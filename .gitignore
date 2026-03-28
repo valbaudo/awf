@@ -4,3 +4,4 @@ docs/superpowers/*
 docs/runtime-design.md
 ROADMAP.md
 AgentWorkflowFormat.md
+/bin/
