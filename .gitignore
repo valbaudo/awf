@@ -1,7 +1,6 @@
 .claude
 CLAUDE.md
-docs/superpowers/*
-docs/runtime-design.md
+docs/
 ROADMAP.md
 AgentWorkflowFormat.md
 /bin/
