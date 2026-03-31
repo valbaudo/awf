@@ -23,11 +23,19 @@ type System struct{}
 
 func (System) Now() time.Time { return time.Now().UTC() }
 
+// runIDBytes is the byte length of a freshly minted run id (128 bits).
+// runIDHexLen is the resulting hex-encoded string length, exported (lower-case, package-internal)
+// for the test that asserts production IDs are the right shape.
+const (
+	runIDBytes  = 16
+	runIDHexLen = 2 * runIDBytes
+)
+
 // CryptoIDGen is the production IDGen (128-bit crypto/rand, hex-encoded).
 type CryptoIDGen struct{}
 
 func (CryptoIDGen) NewRunID() string {
-	var b [16]byte
+	var b [runIDBytes]byte
 	// On Go 1.20+ crypto/rand.Read does not return errors — the stdlib crashes the process if the
 	// OS RNG is unavailable. The branch below is retained defensively (and satisfies errcheck); if
 	// a future runtime ever surfaces an error here, the panic gives a clear, attributed message

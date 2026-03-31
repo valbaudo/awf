@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -28,10 +29,10 @@ func TestDigestIsSelfDescribing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(d, "awf-d1:sha256:") {
+	if !strings.HasPrefix(d, digestScheme) {
 		t.Fatalf("digest %q lacks scheme prefix", d)
 	}
-	if len(d) != len("awf-d1:sha256:")+64 {
+	if len(d) != len(digestScheme)+sha256.Size*2 {
 		t.Fatalf("digest %q wrong length", d)
 	}
 }
@@ -43,7 +44,7 @@ func TestDigestExcludesDigestField(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := sampleWorkflow()
-	b.Digest = "awf-d1:sha256:" + strings.Repeat("f", 64) // pre-set Digest must not affect the hash
+	b.Digest = digestScheme + strings.Repeat("f", sha256.Size*2) // pre-set Digest must not affect the hash
 	db, err := b.ComputeDigest(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +119,25 @@ func TestGoldenDigest(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("golden digest mismatch:\n got  = %s\n want = %s\n(if this change is intentional, update `want`)", got, want)
+	}
+}
+
+func TestSetDigestPopulatesField(t *testing.T) {
+	wf := sampleWorkflow()
+	d, err := wf.SetDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.Digest != d {
+		t.Fatalf("Digest field = %q, want %q", wf.Digest, d)
+	}
+	// Idempotence: SetDigest twice yields the same value (and Digest is excluded from its own hash).
+	d2, err := wf.SetDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d != d2 {
+		t.Fatalf("SetDigest changed on re-run: %q vs %q", d, d2)
 	}
 }
 

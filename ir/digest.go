@@ -10,12 +10,14 @@ import (
 	"github.com/gowebpki/jcs"
 )
 
-// DigestScheme is the self-describing prefix. Bump (awf-d2) only on a deliberate canonicalization change.
-const DigestScheme = "awf-d1:sha256:"
+// digestScheme is the self-describing prefix. Bump (awf-d2) only on a deliberate canonicalization
+// change. Unexported until an external consumer needs to compare it; promote when that day comes.
+const digestScheme = "awf-d1:sha256:"
 
-// ComputeDigest returns the self-describing content digest of the workflow, folding in the sha256 of
-// each referenced compose file (keyed by cleaned, workflow-relative path; the loader supplies these in
-// slice 1.2). The Digest field is excluded (json:"-"). composeFiles is nil if none.
+// ComputeDigest returns the self-describing content digest of the workflow, folding in the sha256
+// of each referenced compose file (keyed by cleaned, workflow-relative path supplied by the
+// loader). Pure: does not modify w. The Digest field is excluded (`json:"-"`). composeFiles is
+// nil if none. See (*Workflow).SetDigest for the in-place variant.
 func (w *Workflow) ComputeDigest(composeFiles map[string][]byte) (string, error) {
 	raw, err := json.Marshal(w) // Node marshalers produce the key-presence shape; Digest is json:"-"
 	if err != nil {
@@ -40,5 +42,17 @@ func (w *Workflow) ComputeDigest(composeFiles map[string][]byte) (string, error)
 		fmt.Fprintf(h, "\x00%d:%s\x00", len(p), p)
 		h.Write(fh[:])
 	}
-	return DigestScheme + hex.EncodeToString(h.Sum(nil)), nil
+	return digestScheme + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// SetDigest computes the workflow's content digest via ComputeDigest and stores it in w.Digest.
+// Returns the computed value for convenience. Convenient for run-start / loader callers that
+// want both the value and the field populated; ComputeDigest itself remains pure.
+func (w *Workflow) SetDigest(composeFiles map[string][]byte) (string, error) {
+	d, err := w.ComputeDigest(composeFiles)
+	if err != nil {
+		return "", err
+	}
+	w.Digest = d
+	return d, nil
 }

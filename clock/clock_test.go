@@ -5,10 +5,15 @@ import (
 	"time"
 )
 
+// testEpochSeconds is a deterministic fixed timestamp (2023-11-14T22:13:20Z), pinned so tests
+// don't depend on wall-clock or timezone.
+const testEpochSeconds = 1700000000
+
 func TestFakeIsDeterministic(t *testing.T) {
-	f := &Fake{T: time.Unix(1700000000, 0).UTC(), IDs: []string{"run-a", "run-b"}}
-	if got := f.Now(); !got.Equal(time.Unix(1700000000, 0).UTC()) {
-		t.Fatalf("Now() = %v, want %v", got, time.Unix(1700000000, 0).UTC())
+	want := time.Unix(testEpochSeconds, 0).UTC()
+	f := &Fake{T: want, IDs: []string{"run-a", "run-b"}}
+	if got := f.Now(); !got.Equal(want) {
+		t.Fatalf("Now() = %v, want %v", got, want)
 	}
 	if got := f.NewRunID(); got != "run-a" {
 		t.Fatalf("first NewRunID() = %q, want run-a", got)
@@ -23,7 +28,7 @@ func TestProdImplsSatisfyInterfaces(t *testing.T) {
 	var _ IDGen = CryptoIDGen{}
 	var _ Clock = (*Fake)(nil)
 	var _ IDGen = (*Fake)(nil)
-	if id := (CryptoIDGen{}).NewRunID(); len(id) != 32 {
-		t.Fatalf("run id len = %d, want 32 hex chars", len(id))
+	if id := (CryptoIDGen{}).NewRunID(); len(id) != runIDHexLen {
+		t.Fatalf("run id len = %d, want %d hex chars", len(id), runIDHexLen)
 	}
 }

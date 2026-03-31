@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-// Workflow is the top-level definition. Digest is excluded from its own hash input (json:"-").
+// Workflow is the top-level definition. The Digest field is populated by run-start (via
+// (*Workflow).SetDigest) or compared on resume; it is excluded from its own hash input
+// (`json:"-"`). After json.Unmarshal, Digest is empty until set.
 type Workflow struct {
 	ID         string               `json:"workflow"`
 	Version    int                  `json:"version"`
@@ -17,7 +19,7 @@ type Workflow struct {
 	Digest     string               `json:"-"`
 }
 
-// Container is backed by exactly one of Image or Compose (validated in slice 1.4).
+// Container is backed by exactly one of Image or Compose (structural validation per the standard §3).
 type Container struct {
 	Image     string     `json:"image,omitempty"`
 	Compose   string     `json:"compose,omitempty"`
@@ -81,9 +83,9 @@ type RawConfig map[string]any
 // json.Number, not a defined type — a defined type over json.Number loses the special numeric-token
 // decoding (verified during planning), so `min_success: 3` would fail to unmarshal.
 //
-// Consumption (engine fan-in, Phase 3): call .Int64() or .Float64() to interpret; the consumer
-// must check which form. Strictness (rejecting a JSON-string form like "0.8" that json.Number
-// also accepts) is deferred to slice 1.4 validation.
+// Consumption (engine `map` fan-in, runtime-design.md §5): call .Int64() or .Float64() to
+// interpret; the consumer must check which form. Strictness (rejecting a JSON-string form like
+// "0.8" that json.Number also accepts) is the validator's job — see runtime-design.md §4.
 type Ratio = json.Number
 
 // JSONSchema is a JSON Schema document, preserved as decoded JSON for canonicalization + validation.

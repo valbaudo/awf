@@ -270,3 +270,80 @@ func TestLoopRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip: got %s want %s", out, in)
 	}
 }
+
+func TestIfElseRoundTrip(t *testing.T) {
+	in := `{"if":{"cond":"x","then":[{"id":"a","run":"a"}],"else":[{"id":"b","run":"b"}]}}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifN := n.(*If)
+	if len(ifN.Else) != 1 {
+		t.Fatalf("else len = %d, want 1", len(ifN.Else))
+	}
+	out, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
+func TestLoopMaxItersRoundTrip(t *testing.T) {
+	in := `{"loop":{"max_iters":5,"body":[{"id":"a","run":"x"}]}}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lp := n.(*Loop)
+	if lp.MaxIters == nil || *lp.MaxIters != 5 {
+		t.Fatalf("max_iters = %v, want 5", lp.MaxIters)
+	}
+	out, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
+func TestTryCatchFinallyRoundTrip(t *testing.T) {
+	in := `{"try":{"do":[{"id":"d","run":"d"}],"catch":[{"id":"c","run":"c"}],"finally":[{"id":"f","run":"f"}]}}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	try := n.(*Try)
+	if len(try.Catch) != 1 || len(try.Finally) != 1 {
+		t.Fatalf("catch/finally len: catch=%d finally=%d", len(try.Catch), len(try.Finally))
+	}
+	out, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
+// TestNodeRegistryExhaustive guards the 3-touchpoint invariant called out in node.go: every
+// controlKeys entry must have a matching case in unmarshalControl, and the total number of kinds
+// (control + step) must equal the count of concrete Node types. A future contributor who adds a
+// control type to the factory but forgets the switch case lands in the "unknown control" branch,
+// which this test catches before it can ship.
+func TestNodeRegistryExhaustive(t *testing.T) {
+	const wantKinds = 10 // 3 step + 7 control; update when (the standard's set of) node kinds changes.
+	if got := len(controlKeys) + len(stepKeys); got != wantKinds {
+		t.Fatalf("registries cover %d kinds, want %d", got, wantKinds)
+	}
+	for k, mk := range controlKeys {
+		n := mk()
+		if err := unmarshalControl(k, json.RawMessage(`null`), n); err != nil {
+			if strings.Contains(err.Error(), "unknown control") {
+				t.Errorf("unmarshalControl(%q): %v — missing case in the switch", k, err)
+			}
+		}
+	}
+}
