@@ -1,0 +1,6 @@
+workflow: missing
+version: 1
+containers:
+  lab:
+    compose: ./nope.yml
+graph: []

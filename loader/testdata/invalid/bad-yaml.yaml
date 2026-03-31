@@ -1,0 +1,5 @@
+workflow: bad
+graph:
+  - id: a
+    run: ./a.sh
+  bad-indent

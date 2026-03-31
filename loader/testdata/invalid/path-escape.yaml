@@ -1,0 +1,6 @@
+workflow: escape
+version: 1
+containers:
+  lab:
+    compose: ../../../etc/passwd
+graph: []
