@@ -6,4 +6,4 @@ toolchain go1.26.3
 
 require github.com/gowebpki/jcs v1.0.1
 
-require github.com/goccy/go-yaml v1.19.2 // indirect
+require github.com/goccy/go-yaml v1.19.2
