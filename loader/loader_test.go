@@ -2,8 +2,11 @@ package loader
 
 import (
 	"errors"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,14 +31,14 @@ func TestLoadValidFixture(t *testing.T) {
 		t.Fatalf("Containers count = %d, want 2", len(ld.Workflow.Containers))
 	}
 	if r, ok := ld.Workflow.Containers["runner"]; !ok || r.Image == "" || r.Compose != "" {
-		t.Fatalf("expected image-backed `runner` with no compose; got %#v (all keys = %v)", r, keys(ld.Workflow.Containers))
+		t.Fatalf("expected image-backed `runner` with no compose; got %#v (all keys = %v)", r, slices.Sorted(maps.Keys(ld.Workflow.Containers)))
 	}
 	if len(ld.ComposeFiles) != 1 {
 		t.Fatalf("ComposeFiles count = %d, want 1 (only `lab` is compose-backed)", len(ld.ComposeFiles))
 	}
 	b, ok := ld.ComposeFiles["lab/compose.yml"]
 	if !ok {
-		t.Fatalf("ComposeFiles keys = %v, want forward-slash workflow-relative \"lab/compose.yml\"", keys(ld.ComposeFiles))
+		t.Fatalf("ComposeFiles keys = %v, want forward-slash workflow-relative \"lab/compose.yml\"", slices.Sorted(maps.Keys(ld.ComposeFiles)))
 	}
 	if !strings.Contains(string(b), "vulnerable:") {
 		t.Fatalf("compose bytes look wrong: %q", b)
@@ -60,6 +63,9 @@ func TestLoadMissingWorkflow(t *testing.T) {
 	_, err := Load("testdata/does-not-exist.yaml")
 	if err == nil {
 		t.Fatal("expected error for missing workflow")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v, want one wrapping fs.ErrNotExist", err)
 	}
 }
 
@@ -156,17 +162,46 @@ func TestLoadSymlinkEscapeRejected(t *testing.T) {
 	}
 }
 
+func TestLoadDeduplicatesSharedComposePath(t *testing.T) {
+	// Two containers referencing the same cleaned compose path (different surface forms
+	// "./compose.yml" and "compose.yml") must result in ONE read and ONE entry in
+	// ComposeFiles. Reading twice would open a TOCTOU window where the bytes could differ
+	// between reads, destabilizing the future spec §E compose-fold digest.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wf := []byte("workflow: dedup\nversion: 1\ncontainers:\n  a:\n    compose: ./compose.yml\n  b:\n    compose: compose.yml\ngraph: []\n")
+	wfPath := filepath.Join(dir, "wf.yaml")
+	if err := os.WriteFile(wfPath, wf, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ld, err := Load(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ld.ComposeFiles) != 1 {
+		t.Fatalf("ComposeFiles count = %d, want 1 (deduped)", len(ld.ComposeFiles))
+	}
+	if a := ld.Workflow.Containers["a"].Compose; a != "compose.yml" {
+		t.Errorf("Containers[a].Compose = %q, want normalized %q", a, "compose.yml")
+	}
+	if b := ld.Workflow.Containers["b"].Compose; b != "compose.yml" {
+		t.Errorf("Containers[b].Compose = %q, want normalized %q", b, "compose.yml")
+	}
+}
+
 func TestLoadInsideRootSymlinkAlsoRejected(t *testing.T) {
 	// os.Root refuses ALL symlinks in the resolution path, not only escaping ones — even a
 	// symlink to a sibling file inside the same rooted directory is refused. This locks that
 	// conservative behavior so we notice if Go ever loosens it (it would be a real semantic
 	// shift in our security posture).
 	dir := t.TempDir()
-	real := filepath.Join(dir, "real.yml")
-	if err := os.WriteFile(real, []byte("services: {}\n"), 0o644); err != nil {
+	realPath := filepath.Join(dir, "real.yml")
+	if err := os.WriteFile(realPath, []byte("services: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(real, filepath.Join(dir, "link.yml")); err != nil {
+	if err := os.Symlink(realPath, filepath.Join(dir, "link.yml")); err != nil {
 		t.Fatalf("os.Symlink failed: %v", err)
 	}
 	wf := []byte("workflow: inside\nversion: 1\ncontainers:\n  lab:\n    compose: ./link.yml\ngraph: []\n")
@@ -178,12 +213,4 @@ func TestLoadInsideRootSymlinkAlsoRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected os.Root to refuse an inside-root symlink (conservative behavior locked here)")
 	}
-}
-
-func keys[V any](m map[string]V) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	return ks
 }

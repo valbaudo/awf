@@ -28,8 +28,8 @@ func Decode(yamlBytes []byte) (*ir.Workflow, error) {
 	if err := goyaml.Unmarshal(yamlBytes, &raw); err != nil {
 		return nil, fmt.Errorf("yaml parse: %w", err)
 	}
-	// Stage 2: any → JSON. json.Marshal of map[string]any sorts keys; the digest is stable
-	// regardless, but this keeps the intermediate JSON deterministic for diagnostics.
+	// Stage 2: any → JSON. json.Marshal of map[string]any sorts keys, so the intermediate
+	// JSON is deterministic for diagnostics.
 	jsonBytes, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("yaml→json: %w", err)

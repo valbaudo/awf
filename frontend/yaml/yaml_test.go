@@ -3,6 +3,7 @@ package yaml
 import (
 	"errors"
 	"testing"
+	"time"
 
 	goyaml "github.com/goccy/go-yaml"
 
@@ -100,12 +101,15 @@ graph:
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig := wf.Graph[0].(*ir.SignalStep)
+	sig, ok := wf.Graph[0].(*ir.SignalStep)
+	if !ok {
+		t.Fatalf("Graph[0] = %#v, want *ir.SignalStep", wf.Graph[0])
+	}
 	if sig.Timeout == nil {
 		t.Fatal("Timeout is nil")
 	}
-	// 24h == 86_400_000_000_000 ns
-	if int64(*sig.Timeout) != 86_400_000_000_000 {
-		t.Fatalf("Timeout = %d ns, want 86400000000000 (24h)", int64(*sig.Timeout))
+	want := int64(24 * time.Hour)
+	if int64(*sig.Timeout) != want {
+		t.Fatalf("Timeout = %d ns, want %d (24h)", int64(*sig.Timeout), want)
 	}
 }

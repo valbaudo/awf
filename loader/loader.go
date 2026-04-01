@@ -7,10 +7,10 @@
 //  1. composeRelPath rejects absolute paths, paths containing backslashes (compose paths are
 //     POSIX; backslashes have no legitimate use and silently rewriting them hides authoring
 //     mistakes), and paths that escape the workflow directory after filepath.Clean.
-//  2. os.Root (Go 1.24, rooted at the workflow directory) refuses any escape that slipped past
-//     gate 1 — including any symlink in the resolution path, regardless of where it resolves
-//     (Load is conservative: symlinks are refused even when they target a sibling file inside
-//     the rooted directory).
+//  2. os.Root (Go 1.24, rooted at the workflow directory) independently confines all opens to
+//     the workflow directory and refuses any symlink in the resolution path — additional
+//     protection beyond gate 1's string-level checks. Load is conservative: symlinks are refused
+//     even when they target a sibling file inside the rooted directory.
 //
 // Load also normalizes each Container.Compose to its cleaned forward-slash form so the IR field
 // and the ComposeFiles map key agree (this matters for the spec §E compose-fold and for any
@@ -18,6 +18,7 @@
 package loader
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -62,6 +63,15 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 		if err != nil {
 			return nil, fmt.Errorf("container %q compose %q: %w", name, c.Compose, err)
 		}
+		// If two containers reference the same cleaned path (e.g. "./lab/compose.yml" and
+		// "lab/compose.yml"), read the file once. Avoids a TOCTOU window where two reads of
+		// the same path could see different bytes, which would destabilize the future
+		// compose-fold digest. Still normalize Container.Compose for the second container.
+		if _, seen := compose[rel]; seen {
+			c.Compose = rel
+			wf.Containers[name] = c
+			continue
+		}
 		// os.Root.Open enforces no `..`-escape and refuses every symlink in the resolution
 		// path (even inside-root ones); composeRelPath has already rejected absolute paths
 		// and backslashes. A missing file surfaces here as fs.ErrNotExist.
@@ -105,10 +115,10 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 // attributed error messages distinct from "file not found".
 func composeRelPath(declared string) (string, error) {
 	if filepath.IsAbs(declared) {
-		return "", fmt.Errorf("absolute path not permitted (must be relative to the workflow directory)")
+		return "", errors.New("absolute path not permitted (must be relative to the workflow directory)")
 	}
 	if strings.ContainsRune(declared, '\\') {
-		return "", fmt.Errorf("backslash not permitted in compose paths; use forward slash")
+		return "", errors.New("backslash not permitted in compose paths; use forward slash")
 	}
 	clean := filepath.ToSlash(filepath.Clean(declared))
 	if clean == ".." || strings.HasPrefix(clean, "../") {
