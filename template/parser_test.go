@@ -62,6 +62,7 @@ func TestParseRefErrors(t *testing.T) {
 		{"a..b", "expected ident or integer"},
 		{".a", "expected identifier"},
 		{"a.-1", "non-negative"},
+		{"a.9999999999999999999", "non-negative integer"},
 		{`"string"`, "expected identifier"},
 		{"1.2", "expected identifier"},
 		{"a b", "expected end of reference"},
@@ -84,7 +85,9 @@ func TestParseRefErrors(t *testing.T) {
 }
 
 func TestParseExprHappyPath(t *testing.T) {
-	// Smoke-test each production in the §B grammar at least once.
+	// Grammar-coverage smoke test: parses one example of each §B production and only checks
+	// that parsing succeeds (the AST is discarded). Structural shape is locked separately by
+	// TestParseExprPrecedence and TestParseExprUnaryBindsLooseThanCmp.
 	cases := []string{
 		// literals
 		"true",

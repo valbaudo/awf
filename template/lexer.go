@@ -102,7 +102,7 @@ func (k TokenKind) String() string {
 // Token is one lexed token. Pos is the byte offset into the source.
 type Token struct {
 	Kind TokenKind
-	Text string // for TIdent: the identifier; for TNumber: digits; for TString: decoded content
+	Text string // for TIdent: the identifier; for TNumber: the raw number literal (may include leading '-' and decimal point); for TString: decoded content
 	Pos  int
 }
 

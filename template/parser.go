@@ -3,6 +3,7 @@ package template
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 )
 
 // tokDesc renders a token for use in error messages: "EOF" for TEOF (the Text field is empty
@@ -27,8 +28,8 @@ func ParseExpr(src string) (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.peek().Kind != TEOF {
-		return nil, &SyntaxError{Pos: p.peek().Pos, Msg: fmt.Sprintf("unexpected %s after expression", tokDesc(p.peek()))}
+	if t := p.peek(); t.Kind != TEOF {
+		return nil, &SyntaxError{Pos: t.Pos, Msg: fmt.Sprintf("unexpected %s after expression", tokDesc(t))}
 	}
 	return e, nil
 }
@@ -45,8 +46,8 @@ func ParseRef(src string) (*Ref, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.peek().Kind != TEOF {
-		return nil, &SyntaxError{Pos: p.peek().Pos, Msg: fmt.Sprintf("expected end of reference, got %s", tokDesc(p.peek()))}
+	if t := p.peek(); t.Kind != TEOF {
+		return nil, &SyntaxError{Pos: t.Pos, Msg: fmt.Sprintf("expected end of reference, got %s", tokDesc(t))}
 	}
 	return r, nil
 }
@@ -160,8 +161,8 @@ func (p *parser) parsePrimary() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		if p.peek().Kind != TRParen {
-			return nil, &SyntaxError{Pos: p.peek().Pos, Msg: fmt.Sprintf("expected ')', got %s", tokDesc(p.peek()))}
+		if rp := p.peek(); rp.Kind != TRParen {
+			return nil, &SyntaxError{Pos: rp.Pos, Msg: fmt.Sprintf("expected ')', got %s", tokDesc(rp))}
 		}
 		p.consume()
 		return e, nil
@@ -205,7 +206,9 @@ func (p *parser) parseRef() (*Ref, error) {
 		case TNumber:
 			p.consume()
 			n, err := (json.Number(t.Text)).Int64()
-			if err != nil || n < 0 {
+			// n > math.MaxInt guards against int64→int truncation on 32-bit build targets where
+			// math.MaxInt < math.MaxInt64. On 64-bit (our shipping targets) this branch is unreachable.
+			if err != nil || n < 0 || n > math.MaxInt {
 				return nil, &SyntaxError{Pos: t.Pos, Msg: fmt.Sprintf("ref index must be a non-negative integer, got %q", t.Text)}
 			}
 			r.Segments = append(r.Segments, Segment{Index: int(n), IsIndex: true, Pos: t.Pos})

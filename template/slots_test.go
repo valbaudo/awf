@@ -22,6 +22,7 @@ func TestSlotsHappyPath(t *testing.T) {
 		{"no slots", "no slots here", nil},
 		{"empty input", "", nil},
 		{"empty inner", "{{}}", []Slot{{Start: 0, End: 4, Inner: ""}}},
+		{"first close wins when }} appears later", "{{ a }} b }}", []Slot{{Start: 0, End: 7, Inner: " a "}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -98,5 +99,22 @@ func TestSlotsStrayCloseIsLiteral(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("expected no slots in %q, got %+v", "hello }} world", got)
+	}
+}
+
+// TestSlotsEmptyInnerIsRejectedByParseRef locks the slot-scanner ↔ ParseRef boundary: the
+// scanner accepts `{{}}` (empty inner) because rejecting it isn't its concern, but the empty
+// inner is rejected downstream by ParseRef. Closes the loop so slice 1.4's validator doesn't
+// have to rediscover the contract.
+func TestSlotsEmptyInnerIsRejectedByParseRef(t *testing.T) {
+	slots, err := Slots("{{}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("got %d slots, want 1", len(slots))
+	}
+	if _, err := ParseRef(strings.TrimSpace(slots[0].Inner)); err == nil {
+		t.Fatal("expected ParseRef to reject empty slot inner")
 	}
 }

@@ -1,22 +1,14 @@
 package template
 
 import (
-	"strings"
 	"testing"
 )
 
+// dumpRefs maps dumpRef over a slice of refs. The single-ref form lives in parser_test.go.
 func dumpRefs(refs []Ref) []string {
 	out := make([]string, 0, len(refs))
-	for _, r := range refs {
-		parts := make([]string, 0, len(r.Segments))
-		for _, s := range r.Segments {
-			if s.IsIndex {
-				parts = append(parts, "<idx>")
-			} else {
-				parts = append(parts, s.Ident)
-			}
-		}
-		out = append(out, strings.Join(parts, "."))
+	for i := range refs {
+		out = append(out, dumpRef(&refs[i]))
 	}
 	return out
 }
