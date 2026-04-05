@@ -121,7 +121,21 @@ func less(a, b Diagnostic) bool {
 // AWF1001/AWF1002 are emitted at PARSE time by ir/node_unmarshal.go (zero / multiple
 // kind-keys on a node) before Validate ever runs; they intentionally don't appear here.
 var catalog = map[string]string{
-	// Tasks 2–5 populate this. Task 1 leaves it empty so the uniqueness test passes
-	// trivially and later additions are caught by code review (any new emission site
-	// requires a corresponding catalog entry — that pairing is the convention).
+	"AWF1003": "nil or empty LoadedDefinition",
+	"AWF1004": "step id is not unique",
+	"AWF1005": "container declares both image and compose (pick one)",
+	"AWF1006": "container declares neither image nor compose",
+	"AWF1007": "image must be content-addressed (tag forbidden, use @sha256:...)",
+	"AWF1008": "compose-backed container missing required `service` field",
+	"AWF1009": "container reference is missing or does not resolve to a declared container",
+	"AWF1010": "parallel branches use overlapping containers (§5.4 forbids)",
+	"AWF1011": "loop declares neither until nor max_iters",
+	"AWF1012": "map missing one of over/as/container/concurrency",
+	"AWF1013": "gate.generate must be non-empty",
+	"AWF1014": "gate.evaluate final node must declare output_schema",
+	"AWF1015": "gate missing until",
+	"AWF1016": "expression or template exceeds size limit (default 64 KiB)",
+	"AWF1017": "workflow `version` is not the supported value (only 1 is defined by AWF §2)",
+	// AWF1018 is intentionally skipped (folded into AWF1009 after critique).
+	"AWF1019": "container or service reference uses template syntax (`{{ }}`); these fields must be static names",
 }

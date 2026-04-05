@@ -24,13 +24,12 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 		return []Diagnostic{{
 			Severity: Error,
 			Code:     "AWF1003",
-			Message:  "nil or empty LoadedDefinition",
+			Message:  catalog["AWF1003"],
 		}}
 	}
 	c := &collector{}
-	// Each pass lands in Tasks 2–5. The skeleton calls nothing — Task 2 will replace this
-	// comment with the structural pass invocation, Task 3 with refs, etc.
-	_ = c
+	validateStructural(ld, c)
+	// Tasks 3-5 add: validateRefs, validateSchema, validateCompose.
 	return c.sorted()
 }
 
