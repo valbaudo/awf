@@ -29,7 +29,8 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 	}
 	c := &collector{}
 	validateStructural(ld, c)
-	// Tasks 3-5 add: validateRefs, validateSchema, validateCompose.
+	validateRefs(ld, c)
+	// Tasks 4-5 add: validateSchema, validateCompose.
 	return c.sorted()
 }
 
