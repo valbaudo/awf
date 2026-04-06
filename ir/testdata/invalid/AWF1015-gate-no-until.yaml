@@ -1,0 +1,23 @@
+workflow: gate-no-until
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: g
+          container: c
+          run: ./g.sh
+      evaluate:
+        - id: j
+          container: c
+          run: ./j.sh
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties:
+              ok: { type: boolean }
+      until: ""
+      max_attempts: 3

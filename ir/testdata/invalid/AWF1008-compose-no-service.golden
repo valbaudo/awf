@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "containers.c",
+    "Code": "AWF1008",
+    "Message": "compose-backed container missing required `service` field"
+  }
+]

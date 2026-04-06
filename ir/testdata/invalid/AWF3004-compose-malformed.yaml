@@ -1,0 +1,7 @@
+workflow: compose-bad
+version: 1
+containers:
+  lab:
+    compose: ./lab-bad/compose.yml
+    service: vuln
+graph: []

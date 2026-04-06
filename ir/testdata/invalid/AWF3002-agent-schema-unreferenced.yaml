@@ -1,0 +1,16 @@
+workflow: iff
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: a
+    container: c
+    uses: anthropic/claude-code
+    with: {}
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [verdict]
+      properties:
+        verdict: { type: boolean }

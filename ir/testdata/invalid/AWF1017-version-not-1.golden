@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "",
+    "Code": "AWF1017",
+    "Message": "workflow `version` is not the supported value (only 1 is defined by AWF §2) (got 2)"
+  }
+]

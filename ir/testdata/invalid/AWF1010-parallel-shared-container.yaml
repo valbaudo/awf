@@ -1,0 +1,13 @@
+workflow: par-shared
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - parallel:
+      - id: a
+        container: c
+        run: ./a.sh
+      - id: b
+        container: c
+        run: ./b.sh

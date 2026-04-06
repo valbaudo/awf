@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "warning",
+    "Path": "a",
+    "Code": "AWF3002",
+    "Message": "agent output_schema declared but no reference into it (step \"a\")"
+  }
+]

@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "containers.c",
+    "Code": "AWF1005",
+    "Message": "container declares both image and compose (pick one)"
+  }
+]

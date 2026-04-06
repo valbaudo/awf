@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "map[0]",
+    "Code": "AWF1012",
+    "Message": "map missing one of over/as/container/concurrency"
+  }
+]

@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "containers.lab",
+    "Code": "AWF3003",
+    "Message": "service \"vuln\" image \"nginx:latest\" is not digest-pinned"
+  }
+]

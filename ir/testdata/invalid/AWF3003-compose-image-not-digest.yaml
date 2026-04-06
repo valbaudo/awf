@@ -1,0 +1,7 @@
+workflow: compose-tag
+version: 1
+containers:
+  lab:
+    compose: ./lab/compose.yml
+    service: vuln
+graph: []

@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "loop[0]",
+    "Code": "AWF1011",
+    "Message": "loop declares neither until nor max_iters"
+  }
+]

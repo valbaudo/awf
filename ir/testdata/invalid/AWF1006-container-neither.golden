@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "containers.c",
+    "Code": "AWF1006",
+    "Message": "container declares neither image nor compose"
+  }
+]

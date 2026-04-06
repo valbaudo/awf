@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "containers.lab",
+    "Code": "AWF3004",
+    "Message": "top-level object must be a mapping"
+  }
+]

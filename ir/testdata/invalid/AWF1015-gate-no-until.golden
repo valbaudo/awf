@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "gate[0]",
+    "Code": "AWF1015",
+    "Message": "gate missing until"
+  }
+]

@@ -1,0 +1,17 @@
+workflow: gate-no-schema
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: g
+          container: c
+          run: ./g.sh
+      evaluate:
+        - id: j
+          container: c
+          run: ./j.sh
+      until: "{{ run.id }}"
+      max_attempts: 3

@@ -1,0 +1,11 @@
+workflow: map-bad
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - map:
+      body:
+        - id: a
+          container: c
+          run: ./a.sh

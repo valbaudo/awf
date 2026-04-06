@@ -1,0 +1,7 @@
+workflow: compose-extends
+version: 1
+containers:
+  lab:
+    compose: ./lab-ext/compose.yml
+    service: vuln
+graph: []

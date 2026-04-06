@@ -1,0 +1,15 @@
+workflow: map-tmpl
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - map:
+      over: "{{ run.id }}"
+      as: item
+      container: "{{ injected }}"
+      concurrency: 2
+      body:
+        - id: a
+          container: c
+          run: ./a.sh

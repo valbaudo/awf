@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "a.run",
+    "Code": "AWF3001",
+    "Message": "reference to undeclared step \"nope\""
+  }
+]

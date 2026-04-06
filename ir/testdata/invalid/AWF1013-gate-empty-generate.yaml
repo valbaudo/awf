@@ -1,0 +1,20 @@
+workflow: gate-empty-gen
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate: []
+      evaluate:
+        - id: j
+          container: c
+          run: ./j.sh
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties:
+              ok: { type: boolean }
+      until: "{{ step.j.ok }}"
+      max_attempts: 3

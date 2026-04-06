@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "a",
+    "Code": "AWF1009",
+    "Message": "container reference is missing or does not resolve to a declared container (container \"not-declared\")"
+  }
+]

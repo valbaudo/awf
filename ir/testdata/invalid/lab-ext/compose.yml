@@ -1,0 +1,5 @@
+services:
+  vuln:
+    extends:
+      file: /etc/passwd
+      service: base

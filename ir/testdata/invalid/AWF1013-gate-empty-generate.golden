@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "gate[0]",
+    "Code": "AWF1013",
+    "Message": "gate.generate must be non-empty"
+  }
+]

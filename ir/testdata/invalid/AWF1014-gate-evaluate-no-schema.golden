@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "gate[0]",
+    "Code": "AWF1014",
+    "Message": "gate.evaluate final node must declare output_schema"
+  }
+]
