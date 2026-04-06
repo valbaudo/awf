@@ -107,12 +107,12 @@ func decodeFrame(buf []byte) ([]byte, int, error) {
 
 // marshalEvent encodes an Event to wire JSON. Wrapped so future codec swaps (CBOR, protobuf
 // per design §D "codec seam") are a one-function change.
-func marshalEvent(e Event) ([]byte, error) { //nolint:unused // called by Task 2's Log.Append
+func marshalEvent(e Event) ([]byte, error) {
 	return json.Marshal(e)
 }
 
 // unmarshalEvent is marshalEvent's inverse.
-func unmarshalEvent(b []byte) (Event, error) { //nolint:unused // called by Task 2's Log.Fold
+func unmarshalEvent(b []byte) (Event, error) {
 	var e Event
 	if err := json.Unmarshal(b, &e); err != nil {
 		return Event{}, err

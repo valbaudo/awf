@@ -164,6 +164,36 @@ func TestCRCTableIsCastagnoli(t *testing.T) {
 	_ = hex.EncodeToString(frame[:8])
 }
 
+func TestMarshalUnmarshalEventRoundTrip(t *testing.T) {
+	// Lock the codec-seam contract: marshalEvent → unmarshalEvent must round-trip every field.
+	// TestEventJSONRoundTrip exercises the JSON shape via direct encoding/json calls; this test
+	// exercises it via the package-private wrappers that FileLog.Append and FileLog.Fold call.
+	// If a future implementer swaps JSON for CBOR/protobuf in marshalEvent but forgets to update
+	// unmarshalEvent, the direct-encoding test would still pass — this one would not.
+	in := Event{
+		Seq:        42,
+		Epoch:      3,
+		TS:         time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC),
+		Path:       "graph[0]",
+		Type:       "node.completed",
+		PayloadRef: "awf-d1:sha256:" + strings.Repeat("b", 64),
+		Data:       json.RawMessage(`{"k":"v"}`),
+	}
+	b, err := marshalEvent(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := unmarshalEvent(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Seq != in.Seq || out.Epoch != in.Epoch || !out.TS.Equal(in.TS) ||
+		out.Path != in.Path || out.Type != in.Type || out.PayloadRef != in.PayloadRef ||
+		string(out.Data) != string(in.Data) {
+		t.Fatalf("roundtrip mismatch:\n got  %+v\n want %+v", out, in)
+	}
+}
+
 // binaryLittleEndianU32 is a test-local mirror so the test doesn't depend on encoding/binary
 // (the production decoder uses encoding/binary; the test cross-checks via a tiny ad-hoc
 // little-endian read so a wrong byte order in the production code can't pass).
