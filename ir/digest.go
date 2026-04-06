@@ -39,7 +39,10 @@ func (w *Workflow) ComputeDigest(composeFiles map[string][]byte) (string, error)
 		// length-prefix + NUL sentinels: \x00<byteLen(p)>:<p>\x00 — prevents aliasing for any
 		// path byte sequence (incl. paths containing ':' or digits) and separates the path from
 		// the following 32-byte content hash without depending on the reader knowing the hash size.
-		fmt.Fprintf(h, "\x00%d:%s\x00", len(p), p)
+		// Explicit `_, _ =` to satisfy errcheck (Fprintf returns an error that staticcheck
+		// prefers we use here over Write([]byte(fmt.Sprintf(...))); hash.Hash.Write is
+		// errcheck-whitelisted so the line below stays unannotated).
+		_, _ = fmt.Fprintf(h, "\x00%d:%s\x00", len(p), p)
 		h.Write(fh[:])
 	}
 	return digestScheme + hex.EncodeToString(h.Sum(nil)), nil

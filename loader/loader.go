@@ -52,7 +52,7 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open workflow dir %q as root: %w", workflowDir, err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }() // read-only Root; Close error not meaningful
 
 	compose := map[string][]byte{}
 	for name, c := range wf.Containers {
