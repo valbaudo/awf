@@ -835,3 +835,39 @@ func TestComposeEnvFileDoesNotReadDisk(t *testing.T) {
 		}
 	}
 }
+
+func TestStructuralParallelDistinctComposeProject(t *testing.T) {
+	// AWF1010: `lab` and `lab:db` reference the same compose project (different services)
+	// — they should still trigger the distinct-container rule.
+	ld := makeLD(&Workflow{
+		ID: "par-compose", Version: 1,
+		Containers: map[string]Container{
+			"lab": {Compose: "lab/compose.yml", Service: "web"},
+		},
+		Graph: NodeList{
+			&Parallel{Children: NodeList{
+				&CodeStep{ID: "a", Container: "lab", Run: "true"},
+				&CodeStep{ID: "b", Container: "lab:db", Run: "true"}, // SAME compose project
+			}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1010", "parallel[0]")
+}
+
+func TestComposeLabelFileBlockedAWF3005(t *testing.T) {
+	// label_file: is a file-following directive that compose-go has no Skip option for —
+	// the pre-scan is its only defense. A workflow author can't sneak `label_file: /etc/shadow`
+	// past the validator.
+	ld := &LoadedDefinition{
+		Workflow: &Workflow{
+			ID: "lblfile", Version: 1,
+			Containers: map[string]Container{"lab": {Compose: "lab/compose.yml", Service: "vuln"}},
+			Graph:      NodeList{},
+		},
+		WorkflowPath: "/tmp/wf.yaml",
+		ComposeFiles: map[string][]byte{
+			"lab/compose.yml": []byte("services:\n  vuln:\n    image: example.com/x@sha256:0000000000000000000000000000000000000000000000000000000000000000\n    label_file: /etc/shadow\n"),
+		},
+	}
+	assertErrorAt(t, Validate(ld), "AWF3005", "containers.lab")
+}

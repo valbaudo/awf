@@ -19,14 +19,19 @@ import (
 // A service with no `image:` (e.g. `build:` only) is also rejected as AWF3003 because AWF
 // can't pin what isn't there.
 //
-// SECURITY: compose-go honors several file-following directives (extends, include, env_file)
-// by reading those paths from disk — INCLUDING absolute paths, INCLUDING outside the workflow
-// directory. Empirically verified: `extends: file: /etc/passwd` and `env_file: /etc/hosts`
-// both attempt the reads. Slice 1.2's os.Root confinement governs the loader's READ of the
+// SECURITY: compose-go honors several file-following directives (extends, include, env_file,
+// label_file) by reading those paths from disk — INCLUDING absolute paths, INCLUDING outside
+// the workflow directory. Empirically verified: `extends: file: /etc/passwd` and `env_file:
+// /etc/hosts` both attempt the reads. compose-go v2.11.0 exposes SkipExtends/SkipInclude/
+// SkipResolveEnvironment but NOT a SkipResolveLabels, so label_file's only defense is the
+// pre-scan layer. Slice 1.2's os.Root confinement governs the loader's READ of the
 // workflow-declared compose path, but not compose-go's transitive reads. Defense in depth:
 //
 //	(1) Pre-scan the compose YAML (decode to map[string]any via goccy/go-yaml) for top-level
-//	    `include:` or a service-level `extends:` key. If found → AWF3005, skip the rest.
+//	    `include:` or a service-level `extends:` or `label_file:` key. If found → AWF3005,
+//	    skip the rest. label_file is in the pre-scan because compose-go has no Skip option
+//	    for it; extends/include are in the pre-scan as primary refusal even though they have
+//	    Skip options (defense in depth).
 //	(2) Configure the compose-go loader with SkipExtends, SkipInclude, AND
 //	    SkipResolveEnvironment as defense-in-depth: a future compose-spec extension or a
 //	    pre-scan miss never reopens the file-read primitive. env_file: is NOT pre-scanned-
@@ -53,9 +58,9 @@ func validateCompose(ld *LoadedDefinition, c *collector) {
 			c.errf(ContainerPath(name, ""), "AWF3004", fmt.Sprintf("compose file %q not loaded", ctr.Compose))
 			continue
 		}
-		// Layer 1: pre-scan for extends/include directives. Refuse rather than try to
+		// Layer 1: pre-scan for extends/include/label_file directives. Refuse rather than try to
 		// validate them — they're a file-read primitive disguised as a portability feature.
-		if found, reason := hasExtendsOrInclude(bytes); found {
+		if found, reason := hasFileFollowingDirective(bytes); found {
 			c.errf(ContainerPath(name, ""), "AWF3005", reason)
 			continue
 		}
@@ -79,11 +84,18 @@ func validateCompose(ld *LoadedDefinition, c *collector) {
 	}
 }
 
-// hasExtendsOrInclude scans the raw compose YAML for the two file-following directives the
-// validator refuses (AWF3005). Returns (true, reason) if either appears. Structural decode
-// via goccy/go-yaml so the detection isn't fooled by the literal string "extends:" appearing
-// in a comment or service name.
-func hasExtendsOrInclude(content []byte) (bool, string) {
+// hasFileFollowingDirective scans the raw compose YAML for file-following directives the
+// validator refuses (AWF3005). Returns (true, reason) if any appears. Structural decode via
+// goccy/go-yaml so the detection isn't fooled by the literal strings appearing in comments
+// or service names.
+//
+// The three directives covered:
+//   - top-level `include:` (file inclusion)
+//   - service-level `extends:` (config inheritance from another file)
+//   - service-level `label_file:` (read labels from a file — compose-go has no Skip option for
+//     this in v2.11.0, so the pre-scan is the only defense against absolute paths like
+//     /etc/shadow being opened during validation)
+func hasFileFollowingDirective(content []byte) (bool, string) {
 	var raw any
 	if err := goyaml.Unmarshal(content, &raw); err != nil {
 		// Malformed YAML — AWF3004 will surface the same load failure with a richer message,
@@ -98,13 +110,18 @@ func hasExtendsOrInclude(content []byte) (bool, string) {
 	if _, has := root["include"]; has {
 		return true, catalog["AWF3005"] + " (top-level `include:` found)"
 	}
-	// service-level extends: directive (every service is a map, the key we look for is `extends`).
+	// service-level extends: and label_file: directives.
 	if services, ok := root["services"].(map[string]any); ok {
 		for svcName, raw := range services {
-			if svc, ok := raw.(map[string]any); ok {
-				if _, has := svc["extends"]; has {
-					return true, fmt.Sprintf("%s (service %q has `extends:`)", catalog["AWF3005"], svcName)
-				}
+			svc, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, has := svc["extends"]; has {
+				return true, fmt.Sprintf("%s (service %q has `extends:`)", catalog["AWF3005"], svcName)
+			}
+			if _, has := svc["label_file"]; has {
+				return true, fmt.Sprintf("%s (service %q has `label_file:` — compose-go reads it unconditionally)", catalog["AWF3005"], svcName)
 			}
 		}
 	}

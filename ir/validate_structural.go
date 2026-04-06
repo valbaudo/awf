@@ -180,13 +180,20 @@ func checkContainerRef(name, path string, wf *Workflow, c *collector, required b
 
 func checkParallelDistinctContainers(children NodeList, path string, c *collector) {
 	// §5.4: "branches that run steps MUST target distinct containers / compose projects."
-	// Walk each branch's FIRST step and collect the container ref; report a single AWF1010
-	// per duplicate pair so the diagnostic count doesn't explode for large parallels.
-	used := map[string][]int{} // container name → branch indices using it
+	// Walk each branch's FIRST step and collect the container ref's BARE name (left of any
+	// colon — `lab:db` and `lab` both refer to the same compose project per AWF §3). Report
+	// a single AWF1010 per duplicate pair so the diagnostic count doesn't explode.
+	used := map[string][]int{} // bare container name → branch indices using it
 	for i, child := range children {
-		if ctr := firstContainerRef(child); ctr != "" {
-			used[ctr] = append(used[ctr], i)
+		ctr := firstContainerRef(child)
+		if ctr == "" {
+			continue
 		}
+		bare := ctr
+		if j := strings.Index(ctr, ":"); j >= 0 {
+			bare = ctr[:j]
+		}
+		used[bare] = append(used[bare], i)
 	}
 	for ctr, branches := range used {
 		if len(branches) > 1 {
