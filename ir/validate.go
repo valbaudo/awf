@@ -14,8 +14,10 @@ package ir
 //   - schema     (AWF2001/2) — JSON Schema well-formedness + §7 floor (warning, agents only)
 //   - compose    (AWF3003/4/5) — compose-go/v2 parse + digest-pinning of every inner image
 //
-// Validate is pure: no I/O, no clock, no goroutines. ld.WorkflowPath is read only for the
-// `at <path>` suffix of compose diagnostics; the function never touches the filesystem.
+// Validate performs no filesystem I/O of its own — all reads happened in loader.Load before
+// the LoadedDefinition was constructed. (compose-go/v2 is configured with SkipExtends,
+// SkipInclude, and SkipResolveEnvironment so its transitive file-following directives don't
+// reopen a file-read primitive.)
 //
 // Validate(nil) returns one Error diagnostic (AWF1003) so the slice-1.6 CLI can surface a
 // nil LoadedDefinition gracefully rather than panicking.
@@ -31,7 +33,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 	validateStructural(ld, c)
 	validateRefs(ld, c)
 	validateSchema(ld, c)
-	// Task 5 adds: validateCompose.
+	validateCompose(ld, c)
 	return c.sorted()
 }
 

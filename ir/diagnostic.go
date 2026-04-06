@@ -142,4 +142,7 @@ var catalog = map[string]string{
 	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",
 	"AWF3002": "agent output_schema declared but no reference into it",
+	"AWF3003": "compose file contains a non-digest image (§3: every image in a referenced compose file must be @sha256:-pinned)",
+	"AWF3004": "compose file failed to parse",
+	"AWF3005": "compose file uses `extends:` or `include:` directives; the validator refuses these (they would follow arbitrary disk paths and bypass loader confinement)",
 }
