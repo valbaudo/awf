@@ -44,3 +44,32 @@ func TestContainerPath(t *testing.T) {
 		t.Errorf("ContainerPath no-field = %q", got)
 	}
 }
+
+// TestChildPath pins the convention every validation pass uses to address a control node's
+// named child block. Centralized so the four walkers (structural / refs / schema / index)
+// can't drift apart on branch-name spellings.
+func TestChildPath(t *testing.T) {
+	cases := []struct {
+		parent, keyword, branch string
+		idx                     int
+		want                    string
+	}{
+		{"", "if", "then", 1, "if[1].then"},
+		{"", "if", "else", 1, "if[1].else"},
+		{"", "loop", "body", 0, "loop[0].body"},
+		{"", "try", "do", 0, "try[0].do"},
+		{"", "try", "catch", 0, "try[0].catch"},
+		{"", "try", "finally", 0, "try[0].finally"},
+		{"", "gate", "generate", 2, "gate[2].generate"},
+		{"", "gate", "evaluate", 2, "gate[2].evaluate"},
+		{"", "map", "body", 0, "map[0].body"},
+		{"loop[0].body", "if", "then", 3, "loop[0].body.if[3].then"},
+	}
+	for _, c := range cases {
+		got := ChildPath(c.parent, c.keyword, c.idx, c.branch)
+		if got != c.want {
+			t.Errorf("ChildPath(%q, %q, %d, %q) = %q, want %q",
+				c.parent, c.keyword, c.idx, c.branch, got, c.want)
+		}
+	}
+}

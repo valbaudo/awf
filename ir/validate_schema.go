@@ -52,27 +52,21 @@ func walkSchemas(nodes NodeList, parent string, c *collector) {
 				checkSchemaWellFormed(*v.OutputSchema, path, c)
 			}
 		case *If:
-			path := PathFor(parent, "if", "", i)
-			walkSchemas(v.Then, path+".then", c)
-			walkSchemas(v.Else, path+".else", c)
+			walkSchemas(v.Then, ChildPath(parent, "if", i, "then"), c)
+			walkSchemas(v.Else, ChildPath(parent, "if", i, "else"), c)
 		case *Loop:
-			path := PathFor(parent, "loop", "", i)
-			walkSchemas(v.Body, path+".body", c)
+			walkSchemas(v.Body, ChildPath(parent, "loop", i, "body"), c)
 		case *Try:
-			path := PathFor(parent, "try", "", i)
-			walkSchemas(v.Do, path+".do", c)
-			walkSchemas(v.Catch, path+".catch", c)
-			walkSchemas(v.Finally, path+".finally", c)
+			walkSchemas(v.Do, ChildPath(parent, "try", i, "do"), c)
+			walkSchemas(v.Catch, ChildPath(parent, "try", i, "catch"), c)
+			walkSchemas(v.Finally, ChildPath(parent, "try", i, "finally"), c)
 		case *Parallel:
-			path := PathFor(parent, "parallel", "", i)
-			walkSchemas(v.Children, path, c)
+			walkSchemas(v.Children, PathFor(parent, "parallel", "", i), c)
 		case *Gate:
-			path := PathFor(parent, "gate", "", i)
-			walkSchemas(v.Generate, path+".generate", c)
-			walkSchemas(v.Evaluate, path+".evaluate", c)
+			walkSchemas(v.Generate, ChildPath(parent, "gate", i, "generate"), c)
+			walkSchemas(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c)
 		case *Map:
-			path := PathFor(parent, "map", "", i)
-			walkSchemas(v.Body, path+".body", c)
+			walkSchemas(v.Body, ChildPath(parent, "map", i, "body"), c)
 		}
 	}
 }
@@ -152,7 +146,7 @@ func walkFloor(m map[string]any, path string, c *collector, depth int) {
 	switch t := m["type"].(type) {
 	case string:
 		if t != "" {
-			if _, allowed := floorAllowedTypes[t]; !allowed && !isEnumOnly(m) {
+			if _, allowed := floorAllowedTypes[t]; !allowed && !hasEnum(m) {
 				c.warnf(path, "AWF2002", fmt.Sprintf("type %q not allowed by §7 floor", t))
 			}
 		}
@@ -209,9 +203,10 @@ func walkFloor(m map[string]any, path string, c *collector, depth int) {
 	}
 }
 
-// isEnumOnly returns true if the schema uses `enum` without a typed shape — `enum` is
-// always allowed by the floor.
-func isEnumOnly(m map[string]any) bool {
-	_, hasEnum := m["enum"]
-	return hasEnum
+// hasEnum reports whether the schema declares an `enum` keyword at this level. `enum` is
+// always allowed by the §7 floor regardless of the surrounding `type`, so its presence
+// shortcuts the type-allowlist check above.
+func hasEnum(m map[string]any) bool {
+	_, ok := m["enum"]
+	return ok
 }

@@ -79,8 +79,8 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 		case *If:
 			path := PathFor(parent, "if", "", i)
 			checkFieldSize(string(v.Cond), path, c)
-			walkStructural(v.Then, path+".then", wf, c, seen)
-			walkStructural(v.Else, path+".else", wf, c, seen)
+			walkStructural(v.Then, ChildPath(parent, "if", i, "then"), wf, c, seen)
+			walkStructural(v.Else, ChildPath(parent, "if", i, "else"), wf, c, seen)
 		case *Loop:
 			path := PathFor(parent, "loop", "", i)
 			if v.Until == nil && v.MaxIters == nil {
@@ -89,12 +89,11 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			if v.Until != nil {
 				checkFieldSize(string(*v.Until), path, c)
 			}
-			walkStructural(v.Body, path+".body", wf, c, seen)
+			walkStructural(v.Body, ChildPath(parent, "loop", i, "body"), wf, c, seen)
 		case *Try:
-			path := PathFor(parent, "try", "", i)
-			walkStructural(v.Do, path+".do", wf, c, seen)
-			walkStructural(v.Catch, path+".catch", wf, c, seen)
-			walkStructural(v.Finally, path+".finally", wf, c, seen)
+			walkStructural(v.Do, ChildPath(parent, "try", i, "do"), wf, c, seen)
+			walkStructural(v.Catch, ChildPath(parent, "try", i, "catch"), wf, c, seen)
+			walkStructural(v.Finally, ChildPath(parent, "try", i, "finally"), wf, c, seen)
 		case *Parallel:
 			path := PathFor(parent, "parallel", "", i)
 			checkParallelDistinctContainers(v.Children, path, c)
@@ -115,8 +114,8 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 					c.errf(path, "AWF1014", catalog["AWF1014"])
 				}
 			}
-			walkStructural(v.Generate, path+".generate", wf, c, seen)
-			walkStructural(v.Evaluate, path+".evaluate", wf, c, seen)
+			walkStructural(v.Generate, ChildPath(parent, "gate", i, "generate"), wf, c, seen)
+			walkStructural(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), wf, c, seen)
 		case *Skip:
 			// skip has no fields that need structural validation.
 		case *Map:
@@ -135,7 +134,7 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 					checkContainerRef(v.Container, path, wf, c, true /* required */)
 				}
 			}
-			walkStructural(v.Body, path+".body", wf, c, seen)
+			walkStructural(v.Body, ChildPath(parent, "map", i, "body"), wf, c, seen)
 		}
 	}
 }

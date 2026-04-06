@@ -75,27 +75,21 @@ func indexProducers(nodes NodeList, parent string, producers map[string]producer
 		case *SignalStep:
 			producers[v.ID] = producer{path: PathFor(parent, "", v.ID, i), kind: "signal", schema: v.OutputSchema}
 		case *If:
-			path := PathFor(parent, "if", "", i)
-			indexProducers(v.Then, path+".then", producers)
-			indexProducers(v.Else, path+".else", producers)
+			indexProducers(v.Then, ChildPath(parent, "if", i, "then"), producers)
+			indexProducers(v.Else, ChildPath(parent, "if", i, "else"), producers)
 		case *Loop:
-			path := PathFor(parent, "loop", "", i)
-			indexProducers(v.Body, path+".body", producers)
+			indexProducers(v.Body, ChildPath(parent, "loop", i, "body"), producers)
 		case *Try:
-			path := PathFor(parent, "try", "", i)
-			indexProducers(v.Do, path+".do", producers)
-			indexProducers(v.Catch, path+".catch", producers)
-			indexProducers(v.Finally, path+".finally", producers)
+			indexProducers(v.Do, ChildPath(parent, "try", i, "do"), producers)
+			indexProducers(v.Catch, ChildPath(parent, "try", i, "catch"), producers)
+			indexProducers(v.Finally, ChildPath(parent, "try", i, "finally"), producers)
 		case *Parallel:
-			path := PathFor(parent, "parallel", "", i)
-			indexProducers(v.Children, path, producers)
+			indexProducers(v.Children, PathFor(parent, "parallel", "", i), producers)
 		case *Gate:
-			path := PathFor(parent, "gate", "", i)
-			indexProducers(v.Generate, path+".generate", producers)
-			indexProducers(v.Evaluate, path+".evaluate", producers)
+			indexProducers(v.Generate, ChildPath(parent, "gate", i, "generate"), producers)
+			indexProducers(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), producers)
 		case *Map:
-			path := PathFor(parent, "map", "", i)
-			indexProducers(v.Body, path+".body", producers)
+			indexProducers(v.Body, ChildPath(parent, "map", i, "body"), producers)
 		}
 	}
 }
@@ -106,54 +100,53 @@ func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]
 		switch v := n.(type) {
 		case *CodeStep:
 			path := PathFor(parent, "", v.ID, i)
-			processTemplate(v.Run, path+".run", c, producers, referenced)
+			checkTemplateRefs(v.Run, path+".run", c, producers, referenced)
 			if v.IdempotencyKey != nil {
-				processTemplate(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced)
+				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced)
 			}
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
 			if v.IdempotencyKey != nil {
-				processTemplate(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced)
+				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced)
 			}
 			// v.With is opaque RawConfig per CLAUDE.md — do NOT walk it.
 		case *SignalStep:
 			// no Template / Expr fields beyond the schema itself.
 		case *If:
 			path := PathFor(parent, "if", "", i)
-			processExpr(string(v.Cond), path+".cond", c, producers, referenced)
-			walkRefs(v.Then, path+".then", c, producers, referenced)
-			walkRefs(v.Else, path+".else", c, producers, referenced)
+			checkExprRefs(string(v.Cond), path+".cond", c, producers, referenced)
+			walkRefs(v.Then, ChildPath(parent, "if", i, "then"), c, producers, referenced)
+			walkRefs(v.Else, ChildPath(parent, "if", i, "else"), c, producers, referenced)
 		case *Loop:
 			path := PathFor(parent, "loop", "", i)
 			if v.Until != nil {
-				processExpr(string(*v.Until), path+".until", c, producers, referenced)
+				checkExprRefs(string(*v.Until), path+".until", c, producers, referenced)
 			}
-			walkRefs(v.Body, path+".body", c, producers, referenced)
+			walkRefs(v.Body, ChildPath(parent, "loop", i, "body"), c, producers, referenced)
 		case *Try:
-			path := PathFor(parent, "try", "", i)
-			walkRefs(v.Do, path+".do", c, producers, referenced)
-			walkRefs(v.Catch, path+".catch", c, producers, referenced)
-			walkRefs(v.Finally, path+".finally", c, producers, referenced)
+			walkRefs(v.Do, ChildPath(parent, "try", i, "do"), c, producers, referenced)
+			walkRefs(v.Catch, ChildPath(parent, "try", i, "catch"), c, producers, referenced)
+			walkRefs(v.Finally, ChildPath(parent, "try", i, "finally"), c, producers, referenced)
 		case *Parallel:
-			path := PathFor(parent, "parallel", "", i)
-			walkRefs(v.Children, path, c, producers, referenced)
+			walkRefs(v.Children, PathFor(parent, "parallel", "", i), c, producers, referenced)
 		case *Gate:
 			path := PathFor(parent, "gate", "", i)
-			processExpr(string(v.Until), path+".until", c, producers, referenced)
-			walkRefs(v.Generate, path+".generate", c, producers, referenced)
-			walkRefs(v.Evaluate, path+".evaluate", c, producers, referenced)
+			checkExprRefs(string(v.Until), path+".until", c, producers, referenced)
+			walkRefs(v.Generate, ChildPath(parent, "gate", i, "generate"), c, producers, referenced)
+			walkRefs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c, producers, referenced)
 		case *Map:
 			path := PathFor(parent, "map", "", i)
-			processExpr(string(v.Over), path+".over", c, producers, referenced)
+			checkExprRefs(string(v.Over), path+".over", c, producers, referenced)
 			// v.Container is a STATIC container name (AWF §5.7); validated by walkStructural
 			// (AWF1009/AWF1019). Not a Template — no Slots/ParseRef walk here.
-			walkRefs(v.Body, path+".body", c, producers, referenced)
+			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, referenced)
 		}
 	}
 }
 
-// processTemplate scans src for `{{ … }}` slots, parses each as a ref, and checks each ref.
-func processTemplate(src, path string, c *collector, producers map[string]producer, referenced map[string]bool) {
+// checkTemplateRefs scans src (an ir.Template field) for `{{ … }}` slots, parses each as a
+// ref via the template package, and runs each through checkRef.
+func checkTemplateRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool) {
 	if src == "" {
 		return
 	}
@@ -177,9 +170,9 @@ func processTemplate(src, path string, c *collector, producers map[string]produc
 	}
 }
 
-// processExpr unwraps the outer `{{ }}` (if present) and parses the inner as an Expr.
-// Walks the AST and checks every Ref.
-func processExpr(src, path string, c *collector, producers map[string]producer, referenced map[string]bool) {
+// checkExprRefs unwraps the outer `{{ }}` envelope (if present), parses the inner as an
+// Expr via the template package, and runs each Ref in the AST through checkRef.
+func checkExprRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool) {
 	if src == "" {
 		return
 	}

@@ -47,3 +47,16 @@ func ContainerPath(name, field string) string {
 	}
 	return "containers." + name + "." + field
 }
+
+// ChildPath returns the path of a control node's named child block — the convention is
+//
+//	<parent>.<keyword>[idx].<branch>
+//
+// e.g. `if[1].then`, `loop[0].body`, `gate[2].generate`, `try[0].catch`. Centralizes the
+// branch-label / path-join convention so every validation pass (validateStructural,
+// validateRefs, validateSchema, indexProducers) addresses the same nested node identically.
+// Without this helper, a typo in any one walker's `path+".then"` literal would silently
+// produce a divergent path for the same node in different passes.
+func ChildPath(parent, keyword string, idx int, branch string) string {
+	return PathFor(parent, keyword, "", idx) + "." + branch
+}
