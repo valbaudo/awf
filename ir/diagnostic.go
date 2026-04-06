@@ -138,6 +138,8 @@ var catalog = map[string]string{
 	"AWF1017": "workflow `version` is not the supported value (only 1 is defined by AWF §2)",
 	// AWF1018 is intentionally skipped (folded into AWF1009 after critique).
 	"AWF1019": "container or service reference uses template syntax (`{{ }}`); these fields must be static names",
+	"AWF2001": "JSON Schema does not compile per the JSON Schema 2020-12 metaschema",
+	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",
 	"AWF3002": "agent output_schema declared but no reference into it",
 }
