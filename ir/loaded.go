@@ -2,9 +2,8 @@ package ir
 
 // LoadedDefinition is the loader's output and the validator's input — the parsed Workflow plus the
 // raw bytes of every referenced compose file, keyed by the cleaned workflow-relative forward-slash
-// path. That key form is the shape the spec's compose-fold consumes (see §E of the runtime
-// design); the fold itself is not implemented yet — see ir/digest.go, which currently hashes only
-// the canonical Workflow JSON. The fold lands when the CLI prints the canonical digest.
+// path. That key form is what ir/digest.go consumes for the spec §E compose-fold (length-prefixed
+// (path, sha256(bytes)) entries, sorted by path, folded into the workflow's content digest).
 //
 // Lives in the `ir` package because validation — also in `ir` per docs/runtime-design.md —
 // consumes it. Putting LoadedDefinition in `loader` would create a cycle (loader already imports
