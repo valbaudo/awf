@@ -73,8 +73,8 @@ func encodeFrame(payload []byte) []byte {
 }
 
 // decodeFrame reads one frame from buf[0:]. Returns (payload, consumed-bytes, err) where err
-// is errShortFrame (buf too small for header / payload) or errCRCMismatch (CRC didn't match).
-// On error, `consumed` is unspecified — the caller (Fold) treats it as torn-tail and stops.
+// is errShortFrame (buf too small for header / payload / pad) or errCRCMismatch (CRC didn't
+// match). On error, `consumed` is 0 — the caller (Fold) treats it as torn-tail and stops.
 func decodeFrame(buf []byte) ([]byte, int, error) {
 	if len(buf) < frameHeaderSize {
 		return nil, 0, fmt.Errorf("%w: have %d bytes, need at least %d for header",
@@ -82,11 +82,14 @@ func decodeFrame(buf []byte) ([]byte, int, error) {
 	}
 	payloadLen := binary.LittleEndian.Uint32(buf[0:4])
 	wantCRC := binary.LittleEndian.Uint32(buf[4:8])
-	end := frameHeaderSize + int(payloadLen)
-	if len(buf) < end {
-		return nil, 0, fmt.Errorf("%w: have %d bytes, need %d for payload of len %d",
-			errShortFrame, len(buf), end, payloadLen)
+	// Bounds-check in uint64 so a pathological payloadLen approaching MaxUint32 can't wrap
+	// negative when cast to int on a 32-bit build. After the check, int(payloadLen) is safe
+	// because payloadLen fits within len(buf)-frameHeaderSize (which is itself an int).
+	if uint64(payloadLen) > uint64(len(buf)-frameHeaderSize) {
+		return nil, 0, fmt.Errorf("%w: have %d bytes, payload len %d exceeds remaining",
+			errShortFrame, len(buf), payloadLen)
 	}
+	end := frameHeaderSize + int(payloadLen)
 	payload := buf[frameHeaderSize:end]
 	gotCRC := crc32.Checksum(payload, crcTable)
 	if gotCRC != wantCRC {

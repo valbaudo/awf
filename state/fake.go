@@ -46,6 +46,8 @@ func (*InMemoryLog) Close() error { return nil }
 // InMemoryBlobs is the Blobs fake: a map from hex-hash to content. Matches FSBlobs'
 // error contract (ErrBadRef for malformed, wrapped fs.ErrNotExist for missing,
 // ErrCorruption never fires in-memory because content can't be tampered with).
+// Not safe for concurrent Put/Get from multiple goroutines (matches the single-writer
+// assumption the engine relies on, same as InMemoryLog).
 type InMemoryBlobs struct {
 	store map[string][]byte // key: hex(sha256(content)); value: a copy of the content
 }
@@ -56,8 +58,7 @@ func NewInMemoryBlobs() *InMemoryBlobs {
 }
 
 func (b *InMemoryBlobs) Put(content []byte) (string, error) {
-	ref := RefFor(content)
-	hashHex := ref[len(blobRefPrefix):]
+	hashHex, ref := hashAndRef(content)
 	if _, ok := b.store[hashHex]; !ok {
 		// Defensive copy — callers might mutate their byte slice after Put.
 		dup := make([]byte, len(content))

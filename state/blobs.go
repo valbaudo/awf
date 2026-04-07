@@ -61,8 +61,7 @@ func OpenBlobs(root string) (*FSBlobs, error) {
 // Idempotent: putting the same bytes a second time is a no-op (atomic rename onto the
 // existing file produces an identical file). Atomic on POSIX (same-directory rename).
 func (b *FSBlobs) Put(content []byte) (string, error) {
-	ref := RefFor(content)
-	hashHex := strings.TrimPrefix(ref, blobRefPrefix)
+	hashHex, ref := hashAndRef(content)
 	shardDir := filepath.Join(b.root, "sha256", hashHex[:blobShardLen])
 	if err := os.MkdirAll(shardDir, 0o755); err != nil {
 		return "", fmt.Errorf("state: prepare shard %q: %w", shardDir, err)
@@ -138,8 +137,18 @@ func (b *FSBlobs) Get(ref string) ([]byte, error) {
 // RefFor returns the ref string a Put of content would produce. Pure; no I/O. Callers
 // (the engine, when building events that point to soon-to-be-put payloads) can pre-compute.
 func RefFor(content []byte) string {
+	_, ref := hashAndRef(content)
+	return ref
+}
+
+// hashAndRef computes both the sha256 hex hash and the namespaced ref of content in one
+// pass. Internal helper: callers needing only the ref should use RefFor; callers needing
+// the hex (e.g. to build a filesystem shard path) avoid the RefFor → strip-prefix round
+// trip that would otherwise duplicate the hash work.
+func hashAndRef(content []byte) (hashHex, ref string) {
 	h := sha256.Sum256(content)
-	return blobRefPrefix + hex.EncodeToString(h[:])
+	hashHex = hex.EncodeToString(h[:])
+	return hashHex, blobRefPrefix + hashHex
 }
 
 // parseRef validates a ref string and returns the hex portion. Rejects:

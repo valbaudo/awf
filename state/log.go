@@ -95,8 +95,9 @@ func OpenLog(path string, clk clock.Clock) (*FileLog, error) {
 	}
 
 	if n := len(events); n > 0 {
-		lg.seq = events[n-1].Seq
-		lg.epoch = events[n-1].Epoch + 1
+		last := events[n-1]
+		lg.seq = last.Seq
+		lg.epoch = last.Epoch + 1
 	}
 	return lg, nil
 }

@@ -62,10 +62,10 @@ func TestEventJSONOmitsAbsentOptionals(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	if strings.Contains(s, `"payload_ref"`) {
+	if strings.Contains(s, `"payload_ref":`) {
 		t.Errorf("expected omitempty to drop payload_ref; got %s", s)
 	}
-	if strings.Contains(s, `"data"`) {
+	if strings.Contains(s, `"data":`) {
 		t.Errorf("expected omitempty to drop data; got %s", s)
 	}
 }

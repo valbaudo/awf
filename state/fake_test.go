@@ -86,3 +86,24 @@ func TestInMemoryBlobsSmoke(t *testing.T) {
 		t.Errorf("Get on malformed ref: err = %v, want ErrBadRef", err)
 	}
 }
+
+func TestInMemoryBlobsDefensiveCopy(t *testing.T) {
+	// The fake makes a defensive copy on Put so a caller mutating the input slice after Put
+	// returns does not corrupt the store. This locks that load-bearing behavior — without
+	// it, a future refactor that drops the copy would silently break parity with FSBlobs
+	// (which returns a fresh slice from io.ReadAll and is immune by construction).
+	bs := NewInMemoryBlobs()
+	mut := []byte("mutate-me")
+	ref, err := bs.Put(mut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mut[0] = 'X' // mutate input AFTER Put returns
+	got, err := bs.Get(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "mutate-me" {
+		t.Errorf("Put did not defensive-copy: post-Put mutation leaked into store, got %q", got)
+	}
+}
