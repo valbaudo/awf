@@ -1,0 +1,5 @@
+../ir/testdata/invalid/AWF1007-image-not-digest.yaml: 1 error
+
+  error AWF1007 at containers.c.image: image must be content-addressed (tag forbidden, use @sha256:...)
+
+digest: awf-d1:sha256:6d8bc7945d9ddba17a211991d087bf2a16d7dd194366cbaa45ffea3219a7f62c

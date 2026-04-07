@@ -1,0 +1,5 @@
+../ir/testdata/invalid/AWF1004-duplicate-step-id.yaml: 1 error
+
+  error AWF1004 at a: step id is not unique (first seen at a)
+
+digest: awf-d1:sha256:0131094676955dc33376846964196289389b152c98b14135314c512d19482e93

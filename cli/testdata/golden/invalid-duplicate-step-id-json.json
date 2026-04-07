@@ -1,0 +1,12 @@
+{
+  "path": "../ir/testdata/invalid/AWF1004-duplicate-step-id.yaml",
+  "digest": "awf-d1:sha256:0131094676955dc33376846964196289389b152c98b14135314c512d19482e93",
+  "diagnostics": [
+    {
+      "Severity": "error",
+      "Path": "a",
+      "Code": "AWF1004",
+      "Message": "step id is not unique (first seen at a)"
+    }
+  ]
+}
