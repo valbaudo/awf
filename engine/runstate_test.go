@@ -4,27 +4,30 @@ import "testing"
 
 func TestParseOutcome(t *testing.T) {
 	cases := []struct {
+		name    string
 		in      string
 		want    Outcome
 		wantErr bool
 	}{
-		{"ok", OutcomeOK, false},
-		{"retryable_failure", OutcomeRetryableFailure, false},
-		{"permanent_failure", OutcomePermanentFailure, false},
-		{"", "", true},
-		{"OK", "", true},               // case-sensitive
-		{"success", "", true},          // not a valid AWF outcome (quality is the gate's job)
-		{"semantic_failure", "", true}, // ditto
-		{"fubar", "", true},
+		{"ok", "ok", OutcomeOK, false},
+		{"retryable_failure", "retryable_failure", OutcomeRetryableFailure, false},
+		{"permanent_failure", "permanent_failure", OutcomePermanentFailure, false},
+		{"empty_string", "", "", true},
+		{"wrong_case", "OK", "", true},
+		{"success_rejected", "success", "", true}, // not a valid AWF outcome — quality is the gate's job
+		{"semantic_failure_rejected", "semantic_failure", "", true},
+		{"garbage", "fubar", "", true},
 	}
 	for _, c := range cases {
-		got, err := ParseOutcome(c.in)
-		if (err != nil) != c.wantErr {
-			t.Errorf("ParseOutcome(%q) err=%v, wantErr=%v", c.in, err, c.wantErr)
-		}
-		if got != c.want {
-			t.Errorf("ParseOutcome(%q) = %q, want %q", c.in, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			got, err := ParseOutcome(c.in)
+			if (err != nil) != c.wantErr {
+				t.Errorf("ParseOutcome(%q) err=%v, wantErr=%v", c.in, err, c.wantErr)
+			}
+			if got != c.want {
+				t.Errorf("ParseOutcome(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
 	}
 }
 
@@ -70,9 +73,14 @@ func TestRunStateZeroValueIsUsable(t *testing.T) {
 	}
 }
 
-func TestNodeResultIsCopyable(t *testing.T) {
-	// NodeResult is stored by value in RunState.Completed; we rely on Go's map-value
-	// semantics. This pins that copying preserves all fields.
+func TestNodeResultCopyIsShallow(t *testing.T) {
+	// NodeResult is stored by value in RunState.Completed, but it embeds maps
+	// (Outputs, Files) which are reference types — copying the struct shares the
+	// underlying maps. Downstream code (Phase 2.4/2.5 fold callers, template
+	// evaluator) must treat RunState.Completed entries as read-only: mutating
+	// .Outputs or .Files through a copied NodeResult corrupts the fold-committed
+	// record. This test pins that aliasing semantics so a future reader doesn't
+	// assume a deep copy.
 	exit := 0
 	original := NodeResult{
 		Outcome:    OutcomeOK,
@@ -82,10 +90,23 @@ func TestNodeResultIsCopyable(t *testing.T) {
 		Files:      map[string]string{"/out/a": "awf-d1:sha256:def"},
 	}
 	cp := original
-	if cp.Outcome != OutcomeOK || cp.OutputsRef != "awf-d1:sha256:abc" {
-		t.Errorf("NodeResult copy lost fields: %+v", cp)
+
+	// Scalar / pointer fields are preserved.
+	if cp.Outcome != OutcomeOK || cp.OutputsRef != "awf-d1:sha256:abc" || cp.ExitCode != &exit {
+		t.Errorf("scalar fields not preserved: %+v", cp)
 	}
-	if cp.Outputs["k"] != "v" || cp.Files["/out/a"] != "awf-d1:sha256:def" {
-		t.Errorf("NodeResult copy lost map entries: %+v", cp)
+
+	// Maps are SHARED — mutating cp.Outputs visibly mutates original.Outputs.
+	// (If a future refactor makes the copy deep, this test fails and the new
+	// invariant must be re-pinned.)
+	cp.Outputs["mutated"] = "yes"
+	if original.Outputs["mutated"] != "yes" {
+		t.Errorf("Outputs map is unexpectedly NOT shared: original=%+v cp=%+v",
+			original.Outputs, cp.Outputs)
+	}
+	cp.Files["/out/b"] = "awf-d1:sha256:newref"
+	if original.Files["/out/b"] != "awf-d1:sha256:newref" {
+		t.Errorf("Files map is unexpectedly NOT shared: original=%+v cp=%+v",
+			original.Files, cp.Files)
 	}
 }

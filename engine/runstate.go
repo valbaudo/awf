@@ -62,7 +62,7 @@ type RunState struct {
 	RunID          string
 	WorkflowDigest string
 	Input          map[string]any // resolved from run.started.Data.input_ref via Blobs.Get
-	Epoch          uint32         // ++ on each run.resumed event; 1 after the initial run.started
+	Epoch          uint32         // bumped by state.Log on each reopen (= each `awf resume`); the run.resumed event records each bump (added in slice 2.1 Task 3)
 
 	Completed map[string]NodeResult // node.path → result
 	Branches  map[string]string     // if-node path → "then" | "else"
