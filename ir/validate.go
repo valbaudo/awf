@@ -57,9 +57,12 @@ func (c *collector) warnf(path, code, msg string) {
 
 // sorted returns the collected diagnostics in a stable, deterministic order (by Code, then
 // Path, then Message) so golden-file comparisons don't depend on map-iteration order or pass
-// invocation order.
+// invocation order. Always returns a non-nil slice (an empty []Diagnostic{} on the clean path)
+// so JSON consumers see "diagnostics": [] rather than null — important for downstream tooling
+// like `jq '.diagnostics[]'` that breaks on null but works on [].
 func (c *collector) sorted() []Diagnostic {
-	out := append([]Diagnostic(nil), c.out...)
+	out := make([]Diagnostic, 0, len(c.out))
+	out = append(out, c.out...)
 	sortDiagnostics(out)
 	return out
 }

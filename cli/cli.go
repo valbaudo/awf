@@ -33,16 +33,30 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stdout)
 		return ExitOK
 	default:
-		_, _ = fmt.Fprintf(stderr, "awf: unknown subcommand %q\n\n", args[0])
+		fprintf(stderr, "awf: unknown subcommand %q\n\n", args[0])
 		printUsage(stderr)
 		return ExitUsage
 	}
 }
 
 func printUsage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, "usage: awf <subcommand> [arguments]")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "subcommands:")
-	_, _ = fmt.Fprintln(w, "  validate <path>   parse, validate, and print the workflow's digest")
-	_, _ = fmt.Fprintln(w, "  help              print this usage")
+	fprintln(w, "usage: awf <subcommand> [arguments]")
+	fprintln(w, "")
+	fprintln(w, "subcommands:")
+	fprintln(w, "  validate <path>   parse, validate, and print the workflow's digest")
+	fprintln(w, "  help              print this usage")
+}
+
+// fprintf / fprintln are fmt.Fprintf / fmt.Fprintln with the (n int, err error) return
+// explicitly discarded. The CLI writes to bytes.Buffer (tests) or os.Stdout/os.Stderr
+// (production); writes to those targets cannot fail in any realistic operational scenario,
+// and surfacing an "error printing the error message" would be worse than silently dropping
+// it. Centralizing the discard here documents WHY in one place instead of repeating
+// `_, _ = fmt.Fprintf(...)` at every call site (errcheck-clean via the explicit discard).
+func fprintf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
+func fprintln(w io.Writer, s string) {
+	_, _ = fmt.Fprintln(w, s)
 }

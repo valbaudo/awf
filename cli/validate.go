@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 
 	"github.com/valbaudo/awf/ir"
@@ -28,7 +27,7 @@ type validateResult struct {
 // printValidateUsage writes the validate-subcommand usage line. Pulled out so help (stdout,
 // exit 0) and errors (stderr, exit 2) can share the same wording without drift.
 func printValidateUsage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, "usage: awf validate [--format text|json] <path>")
+	fprintln(w, "usage: awf validate [--format text|json] <path>")
 }
 
 // cliValidate runs `awf validate [--format text|json] <path>`. Returns:
@@ -59,7 +58,7 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "awf validate: %v\n", err)
+		fprintf(stderr, "awf validate: %v\n", err)
 		printValidateUsage(stderr)
 		return ExitUsage
 	}
@@ -71,7 +70,7 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 
 	ld, loadErr := loader.Load(path)
 	if loadErr != nil {
-		_, _ = fmt.Fprintf(stderr, "awf validate: %v\n", loadErr)
+		fprintf(stderr, "awf validate: %v\n", loadErr)
 		return ExitUsage
 	}
 
@@ -83,15 +82,8 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 	// the primary output and shouldn't be lost to a digest-pipeline edge case.
 	digest, digestErr := ld.Workflow.ComputeDigest(ld.ComposeFiles)
 	if digestErr != nil {
-		_, _ = fmt.Fprintf(stderr, "awf validate: warning: digest unavailable: %v\n", digestErr)
+		fprintf(stderr, "awf validate: warning: digest unavailable: %v\n", digestErr)
 		digest = ""
-	}
-
-	// Normalize nil → empty slice so JSON encodes as [] rather than null.
-	// ir.Validate returns nil on the clean path; encoding/json marshals nil-slice as null,
-	// which breaks downstream consumers like `jq '.diagnostics[]'`.
-	if diags == nil {
-		diags = []ir.Diagnostic{}
 	}
 
 	switch *format {
@@ -99,13 +91,13 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(validateResult{Path: path, Digest: digest, Diagnostics: diags}); err != nil {
-			_, _ = fmt.Fprintf(stderr, "awf validate: json encode: %v\n", err)
+			fprintf(stderr, "awf validate: json encode: %v\n", err)
 			return ExitUsage
 		}
 	case "text":
 		printTextResult(stdout, path, digest, diags)
 	default:
-		_, _ = fmt.Fprintf(stderr, "awf validate: unknown --format %q (want text or json)\n", *format)
+		fprintf(stderr, "awf validate: unknown --format %q (want text or json)\n", *format)
 		return ExitUsage
 	}
 
@@ -145,25 +137,25 @@ func printTextResult(w io.Writer, path, digest string, diags []ir.Diagnostic) {
 
 	switch {
 	case errs == 0 && warns == 0:
-		_, _ = fmt.Fprintf(w, "%s: ok\n", path)
+		fprintf(w, "%s: ok\n", path)
 	case errs > 0 && warns > 0:
-		_, _ = fmt.Fprintf(w, "%s: %d %s, %d %s\n", path, errs, plural(errs, "error"), warns, plural(warns, "warning"))
+		fprintf(w, "%s: %d %s, %d %s\n", path, errs, plural(errs, "error"), warns, plural(warns, "warning"))
 	case errs > 0:
-		_, _ = fmt.Fprintf(w, "%s: %d %s\n", path, errs, plural(errs, "error"))
+		fprintf(w, "%s: %d %s\n", path, errs, plural(errs, "error"))
 	default:
-		_, _ = fmt.Fprintf(w, "%s: %d %s\n", path, warns, plural(warns, "warning"))
+		fprintf(w, "%s: %d %s\n", path, warns, plural(warns, "warning"))
 	}
 
 	if len(diags) > 0 {
-		_, _ = fmt.Fprintln(w)
+		fprintln(w, "")
 		for _, d := range diags {
-			_, _ = fmt.Fprintf(w, "  %s\n", d) // Diagnostic.String() includes severity + code + path + message
+			fprintf(w, "  %s\n", d) // Diagnostic.String() includes severity + code + path + message
 		}
 	}
 
 	if digest != "" {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintf(w, "digest: %s\n", digest)
+		fprintln(w, "")
+		fprintf(w, "digest: %s\n", digest)
 	}
 }
 
