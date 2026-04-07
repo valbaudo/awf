@@ -87,6 +87,13 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 		digest = ""
 	}
 
+	// Normalize nil → empty slice so JSON encodes as [] rather than null.
+	// ir.Validate returns nil on the clean path; encoding/json marshals nil-slice as null,
+	// which breaks downstream consumers like `jq '.diagnostics[]'`.
+	if diags == nil {
+		diags = []ir.Diagnostic{}
+	}
+
 	switch *format {
 	case "json":
 		enc := json.NewEncoder(stdout)

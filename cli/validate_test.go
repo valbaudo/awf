@@ -221,6 +221,12 @@ func TestValidateCleanWorkflowJSONExitsOK(t *testing.T) {
 	if len(got.Diagnostics) != 0 {
 		t.Errorf("got.Diagnostics = %v, want []", got.Diagnostics)
 	}
+	// Wire-format contract: the JSON output must contain the literal empty-array token, not
+	// "null". encoding/json marshals a nil []ir.Diagnostic as null; the normalization in
+	// cliValidate must prevent that.
+	if !strings.Contains(stdout.String(), `"diagnostics": []`) {
+		t.Errorf("expected '\"diagnostics\": []' (empty array) in JSON output; got %s", stdout.String())
+	}
 	// Mirror of the text test: stderr must be silent so `awf validate --format json | jq` works.
 	if stderr.Len() > 0 {
 		t.Errorf("unexpected stderr on clean JSON validation: %q", stderr.String())
@@ -263,5 +269,56 @@ func TestValidateInvalidWorkflowJSONExitsInvalid(t *testing.T) {
 func TestValidateExitCodesAreStable(t *testing.T) {
 	if ExitOK != 0 || ExitInvalid != 1 || ExitUsage != 2 {
 		t.Errorf("exit codes drifted: OK=%d Invalid=%d Usage=%d; want 0/1/2", ExitOK, ExitInvalid, ExitUsage)
+	}
+}
+
+func TestPrintTextResultSummaryBranches(t *testing.T) {
+	// printTextResult formats the summary line in four shapes (clean / errors only / warnings
+	// only / both); existing tests only exercise "ok" (clean) and "1 error". This test calls
+	// the renderer directly with synthesized diagnostics to cover the remaining three
+	// branches plus the plural(n>1) path that the rest of the suite never hits.
+	cases := []struct {
+		name        string
+		diags       []ir.Diagnostic
+		wantSummary string // substring that must appear in the first line
+	}{
+		{
+			name:        "errors-plural",
+			diags:       []ir.Diagnostic{{Severity: ir.Error, Code: "AWF1004", Message: "x"}, {Severity: ir.Error, Code: "AWF1004", Message: "y"}},
+			wantSummary: "2 errors",
+		},
+		{
+			name:        "warnings-only-singular",
+			diags:       []ir.Diagnostic{{Severity: ir.Warning, Code: "AWF2002", Message: "w"}},
+			wantSummary: "1 warning",
+		},
+		{
+			name:        "warnings-only-plural",
+			diags:       []ir.Diagnostic{{Severity: ir.Warning, Code: "AWF2002", Message: "w1"}, {Severity: ir.Warning, Code: "AWF2002", Message: "w2"}},
+			wantSummary: "2 warnings",
+		},
+		{
+			name:        "errors-and-warnings",
+			diags:       []ir.Diagnostic{{Severity: ir.Error, Code: "AWF1004", Message: "e"}, {Severity: ir.Warning, Code: "AWF2002", Message: "w"}},
+			wantSummary: "1 error, 1 warning",
+		},
+		{
+			name:        "errors-plural-warnings-plural",
+			diags:       []ir.Diagnostic{{Severity: ir.Error}, {Severity: ir.Error}, {Severity: ir.Warning}, {Severity: ir.Warning}, {Severity: ir.Warning}},
+			wantSummary: "2 errors, 3 warnings",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printTextResult(&buf, "wf.yaml", "", tc.diags) // empty digest so we don't assert on it
+			out := buf.String()
+			// First line is the summary; check substring presence (the line also has the path prefix).
+			firstLine := strings.SplitN(out, "\n", 2)[0]
+			if !strings.Contains(firstLine, tc.wantSummary) {
+				t.Errorf("summary line = %q, want substring %q (full output: %q)", firstLine, tc.wantSummary, out)
+			}
+		})
 	}
 }
