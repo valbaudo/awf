@@ -37,9 +37,10 @@ func AttemptPath(gatePath string, attempt int) string {
 //
 //	ItemPath("map[0]", 3) → "map[0].item-3"
 //
-// `item` is 0-based (matches the §5.7 array-index semantics — `map[0].item-0` is the first
-// element). Phase 2 doesn't execute `map`, but the helper ships now so the addressing
-// grammar is complete and Phase 3 inherits it unchanged.
+// `item` is 0-based — matching the `{{ <as>.index }}` array-index binding documented in
+// spec §5.7 (the first element is item-0; conventional array indexing). Phase 2 doesn't
+// execute `map`, but the helper ships now so the addressing grammar is complete and
+// Phase 3 inherits it unchanged.
 func ItemPath(mapPath string, item int) string {
 	return fmt.Sprintf("%s.item-%d", mapPath, item)
 }
