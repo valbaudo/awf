@@ -69,9 +69,14 @@ func (b *FSBlobs) Put(content []byte) (string, error) {
 	}
 	finalPath := filepath.Join(shardDir, hashHex)
 	// Fast path: file already exists (dedup). os.Stat is cheap; if it exists, the content
-	// is by definition identical (sha256 collision resistance).
+	// is by definition identical (sha256 collision resistance). No new directory entry is
+	// created, so no syncDir needed.
 	if _, err := os.Stat(finalPath); err == nil {
 		return ref, nil
+	}
+	// Commit the shard subdirectory's creation (if it was new) before writing the blob file.
+	if err := syncDir(filepath.Join(b.root, "sha256")); err != nil {
+		return "", err
 	}
 
 	// Atomic write: tmp file in the same shard directory → fsync → rename.
@@ -97,6 +102,9 @@ func (b *FSBlobs) Put(content []byte) (string, error) {
 	if rerr := os.Rename(tmpPath, finalPath); rerr != nil {
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("state: rename tmp→final for %s: %w", ref, rerr)
+	}
+	if err := syncDir(shardDir); err != nil {
+		return "", fmt.Errorf("state: sync shard dir after put %s: %w", ref, err)
 	}
 	return ref, nil
 }
@@ -159,4 +167,23 @@ func parseRef(ref string) (string, error) {
 		return "", fmt.Errorf("%w: invalid hex in %q: %v", ErrBadRef, ref, err)
 	}
 	return rest, nil
+}
+
+// syncDir fsyncs a directory inode so that file-creation / rename operations within it
+// become durable. Required after os.Rename and after creating a new directory whose parent
+// dir's inode must reflect the new entry on next open. On Windows (which AWF doesn't target
+// per CLAUDE.md), opening a directory for write would fail; we don't reach this code path.
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("state: open dir %q for sync: %w", path, err)
+	}
+	if serr := d.Sync(); serr != nil {
+		_ = d.Close()
+		return fmt.Errorf("state: sync dir %q: %w", path, serr)
+	}
+	if cerr := d.Close(); cerr != nil {
+		return fmt.Errorf("state: close dir %q after sync: %w", path, cerr)
+	}
+	return nil
 }
