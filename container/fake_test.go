@@ -1,0 +1,197 @@
+package container_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/container/backendtest"
+)
+
+// Compile-time check: Fake satisfies Backend. Catches signature drift the
+// moment a method signature changes.
+var _ container.Backend = (*container.Fake)(nil)
+
+// Interface conformance via the shared contract helper.
+func TestFakeRunBasicContract(t *testing.T) {
+	backendtest.RunBasicContract(t, container.NewFake())
+}
+
+// Behavior tests below are fake-specific (they use ProgramExec / WriteFile,
+// which aren't on the Backend interface). Phase 4 Docker will have its own
+// equivalents (sentinel commands / docker cp) in docker_test.go.
+
+func TestFakeExecScriptedResult(t *testing.T) {
+	f := container.NewFake()
+	ctx := context.Background()
+	h, err := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = f.Destroy(ctx, h) }()
+
+	want := container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"web_exploitable":true}`),
+		Stdout:    []byte("hello\n"),
+	}
+	cmd := container.Cmd{Run: "./triage.sh"}
+	f.ProgramExec(cmd.Run, want, nil)
+
+	got, _, err := f.Exec(ctx, h, cmd)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if got.ExitCode != want.ExitCode {
+		t.Errorf("ExitCode = %d, want %d", got.ExitCode, want.ExitCode)
+	}
+	if string(got.AWFOutput) != string(want.AWFOutput) {
+		t.Errorf("AWFOutput = %q, want %q", got.AWFOutput, want.AWFOutput)
+	}
+	if string(got.Stdout) != string(want.Stdout) {
+		t.Errorf("Stdout = %q, want %q", got.Stdout, want.Stdout)
+	}
+}
+
+func TestFakeExecStreamsChunks(t *testing.T) {
+	f := container.NewFake()
+	ctx := context.Background()
+	h, err := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = f.Destroy(ctx, h) }()
+
+	wantChunks := []container.IOChunk{
+		{Stream: "stdout", Data: []byte("step starting\n")},
+		{Stream: "stdout", Data: []byte("step done\n")},
+		{Stream: "stderr", Data: []byte("warning: deprecated\n")},
+	}
+	cmd := container.Cmd{Run: "./noisy.sh"}
+	f.ProgramExec(cmd.Run, container.ExecResult{ExitCode: 0}, wantChunks)
+
+	_, ch, err := f.Exec(ctx, h, cmd)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	var got []container.IOChunk
+	for c := range ch {
+		got = append(got, c)
+	}
+	if len(got) != len(wantChunks) {
+		t.Fatalf("got %d chunks, want %d", len(got), len(wantChunks))
+	}
+	for i, w := range wantChunks {
+		if got[i].Stream != w.Stream || string(got[i].Data) != string(w.Data) {
+			t.Errorf("chunks[%d] = {%q, %q}, want {%q, %q}",
+				i, got[i].Stream, got[i].Data, w.Stream, w.Data)
+		}
+	}
+}
+
+func TestFakeExecChannelClosedWithNoChunks(t *testing.T) {
+	// Contract: the channel is buffered and pre-closed even when no chunks
+	// were programmed. Live tap's `for range ch` must exit cleanly.
+	f := container.NewFake()
+	ctx := context.Background()
+	h, _ := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+	defer func() { _ = f.Destroy(ctx, h) }()
+	f.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	_, ch, _ := f.Exec(ctx, h, container.Cmd{Run: "true"})
+	if _, ok := <-ch; ok {
+		t.Errorf("channel returned a value; want closed-empty")
+	}
+}
+
+func TestFakeExecUnscriptedErrors(t *testing.T) {
+	// Unprogrammed Cmd.Run is a hard error — silent zero-value would mask
+	// slice 2.4 dispatcher bugs (e.g., wrong-cmd misroutes).
+	f := container.NewFake()
+	ctx := context.Background()
+	h, _ := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+	defer func() { _ = f.Destroy(ctx, h) }()
+	if _, _, err := f.Exec(ctx, h, container.Cmd{Run: "never-programmed"}); err == nil {
+		t.Errorf("Exec on unprogrammed cmd returned nil; want error")
+	}
+}
+
+func TestFakeExecUnknownHandleErrors(t *testing.T) {
+	f := container.NewFake()
+	f.ProgramExec("noop", container.ExecResult{}, nil)
+	if _, _, err := f.Exec(context.Background(), container.Handle{ID: "ghost"}, container.Cmd{Run: "noop"}); err == nil {
+		t.Errorf("Exec on unknown handle returned nil; want error")
+	}
+}
+
+func TestFakeCaptureFilesRoundTrip(t *testing.T) {
+	f := container.NewFake()
+	ctx := context.Background()
+	h, _ := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+	defer func() { _ = f.Destroy(ctx, h) }()
+
+	wantA := []byte("alpha contents\n")
+	wantB := []byte(`{"results":[1,2,3]}`)
+	if err := f.WriteFile(h, "/out/a.txt", wantA); err != nil {
+		t.Fatalf("WriteFile a: %v", err)
+	}
+	if err := f.WriteFile(h, "/out/b.json", wantB); err != nil {
+		t.Fatalf("WriteFile b: %v", err)
+	}
+
+	got, err := f.CaptureFiles(ctx, h, []string{"/out/a.txt", "/out/b.json"})
+	if err != nil {
+		t.Fatalf("CaptureFiles: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d files, want 2", len(got))
+	}
+	// Order MUST match input.
+	if got[0].Path != "/out/a.txt" || string(got[0].Content) != string(wantA) {
+		t.Errorf("got[0] = {%q, %q}", got[0].Path, got[0].Content)
+	}
+	if got[1].Path != "/out/b.json" || string(got[1].Content) != string(wantB) {
+		t.Errorf("got[1] = {%q, %q}", got[1].Path, got[1].Content)
+	}
+}
+
+func TestFakeCaptureFilesMissingPathErrors(t *testing.T) {
+	// All-or-nothing: a single missing path errors the whole call. Slice 2.4
+	// relies on this so a half-populated NodeCompletedData.Files can't slip
+	// into the commit boundary.
+	f := container.NewFake()
+	ctx := context.Background()
+	h, _ := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+	defer func() { _ = f.Destroy(ctx, h) }()
+	_ = f.WriteFile(h, "/out/exists.txt", []byte("here"))
+	if _, err := f.CaptureFiles(ctx, h, []string{"/out/exists.txt", "/out/missing.txt"}); err == nil {
+		t.Errorf("CaptureFiles with missing path returned nil; want error")
+	}
+}
+
+func TestFakeCaptureFilesUnknownHandleErrors(t *testing.T) {
+	f := container.NewFake()
+	if _, err := f.CaptureFiles(context.Background(), container.Handle{ID: "ghost"}, nil); err == nil {
+		t.Errorf("CaptureFiles on unknown handle returned nil; want error")
+	}
+}
+
+func TestFakeWriteFileUnknownHandleErrors(t *testing.T) {
+	f := container.NewFake()
+	if err := f.WriteFile(container.Handle{ID: "ghost"}, "/x", []byte("y")); err == nil {
+		t.Errorf("WriteFile on unknown handle returned nil; want error")
+	}
+}
+
+func TestFakeSnapshotIsUnsupported(t *testing.T) {
+	// Direct call documents intent at the package level. The contract test
+	// covers the routing too; both stay green so a programmer touching either
+	// surface gets a loud failure.
+	f := container.NewFake()
+	ctx := context.Background()
+	h, _ := f.Create(ctx, container.ContainerSpec{Name: "workspace"})
+	defer func() { _ = f.Destroy(ctx, h) }()
+	if _, err := f.Snapshot(ctx, h); !errors.Is(err, container.ErrUnsupported) {
+		t.Errorf("Snapshot: err = %v, want errors.Is(_, ErrUnsupported)", err)
+	}
+}
