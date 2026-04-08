@@ -14,13 +14,20 @@ import (
 // run.started.InputRef) and per-step Outputs (from node.completed.OutputsRef) into
 // typed map[string]any values.
 //
+// (Spec §A sketches `FoldLog(log state.Log)`; the name was changed to `Fold` with a
+// `[]state.Event` argument for testability — callers do
+// `events, _ := log.Fold(); rs, _ := engine.Fold(events, blobs)`. Same semantics, no
+// extra `state.Log` dependency in unit tests.)
+//
 // Phase 2 semantics:
 //   - The first event (if any) MUST be run.started; it seeds RunID, WorkflowDigest,
 //     Input, Epoch=1. A non-run.started first event is corruption or a writer bug.
 //   - A second run.started is a fold error — the engine never writes it twice.
 //   - Each run.resumed event sets Epoch from its payload.
 //   - node.completed populates Completed[path] (the commit record). Outcome is
-//     validated via ParseOutcome — unknown values are rejected.
+//     validated via ParseOutcome AND additionally required to be OutcomeOK — only
+//     ok-steps commit, per spec §8 + CLAUDE.md "a 'done' record must never reference
+//     [an incomplete] state."
 //   - branch.taken populates Branches[path] (which side of an if).
 //   - loop.iter populates LoopIters[path] (events are seq-ordered, so the latest
 //     assignment gives the max — which is correct, since loops only advance forward).
@@ -31,8 +38,9 @@ import (
 //   - Malformed Data (JSON parse failure on a known event type).
 //   - Blobs.Get failure for a referenced blob (broken §8 atomicity invariant —
 //     a node.completed referenced a missing artifact).
-//   - Unknown Outcome string in node.completed (corruption — engine only emits
-//     the three known values; ParseOutcome catches it).
+//   - Unknown Outcome string in node.completed (corruption — ParseOutcome catches it).
+//   - Non-`ok` Outcome in node.completed (corruption — only ok-steps commit; the
+//     extra check beyond ParseOutcome closes a gap a bare ParseOutcome would miss).
 func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 	var rs RunState
 	if len(events) == 0 {
@@ -42,6 +50,15 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 		return RunState{}, fmt.Errorf("engine.Fold: first event must be %s, got %q at seq=%d",
 			EventRunStarted, events[0].Type, events[0].Seq)
 	}
+
+	// Pre-allocate the three maps with capacity hints proportional to event count.
+	// Phase 1.5 logs grow with event count, not payload size, so len(events) is the
+	// right upper bound. The heuristics (÷4, ÷8, ÷8) reflect that most events are
+	// node.completed; branches and loop iterations are sparser. Sized hints save the
+	// geometric resize cycles for the resume-from-large-log path Phase 6 will exercise.
+	rs.Completed = make(map[string]NodeResult, len(events)/4)
+	rs.Branches = make(map[string]string, len(events)/8)
+	rs.LoopIters = make(map[string]int, len(events)/8)
 
 	seenRunStarted := false
 	for _, e := range events {
@@ -92,6 +109,14 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 			if err != nil {
 				return RunState{}, fmt.Errorf("engine.Fold: %w at path=%q seq=%d", err, e.Path, e.Seq)
 			}
+			// Spec §8 + CLAUDE.md commit invariant: only ok-steps commit. A node.completed
+			// with a non-ok outcome means corruption or a §8 violation by the writer.
+			// ParseOutcome alone would accept retryable_failure / permanent_failure here,
+			// which is wider than the invariant — this check closes the gap.
+			if oc != OutcomeOK {
+				return RunState{}, fmt.Errorf("engine.Fold: %s at path=%q seq=%d has outcome %q, only %q commits (spec §8)",
+					EventNodeCompleted, e.Path, e.Seq, oc, OutcomeOK)
+			}
 			nr := NodeResult{
 				Outcome:    oc,
 				ExitCode:   d.ExitCode,
@@ -111,9 +136,6 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 				}
 				nr.Outputs = out
 			}
-			if rs.Completed == nil {
-				rs.Completed = make(map[string]NodeResult)
-			}
 			rs.Completed[e.Path] = nr
 
 		case EventBranchTaken:
@@ -122,9 +144,6 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 				return RunState{}, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
 					EventBranchTaken, e.Seq, e.Path, err)
 			}
-			if rs.Branches == nil {
-				rs.Branches = make(map[string]string)
-			}
 			rs.Branches[e.Path] = d.Which
 
 		case EventLoopIter:
@@ -132,9 +151,6 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 			if err := json.Unmarshal(e.Data, &d); err != nil {
 				return RunState{}, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
 					EventLoopIter, e.Seq, e.Path, err)
-			}
-			if rs.LoopIters == nil {
-				rs.LoopIters = make(map[string]int)
 			}
 			rs.LoopIters[e.Path] = d.N
 

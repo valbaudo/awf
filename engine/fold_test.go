@@ -13,8 +13,10 @@ import (
 // (it only carries metadata), but events need a non-zero TS to round-trip cleanly.
 var fixedTS = time.Unix(1700000000, 0).UTC()
 
-// mustMarshal panics on marshal error — test helper for cleaner table cases.
-func mustMarshal(t *testing.T, v any) json.RawMessage {
+// marshalOrFatal calls t.Fatalf on marshal error — test helper for cleaner table cases.
+// (Named with the "OrFatal" suffix rather than "must" prefix to make the failure mode
+// honest: idiomatic Go uses "Must*" for panic-on-error, e.g. regexp.MustCompile.)
+func marshalOrFatal(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -44,7 +46,7 @@ func TestFold_RunStartedSeeds(t *testing.T) {
 		{
 			Seq: 1, Epoch: 0, TS: fixedTS,
 			Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{
+			Data: marshalOrFatal(t, RunStartedData{
 				RunID:          "deadbeef",
 				WorkflowDigest: "awf-d1:sha256:wf",
 				InputRef:       inputRef,
@@ -76,7 +78,7 @@ func TestFold_RunStartedWithoutInput(t *testing.T) {
 	events := []state.Event{
 		{
 			Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{
+			Data: marshalOrFatal(t, RunStartedData{
 				RunID:          "abc",
 				WorkflowDigest: "awf-d1:sha256:wf",
 				InputRef:       "",
@@ -96,11 +98,11 @@ func TestFold_RunStartedWithoutInput(t *testing.T) {
 func TestFold_RunResumedBumpsEpoch(t *testing.T) {
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
 		{Seq: 2, TS: fixedTS, Type: EventRunResumed,
-			Data: mustMarshal(t, RunResumedData{Epoch: 2})},
+			Data: marshalOrFatal(t, RunResumedData{Epoch: 2})},
 		{Seq: 3, TS: fixedTS, Type: EventRunResumed,
-			Data: mustMarshal(t, RunResumedData{Epoch: 3})},
+			Data: marshalOrFatal(t, RunResumedData{Epoch: 3})},
 	}
 	rs, err := Fold(events, state.NewInMemoryBlobs())
 	if err != nil {
@@ -120,10 +122,10 @@ func TestFold_NodeCompleted(t *testing.T) {
 	exit := 0
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
 		{
 			Seq: 2, TS: fixedTS, Path: "triage", Type: EventNodeCompleted,
-			Data: mustMarshal(t, NodeCompletedData{
+			Data: marshalOrFatal(t, NodeCompletedData{
 				Outcome:    "ok",
 				ExitCode:   &exit,
 				OutputsRef: outputsRef,
@@ -159,9 +161,9 @@ func TestFold_NodeCompleted(t *testing.T) {
 func TestFold_BranchTaken(t *testing.T) {
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
 		{Seq: 2, TS: fixedTS, Path: "if[0]", Type: EventBranchTaken,
-			Data: mustMarshal(t, BranchTakenData{Which: "then"})},
+			Data: marshalOrFatal(t, BranchTakenData{Which: "then"})},
 	}
 	rs, err := Fold(events, state.NewInMemoryBlobs())
 	if err != nil {
@@ -175,13 +177,13 @@ func TestFold_BranchTaken(t *testing.T) {
 func TestFold_LoopIterMax(t *testing.T) {
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
 		{Seq: 2, TS: fixedTS, Path: "loop[0]", Type: EventLoopIter,
-			Data: mustMarshal(t, LoopIterData{N: 1})},
+			Data: marshalOrFatal(t, LoopIterData{N: 1})},
 		{Seq: 3, TS: fixedTS, Path: "loop[0]", Type: EventLoopIter,
-			Data: mustMarshal(t, LoopIterData{N: 2})},
+			Data: marshalOrFatal(t, LoopIterData{N: 2})},
 		{Seq: 4, TS: fixedTS, Path: "loop[0]", Type: EventLoopIter,
-			Data: mustMarshal(t, LoopIterData{N: 3})},
+			Data: marshalOrFatal(t, LoopIterData{N: 3})},
 	}
 	rs, err := Fold(events, state.NewInMemoryBlobs())
 	if err != nil {
@@ -199,7 +201,7 @@ func TestFold_IgnoresUnknownEventType(t *testing.T) {
 	// touch RunState. Use raw string Type values to pin that no constant is needed.
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
 		{Seq: 2, TS: fixedTS, Path: "triage", Type: "node.started", Data: json.RawMessage(`{"attempt":1}`)},
 		{Seq: 3, TS: fixedTS, Path: "triage", Type: "retry.attempt", Data: json.RawMessage(`{"n":1}`)},
 		{Seq: 4, TS: fixedTS, Type: "future.event", Data: json.RawMessage(`{"anything":true}`)},
@@ -218,7 +220,7 @@ func TestFold_FirstEventMustBeRunStarted(t *testing.T) {
 	// writer bug. Surface it instead of producing a half-populated RunState.
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Path: "x", Type: EventNodeCompleted,
-			Data: mustMarshal(t, NodeCompletedData{Outcome: "ok"})},
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok"})},
 	}
 	if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
 		t.Errorf("Fold with non-run.started first event should error, got nil")
@@ -231,9 +233,9 @@ func TestFold_DuplicateRunStartedIsError(t *testing.T) {
 	// silently overwriting RunID / WorkflowDigest.
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "first", WorkflowDigest: "wf1", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "first", WorkflowDigest: "wf1", Runtimes: []ResolvedRuntime{}})},
 		{Seq: 2, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "second", WorkflowDigest: "wf2", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "second", WorkflowDigest: "wf2", Runtimes: []ResolvedRuntime{}})},
 	}
 	if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
 		t.Errorf("Fold with duplicate run.started should error, got nil")
@@ -245,9 +247,9 @@ func TestFold_UnknownOutcomeIsError(t *testing.T) {
 	// corruption — the engine only writes "ok" on commit. ParseOutcome catches it.
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
 		{Seq: 2, TS: fixedTS, Path: "step", Type: EventNodeCompleted,
-			Data: mustMarshal(t, NodeCompletedData{Outcome: "fubar"})},
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "fubar"})},
 	}
 	if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
 		t.Errorf("Fold with unknown outcome should error, got nil")
@@ -279,19 +281,19 @@ func TestFold_GoldenEquivalence(t *testing.T) {
 	exit0 := 0
 
 	events := []state.Event{
-		{Seq: 1, TS: fixedTS, Type: EventRunStarted, Data: mustMarshal(t, RunStartedData{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted, Data: marshalOrFatal(t, RunStartedData{
 			RunID: "run-a", WorkflowDigest: "awf-d1:sha256:wf",
 			InputRef: inputRef, Runtimes: []ResolvedRuntime{},
 		})},
-		{Seq: 2, TS: fixedTS, Path: "triage", Type: EventNodeCompleted, Data: mustMarshal(t, NodeCompletedData{
+		{Seq: 2, TS: fixedTS, Path: "triage", Type: EventNodeCompleted, Data: marshalOrFatal(t, NodeCompletedData{
 			Outcome: "ok", ExitCode: &exit0, OutputsRef: triageOutRef,
 			Files: map[string]string{"/out/triage.json": "awf-d1:sha256:filea"},
 		})},
-		{Seq: 3, TS: fixedTS, Path: "if[1]", Type: EventBranchTaken, Data: mustMarshal(t, BranchTakenData{Which: "then"})},
-		{Seq: 4, TS: fixedTS, Path: "if[1].then.approve", Type: EventNodeCompleted, Data: mustMarshal(t, NodeCompletedData{
+		{Seq: 3, TS: fixedTS, Path: "if[1]", Type: EventBranchTaken, Data: marshalOrFatal(t, BranchTakenData{Which: "then"})},
+		{Seq: 4, TS: fixedTS, Path: "if[1].then.approve", Type: EventNodeCompleted, Data: marshalOrFatal(t, NodeCompletedData{
 			Outcome: "ok", ExitCode: &exit0, OutputsRef: approveOutRef,
 		})},
-		{Seq: 5, TS: fixedTS, Path: "loop[2]", Type: EventLoopIter, Data: mustMarshal(t, LoopIterData{N: 2})},
+		{Seq: 5, TS: fixedTS, Path: "loop[2]", Type: EventLoopIter, Data: marshalOrFatal(t, LoopIterData{N: 2})},
 	}
 
 	got, err := Fold(events, blobs)
@@ -377,7 +379,7 @@ func TestFold_MalformedDataIsError(t *testing.T) {
 
 func TestFold_MissingInputBlobIsError(t *testing.T) {
 	events := []state.Event{
-		{Seq: 1, TS: fixedTS, Type: EventRunStarted, Data: mustMarshal(t, RunStartedData{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted, Data: marshalOrFatal(t, RunStartedData{
 			RunID: "x", WorkflowDigest: "y",
 			// Well-formed ref (correct prefix + 64 hex chars), but the blob was never Put —
 			// state.InMemoryBlobs.Get returns wrapped fs.ErrNotExist, which Fold surfaces.
@@ -398,9 +400,9 @@ func TestFold_MissingOutputsBlobIsError(t *testing.T) {
 	// not proceed.
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
-			Data: mustMarshal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
 		{Seq: 2, TS: fixedTS, Path: "step", Type: EventNodeCompleted,
-			Data: mustMarshal(t, NodeCompletedData{
+			Data: marshalOrFatal(t, NodeCompletedData{
 				Outcome: "ok",
 				// Well-formed ref but blob was never Put — state.InMemoryBlobs.Get
 				// returns wrapped fs.ErrNotExist, which Fold surfaces.
@@ -409,5 +411,185 @@ func TestFold_MissingOutputsBlobIsError(t *testing.T) {
 	}
 	if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
 		t.Errorf("Fold with missing outputs blob should error, got nil")
+	}
+}
+
+// TestFold_NodeCompletedWithNonOkOutcomeIsError pins that even a syntactically-valid
+// non-ok outcome in node.completed is a fold error — the spec §8 commit invariant
+// says only ok-steps commit, so ParseOutcome accepting retryable_failure /
+// permanent_failure here would be too wide. Closes the gap the bare ParseOutcome call
+// would otherwise leave.
+func TestFold_NodeCompletedWithNonOkOutcomeIsError(t *testing.T) {
+	for _, oc := range []string{"retryable_failure", "permanent_failure"} {
+		t.Run(oc, func(t *testing.T) {
+			events := []state.Event{
+				{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+					Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+				{Seq: 2, TS: fixedTS, Path: "step", Type: EventNodeCompleted,
+					Data: marshalOrFatal(t, NodeCompletedData{Outcome: oc})},
+			}
+			if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
+				t.Errorf("Fold with node.completed outcome=%q should error, got nil", oc)
+			}
+		})
+	}
+}
+
+// TestFold_MalformedDataPerEventType covers JSON-unmarshal failures on every dispatch
+// case the fold handles. The pre-existing TestFold_MalformedDataIsError only hits the
+// run.started branch — this table covers run.resumed / node.completed / branch.taken
+// / loop.iter so a regression in any single unmarshal call surfaces directly.
+func TestFold_MalformedDataPerEventType(t *testing.T) {
+	// Seed a valid run.started so the per-type bad-Data event isn't the first event
+	// (which would error for a different reason).
+	runStarted := state.Event{
+		Seq: 1, TS: fixedTS, Type: EventRunStarted,
+		Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"}),
+	}
+	cases := []struct {
+		name      string
+		eventType string
+	}{
+		{"run.resumed", EventRunResumed},
+		{"node.completed", EventNodeCompleted},
+		{"branch.taken", EventBranchTaken},
+		{"loop.iter", EventLoopIter},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			events := []state.Event{
+				runStarted,
+				{Seq: 2, TS: fixedTS, Path: "p", Type: c.eventType,
+					Data: json.RawMessage(`not json`)},
+			}
+			if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
+				t.Errorf("Fold with malformed Data on %s should error, got nil", c.eventType)
+			}
+		})
+	}
+}
+
+// TestFold_Golden_Sequential — a flat 3-step sequential workflow with no branches or
+// loops. Verifies the most common shape — a linear pipeline — folds correctly with
+// Completed entries keyed by step id.
+func TestFold_Golden_Sequential(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	a, err := blobs.Put([]byte(`{"v":1}`))
+	if err != nil {
+		t.Fatalf("seed a: %v", err)
+	}
+	b, err := blobs.Put([]byte(`{"v":2}`))
+	if err != nil {
+		t.Fatalf("seed b: %v", err)
+	}
+	c, err := blobs.Put([]byte(`{"v":3}`))
+	if err != nil {
+		t.Fatalf("seed c: %v", err)
+	}
+	exit0 := 0
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r", WorkflowDigest: "wf"})},
+		{Seq: 2, TS: fixedTS, Path: "stepA", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok", ExitCode: &exit0, OutputsRef: a})},
+		{Seq: 3, TS: fixedTS, Path: "stepB", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok", ExitCode: &exit0, OutputsRef: b})},
+		{Seq: 4, TS: fixedTS, Path: "stepC", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok", ExitCode: &exit0, OutputsRef: c})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if len(rs.Completed) != 3 {
+		t.Errorf("Completed: got %d, want 3", len(rs.Completed))
+	}
+	for _, p := range []string{"stepA", "stepB", "stepC"} {
+		if _, ok := rs.Completed[p]; !ok {
+			t.Errorf("Completed[%q] missing", p)
+		}
+	}
+	if rs.Completed["stepA"].Outputs["v"] != float64(1) {
+		t.Errorf("stepA.Outputs.v = %v, want 1", rs.Completed["stepA"].Outputs["v"])
+	}
+}
+
+// TestFold_Golden_IfElseBranch — the if-false / else-branch case. Pins that fold
+// records "else" in Branches and the else-branch step lands in Completed under the
+// nested path.
+func TestFold_Golden_IfElseBranch(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	out, err := blobs.Put([]byte(`{"ok":true}`))
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	exit0 := 0
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r", WorkflowDigest: "wf"})},
+		{Seq: 2, TS: fixedTS, Path: "if[0]", Type: EventBranchTaken,
+			Data: marshalOrFatal(t, BranchTakenData{Which: "else"})},
+		{Seq: 3, TS: fixedTS, Path: "if[0].else.fallback", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok", ExitCode: &exit0, OutputsRef: out})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if rs.Branches["if[0]"] != "else" {
+		t.Errorf("Branches[if[0]] = %q, want else", rs.Branches["if[0]"])
+	}
+	if _, ok := rs.Completed["if[0].else.fallback"]; !ok {
+		t.Errorf("Completed[if[0].else.fallback] missing; got %+v", rs.Completed)
+	}
+}
+
+// TestFold_Golden_LoopWithBodySteps — a loop with 3 iterations, each iteration's
+// body step committing at a distinct iter-N path. Pins that LoopIters tracks the
+// max N AND Completed has one entry per (iter, step) coordinate.
+func TestFold_Golden_LoopWithBodySteps(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	out, err := blobs.Put([]byte(`{"n":1}`))
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	exit0 := 0
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r", WorkflowDigest: "wf"})},
+		// iter 1: body step commits, then loop.iter
+		{Seq: 2, TS: fixedTS, Path: "loop[0].body.iter-1.work", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok", ExitCode: &exit0, OutputsRef: out})},
+		{Seq: 3, TS: fixedTS, Path: "loop[0]", Type: EventLoopIter,
+			Data: marshalOrFatal(t, LoopIterData{N: 1})},
+		// iter 2
+		{Seq: 4, TS: fixedTS, Path: "loop[0].body.iter-2.work", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok", ExitCode: &exit0, OutputsRef: out})},
+		{Seq: 5, TS: fixedTS, Path: "loop[0]", Type: EventLoopIter,
+			Data: marshalOrFatal(t, LoopIterData{N: 2})},
+		// iter 3
+		{Seq: 6, TS: fixedTS, Path: "loop[0].body.iter-3.work", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok", ExitCode: &exit0, OutputsRef: out})},
+		{Seq: 7, TS: fixedTS, Path: "loop[0]", Type: EventLoopIter,
+			Data: marshalOrFatal(t, LoopIterData{N: 3})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if rs.LoopIters["loop[0]"] != 3 {
+		t.Errorf("LoopIters[loop[0]] = %d, want 3", rs.LoopIters["loop[0]"])
+	}
+	if len(rs.Completed) != 3 {
+		t.Errorf("Completed: got %d entries, want 3 (one per iter)", len(rs.Completed))
+	}
+	for _, p := range []string{
+		"loop[0].body.iter-1.work",
+		"loop[0].body.iter-2.work",
+		"loop[0].body.iter-3.work",
+	} {
+		if _, ok := rs.Completed[p]; !ok {
+			t.Errorf("Completed[%q] missing", p)
+		}
 	}
 }

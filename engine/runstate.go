@@ -42,12 +42,17 @@ func ParseOutcome(s string) (Outcome, error) {
 // stored, Outputs is the typed value the fold materialized via Blobs.Get. The template
 // evaluator reads Outputs; obs (Phase 6) reads OutputsRef. Keeping both means callers
 // don't re-dereference per resolution.
+//
+// IMPORTANT — aliasing: Outputs and Files are maps; Go's value-copy of a struct shares
+// the underlying map. Callers MUST treat RunState.Completed[*].Outputs and .Files as
+// read-only — mutating an entry through a copied NodeResult corrupts the fold-committed
+// record. Pinned by TestNodeResultCopyIsShallow (engine/runstate_test.go).
 type NodeResult struct {
 	Outcome    Outcome
 	ExitCode   *int              // code step only (nil for agent/signal)
-	Outputs    map[string]any    // typed; materialized from OutputsRef
+	Outputs    map[string]any    // typed; materialized from OutputsRef. READ-ONLY (see NodeResult doc).
 	OutputsRef string            // CAS pointer (validates against Outputs)
-	Files      map[string]string // declared path → CAS ref (no materialization — too large)
+	Files      map[string]string // declared path → CAS ref. READ-ONLY (see NodeResult doc).
 }
 
 // RunState is the in-memory fold of the log: the interpreter consults it to skip
@@ -58,11 +63,19 @@ type NodeResult struct {
 //
 // Phase 2 fields only — Phase 3 will add signals (await), gate attempts (per
 // gate[N].attempt-K), and map items (per map[N].item-K).
+// RunState.Epoch ≠ state.Event.Epoch — see comment on the Epoch field below.
 type RunState struct {
 	RunID          string
 	WorkflowDigest string
 	Input          map[string]any // resolved from run.started.Data.input_ref via Blobs.Get
-	Epoch          uint32         // bumped by state.Log on each reopen (= each `awf resume`); the run.resumed event records each bump (added in slice 2.1 Task 3)
+	// Epoch is the *runtime* resume-invocation counter — set to 1 on run.started, then
+	// overwritten by each run.resumed event's payload (see Fold). This is NOT the same
+	// counter as state.Event.Epoch (which is auto-stamped by state.Log on each Append
+	// and bumped by OpenLog on each reopen — see state/log.go). The two counters can
+	// diverge if the writer makes a mistake: slice 2.6's cli resume MUST emit
+	// RunResumedData{Epoch: rs.Epoch + 1} after each fold, otherwise the runtime
+	// counter goes stale while state.Event.Epoch keeps incrementing.
+	Epoch uint32
 
 	Completed map[string]NodeResult // node.path → result
 	Branches  map[string]string     // if-node path → "then" | "else"

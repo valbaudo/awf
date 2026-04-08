@@ -20,12 +20,15 @@ const (
 //
 // Phase 2: Runtimes is always empty (no `uses:` execution). Phase 5 populates it
 // with {ref, resolved-version} per agent step, and resume verifies the resolved
-// versions against the live registry.
+// versions against the live registry. `omitempty` on Runtimes means both nil and
+// empty-slice writers produce identical on-disk JSON (the key is absent) — avoids
+// the silent `"runtimes":null` vs `"runtimes":[]` wire drift a Phase 5 writer would
+// otherwise create by forgetting to initialize an empty slice.
 type RunStartedData struct {
 	RunID          string            `json:"run_id"`
 	WorkflowDigest string            `json:"workflow_digest"`
 	InputRef       string            `json:"input_ref,omitempty"` // empty if Workflow.Input is nil
-	Runtimes       []ResolvedRuntime `json:"runtimes"`
+	Runtimes       []ResolvedRuntime `json:"runtimes,omitempty"`
 }
 
 // ResolvedRuntime is one element of RunStartedData.Runtimes — a `uses:` ref + the
