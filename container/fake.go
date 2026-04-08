@@ -159,3 +159,19 @@ func (f *Fake) WriteFile(h Handle, path string, content []byte) error {
 	fh.files[path] = dup
 	return nil
 }
+
+// FailExecAfterN configures the fake so the first n Exec calls succeed and
+// the (n+1)-th fails with an "induced fault" error. FailExecAfterN(0) fails
+// the very first call. One-shot: call #(n+1) and beyond succeed normally —
+// matches slice 2.6's bucket-3 use (a single crash per test process; the
+// process exits and resumes fresh).
+//
+// The check sits in Exec itself, so calling this method has no retroactive
+// effect on already-completed calls — the count is the live counter at the
+// next call.
+func (f *Fake) FailExecAfterN(n int) { f.failExecAt = &n }
+
+// FailCaptureAfterN is the CaptureFiles analogue — same one-shot semantic,
+// same guarantees. Used in slice 2.6 bucket-3 to crash between blob
+// materialization and journal append.
+func (f *Fake) FailCaptureAfterN(n int) { f.failCapAt = &n }

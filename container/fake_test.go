@@ -3,6 +3,7 @@ package container_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/valbaudo/awf/container"
@@ -193,5 +194,65 @@ func TestFakeSnapshotIsUnsupported(t *testing.T) {
 	defer func() { _ = f.Destroy(ctx, h) }()
 	if _, err := f.Snapshot(ctx, h); !errors.Is(err, container.ErrUnsupported) {
 		t.Errorf("Snapshot: err = %v, want errors.Is(_, ErrUnsupported)", err)
+	}
+}
+
+func TestFakeFailExecAfterN(t *testing.T) {
+	for _, k := range []int{0, 1, 3} {
+		t.Run(fmt.Sprintf("k=%d", k), func(t *testing.T) {
+			f := container.NewFake()
+			f.ProgramExec("noop", container.ExecResult{ExitCode: 0}, nil)
+			ctx := context.Background()
+			h, err := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			f.FailExecAfterN(k)
+
+			// First k calls succeed.
+			for i := 0; i < k; i++ {
+				if _, _, err := f.Exec(ctx, h, container.Cmd{Run: "noop"}); err != nil {
+					t.Fatalf("call #%d before fault: %v", i, err)
+				}
+			}
+			// Call #k fails.
+			if _, _, err := f.Exec(ctx, h, container.Cmd{Run: "noop"}); err == nil {
+				t.Errorf("call #%d did not trigger fault", k)
+			}
+			// Call #(k+1) succeeds — one-shot semantic.
+			if _, _, err := f.Exec(ctx, h, container.Cmd{Run: "noop"}); err != nil {
+				t.Errorf("call #%d after fault returned err=%v; want nil (one-shot)", k+1, err)
+			}
+		})
+	}
+}
+
+func TestFakeFailCaptureAfterN(t *testing.T) {
+	for _, k := range []int{0, 1, 3} {
+		t.Run(fmt.Sprintf("k=%d", k), func(t *testing.T) {
+			f := container.NewFake()
+			ctx := context.Background()
+			h, err := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := f.WriteFile(h, "/out/a", []byte("hi")); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			f.FailCaptureAfterN(k)
+
+			for i := 0; i < k; i++ {
+				if _, err := f.CaptureFiles(ctx, h, []string{"/out/a"}); err != nil {
+					t.Fatalf("call #%d before fault: %v", i, err)
+				}
+			}
+			if _, err := f.CaptureFiles(ctx, h, []string{"/out/a"}); err == nil {
+				t.Errorf("call #%d did not trigger fault", k)
+			}
+			// One-shot: call #(k+1) succeeds.
+			if _, err := f.CaptureFiles(ctx, h, []string{"/out/a"}); err != nil {
+				t.Errorf("call #%d after fault returned err=%v; want nil (one-shot)", k+1, err)
+			}
+		})
 	}
 }
