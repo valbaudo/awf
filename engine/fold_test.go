@@ -389,3 +389,25 @@ func TestFold_MissingInputBlobIsError(t *testing.T) {
 		t.Errorf("Fold with missing input blob should error, got nil")
 	}
 }
+
+func TestFold_MissingOutputsBlobIsError(t *testing.T) {
+	// Symmetric to TestFold_MissingInputBlobIsError: node.completed with a
+	// well-formed but absent OutputsRef → fold error. This is the §8 atomic-commit
+	// invariant — a committed node referencing a missing artifact means the commit
+	// boundary protocol was broken (or the log was tampered with), and resume must
+	// not proceed.
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: mustMarshal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+		{Seq: 2, TS: fixedTS, Path: "step", Type: EventNodeCompleted,
+			Data: mustMarshal(t, NodeCompletedData{
+				Outcome: "ok",
+				// Well-formed ref but blob was never Put — state.InMemoryBlobs.Get
+				// returns wrapped fs.ErrNotExist, which Fold surfaces.
+				OutputsRef: "awf-d1:sha256:" + strings.Repeat("cd", 32),
+			})},
+	}
+	if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
+		t.Errorf("Fold with missing outputs blob should error, got nil")
+	}
+}
