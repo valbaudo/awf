@@ -2,6 +2,7 @@ package container
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -21,11 +22,12 @@ func TestSnapshotModeConstants(t *testing.T) {
 }
 
 func TestErrUnsupportedIsSentinel(t *testing.T) {
-	if ErrUnsupported == nil {
-		t.Fatal("ErrUnsupported is nil")
-	}
-	if !errors.Is(ErrUnsupported, ErrUnsupported) {
-		t.Errorf("errors.Is(ErrUnsupported, ErrUnsupported) = false")
+	// Wrapped sentinel still matches via errors.Is — this is the pattern
+	// callers use ("container/fake: Snapshot: %w", ErrUnsupported), so the
+	// match must hold through %w wrapping.
+	wrapped := fmt.Errorf("container/fake: Snapshot: %w", ErrUnsupported)
+	if !errors.Is(wrapped, ErrUnsupported) {
+		t.Errorf("errors.Is(wrapped, ErrUnsupported) = false; want true")
 	}
 	// An unrelated error must NOT match (defends against sentinel aliasing).
 	unrelated := errors.New("snapshot in Phase 2 fake")
@@ -42,9 +44,5 @@ func TestCapsZeroValue(t *testing.T) {
 	var c Caps
 	if c.Snapshot != "" {
 		t.Errorf("zero-value Caps.Snapshot = %q, want empty string (forces explicit set)", c.Snapshot)
-	}
-	c2 := Caps{Snapshot: SnapshotNone}
-	if c2.Snapshot != SnapshotNone {
-		t.Errorf("Caps{Snapshot: SnapshotNone}.Snapshot = %q", c2.Snapshot)
 	}
 }

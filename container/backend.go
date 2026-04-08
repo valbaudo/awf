@@ -74,10 +74,12 @@ type Backend interface {
 	// disposition as Snapshot.
 	Restore(ctx context.Context, ref SnapshotRef) (Handle, error)
 
-	// Destroy releases the handle's resources. Matches the io.Closer convention:
-	// safe to call exactly once per Create; double-Destroy returns an error
-	// (the handle is gone). Phase 4 Docker will route to ContainerRemove,
-	// which also errors on already-removed containers.
+	// Destroy releases the handle's resources. The caller must call Destroy
+	// exactly once per Create; a second call returns an error (the handle is
+	// gone). Matches os.File.Close and Docker's ContainerRemove behavior;
+	// io.Closer itself leaves post-first-call behavior undefined, but the
+	// engine relies on the stricter "error on double" guarantee to surface
+	// dispatcher bugs.
 	Destroy(ctx context.Context, h Handle) error
 }
 
