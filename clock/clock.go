@@ -63,3 +63,10 @@ func (f *Fake) NewRunID() string {
 	f.i++
 	return id
 }
+
+// Advance steps the fake clock forward by d. Slice 2.4 (retry / timeout tests) uses
+// this to simulate elapsed time without real-time sleeps. Independent of
+// testing/synctest — Fake.Now() returns f.T regardless of any synctest bubble's
+// faked time.Now(). Whether retry tests use this method or synctest's time-fake
+// is slice 2.4's decision; 2.1 ships only the explicit-control primitive.
+func (f *Fake) Advance(d time.Duration) { f.T = f.T.Add(d) }

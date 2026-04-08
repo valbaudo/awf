@@ -32,3 +32,19 @@ func TestProdImplsSatisfyInterfaces(t *testing.T) {
 		t.Fatalf("run id len = %d, want %d hex chars", len(id), runIDHexLen)
 	}
 }
+
+func TestFakeAdvance(t *testing.T) {
+	start := time.Unix(testEpochSeconds, 0).UTC()
+	f := &Fake{T: start}
+	if got := f.Now(); !got.Equal(start) {
+		t.Fatalf("pre-advance Now() = %v", got)
+	}
+	f.Advance(5 * time.Second)
+	if got := f.Now(); got.Sub(start) != 5*time.Second {
+		t.Fatalf("after Advance(5s), Now()-start = %v, want 5s", got.Sub(start))
+	}
+	f.Advance(2 * time.Minute)
+	if got := f.Now(); got.Sub(start) != 5*time.Second+2*time.Minute {
+		t.Fatalf("after second Advance, Now()-start = %v", got.Sub(start))
+	}
+}
