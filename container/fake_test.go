@@ -256,3 +256,56 @@ func TestFakeFailCaptureAfterN(t *testing.T) {
 		})
 	}
 }
+
+func TestFakeProgramExecDefensiveCopy(t *testing.T) {
+	// Mirror state.InMemoryBlobs.TestInMemoryBlobsDefensiveCopy. A caller that
+	// mutates the slices passed to ProgramExec after it returns must NOT
+	// corrupt what Exec subsequently returns. Matches the discipline already
+	// applied to WriteFile and CaptureFiles.
+	f := container.NewFake()
+	ctx := context.Background()
+	h, err := f.Create(ctx, container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = f.Destroy(ctx, h) }()
+
+	awfOut := []byte(`{"ok":true}`)
+	stdout := []byte("hello\n")
+	chunkData := []byte("chunk-payload")
+	chunks := []container.IOChunk{{Stream: "stdout", Data: chunkData}}
+
+	f.ProgramExec("noop", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: awfOut,
+		Stdout:    stdout,
+	}, chunks)
+
+	// Mutate ALL inputs after ProgramExec returns. The fake's stored copies
+	// must be unaffected.
+	awfOut[0] = 'X'
+	stdout[0] = 'X'
+	chunkData[0] = 'X'
+	chunks[0].Stream = "stderr" // also mutate the chunks slice header
+
+	got, ch, err := f.Exec(ctx, h, container.Cmd{Run: "noop"})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if string(got.AWFOutput) != `{"ok":true}` {
+		t.Errorf("AWFOutput leaked caller mutation: got %q", got.AWFOutput)
+	}
+	if string(got.Stdout) != "hello\n" {
+		t.Errorf("Stdout leaked caller mutation: got %q", got.Stdout)
+	}
+	c, ok := <-ch
+	if !ok {
+		t.Fatalf("chunk channel closed before any chunk")
+	}
+	if c.Stream != "stdout" {
+		t.Errorf("chunk Stream leaked caller mutation: got %q, want \"stdout\"", c.Stream)
+	}
+	if string(c.Data) != "chunk-payload" {
+		t.Errorf("chunk Data leaked caller mutation: got %q", c.Data)
+	}
+}

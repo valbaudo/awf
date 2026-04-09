@@ -32,7 +32,6 @@ type Fake struct {
 
 // fakeHandle is the per-Create internal state: an in-mem fs map.
 type fakeHandle struct {
-	name  string
 	files map[string][]byte
 }
 
@@ -51,7 +50,7 @@ func (*Fake) Capabilities() Caps {
 func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
 	f.nextID++
 	id := fmt.Sprintf("fake-%d", f.nextID)
-	f.handles[id] = &fakeHandle{name: spec.Name, files: map[string][]byte{}}
+	f.handles[id] = &fakeHandle{files: map[string][]byte{}}
 	return Handle{Name: spec.Name, ID: id}, nil
 }
 
@@ -133,17 +132,41 @@ func (f *Fake) Destroy(_ context.Context, h Handle) error {
 // ProgramExec queues a result + optional stream chunks for a Cmd.Run. Calling
 // Exec with that Cmd.Run returns the queued result and a closed channel
 // pre-filled with the chunks. Test helper, NOT on the Backend interface.
+//
+// Defensive-copies every byte slice (result.AWFOutput, result.Stdout, each
+// chunk's Data) so a caller mutating its slices after ProgramExec returns
+// cannot corrupt the fake. Matches state.InMemoryBlobs.Put's discipline.
 func (f *Fake) ProgramExec(run string, result ExecResult, chunks []IOChunk) {
 	if f.execTable == nil {
 		f.execTable = map[string]ExecResult{}
 	}
-	f.execTable[run] = result
+	stored := ExecResult{
+		ExitCode:  result.ExitCode,
+		AWFOutput: cloneBytes(result.AWFOutput),
+		Stdout:    cloneBytes(result.Stdout),
+	}
+	f.execTable[run] = stored
 	if len(chunks) > 0 {
 		if f.streamTable == nil {
 			f.streamTable = map[string][]IOChunk{}
 		}
-		f.streamTable[run] = chunks
+		dup := make([]IOChunk, len(chunks))
+		for i, c := range chunks {
+			dup[i] = IOChunk{Stream: c.Stream, Data: cloneBytes(c.Data)}
+		}
+		f.streamTable[run] = dup
 	}
+}
+
+// cloneBytes returns a copy of b, or nil if b is nil. Local helper so the
+// defensive-copy intent is named at call sites.
+func cloneBytes(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	dup := make([]byte, len(b))
+	copy(dup, b)
+	return dup
 }
 
 // WriteFile preloads a file into the handle's in-mem fs. Test helper for
@@ -172,6 +195,9 @@ func (f *Fake) WriteFile(h Handle, path string, content []byte) error {
 func (f *Fake) FailExecAfterN(n int) { f.failExecAt = &n }
 
 // FailCaptureAfterN is the CaptureFiles analogue — same one-shot semantic,
-// same guarantees. Used in slice 2.6 bucket-3 to crash between blob
-// materialization and journal append.
+// same guarantees. Crashes BEFORE any blob is written (CaptureFiles runs
+// before Blobs.Put), so resume simply re-runs the step. Useful in slice 2.6
+// bucket-2 (replay) to simulate a crash mid-execution before state is
+// committed. Bucket-3 (atomic commit) is the job of FailAppendAfterN on
+// state.InMemoryLog, which crashes between Blobs.Put and Log.Append(node.completed).
 func (f *Fake) FailCaptureAfterN(n int) { f.failCapAt = &n }

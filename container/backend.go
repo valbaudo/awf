@@ -55,6 +55,9 @@ type Backend interface {
 	// returned error is non-nil if Exec couldn't run the command at all (the
 	// "launch / transport" class — retryable_failure per §6); if the command
 	// ran and merely exited nonzero, err is nil and ExitCode carries the code.
+	//
+	// On non-nil error, the returned channel is nil; callers MUST check err
+	// before ranging over the channel (a `for range nil-chan` deadlocks).
 	Exec(ctx context.Context, h Handle, cmd Cmd) (ExecResult, <-chan IOChunk, error)
 
 	// CaptureFiles reads the named in-container paths and returns their content,
