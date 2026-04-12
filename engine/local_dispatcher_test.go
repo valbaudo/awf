@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -340,19 +339,25 @@ func TestLocalDispatcherSignalStepReturnsUnsupportedKind(t *testing.T) {
 	}
 }
 
-func TestLocalDispatcherTimeoutIsRetryable(t *testing.T) {
-	// Task 6 fixed the fake to honor ctx; here a pre-cancelled ctx forces
-	// Backend.Exec to return ctx.Err() → ClassifyOutcome routes to retryable.
+func TestLocalDispatcherCancelledContextIsRetryable(t *testing.T) {
+	// A pre-cancelled ctx makes Backend.Exec return ctx.Err() (Task 6's fake
+	// fix). The dispatcher classifies that as a transport-class callErr →
+	// retryable_failure. Confirms ctx-cancellation routing.
+	//
+	// Note: this test does NOT exercise the dispatcher's context.WithTimeout
+	// block (Timeout-field path). A blocking fake that actually times out is
+	// Phase 4 Docker testing territory — the Phase 2 fake returns synchronously
+	// from its scripted table, so an applied WithTimeout has no observable
+	// behavior here.
 	d, fake, _ := newDispatcher(t)
-	fake.ProgramExec("./slow.sh", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("./irrelevant.sh", container.ExecResult{ExitCode: 0}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	intent := engine.NodeIntent{
-		Path: "slow",
-		Node: &ir.CodeStep{ID: "slow", Container: "lab"},
+		Path: "cancelled",
+		Node: &ir.CodeStep{ID: "cancelled", Container: "lab"},
 		ResolvedInputs: engine.ResolvedInputs{
-			Command: "./slow.sh",
-			Timeout: 10 * time.Millisecond,
+			Command: "./irrelevant.sh",
 		},
 	}
 	dr, _, err := d.Run(ctx, intent)

@@ -110,12 +110,16 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		if captureErr != nil {
 			// A declared output file missing or unreadable is a retryable failure
 			// — same class as an unparseable AWFOutput (the step succeeded by
-			// exit code but didn't honor its declared contract).
+			// exit code but didn't honor its declared contract). If parseErr is
+			// also non-nil (schema validation failed AND capture failed), join
+			// both so the operator sees the full failure picture rather than
+			// only the last symptom.
 			return DispatchResult{
 				Outcome:  OutcomeRetryableFailure,
 				ExitCode: copyIntPtr(exec.ExitCode),
+				Outputs:  outputs,
 				Stdout:   exec.Stdout,
-				Err:      captureErr,
+				Err:      errors.Join(parseErr, captureErr),
 			}, chunks, nil
 		}
 	}
