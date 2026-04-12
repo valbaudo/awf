@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,7 @@ func TestNodeCompletedDataRoundTrip(t *testing.T) {
 		Outcome:    "ok",
 		ExitCode:   &exit,
 		OutputsRef: "awf-d1:sha256:abc",
+		StdoutRef:  "awf-d1:sha256:stdout",
 		Files:      map[string]string{"/out/a": "awf-d1:sha256:def"},
 	}
 	b, err := json.Marshal(in)
@@ -60,8 +62,33 @@ func TestNodeCompletedDataRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if out.Outcome != "ok" || out.ExitCode == nil || *out.ExitCode != 0 ||
-		out.OutputsRef != in.OutputsRef || out.Files["/out/a"] != in.Files["/out/a"] {
+		out.OutputsRef != in.OutputsRef || out.StdoutRef != in.StdoutRef ||
+		out.Files["/out/a"] != in.Files["/out/a"] {
 		t.Errorf("round-trip mismatch: in=%+v out=%+v", in, out)
+	}
+}
+
+func TestNodeCompletedDataStdoutRefOmitEmpty(t *testing.T) {
+	// StdoutRef is omitempty — a step that produced no stdout (or had none, e.g.
+	// agent/signal) writes NodeCompletedData without the key. Pin the wire shape
+	// both ways so a future writer can't drift to `"stdout_ref":""` or
+	// `"stdout_ref":null`.
+	in := NodeCompletedData{Outcome: "ok", StdoutRef: "awf-d1:sha256:stdout"}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal with StdoutRef: %v", err)
+	}
+	if !strings.Contains(string(b), `"stdout_ref":"awf-d1:sha256:stdout"`) {
+		t.Errorf("marshal w/ StdoutRef = %s, want substring %q", b, `"stdout_ref":"awf-d1:sha256:stdout"`)
+	}
+
+	empty := NodeCompletedData{Outcome: "ok"}
+	b, err = json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal without StdoutRef: %v", err)
+	}
+	if strings.Contains(string(b), "stdout_ref") {
+		t.Errorf("marshal w/o StdoutRef = %s, must NOT contain %q (omitempty)", b, "stdout_ref")
 	}
 }
 

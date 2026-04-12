@@ -75,24 +75,27 @@ func TestRunStateZeroValueIsUsable(t *testing.T) {
 
 func TestNodeResultCopyIsShallow(t *testing.T) {
 	// NodeResult is stored by value in RunState.Completed, but it embeds maps
-	// (Outputs, Files) which are reference types — copying the struct shares the
-	// underlying maps. Downstream code (Phase 2.4/2.5 fold callers, template
-	// evaluator) must treat RunState.Completed entries as read-only: mutating
-	// .Outputs or .Files through a copied NodeResult corrupts the fold-committed
-	// record. This test pins that aliasing semantics so a future reader doesn't
-	// assume a deep copy.
+	// and slices (Outputs, Files, Stdout) which are reference types — copying
+	// the struct shares the underlying storage. Downstream code (Phase 2.4/2.5
+	// fold callers, template evaluator) must treat RunState.Completed entries
+	// as read-only: mutating .Outputs / .Files / .Stdout through a copied
+	// NodeResult corrupts the fold-committed record. This test pins that
+	// aliasing semantics so a future reader doesn't assume a deep copy.
 	exit := 0
 	original := NodeResult{
 		Outcome:    OutcomeOK,
 		ExitCode:   &exit,
 		Outputs:    map[string]any{"k": "v"},
 		OutputsRef: "awf-d1:sha256:abc",
+		Stdout:     []byte("hello"),
+		StdoutRef:  "awf-d1:sha256:stdout",
 		Files:      map[string]string{"/out/a": "awf-d1:sha256:def"},
 	}
 	cp := original
 
 	// Scalar / pointer fields are preserved.
-	if cp.Outcome != OutcomeOK || cp.OutputsRef != "awf-d1:sha256:abc" || cp.ExitCode != &exit {
+	if cp.Outcome != OutcomeOK || cp.OutputsRef != "awf-d1:sha256:abc" ||
+		cp.StdoutRef != "awf-d1:sha256:stdout" || cp.ExitCode != &exit {
 		t.Errorf("scalar fields not preserved: %+v", cp)
 	}
 
@@ -108,5 +111,14 @@ func TestNodeResultCopyIsShallow(t *testing.T) {
 	if original.Files["/out/b"] != "awf-d1:sha256:newref" {
 		t.Errorf("Files map is unexpectedly NOT shared: original=%+v cp=%+v",
 			original.Files, cp.Files)
+	}
+
+	// Slice backing array is SHARED — mutating an element of cp.Stdout visibly
+	// mutates original.Stdout (slice 2.4: same READ-ONLY discipline as Outputs
+	// and Files).
+	cp.Stdout[0] = 'H'
+	if original.Stdout[0] != 'H' {
+		t.Errorf("Stdout slice is unexpectedly NOT shared: original=%q cp=%q",
+			original.Stdout, cp.Stdout)
 	}
 }

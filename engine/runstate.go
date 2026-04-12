@@ -38,20 +38,23 @@ func ParseOutcome(s string) (Outcome, error) {
 // keyed by node.path. Phase 2 populates this from a `node.completed` event; Phase 3+
 // adds gate-attempt aggregation but the per-node shape stays the same.
 //
-// Both Outputs and OutputsRef are present: OutputsRef is the CAS pointer the journal
-// stored, Outputs is the typed value the fold materialized via Blobs.Get. The template
-// evaluator reads Outputs; obs (Phase 6) reads OutputsRef. Keeping both means callers
-// don't re-dereference per resolution.
+// Both Outputs and OutputsRef (and Stdout / StdoutRef) are present: the *Ref field is
+// the CAS pointer the journal stored, the materialized field is what the fold loaded
+// via Blobs.Get. The template evaluator reads the materialized values; obs (Phase 6)
+// reads the *Ref fields. Keeping both means callers don't re-dereference per resolution.
 //
-// IMPORTANT — aliasing: Outputs and Files are maps; Go's value-copy of a struct shares
-// the underlying map. Callers MUST treat RunState.Completed[*].Outputs and .Files as
-// read-only — mutating an entry through a copied NodeResult corrupts the fold-committed
-// record. Pinned by TestNodeResultCopyIsShallow (engine/runstate_test.go).
+// IMPORTANT — aliasing: Outputs and Files are maps and Stdout is a slice; Go's
+// value-copy of a struct shares the underlying storage. Callers MUST treat
+// RunState.Completed[*].Outputs, .Files, and .Stdout as read-only — mutating an
+// entry through a copied NodeResult corrupts the fold-committed record. Pinned by
+// TestNodeResultCopyIsShallow (engine/runstate_test.go).
 type NodeResult struct {
 	Outcome    Outcome
 	ExitCode   *int              // code step only (nil for agent/signal)
 	Outputs    map[string]any    // typed; materialized from OutputsRef. READ-ONLY (see NodeResult doc).
 	OutputsRef string            // CAS pointer (validates against Outputs)
+	Stdout     []byte            // materialized stdout; READ-ONLY (see NodeResult doc). nil if step produced no stdout.
+	StdoutRef  string            // CAS pointer (validates against Stdout)
 	Files      map[string]string // declared path → CAS ref. READ-ONLY (see NodeResult doc).
 }
 

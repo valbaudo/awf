@@ -17,11 +17,10 @@ import (
 // step-resolution case in spec §5.2).
 //
 // Phase 2 reference vocabulary: run.id, input.<field>, step.<id>.exit_code,
-// step.<id>.<field>. step.<id>.stdout is deferred to slice 2.4 (returns
-// AWF4099 in slice 2.3 — see the plan's Design question 2). Roots not in this
-// list — evaluate.* (Phase 3 gate), <as>.* (Phase 3 map) — return AWF4002
-// unresolved. The validator (slice 1.4) already catches the static cases; the
-// runtime closes the loop on anything that slipped past.
+// step.<id>.stdout, step.<id>.<field>. Roots not in this list — evaluate.*
+// (Phase 3 gate), <as>.* (Phase 3 map) — return AWF4002 unresolved. The
+// validator (slice 1.4) already catches the static cases; the runtime closes
+// the loop on anything that slipped past.
 //
 // Nested loops are out of scope for slice 2.3 (see plan Design question 3);
 // stepRuntimePath errors with a clear "nested loops not supported" message
@@ -131,11 +130,6 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 	if err := mustIdent(fieldSeg, "step field"); err != nil {
 		return nil, err
 	}
-	// Defer stdout to slice 2.4 BEFORE looking up the step — gives a clearer
-	// "not yet" message even if the step itself isn't committed yet.
-	if fieldSeg.Ident == "stdout" {
-		return nil, template.EvalErrf(template.EvalCodeDeferred, "step.%s.stdout resolution lands in slice 2.4 (Phase 2 plan Design question 2)", idSeg.Ident)
-	}
 	staticPath, ok := s.stepIndex[idSeg.Ident]
 	if !ok {
 		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not declared in workflow", idSeg.Ident)
@@ -154,6 +148,14 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 			return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "step has no exit_code (agent or signal step?)"}
 		}
 		return *nr.ExitCode, nil
+	case "stdout":
+		// nr.Stdout is materialized by Fold from NodeCompletedData.StdoutRef
+		// (slice 2.4 atomic extension). Return string so EvalBool comparisons
+		// (`step.x.stdout == "ok\n"`) work without coercion. nil Stdout → "".
+		if len(ref.Segments) != 3 {
+			return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "step.<id>.stdout takes no further segments"}
+		}
+		return string(nr.Stdout), nil
 	default:
 		// Typed output field — look up in nr.Outputs, then descend further if more segments.
 		if nr.Outputs == nil {

@@ -51,13 +51,15 @@ type RunResumedData struct {
 // existence in the log IS the completion record (spec §8). On resume the fold reads
 // these to skip already-committed nodes.
 //
-// OutputsRef is empty if the step has no output_schema (no typed outputs); Files is
+// OutputsRef is empty if the step has no output_schema (no typed outputs); StdoutRef
+// is empty if the step produced no stdout (or has none — agent/signal); Files is
 // empty if the step has no output_files. omitempty keeps the on-disk JSON minimal.
 type NodeCompletedData struct {
 	Outcome    string            `json:"outcome"` // always "ok" — only ok-steps commit
 	ExitCode   *int              `json:"exit_code,omitempty"`
 	OutputsRef string            `json:"outputs_ref,omitempty"`
-	Files      map[string]string `json:"files,omitempty"` // declared path → CAS ref
+	StdoutRef  string            `json:"stdout_ref,omitempty"` // CAS pointer; empty if step produced no stdout (or has none — agent/signal)
+	Files      map[string]string `json:"files,omitempty"`      // declared path → CAS ref
 }
 
 // BranchTakenData is the if-decision marker (spec §5.1). Fold uses Which to know which

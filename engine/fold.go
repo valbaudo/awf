@@ -136,6 +136,15 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 				}
 				nr.Outputs = out
 			}
+			nr.StdoutRef = d.StdoutRef
+			if d.StdoutRef != "" {
+				raw, err := blobs.Get(d.StdoutRef)
+				if err != nil {
+					return RunState{}, fmt.Errorf("engine.Fold: read stdout ref %q at path=%q: %w",
+						d.StdoutRef, e.Path, err)
+				}
+				nr.Stdout = raw
+			}
 			rs.Completed[e.Path] = nr
 
 		case EventBranchTaken:

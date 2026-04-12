@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -270,26 +271,64 @@ func TestScopeResolveUnknownRefRootIsAWF4002(t *testing.T) {
 	}
 }
 
-func TestScopeResolveStepStdoutIsDeferredToSlice24(t *testing.T) {
-	// step.<id>.stdout resolution is deferred to slice 2.4 (Design question 2
-	// in the plan). The runtime returns AWF4099 (deferred-to-later-slice) so
-	// authors get a clear "not yet" message rather than a silent empty value.
+func TestScopeResolveStepStdout(t *testing.T) {
+	exit := 0
 	rs := &RunState{
-		RunID: testRunID,
+		RunID: "run-X",
 		Completed: map[string]NodeResult{
-			"triage": {Outcome: OutcomeOK, ExitCode: intp(0)},
+			"triage": {Outcome: OutcomeOK, ExitCode: &exit, Stdout: []byte("hello world\n")},
 		},
 	}
 	wf := minimalWorkflow()
 	sc := NewScope(rs, wf, "loop[1]")
 	ref := mustParseRef(t, "step.triage.stdout")
-	_, err := sc.Resolve(ref)
-	var ee *template.EvalError
-	if !errors.As(err, &ee) {
-		t.Fatalf("err is %T, want *template.EvalError: %v", err, err)
+	v, err := sc.Resolve(ref)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
 	}
-	if ee.Code != template.EvalCodeDeferred {
-		t.Errorf("err.Code = %q, want %q (AWF4099)", ee.Code, template.EvalCodeDeferred)
+	if got, ok := v.(string); !ok || got != "hello world\n" {
+		t.Errorf("v = %v (%T), want string %q", v, v, "hello world\n")
+	}
+}
+
+func TestScopeResolveStepStdoutEmpty(t *testing.T) {
+	// A step that produced no stdout — Stdout is nil. Resolution returns "",
+	// NOT an AWF4002 error (the step IS committed; stdout just happens to be
+	// empty, which is a valid value).
+	exit := 0
+	rs := &RunState{
+		RunID: "run-X",
+		Completed: map[string]NodeResult{
+			"triage": {Outcome: OutcomeOK, ExitCode: &exit, Stdout: nil},
+		},
+	}
+	wf := minimalWorkflow()
+	sc := NewScope(rs, wf, "loop[1]")
+	ref := mustParseRef(t, "step.triage.stdout")
+	v, err := sc.Resolve(ref)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got, ok := v.(string); !ok || got != "" {
+		t.Errorf("v = %v (%T), want string %q", v, v, "")
+	}
+}
+
+func TestScopeResolveStepStdoutOversizeIsAWF4001(t *testing.T) {
+	huge := bytes.Repeat([]byte{'a'}, template.MaxInlineBytes+1)
+	exit := 0
+	rs := &RunState{
+		RunID: "run-X",
+		Completed: map[string]NodeResult{
+			"triage": {Outcome: OutcomeOK, ExitCode: &exit, Stdout: huge},
+		},
+	}
+	wf := minimalWorkflow()
+	sc := NewScope(rs, wf, "loop[1]")
+	_, err := template.Substitute("{{ step.triage.stdout }}", sc)
+	var ee *template.EvalError
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeOversize {
+		t.Errorf("err = %v, want AWF4001", err)
 	}
 }
 

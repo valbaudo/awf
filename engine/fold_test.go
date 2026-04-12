@@ -158,6 +158,64 @@ func TestFold_NodeCompleted(t *testing.T) {
 	}
 }
 
+func TestFold_NodeCompletedWithStdoutRef(t *testing.T) {
+	// Slice 2.4 extension: NodeCompletedData.StdoutRef → blobs.Get → nr.Stdout.
+	// Same atomicity invariant as OutputsRef: a committed node referencing a
+	// missing stdout blob is a §8 violation (covered by the missing-blob test
+	// below; here we pin the happy path).
+	blobs := state.NewInMemoryBlobs()
+	stdoutRef, err := blobs.Put([]byte("hello"))
+	if err != nil {
+		t.Fatalf("seed stdout blob: %v", err)
+	}
+	exit := 0
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+		{
+			Seq: 2, TS: fixedTS, Path: "triage", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{
+				Outcome:   "ok",
+				ExitCode:  &exit,
+				StdoutRef: stdoutRef,
+			}),
+		},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got, ok := rs.Completed["triage"]
+	if !ok {
+		t.Fatalf("Completed[\"triage\"] missing; got %+v", rs.Completed)
+	}
+	if got.StdoutRef != stdoutRef {
+		t.Errorf("StdoutRef = %q, want %q", got.StdoutRef, stdoutRef)
+	}
+	if string(got.Stdout) != "hello" {
+		t.Errorf("Stdout = %q, want %q", got.Stdout, "hello")
+	}
+}
+
+func TestFold_MissingStdoutBlobIsError(t *testing.T) {
+	// Symmetric to TestFold_MissingOutputsBlobIsError: a node.completed with a
+	// well-formed but absent StdoutRef → fold error. Same §8 atomic-commit
+	// invariant: a committed node referencing a missing artifact means the
+	// commit boundary protocol was broken and resume must not proceed.
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y", Runtimes: []ResolvedRuntime{}})},
+		{Seq: 2, TS: fixedTS, Path: "step", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{
+				Outcome:   "ok",
+				StdoutRef: "awf-d1:sha256:" + strings.Repeat("ef", 32),
+			})},
+	}
+	if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
+		t.Errorf("Fold with missing stdout blob should error, got nil")
+	}
+}
+
 func TestFold_BranchTaken(t *testing.T) {
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
