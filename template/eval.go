@@ -83,7 +83,7 @@ func Substitute(host string, scope Scope) (string, error) {
 	cursor := 0
 	for _, sl := range slots {
 		b.WriteString(host[cursor:sl.Start])
-		ref, perr := ParseRef(strings.TrimSpace(sl.Inner))
+		ref, perr := ParseRef(sl.Inner)
 		if perr != nil {
 			var se *SyntaxError
 			if errors.As(perr, &se) {
@@ -350,6 +350,9 @@ func sameKind(l, r any) bool {
 	return false
 }
 
+// equalValue reports whether l and r are equal. Precondition: sameKind(l, r)
+// returned true (the unchecked type assertions on r below depend on it).
+// Numeric pairs never reach here — compare's toFloat branch handles them.
 func equalValue(l, r any) bool {
 	switch x := l.(type) {
 	case bool:

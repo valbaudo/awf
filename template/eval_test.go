@@ -106,6 +106,29 @@ func TestSubstituteSyntaxErrorIsAWF4005(t *testing.T) {
 	}
 }
 
+func TestSubstituteSyntaxErrorHostOffsetIncludesSlotWhitespace(t *testing.T) {
+	// Slot inner whitespace counts toward host offsets — ParseRef receives
+	// the un-trimmed inner so its reported position is slot-local, and
+	// Substitute translates via sl.Start + len(slotOpen) + se.Pos. A leading-
+	// whitespace slot must NOT silently shift the reported position.
+	host := "prefix {{   bad@token }} suffix"
+	_, err := Substitute(host, mapScope{})
+	var ee *EvalError
+	if !errors.As(err, &ee) {
+		t.Fatalf("err is %T, want *EvalError: %v", err, err)
+	}
+	if ee.Code != EvalCodeSyntax {
+		t.Errorf("err.Code = %q, want %q", ee.Code, EvalCodeSyntax)
+	}
+	// The '@' lives at byte 15 of the host: "prefix " (7) + "{{" (2) + "   bad" (6) = 15.
+	// The Msg should contain "host offset 15" — not 12 (which is what TrimSpace
+	// would produce by stripping the 3 leading spaces from the slot inner before
+	// ParseRef ran).
+	if !strings.Contains(ee.Msg, "host offset 15") {
+		t.Errorf("err.Msg = %q, want mention of host offset 15 (TrimSpace regression?)", ee.Msg)
+	}
+}
+
 func TestSubstituteOversizeIsAWF4001(t *testing.T) {
 	// A typed output value larger than MaxInlineBytes must reject at resolution.
 	// (Using a string-typed output here since step.<id>.stdout is deferred to

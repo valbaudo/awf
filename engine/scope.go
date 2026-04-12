@@ -186,7 +186,8 @@ func (s *Scope) stepRuntimePath(staticPath string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			fmt.Fprintf(&b, ".iter-%d", iter)
+			b.WriteString(iterSep)
+			b.WriteString(strconv.Itoa(iter))
 		}
 	}
 	return b.String(), nil
@@ -200,7 +201,7 @@ func (s *Scope) iterForLoop(loopBodyPath string) (int, error) {
 	if !strings.HasSuffix(loopBodyPath, ".body") {
 		return 0, fmt.Errorf("internal: iterForLoop called with non-body path %q", loopBodyPath)
 	}
-	prefix := loopBodyPath + ".iter-"
+	prefix := iterPrefix(loopBodyPath)
 	if strings.HasPrefix(s.ctxPath, prefix) {
 		rest := s.ctxPath[len(prefix):]
 		end := strings.IndexByte(rest, '.')
