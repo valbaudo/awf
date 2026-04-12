@@ -107,3 +107,67 @@ func TestInMemoryBlobsDefensiveCopy(t *testing.T) {
 		t.Errorf("Put did not defensive-copy: post-Put mutation leaked into store, got %q", got)
 	}
 }
+
+func TestInMemoryLogFailAppendAfterN(t *testing.T) {
+	t.Parallel()
+	lg := NewInMemoryLog(clock.System{})
+	lg.FailAppendAfterN(1) // call #1 succeeds, call #2 fails
+	if err := lg.Append(Event{Type: "first"}); err != nil {
+		t.Fatalf("call #1 unexpected err: %v", err)
+	}
+	err := lg.Append(Event{Type: "second"})
+	if err == nil {
+		t.Fatal("call #2 expected to fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "induced") {
+		t.Errorf("err = %v, want mention of 'induced'", err)
+	}
+	// Call #3 succeeds (one-shot fault).
+	if err := lg.Append(Event{Type: "third"}); err != nil {
+		t.Errorf("call #3 unexpected err: %v", err)
+	}
+	// Fold returns only the events that were actually appended (1 and 3).
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if len(events) != 2 || events[0].Type != "first" || events[1].Type != "third" {
+		t.Errorf("Fold = %+v, want [first, third]", events)
+	}
+}
+
+func TestInMemoryLogFailAppendAfterZeroFailsFirst(t *testing.T) {
+	t.Parallel()
+	lg := NewInMemoryLog(clock.System{})
+	lg.FailAppendAfterN(0) // call #1 fails immediately
+	err := lg.Append(Event{Type: "first"})
+	if err == nil {
+		t.Fatal("call #1 expected to fail, got nil")
+	}
+}
+
+func TestInMemoryBlobsFailPutAfterN(t *testing.T) {
+	t.Parallel()
+	b := NewInMemoryBlobs()
+	b.FailPutAfterN(1) // call #1 succeeds, call #2 fails
+	ref1, err := b.Put([]byte("first"))
+	if err != nil {
+		t.Fatalf("call #1 unexpected err: %v", err)
+	}
+	_, err = b.Put([]byte("second"))
+	if err == nil {
+		t.Fatal("call #2 expected to fail, got nil")
+	}
+	// Call #3 succeeds.
+	ref3, err := b.Put([]byte("third"))
+	if err != nil {
+		t.Fatalf("call #3 unexpected err: %v", err)
+	}
+	// Only successful Puts are retrievable.
+	if got, _ := b.Get(ref1); string(got) != "first" {
+		t.Errorf("Get(ref1) = %q, want %q", got, "first")
+	}
+	if got, _ := b.Get(ref3); string(got) != "third" {
+		t.Errorf("Get(ref3) = %q, want %q", got, "third")
+	}
+}
