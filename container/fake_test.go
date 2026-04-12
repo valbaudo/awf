@@ -257,6 +257,56 @@ func TestFakeFailCaptureAfterN(t *testing.T) {
 	}
 }
 
+func TestFakeExecHonorsContextCancel(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExec("./should-not-run.sh", container.ExecResult{ExitCode: 0}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := f.Exec(ctx, h, container.Cmd{Run: "./should-not-run.sh"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Exec with cancelled ctx: err = %v, want context.Canceled", err)
+	}
+}
+
+func TestFakeCaptureFilesHonorsContextCancel(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	_ = f.WriteFile(h, "/out/x", []byte("data"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := f.CaptureFiles(ctx, h, []string{"/out/x"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("CaptureFiles with cancelled ctx: err = %v, want context.Canceled", err)
+	}
+}
+
+func TestFakeRecordsCallsHistory(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExec("./run.sh", container.ExecResult{ExitCode: 0}, nil)
+	cmd1 := container.Cmd{Run: "./run.sh", Env: map[string]string{"K": "v1"}}
+	_, _, _ = f.Exec(context.Background(), h, cmd1)
+	cmd2 := container.Cmd{Run: "./run.sh", Env: map[string]string{"K": "v2", "AWF_IDEMPOTENCY_KEY": "abc"}}
+	_, _, _ = f.Exec(context.Background(), h, cmd2)
+
+	if len(f.Calls) != 2 {
+		t.Fatalf("len(Calls) = %d, want 2", len(f.Calls))
+	}
+	if f.Calls[0].Env["K"] != "v1" || f.Calls[1].Env["K"] != "v2" {
+		t.Errorf("Calls didn't record both: %+v", f.Calls)
+	}
+	if f.Calls[1].Env["AWF_IDEMPOTENCY_KEY"] != "abc" {
+		t.Errorf("Calls[1] missing AWF_IDEMPOTENCY_KEY: %+v", f.Calls[1].Env)
+	}
+	// Defensive-copy check: mutating the caller's map post-Exec must NOT corrupt
+	// the recorded Cmd. (Matches ProgramExec's defensive-copy discipline.)
+	cmd2.Env["K"] = "MUTATED"
+	if f.Calls[1].Env["K"] != "v2" {
+		t.Errorf("Fake aliased caller's Env map: Calls[1].Env[K] = %q after caller mutation, want %q", f.Calls[1].Env["K"], "v2")
+	}
+}
+
 func TestFakeProgramExecDefensiveCopy(t *testing.T) {
 	// Mirror state.InMemoryBlobs.TestInMemoryBlobsDefensiveCopy. A caller that
 	// mutates the slices passed to ProgramExec after it returns must NOT

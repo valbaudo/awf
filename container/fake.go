@@ -28,6 +28,13 @@ type Fake struct {
 	captureCalls int
 	failExecAt   *int
 	failCapAt    *int
+
+	// Calls is the defensive-copied history of every Cmd this fake's Exec
+	// received. Slice 2.4 (and later) tests inspect this to verify the
+	// dispatcher's env-injection contract (AWF_IDEMPOTENCY_KEY per AWF §10).
+	// The fake's doc-comment anticipated this need at slice-2.2 time but
+	// shipped no mechanism; this is the recording slot.
+	Calls []Cmd
 }
 
 // fakeHandle is the per-Create internal state: an in-mem fs map.
@@ -60,10 +67,17 @@ func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
 // dispatcher bugs in slice 2.4. Unknown handle is a hard error. Cmd.Env is
 // accepted but not used (slice 2.4 verifies dispatcher env injection by
 // inspecting what it passes to Exec, not by what the fake does with it).
-func (f *Fake) Exec(_ context.Context, h Handle, cmd Cmd) (ExecResult, <-chan IOChunk, error) {
+func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (ExecResult, <-chan IOChunk, error) {
+	if err := ctx.Err(); err != nil {
+		return ExecResult{}, nil, err
+	}
 	if _, ok := f.handles[h.ID]; !ok {
 		return ExecResult{}, nil, fmt.Errorf("container/fake: Exec: unknown handle %q", h.ID)
 	}
+	// Record the call BEFORE the fault check / programmed lookup — the dispatcher
+	// invoked us with this Cmd; the recording is what the env-injection test
+	// asserts on regardless of whether the lookup succeeds.
+	f.Calls = append(f.Calls, cloneCmd(cmd))
 	if f.failExecAt != nil && f.execCalls == *f.failExecAt {
 		n := f.execCalls
 		f.execCalls++
@@ -88,7 +102,10 @@ func (f *Fake) Exec(_ context.Context, h Handle, cmd Cmd) (ExecResult, <-chan IO
 // content in input order. Missing-path errors the whole call; unknown handle
 // is a hard error. Defensive-copies content (matches state.InMemoryBlobs.Get
 // discipline — callers mutating their slice must not corrupt our store).
-func (f *Fake) CaptureFiles(_ context.Context, h Handle, paths []string) ([]CapturedFile, error) {
+func (f *Fake) CaptureFiles(ctx context.Context, h Handle, paths []string) ([]CapturedFile, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	fh, ok := f.handles[h.ID]
 	if !ok {
 		return nil, fmt.Errorf("container/fake: CaptureFiles: unknown handle %q", h.ID)
@@ -167,6 +184,21 @@ func cloneBytes(b []byte) []byte {
 	dup := make([]byte, len(b))
 	copy(dup, b)
 	return dup
+}
+
+// cloneCmd defensive-copies a Cmd for Calls recording. The Env map is the
+// only non-trivial field — the caller may continue mutating their own map
+// after Exec returns, so the copy keeps the recording isolated. Matches
+// ProgramExec's defensive-copy discipline.
+func cloneCmd(c Cmd) Cmd {
+	out := Cmd{Run: c.Run}
+	if c.Env != nil {
+		out.Env = make(map[string]string, len(c.Env))
+		for k, v := range c.Env {
+			out.Env[k] = v
+		}
+	}
+	return out
 }
 
 // WriteFile preloads a file into the handle's in-mem fs. Test helper for

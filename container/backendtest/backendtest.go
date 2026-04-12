@@ -34,6 +34,8 @@ func RunBasicContract(t *testing.T, b container.Backend) {
 	t.Run("DoubleDestroyErrors", func(t *testing.T) { testDoubleDestroy(t, b) })
 	t.Run("SnapshotErrUnsupportedIfNotAdvertised", func(t *testing.T) { testSnapshotRouting(t, b) })
 	t.Run("RestoreErrUnsupportedIfNotAdvertised", func(t *testing.T) { testRestoreRouting(t, b) })
+	t.Run("ExecHonorsContextCancel", func(t *testing.T) { testExecCtxCancel(t, b) })
+	t.Run("CaptureFilesHonorsContextCancel", func(t *testing.T) { testCaptureFilesCtxCancel(t, b) })
 }
 
 func testCapsKnownMode(t *testing.T, b container.Backend) {
@@ -101,5 +103,40 @@ func testRestoreRouting(t *testing.T, b container.Backend) {
 	_, err := b.Restore(context.Background(), container.SnapshotRef("any"))
 	if !errors.Is(err, container.ErrUnsupported) {
 		t.Errorf("Restore: err = %v, want errors.Is(_, ErrUnsupported)", err)
+	}
+}
+
+func testExecCtxCancel(t *testing.T, b container.Backend) {
+	ctx := context.Background()
+	h, err := b.Create(ctx, container.ContainerSpec{Name: "ctx-test"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = b.Destroy(ctx, h) }()
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	// The cmd may not be programmed on this backend (e.g. Phase 2 fake requires
+	// ProgramExec). Backends MAY route the cancellation check BEFORE the
+	// unknown-cmd check; backends MAY also route it AFTER. The contract is
+	// "cancelled ctx ⇒ non-nil error" — either path satisfies. We assert only
+	// that the returned error wraps context.Canceled.
+	_, _, err = b.Exec(cancelCtx, h, container.Cmd{Run: "/bin/true"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Exec with cancelled ctx: err = %v, want errors.Is(_, context.Canceled)", err)
+	}
+}
+
+func testCaptureFilesCtxCancel(t *testing.T, b container.Backend) {
+	ctx := context.Background()
+	h, err := b.Create(ctx, container.ContainerSpec{Name: "ctx-test"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = b.Destroy(ctx, h) }()
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = b.CaptureFiles(cancelCtx, h, []string{"/nonexistent"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("CaptureFiles with cancelled ctx: err = %v, want errors.Is(_, context.Canceled)", err)
 	}
 }
