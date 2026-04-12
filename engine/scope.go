@@ -56,8 +56,8 @@ func (s *Scope) Resolve(ref *template.Ref) (any, error) {
 		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "empty ref"}
 	}
 	head := ref.Segments[0]
-	if head.IsIndex {
-		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "ref must start with an identifier"}
+	if err := mustIdent(head, "ref root"); err != nil {
+		return nil, err
 	}
 	switch head.Ident {
 	case "run":
@@ -67,15 +67,18 @@ func (s *Scope) Resolve(ref *template.Ref) (any, error) {
 	case "step":
 		return s.resolveStep(ref)
 	default:
-		return nil, &template.EvalError{
-			Code: template.EvalCodeRefUnresolved,
-			Msg:  fmt.Sprintf("unknown ref root %q (Phase 2 supports run / input / step)", head.Ident),
-		}
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "unknown ref root %q (Phase 2 supports run / input / step)", head.Ident)
 	}
 }
 
 func (s *Scope) resolveRun(ref *template.Ref) (any, error) {
-	if len(ref.Segments) != 2 || ref.Segments[1].IsIndex || ref.Segments[1].Ident != "id" {
+	if len(ref.Segments) != 2 {
+		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "only `run.id` is defined"}
+	}
+	if err := mustIdent(ref.Segments[1], "run.<field>"); err != nil {
+		return nil, err
+	}
+	if ref.Segments[1].Ident != "id" {
 		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "only `run.id` is defined"}
 	}
 	return s.rs.RunID, nil
@@ -85,12 +88,31 @@ func (s *Scope) resolveInput(ref *template.Ref) (any, error) {
 	if len(ref.Segments) < 2 {
 		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "`input` requires a field selector"}
 	}
-	var cur any = s.rs.Input
-	for i := 1; i < len(ref.Segments); i++ {
-		seg := ref.Segments[i]
+	return descendPath(s.rs.Input, ref.Segments[1:], "input.")
+}
+
+// mustIdent returns an AWF4002 EvalError if seg is an index segment; nil otherwise.
+// Used for ref positions where only identifiers are valid (e.g. ref roots, step
+// ids, step field names).
+func mustIdent(seg template.Segment, role string) error {
+	if seg.IsIndex {
+		return &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: role + " must be an identifier (not an index)"}
+	}
+	return nil
+}
+
+// descendPath walks segs from start, calling descend at each step. On error,
+// wraps with an AWF4002 EvalError whose Msg starts with prefix +
+// segPath(consumed) where consumed is the segments walked so far (1-based).
+func descendPath(start any, segs []template.Segment, prefix string) (any, error) {
+	cur := start
+	for i, seg := range segs {
 		next, err := descend(cur, seg)
 		if err != nil {
-			return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "input." + segPath(ref.Segments[1:i+1]) + ": " + err.Error()}
+			return nil, &template.EvalError{
+				Code: template.EvalCodeRefUnresolved,
+				Msg:  prefix + segPath(segs[:i+1]) + ": " + err.Error(),
+			}
 		}
 		cur = next
 	}
@@ -102,24 +124,21 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "`step` requires id + field (e.g. step.foo.exit_code)"}
 	}
 	idSeg := ref.Segments[1]
-	if idSeg.IsIndex {
-		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "step id must be an identifier"}
+	if err := mustIdent(idSeg, "step id"); err != nil {
+		return nil, err
 	}
 	fieldSeg := ref.Segments[2]
-	if fieldSeg.IsIndex {
-		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "step field must be an identifier"}
+	if err := mustIdent(fieldSeg, "step field"); err != nil {
+		return nil, err
 	}
 	// Defer stdout to slice 2.4 BEFORE looking up the step — gives a clearer
 	// "not yet" message even if the step itself isn't committed yet.
 	if fieldSeg.Ident == "stdout" {
-		return nil, &template.EvalError{
-			Code: template.EvalCodeDeferred,
-			Msg:  fmt.Sprintf("step.%s.stdout resolution lands in slice 2.4 (Phase 2 plan Design question 2)", idSeg.Ident),
-		}
+		return nil, template.EvalErrf(template.EvalCodeDeferred, "step.%s.stdout resolution lands in slice 2.4 (Phase 2 plan Design question 2)", idSeg.Ident)
 	}
 	staticPath, ok := s.stepIndex[idSeg.Ident]
 	if !ok {
-		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: fmt.Sprintf("step %q not declared in workflow", idSeg.Ident)}
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not declared in workflow", idSeg.Ident)
 	}
 	runtimePath, err := s.stepRuntimePath(staticPath)
 	if err != nil {
@@ -127,7 +146,7 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 	}
 	nr, ok := s.rs.Completed[runtimePath]
 	if !ok {
-		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: fmt.Sprintf("step %q not yet committed (runtime path %q)", idSeg.Ident, runtimePath)}
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not yet committed (runtime path %q)", idSeg.Ident, runtimePath)
 	}
 	switch fieldSeg.Ident {
 	case "exit_code":
@@ -138,18 +157,9 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 	default:
 		// Typed output field — look up in nr.Outputs, then descend further if more segments.
 		if nr.Outputs == nil {
-			return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: fmt.Sprintf("field %q: step has no typed outputs", fieldSeg.Ident)}
+			return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "field %q: step has no typed outputs", fieldSeg.Ident)
 		}
-		var cur any = nr.Outputs
-		for i := 2; i < len(ref.Segments); i++ {
-			seg := ref.Segments[i]
-			next, err := descend(cur, seg)
-			if err != nil {
-				return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "step." + idSeg.Ident + "." + segPath(ref.Segments[2:i+1]) + ": " + err.Error()}
-			}
-			cur = next
-		}
-		return cur, nil
+		return descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
 	}
 }
 

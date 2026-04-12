@@ -12,6 +12,13 @@ import (
 // Compile-time check: engine.Scope satisfies template.Scope.
 var _ template.Scope = (*Scope)(nil)
 
+// fakeShaImage is a syntactically-valid digest-pinned image ref for test
+// workflow fixtures. The 64-'a' hex string is technically a valid sha256.
+// The validator (slice 1.4) would accept it at definition time.
+const fakeShaImage = "oci://example@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+const testRunID = "run-X"
+
 // minimalWorkflow returns a small workflow shape used by the tests below. The
 // shape: index-0 = triage (CodeStep, top-level), index-1 = loop containing
 // body=[echo, inner_if], inner_if has then=[deep_step]. Covers the Phase 2
@@ -27,7 +34,7 @@ func minimalWorkflow() *ir.Workflow {
 	return &ir.Workflow{
 		ID: "test", Version: 1,
 		Containers: map[string]ir.Container{
-			"lab": {Image: "oci://example@sha256:" + strings.Repeat("a", 64)},
+			"lab": {Image: fakeShaImage},
 		},
 		Graph: ir.NodeList{
 			&ir.CodeStep{ID: "triage", Container: "lab", Run: "echo triage"}, // index 0
@@ -72,7 +79,7 @@ func TestStepPathIndex(t *testing.T) {
 
 func TestScopeResolveRunAndInput(t *testing.T) {
 	rs := &RunState{
-		RunID: "run-123",
+		RunID: testRunID,
 		Input: map[string]any{"cve_id": "CVE-2024-9999", "flag": true},
 	}
 	wf := minimalWorkflow()
@@ -80,7 +87,7 @@ func TestScopeResolveRunAndInput(t *testing.T) {
 
 	ref := mustParseRef(t, "run.id")
 	v, err := sc.Resolve(ref)
-	if err != nil || v != "run-123" {
+	if err != nil || v != testRunID {
 		t.Errorf("run.id: v=%v err=%v", v, err)
 	}
 
@@ -137,13 +144,12 @@ func TestScopeResolveInputIndexSegment(t *testing.T) {
 func TestScopeResolveStepFromOutsideLoop(t *testing.T) {
 	// Resolving step.echo from OUTSIDE the loop: spec §5.2 says it resolves to
 	// the latest completed iter's result (RunState.LoopIters["loop[1]"] = 2).
-	exit := 0
 	rs := &RunState{
-		RunID:     "run-X",
+		RunID:     testRunID,
 		LoopIters: map[string]int{"loop[1]": 2},
 		Completed: map[string]NodeResult{
-			"loop[1].body.iter-1.echo": {Outcome: OutcomeOK, ExitCode: &exit, Outputs: map[string]any{"n": 1.0}},
-			"loop[1].body.iter-2.echo": {Outcome: OutcomeOK, ExitCode: &exit, Outputs: map[string]any{"n": 2.0}},
+			"loop[1].body.iter-1.echo": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"n": 1.0}},
+			"loop[1].body.iter-2.echo": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"n": 2.0}},
 		},
 	}
 	wf := minimalWorkflow()
@@ -177,13 +183,12 @@ func TestScopeResolveStepFromInsideSameLoopIter(t *testing.T) {
 	// Resolving step.echo from inside the same loop body's iter-3 — must
 	// resolve to iter-3's result (the current iteration), NOT iter-2 (the
 	// "latest completed" which would be wrong because iter-3 is the current).
-	exit := 0
 	rs := &RunState{
-		RunID:     "run-X",
+		RunID:     testRunID,
 		LoopIters: map[string]int{"loop[1]": 2}, // 2 iters completed, iter-3 is running
 		Completed: map[string]NodeResult{
-			"loop[1].body.iter-2.echo": {Outcome: OutcomeOK, ExitCode: &exit, Outputs: map[string]any{"n": 2.0}},
-			"loop[1].body.iter-3.echo": {Outcome: OutcomeOK, ExitCode: &exit, Outputs: map[string]any{"n": 3.0}}, // committed earlier in iter-3
+			"loop[1].body.iter-2.echo": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"n": 2.0}},
+			"loop[1].body.iter-3.echo": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"n": 3.0}}, // committed earlier in iter-3
 		},
 	}
 	wf := minimalWorkflow()
@@ -204,11 +209,10 @@ func TestScopeResolveStepFromInsideSameLoopIter(t *testing.T) {
 func TestScopeResolveStepOutsideAnyLoop(t *testing.T) {
 	// Resolving a top-level step's ref: static path = runtime path = bare id;
 	// no iter substitution.
-	exit := 0
 	rs := &RunState{
-		RunID: "run-X",
+		RunID: testRunID,
 		Completed: map[string]NodeResult{
-			"triage": {Outcome: OutcomeOK, ExitCode: &exit, Outputs: map[string]any{"web_exploitable": true}},
+			"triage": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"web_exploitable": true}},
 		},
 	}
 	wf := minimalWorkflow()
@@ -224,7 +228,7 @@ func TestScopeResolveStepOutsideAnyLoop(t *testing.T) {
 }
 
 func TestScopeResolveUnknownStepIDIsAWF4002(t *testing.T) {
-	rs := &RunState{RunID: "run-X"}
+	rs := &RunState{RunID: testRunID}
 	wf := minimalWorkflow()
 	sc := NewScope(rs, wf, "triage")
 	ref := mustParseRef(t, "step.ghost.field")
@@ -238,7 +242,7 @@ func TestScopeResolveUnknownStepIDIsAWF4002(t *testing.T) {
 func TestScopeResolveStepInLoopWithNoIterIsAWF4002(t *testing.T) {
 	// A ref to a step inside a loop, where the loop has zero completed iters
 	// AND ctxPath is outside the loop: there is no value to return.
-	rs := &RunState{RunID: "run-X", LoopIters: map[string]int{}}
+	rs := &RunState{RunID: testRunID, LoopIters: map[string]int{}}
 	wf := minimalWorkflow()
 	sc := NewScope(rs, wf, "after_loop")
 	ref := mustParseRef(t, "step.echo.n")
@@ -250,7 +254,7 @@ func TestScopeResolveStepInLoopWithNoIterIsAWF4002(t *testing.T) {
 }
 
 func TestScopeResolveUnknownRefRootIsAWF4002(t *testing.T) {
-	rs := &RunState{RunID: "run-X"}
+	rs := &RunState{RunID: testRunID}
 	wf := minimalWorkflow()
 	sc := NewScope(rs, wf, "triage")
 	// `evaluate.*` is Phase 3 (gate). `<as>.*` is Phase 3 (map). Either reaching
@@ -270,11 +274,10 @@ func TestScopeResolveStepStdoutIsDeferredToSlice24(t *testing.T) {
 	// step.<id>.stdout resolution is deferred to slice 2.4 (Design question 2
 	// in the plan). The runtime returns AWF4099 (deferred-to-later-slice) so
 	// authors get a clear "not yet" message rather than a silent empty value.
-	exit := 0
 	rs := &RunState{
-		RunID: "run-X",
+		RunID: testRunID,
 		Completed: map[string]NodeResult{
-			"triage": {Outcome: OutcomeOK, ExitCode: &exit},
+			"triage": {Outcome: OutcomeOK, ExitCode: intp(0)},
 		},
 	}
 	wf := minimalWorkflow()
@@ -296,7 +299,7 @@ func TestScopeResolveStepWithMalformedCtxPathErrors(t *testing.T) {
 	// to LoopIters (which would conflate "outside the loop" with "inside
 	// a broken path").
 	rs := &RunState{
-		RunID:     "run-X",
+		RunID:     testRunID,
 		LoopIters: map[string]int{"loop[1]": 1},
 		Completed: map[string]NodeResult{
 			"loop[1].body.iter-1.echo": {Outcome: OutcomeOK, Outputs: map[string]any{"n": 1.0}},
@@ -324,7 +327,7 @@ func TestScopeResolveStepInNestedLoopIsRejected(t *testing.T) {
 	one := 1
 	wf := &ir.Workflow{
 		ID: "test", Version: 1,
-		Containers: map[string]ir.Container{"lab": {Image: "oci://example@sha256:" + strings.Repeat("a", 64)}},
+		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
 		Graph: ir.NodeList{
 			&ir.Loop{
 				MaxIters: &one,
@@ -339,7 +342,7 @@ func TestScopeResolveStepInNestedLoopIsRejected(t *testing.T) {
 			},
 		},
 	}
-	rs := &RunState{RunID: "run-X"}
+	rs := &RunState{RunID: testRunID}
 	sc := NewScope(rs, wf, "loop[0].body.iter-1.loop[0].body.iter-1.inner")
 	ref := mustParseRef(t, "step.inner.exit_code")
 	_, err := sc.Resolve(ref)
@@ -358,7 +361,7 @@ func TestScopeInputOversizeIsAWF4001(t *testing.T) {
 	// Resolve, and the template package's size check fires.
 	huge := strings.Repeat("a", template.MaxInlineBytes+1)
 	rs := &RunState{
-		RunID: "run-X",
+		RunID: testRunID,
 		Input: map[string]any{"payload": huge},
 	}
 	wf := minimalWorkflow()
@@ -370,6 +373,34 @@ func TestScopeInputOversizeIsAWF4001(t *testing.T) {
 	}
 }
 
+func TestScopeWithEvalBool(t *testing.T) {
+	// Integration: engine.Scope flowing through template.EvalBool (the if.cond /
+	// loop.until path). All other EvalBool tests use the test-only mapScope;
+	// this pins that the real engine.Scope works with the boolean evaluator too.
+	rs := &RunState{
+		RunID: testRunID,
+		Completed: map[string]NodeResult{
+			"triage": {
+				Outcome:  OutcomeOK,
+				ExitCode: intp(0),
+				Outputs:  map[string]any{"verified": true},
+			},
+		},
+	}
+	sc := NewScope(rs, minimalWorkflow(), "after_triage")
+	e, err := template.ParseExpr("step.triage.verified && step.triage.exit_code == 0")
+	if err != nil {
+		t.Fatalf("ParseExpr: %v", err)
+	}
+	got, err := template.EvalBool(e, sc)
+	if err != nil {
+		t.Fatalf("EvalBool: %v", err)
+	}
+	if !got {
+		t.Errorf("got %v, want true", got)
+	}
+}
+
 func mustParseRef(t *testing.T, src string) *template.Ref {
 	t.Helper()
 	r, err := template.ParseRef(src)
@@ -378,3 +409,8 @@ func mustParseRef(t *testing.T, src string) *template.Ref {
 	}
 	return r
 }
+
+// intp is a tiny test helper for taking the address of an int literal —
+// removes the boilerplate `exit := 0; ExitCode: &exit` pattern when
+// constructing NodeResult fixtures.
+func intp(n int) *int { return &n }

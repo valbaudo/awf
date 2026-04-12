@@ -47,6 +47,13 @@ func (e *EvalError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Msg)
 }
 
+// EvalErrf is a shorthand for &EvalError{Code: code, Msg: fmt.Sprintf(format, args...)}.
+// Use it at construction sites where the format-args form is clearer than
+// inlining fmt.Sprintf.
+func EvalErrf(code, format string, args ...any) *EvalError {
+	return &EvalError{Code: code, Msg: fmt.Sprintf(format, args...)}
+}
+
 // Scope is the value source the evaluator and substituter consume. The single-
 // method shape keeps the template package engine-free: engine.Scope (slice 2.3
 // in engine/scope.go) implements it from *RunState + *ir.Workflow + a runtime
@@ -71,7 +78,7 @@ func Substitute(host string, scope Scope) (string, error) {
 	if err != nil {
 		var se *SyntaxError
 		if errors.As(err, &se) {
-			return "", &EvalError{Code: EvalCodeSyntax, Msg: fmt.Sprintf("slot scan at offset %d: %s", se.Pos, se.Msg)}
+			return "", EvalErrf(EvalCodeSyntax, "slot scan at offset %d: %s", se.Pos, se.Msg)
 		}
 		return "", &EvalError{Code: EvalCodeSyntax, Msg: "slot scan: " + err.Error()}
 	}
@@ -82,13 +89,16 @@ func Substitute(host string, scope Scope) (string, error) {
 	b.Grow(len(host))
 	cursor := 0
 	for _, sl := range slots {
+		slotErr := func(code, format string, args ...any) *EvalError {
+			return &EvalError{Code: code, Msg: fmt.Sprintf("slot at host offset %d: ", sl.Start) + fmt.Sprintf(format, args...)}
+		}
 		b.WriteString(host[cursor:sl.Start])
 		ref, perr := ParseRef(sl.Inner)
 		if perr != nil {
 			var se *SyntaxError
 			if errors.As(perr, &se) {
 				hostPos := sl.Start + len(slotOpen) + se.Pos
-				return "", &EvalError{Code: EvalCodeSyntax, Msg: fmt.Sprintf("parse slot at host offset %d: %s", hostPos, se.Msg)}
+				return "", EvalErrf(EvalCodeSyntax, "parse slot at host offset %d: %s", hostPos, se.Msg)
 			}
 			return "", &EvalError{Code: EvalCodeSyntax, Msg: "parse slot: " + perr.Error()}
 		}
@@ -96,13 +106,13 @@ func Substitute(host string, scope Scope) (string, error) {
 		if rerr != nil {
 			var ee *EvalError
 			if errors.As(rerr, &ee) {
-				return "", &EvalError{Code: ee.Code, Msg: fmt.Sprintf("slot at host offset %d: %s", sl.Start, ee.Msg)}
+				return "", slotErr(ee.Code, "%s", ee.Msg)
 			}
-			return "", &EvalError{Code: EvalCodeRefUnresolved, Msg: fmt.Sprintf("slot at host offset %d: %s", sl.Start, rerr.Error())}
+			return "", slotErr(EvalCodeRefUnresolved, "%s", rerr.Error())
 		}
 		s, sErr := renderScalar(v)
 		if sErr != nil {
-			return "", &EvalError{Code: EvalCodeInvalidScalar, Msg: fmt.Sprintf("slot at host offset %d: %s", sl.Start, sErr.Error())}
+			return "", slotErr(EvalCodeInvalidScalar, "%s", sErr.Error())
 		}
 		b.WriteString(s)
 		cursor = sl.End
@@ -120,9 +130,37 @@ func EvalBool(e Expr, scope Scope) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return requireBool("top-level expression", v)
+}
+
+// evalLogical handles both && (shortCircuitOn=false) and || (shortCircuitOn=true)
+// with short-circuit evaluation. When the LHS equals shortCircuitOn the RHS is
+// not evaluated; the function returns shortCircuitOn.
+func evalLogical(l, r Expr, scope Scope, op string, shortCircuitOn bool) (any, error) {
+	lv, err := evalExpr(l, scope)
+	if err != nil {
+		return nil, err
+	}
+	lb, err := requireBool(op+" left operand", lv)
+	if err != nil {
+		return nil, err
+	}
+	if lb == shortCircuitOn {
+		return shortCircuitOn, nil
+	}
+	rv, err := evalExpr(r, scope)
+	if err != nil {
+		return nil, err
+	}
+	return requireBool(op+" right operand", rv)
+}
+
+// requireBool asserts v is a bool and returns it, or an AWF4003 EvalError
+// naming the role (e.g. "&& left operand", "! operand", "top-level expression").
+func requireBool(role string, v any) (bool, error) {
 	b, ok := v.(bool)
 	if !ok {
-		return false, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("top-level expression is %T, want bool", v)}
+		return false, EvalErrf(EvalCodeTypeMismatch, "%s is %T, want bool", role, v)
 	}
 	return b, nil
 }
@@ -141,7 +179,7 @@ func evalExpr(e Expr, scope Scope) (any, error) {
 		// no coercion across types but doesn't promise int/float distinction within numerics).
 		f, err := v.Value.Float64()
 		if err != nil {
-			return nil, &EvalError{Code: EvalCodeInvalidScalar, Msg: fmt.Sprintf("number literal %q: %v", v.Value, err)}
+			return nil, EvalErrf(EvalCodeInvalidScalar, "number literal %q: %v", v.Value, err)
 		}
 		return f, nil
 	case *NullLit:
@@ -153,53 +191,15 @@ func evalExpr(e Expr, scope Scope) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		b, ok := x.(bool)
-		if !ok {
-			return nil, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("! operand is %T, want bool", x)}
+		b, err := requireBool("! operand", x)
+		if err != nil {
+			return nil, err
 		}
 		return !b, nil
 	case *AndExpr:
-		l, err := evalExpr(v.L, scope)
-		if err != nil {
-			return nil, err
-		}
-		lb, ok := l.(bool)
-		if !ok {
-			return nil, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("&& left operand is %T, want bool", l)}
-		}
-		if !lb {
-			return false, nil // short-circuit — right not evaluated
-		}
-		r, err := evalExpr(v.R, scope)
-		if err != nil {
-			return nil, err
-		}
-		rb, ok := r.(bool)
-		if !ok {
-			return nil, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("&& right operand is %T, want bool", r)}
-		}
-		return rb, nil
+		return evalLogical(v.L, v.R, scope, "&&", false)
 	case *OrExpr:
-		l, err := evalExpr(v.L, scope)
-		if err != nil {
-			return nil, err
-		}
-		lb, ok := l.(bool)
-		if !ok {
-			return nil, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("|| left operand is %T, want bool", l)}
-		}
-		if lb {
-			return true, nil // short-circuit
-		}
-		r, err := evalExpr(v.R, scope)
-		if err != nil {
-			return nil, err
-		}
-		rb, ok := r.(bool)
-		if !ok {
-			return nil, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("|| right operand is %T, want bool", r)}
-		}
-		return rb, nil
+		return evalLogical(v.L, v.R, scope, "||", true)
 	case *CmpExpr:
 		l, err := evalExpr(v.L, scope)
 		if err != nil {
@@ -211,7 +211,7 @@ func evalExpr(e Expr, scope Scope) (any, error) {
 		}
 		return compare(v.Op, l, r)
 	}
-	return nil, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("unhandled expr node %T", e)}
+	panic(fmt.Sprintf("internal: unhandled Expr variant %T — sumtype lint regression", e))
 }
 
 // resolveRefValue calls scope.Resolve, then applies the MaxInlineBytes check.
@@ -237,10 +237,7 @@ func checkInlineSize(v any) error {
 		return nil // bool / number / nil / composite — all bounded or rejected elsewhere
 	}
 	if n > MaxInlineBytes {
-		return &EvalError{
-			Code: EvalCodeOversize,
-			Msg:  fmt.Sprintf("ref value is %d bytes, MaxInlineBytes is %d (pass via output_files per spec §4)", n, MaxInlineBytes),
-		}
+		return EvalErrf(EvalCodeOversize, "ref value is %d bytes, MaxInlineBytes is %d (pass via output_files per spec §4)", n, MaxInlineBytes)
 	}
 	return nil
 }
@@ -287,7 +284,7 @@ func compare(op string, l, r any) (bool, error) {
 		if op == "!=" {
 			return l != nil || r != nil, nil
 		}
-		return false, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("%s with null operand requires == or !=", op)}
+		return false, EvalErrf(EvalCodeTypeMismatch, "%s with null operand requires == or !=", op)
 	}
 	lf, lOK := toFloat(l)
 	rf, rOK := toFloat(r)
@@ -308,10 +305,10 @@ func compare(op string, l, r any) (bool, error) {
 		}
 	}
 	if op != "==" && op != "!=" {
-		return false, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("%s requires numeric operands, got %T and %T", op, l, r)}
+		return false, EvalErrf(EvalCodeTypeMismatch, "%s requires numeric operands, got %T and %T", op, l, r)
 	}
 	if !sameKind(l, r) {
-		return false, &EvalError{Code: EvalCodeTypeMismatch, Msg: fmt.Sprintf("== / != across types: %T vs %T", l, r)}
+		return false, EvalErrf(EvalCodeTypeMismatch, "== / != across types: %T vs %T", l, r)
 	}
 	eq := equalValue(l, r)
 	if op == "==" {
