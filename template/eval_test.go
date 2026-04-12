@@ -83,6 +83,29 @@ func TestSubstituteUnresolvedRefIsAWF4002(t *testing.T) {
 	}
 }
 
+func TestSubstituteSyntaxErrorIsAWF4005(t *testing.T) {
+	// Host-template syntax errors — unterminated {{, nested {{, empty slot
+	// inner — are AWF4005 (syntax), distinct from AWF4002 (resolution
+	// failure). The ref never reached the scope.
+	cases := []string{
+		"{{ ",           // unterminated slot
+		"{{ {{ a }} }}", // nested {{
+		"{{}}",          // empty inner — ParseRef rejects
+	}
+	for _, src := range cases {
+		t.Run(src, func(t *testing.T) {
+			_, err := Substitute(src, mapScope{})
+			var ee *EvalError
+			if !errors.As(err, &ee) {
+				t.Fatalf("err is %T, want *EvalError: %v", err, err)
+			}
+			if ee.Code != EvalCodeSyntax {
+				t.Errorf("err.Code = %q, want %q (AWF4005)", ee.Code, EvalCodeSyntax)
+			}
+		})
+	}
+}
+
 func TestSubstituteOversizeIsAWF4001(t *testing.T) {
 	// A typed output value larger than MaxInlineBytes must reject at resolution.
 	// (Using a string-typed output here since step.<id>.stdout is deferred to

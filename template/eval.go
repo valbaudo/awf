@@ -30,6 +30,7 @@ const (
 	EvalCodeRefUnresolved = "AWF4002" // ref doesn't bind in the scope
 	EvalCodeTypeMismatch  = "AWF4003" // operator's operand types don't match (no coercion per §7)
 	EvalCodeInvalidScalar = "AWF4004" // a {{ }} slot resolved to a non-scalar (map/slice/nil)
+	EvalCodeSyntax        = "AWF4005" // {{ }} slot or ref-grammar syntax error in the host template (slot scan / ParseRef failure; the ref never reached the scope)
 	EvalCodeDeferred      = "AWF4099" // ref shape valid but resolution lands in a later slice (slice 2.4 for stdout, etc.)
 )
 
@@ -70,9 +71,9 @@ func Substitute(host string, scope Scope) (string, error) {
 	if err != nil {
 		var se *SyntaxError
 		if errors.As(err, &se) {
-			return "", &EvalError{Code: EvalCodeRefUnresolved, Msg: fmt.Sprintf("slot scan at offset %d: %s", se.Pos, se.Msg)}
+			return "", &EvalError{Code: EvalCodeSyntax, Msg: fmt.Sprintf("slot scan at offset %d: %s", se.Pos, se.Msg)}
 		}
-		return "", &EvalError{Code: EvalCodeRefUnresolved, Msg: "slot scan: " + err.Error()}
+		return "", &EvalError{Code: EvalCodeSyntax, Msg: "slot scan: " + err.Error()}
 	}
 	if len(slots) == 0 {
 		return host, nil
@@ -87,9 +88,9 @@ func Substitute(host string, scope Scope) (string, error) {
 			var se *SyntaxError
 			if errors.As(perr, &se) {
 				hostPos := sl.Start + len(slotOpen) + se.Pos
-				return "", &EvalError{Code: EvalCodeRefUnresolved, Msg: fmt.Sprintf("parse slot at host offset %d: %s", hostPos, se.Msg)}
+				return "", &EvalError{Code: EvalCodeSyntax, Msg: fmt.Sprintf("parse slot at host offset %d: %s", hostPos, se.Msg)}
 			}
-			return "", &EvalError{Code: EvalCodeRefUnresolved, Msg: "parse slot: " + perr.Error()}
+			return "", &EvalError{Code: EvalCodeSyntax, Msg: "parse slot: " + perr.Error()}
 		}
 		v, rerr := resolveRefValue(scope, ref)
 		if rerr != nil {
@@ -230,8 +231,6 @@ func resolveRefValue(scope Scope, ref *Ref) (any, error) {
 func checkInlineSize(v any) error {
 	var n int
 	switch x := v.(type) {
-	case []byte:
-		n = len(x)
 	case string:
 		n = len(x)
 	default:
@@ -256,19 +255,12 @@ func renderScalar(v any) (string, error) {
 		return "", fmt.Errorf("nil value not renderable as scalar — pass via output_files or guard with `if x == null` (spec §7)")
 	case string:
 		return x, nil
-	case []byte:
-		return string(x), nil
 	case bool:
 		return strconv.FormatBool(x), nil
 	case int:
 		return strconv.Itoa(x), nil
 	case int64:
 		return strconv.FormatInt(x, 10), nil
-	case *int:
-		if x == nil {
-			return "", fmt.Errorf("nil *int not renderable as scalar")
-		}
-		return strconv.Itoa(*x), nil
 	case float64:
 		if x == math.Trunc(x) && !math.IsInf(x, 0) && !math.IsNaN(x) {
 			return strconv.FormatFloat(x, 'f', -1, 64), nil
@@ -336,11 +328,6 @@ func toFloat(v any) (float64, bool) {
 		return float64(x), true
 	case int64:
 		return float64(x), true
-	case *int:
-		if x == nil {
-			return 0, false
-		}
-		return float64(*x), true
 	case json.Number:
 		f, err := x.Float64()
 		if err != nil {
@@ -359,9 +346,6 @@ func sameKind(l, r any) bool {
 	case string:
 		_, ok := r.(string)
 		return ok
-	case []byte:
-		_, ok := r.([]byte)
-		return ok
 	}
 	return false
 }
@@ -372,8 +356,6 @@ func equalValue(l, r any) bool {
 		return x == r.(bool)
 	case string:
 		return x == r.(string)
-	case []byte:
-		return string(x) == string(r.([]byte))
 	}
 	return false
 }
