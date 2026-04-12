@@ -34,6 +34,7 @@ func TestClassifyOutcomeMatrix(t *testing.T) {
 		{"call error wins over parse", 0, parseErr, callErr, OutcomeRetryableFailure},
 		{"parse error wins over exit-0", 0, parseErr, nil, OutcomeRetryableFailure},
 		{"exit-78 wins over parse error (deterministic priority)", 78, parseErr, nil, OutcomePermanentFailure},
+		{"call error beats permanent exit (exit never observed)", 78, nil, callErr, OutcomeRetryableFailure},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
