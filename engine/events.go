@@ -3,7 +3,7 @@ package engine
 // Phase 2.1 event-type names — the events the fold dispatches on. These are the
 // wire-format string values stored in state.Event.Type; renaming any of them would
 // invalidate every existing log. The vocabulary expands as later slices add writers:
-// 2.4 introduces "retry.attempt"; 2.5 introduces "node.started" / "node.failed" /
+// 2.4 added "retry.attempt"; 2.5 introduces "node.started" / "node.failed" /
 // "run.finished"; future phases add "signal.received" / "map.item" / "agent.event" /
 // "io.chunk" / …. The fold's default switch arm ignores anything unknown — obs
 // (Phase 6) projects them via its own dispatch.
@@ -13,6 +13,7 @@ const (
 	EventNodeCompleted = "node.completed"
 	EventBranchTaken   = "branch.taken"
 	EventLoopIter      = "loop.iter"
+	EventRetryAttempt  = "retry.attempt"
 )
 
 // RunStartedData is the payload of the first event in a run (and the only event the
@@ -73,4 +74,22 @@ type BranchTakenData struct {
 // the max N per loop path so resume knows how many iterations have committed.
 type LoopIterData struct {
 	N int `json:"n"` // 1-based iteration number
+}
+
+// RetryAttemptData is the payload of a retry.attempt event — emitted by
+// engine.RunWithRetry once per non-final attempt (so on an N-attempt run that
+// ultimately succeeds or exhausts, N-1 retry.attempt events land before the
+// final node.completed / node.failed). Durability class is non-critical —
+// node.completed remains the only authoritative completion record per spec §8,
+// so retry.attempt rides the next fsync (RunWithRetry never calls Log.Sync()
+// after one).
+//
+// Outcome is the per-attempt classified outcome (retryable_failure /
+// permanent_failure — never ok, since an ok attempt isn't recorded as a retry
+// step). Error is the free-text rendering of the attempt's error (transport,
+// parse, schema failure).
+type RetryAttemptData struct {
+	N       int    `json:"n"`
+	Outcome string `json:"outcome"`
+	Error   string `json:"error,omitempty"`
 }
