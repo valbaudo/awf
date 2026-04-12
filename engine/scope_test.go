@@ -27,7 +27,7 @@ func minimalWorkflow() *ir.Workflow {
 	return &ir.Workflow{
 		ID: "test", Version: 1,
 		Containers: map[string]ir.Container{
-			"lab": {Image: "oci://example@sha256:" + strRepeat("a", 64)},
+			"lab": {Image: "oci://example@sha256:" + strings.Repeat("a", 64)},
 		},
 		Graph: ir.NodeList{
 			&ir.CodeStep{ID: "triage", Container: "lab", Run: "echo triage"}, // index 0
@@ -45,14 +45,6 @@ func minimalWorkflow() *ir.Workflow {
 			},
 		},
 	}
-}
-
-func strRepeat(s string, n int) string {
-	b := make([]byte, 0, len(s)*n)
-	for i := 0; i < n; i++ {
-		b = append(b, s...)
-	}
-	return string(b)
 }
 
 func TestStepPathIndex(t *testing.T) {
@@ -298,6 +290,32 @@ func TestScopeResolveStepStdoutIsDeferredToSlice24(t *testing.T) {
 	}
 }
 
+func TestScopeResolveStepWithMalformedCtxPathErrors(t *testing.T) {
+	// Engine-invariant check: if ctxPath prefix-matches the loop but the iter
+	// segment isn't an integer, we should error rather than silently fall back
+	// to LoopIters (which would conflate "outside the loop" with "inside
+	// a broken path").
+	rs := &RunState{
+		RunID:     "run-X",
+		LoopIters: map[string]int{"loop[1]": 1},
+		Completed: map[string]NodeResult{
+			"loop[1].body.iter-1.echo": {Outcome: OutcomeOK, Outputs: map[string]any{"n": 1.0}},
+		},
+	}
+	wf := minimalWorkflow()
+	// Malformed: "iter-XYZ" instead of "iter-N".
+	sc := NewScope(rs, wf, "loop[1].body.iter-XYZ.if[1].then.deep_step")
+	ref := mustParseRef(t, "step.echo.n")
+	_, err := sc.Resolve(ref)
+	var ee *template.EvalError
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("err = %v, want AWF4002", err)
+	}
+	if !strings.Contains(strings.ToLower(ee.Msg), "malformed") {
+		t.Errorf("err.Msg = %q, want mention of malformed", ee.Msg)
+	}
+}
+
 func TestScopeResolveStepInNestedLoopIsRejected(t *testing.T) {
 	// Nested loops are out of scope for slice 2.3 (Design question 3 in the
 	// plan) — LoopIters wire-format keying for nested loops needs a Phase 2.5/3
@@ -306,7 +324,7 @@ func TestScopeResolveStepInNestedLoopIsRejected(t *testing.T) {
 	one := 1
 	wf := &ir.Workflow{
 		ID: "test", Version: 1,
-		Containers: map[string]ir.Container{"lab": {Image: "oci://example@sha256:" + strRepeat("a", 64)}},
+		Containers: map[string]ir.Container{"lab": {Image: "oci://example@sha256:" + strings.Repeat("a", 64)}},
 		Graph: ir.NodeList{
 			&ir.Loop{
 				MaxIters: &one,

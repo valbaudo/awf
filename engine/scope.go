@@ -29,7 +29,7 @@ import (
 type Scope struct {
 	rs        *RunState
 	ctxPath   string
-	stepIndex map[string]string // step id → static IR path (precomputed once at NewScope)
+	stepIndex map[string]string // step id → static IR path (computed at NewScope; one IR walk per scope)
 }
 
 // NewScope wires the inputs into a Scope. ctxPath is the runtime path of the
@@ -47,6 +47,10 @@ func NewScope(rs *RunState, wf *ir.Workflow, ctxPath string) *Scope {
 // Resolve implements template.Scope. Dispatches on the first ref segment; the
 // AWF4001 size check is NOT performed here — template.resolveRefValue applies
 // it uniformly after the Scope returns.
+//
+// Returned composite values (map[string]any, []any) alias the underlying
+// RunState — callers MUST NOT mutate them (see RunState.NodeResult's
+// READ-ONLY caveat).
 func (s *Scope) Resolve(ref *template.Ref) (any, error) {
 	if len(ref.Segments) == 0 {
 		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "empty ref"}
@@ -193,6 +197,9 @@ func (s *Scope) stepRuntimePath(staticPath string) (string, error) {
 // Otherwise: K = RunState.LoopIters[loopPath] (the latest completed iter). Zero
 // iters AND not inside the loop → error (no value to return).
 func (s *Scope) iterForLoop(loopBodyPath string) (int, error) {
+	if !strings.HasSuffix(loopBodyPath, ".body") {
+		return 0, fmt.Errorf("internal: iterForLoop called with non-body path %q", loopBodyPath)
+	}
 	prefix := loopBodyPath + ".iter-"
 	if strings.HasPrefix(s.ctxPath, prefix) {
 		rest := s.ctxPath[len(prefix):]
@@ -200,9 +207,11 @@ func (s *Scope) iterForLoop(loopBodyPath string) (int, error) {
 		if end < 0 {
 			end = len(rest)
 		}
-		if n, err := strconv.Atoi(rest[:end]); err == nil {
-			return n, nil
+		n, err := strconv.Atoi(rest[:end])
+		if err != nil {
+			return 0, fmt.Errorf("malformed iter segment in ctxPath %q (after prefix %q)", s.ctxPath, prefix)
 		}
+		return n, nil
 	}
 	loopPath := strings.TrimSuffix(loopBodyPath, ".body")
 	iter, ok := s.rs.LoopIters[loopPath]
@@ -266,6 +275,10 @@ func StepPathIndex(wf *ir.Workflow) map[string]string {
 	return out
 }
 
+// walkNodes is StepPathIndex's recursive worker. Appends a (step id → static
+// path) entry for each step under `list`, recursing into If branches and Loop
+// bodies. Phase 3 kinds (Try / Parallel / Gate / Map / Skip) are silently
+// skipped — slice 2.5's interpreter errors on them at runtime in Phase 2.
 func walkNodes(list ir.NodeList, parent string, out map[string]string) {
 	for i, n := range list {
 		switch v := n.(type) {
