@@ -102,6 +102,26 @@ func OpenLog(path string, clk clock.Clock) (*FileLog, error) {
 	return lg, nil
 }
 
+// OpenLogExclusive opens (or creates) the log file at path WITH O_EXCL — i.e.
+// the open atomically fails if the file already exists. This is the race-free
+// first-run primitive: `awf run` calls it to mint a new run.id's log, and the
+// existing OpenLog (which tolerates and torn-tail-recovers an existing file)
+// stays as the resume primitive.
+//
+// On collision, the returned error wraps fs.ErrExist — callers route with
+// errors.Is(err, fs.ErrExist) for the "run id already exists, use awf resume"
+// message.
+//
+// Unlike OpenLog, there's no torn-tail-recovery branch here: a fresh file
+// can't have a torn tail. The function is intentionally minimal.
+func OpenLogExclusive(path string, clk clock.Clock) (*FileLog, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("state: open log %q exclusive: %w", path, err)
+	}
+	return &FileLog{path: path, file: f, clk: clk}, nil
+}
+
 // Append assigns Seq/Epoch/TS and writes the framed JSON record. Does NOT fsync — caller
 // invokes Sync at durability-critical events.
 func (lg *FileLog) Append(e Event) error {

@@ -2,11 +2,9 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
-	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 )
@@ -98,7 +96,7 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 	var outputs map[string]any
 	var parseErr error
 	if intent.ResolvedInputs.OutputSchema != nil {
-		outputs, parseErr = parseAndValidateAWFOutput(exec.AWFOutput, intent.ResolvedInputs.OutputSchema)
+		outputs, parseErr = ValidateAgainstSchema(exec.AWFOutput, intent.ResolvedInputs.OutputSchema)
 	}
 
 	// Capture output_files (only if the step exited 0; otherwise the files may
@@ -135,41 +133,6 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		dr.Err = parseErr
 	}
 	return dr, chunks, nil
-}
-
-func parseAndValidateAWFOutput(raw []byte, schema *ir.JSONSchema) (map[string]any, error) {
-	if len(raw) == 0 {
-		return nil, errors.New("AWF_OUTPUT is empty (step declared output_schema but wrote no JSON)")
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, fmt.Errorf("AWF_OUTPUT decode: %w", err)
-	}
-	// Compile + validate via santhosh-tekuri/jsonschema/v6 (the same lib slice
-	// 1.4 uses for ir.validateSchema). Per-dispatch compile is fine in Phase 2
-	// (no agent loop); Phase 4 Docker may want to cache compiled schemas if a
-	// long-lived step exec loops without re-fold.
-	//
-	// The direct map[string]any(*schema) cast works because the IR's schemas
-	// come from JSON-unmarshaled YAML — all nested values are native
-	// map[string]any, not the JSONSchema defined-type. If a future caller
-	// constructs a schema in Go with nested ir.JSONSchema{...} values, the
-	// compiler will fail with "invalid jsonType *ir.JSONSchema" and the fix
-	// is to round-trip via json.Marshal/Unmarshal first (matching slice 1.4's
-	// ir/validate_schema.go:74 defensive pattern). Verified during slice 2.4
-	// planning (Revision #3).
-	c := jsonschema.NewCompiler()
-	if err := c.AddResource("step://output_schema", map[string]any(*schema)); err != nil {
-		return nil, fmt.Errorf("AWF_OUTPUT schema compile: %w", err)
-	}
-	compiled, err := c.Compile("step://output_schema")
-	if err != nil {
-		return nil, fmt.Errorf("AWF_OUTPUT schema compile: %w", err)
-	}
-	if err := compiled.Validate(decoded); err != nil {
-		return nil, fmt.Errorf("AWF_OUTPUT schema validation: %w", err)
-	}
-	return decoded, nil
 }
 
 func copyIntPtr(v int) *int {

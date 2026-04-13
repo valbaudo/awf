@@ -73,6 +73,23 @@ func TestRunStateZeroValueIsUsable(t *testing.T) {
 	}
 }
 
+func TestNewRunStateAllocatesMaps(t *testing.T) {
+	t.Parallel()
+	rs := NewRunState("r1", "d1", map[string]any{"k": "v"})
+	if rs.RunID != "r1" || rs.WorkflowDigest != "d1" {
+		t.Errorf("identity fields wrong: %+v", rs)
+	}
+	if rs.Epoch != 1 {
+		t.Errorf("Epoch = %d, want 1 (first-run baseline)", rs.Epoch)
+	}
+	if rs.Input["k"] != "v" {
+		t.Errorf("Input not preserved")
+	}
+	rs.Completed["x"] = NodeResult{}
+	rs.Branches["y"] = "then"
+	rs.LoopIters["z"] = 1
+}
+
 func TestNodeResultCopyIsShallow(t *testing.T) {
 	// NodeResult is stored by value in RunState.Completed, but it embeds maps
 	// and slices (Outputs, Files, Stdout) which are reference types — copying

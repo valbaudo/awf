@@ -359,6 +359,38 @@ func TestLogInterfaceSatisfiedByFileLog(t *testing.T) {
 	var _ Log = (*FileLog)(nil)
 }
 
+func TestOpenLogExclusiveCreatesFresh(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "log")
+	lg, err := OpenLogExclusive(path, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	defer func() { _ = lg.Close() }()
+	if err := lg.Append(Event{Type: "test"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+}
+
+func TestOpenLogExclusiveRefusesExistingFile(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "log")
+	lg, err := OpenLogExclusive(path, clock.System{})
+	if err != nil {
+		t.Fatalf("first OpenLogExclusive: %v", err)
+	}
+	_ = lg.Close()
+	_, err = OpenLogExclusive(path, clock.System{})
+	if err == nil {
+		t.Fatal("second OpenLogExclusive: err = nil, want fs.ErrExist")
+	}
+	if !errors.Is(err, fs.ErrExist) {
+		t.Errorf("err = %v, want errors.Is(_, fs.ErrExist)", err)
+	}
+}
+
 // appendBytesTo opens the file for append-only writes outside the Log's API. Used to
 // simulate the torn-tail / partial-write conditions a crash would produce.
 func appendBytesTo(path string, b []byte) error {

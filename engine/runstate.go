@@ -84,3 +84,25 @@ type RunState struct {
 	Branches  map[string]string     // if-node path → "then" | "else"
 	LoopIters map[string]int        // loop-node path → max completed iteration (1-based)
 }
+
+// NewRunState constructs a fresh RunState with the three maps pre-allocated
+// and identity fields set. The Epoch is initialized to 1 — the first-run
+// baseline; slice 2.6's resume increments via the run.resumed event in the
+// fold path. Input is the optional run-input map (nil if the workflow has no
+// input schema or --input wasn't passed).
+//
+// Eliminates the "caller forgets to allocate Completed/Branches/LoopIters"
+// footgun. Fold (engine/fold.go) constructs its own RunState with capacity-
+// hinted maps; this constructor is for non-Fold construction paths (CLI
+// first-run, tests).
+func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
+	return &RunState{
+		RunID:          runID,
+		WorkflowDigest: workflowDigest,
+		Input:          input,
+		Epoch:          1,
+		Completed:      map[string]NodeResult{},
+		Branches:       map[string]string{},
+		LoopIters:      map[string]int{},
+	}
+}
