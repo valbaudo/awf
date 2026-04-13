@@ -1,0 +1,318 @@
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"time"
+
+	"github.com/valbaudo/awf/clock"
+	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/retry"
+	"github.com/valbaudo/awf/state"
+	"github.com/valbaudo/awf/template"
+)
+
+// ErrNodeNotImplementedInPhase2 is the sentinel the interpreter returns for any
+// node kind Phase 2 doesn't execute: AgentStep (Phase 5), SignalStep (Phase 3),
+// Try/Parallel/Gate/Map/Skip (Phase 3). Slice 2.5 Design question 5: this is
+// distinct from engine.ErrUnsupportedKind (which is the dispatcher's per-step
+// sentinel) — the two answer different questions, and conflating them would let
+// a future Phase 3 caller mis-route a `Try` skip through Phase-5 plumbing.
+//
+// Wrap with kind + path for diagnostic clarity:
+//
+//	fmt.Errorf("%w: %s at path %q", ErrNodeNotImplementedInPhase2, kindName, path)
+var ErrNodeNotImplementedInPhase2 = errors.New("engine: node kind not implemented in Phase 2")
+
+// Run is the top-level interpreter entry point. Walks def.Workflow.Graph
+// recursively; for each node, computes its runtime path; consults runstate to
+// skip committed nodes (the resume invariant — slice 2.6 will exercise the
+// non-empty-Completed case, but this is the same code path); otherwise
+// dispatches per-kind. Halts on the first error or non-ok outcome (Phase 2 has
+// no try/catch — propagation is "stop the run").
+//
+// Returns:
+//   - (OutcomeOK, nil)                              — every node committed ok
+//   - (OutcomeRetryableFailure | OutcomePermanentFailure, <step's err>)
+//     — a step terminated; the
+//     run.finished event records
+//     the same outcome
+//   - ("", <internal-error>)                        — interpreter / CLI bug
+//     (unknown container,
+//     ErrNodeNotImplementedInPhase2,
+//     log/blobs failure). The CLI
+//     distinguishes this from
+//     step failures via the empty
+//     Outcome (slice 2.5 DQ4).
+//
+// tap, if non-nil, receives the live-tap output: one "[step.id] <chunk>" per
+// IOChunk produced by each step. nil disables the tap entirely (per Phase 2
+// design — Phase 6 will replace this with the obs subsystem).
+//
+// dispatcher's Handles map MUST be populated for every container the workflow
+// declares; engine.Run is NOT responsible for Backend.Create / Destroy (the
+// CLI owns lifecycle, slice 2.5 DQ3). An unknown-container reference inside
+// a step is an internal error.
+func Run(
+	ctx context.Context,
+	def *ir.LoadedDefinition,
+	runstate *RunState,
+	dispatcher Dispatcher,
+	log state.Log,
+	blobs state.Blobs,
+	clk clock.Clock,
+	tap io.Writer,
+) (Outcome, error) {
+	if def == nil || def.Workflow == nil {
+		return "", fmt.Errorf("engine.Run: nil workflow")
+	}
+	if runstate == nil {
+		return "", fmt.Errorf("engine.Run: nil runstate")
+	}
+	return interpNodes(ctx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, tap)
+}
+
+// interpNodes recursively walks a NodeList in order. Each node's path is
+// computed via ir.PathFor — the single source of truth for journal keys
+// (CLAUDE.md "node addressing is one pure function" invariant; runtime
+// suffixes — iter-N for Loop body — are added inside the loop handler, not
+// here).
+func interpNodes(
+	ctx context.Context,
+	nodes ir.NodeList,
+	parent string,
+	wf *ir.Workflow,
+	runstate *RunState,
+	dispatcher Dispatcher,
+	log state.Log,
+	blobs state.Blobs,
+	clk clock.Clock,
+	tap io.Writer,
+) (Outcome, error) {
+	for i, n := range nodes {
+		oc, err := interpNode(ctx, n, i, parent, wf, runstate, dispatcher, log, blobs, clk, tap)
+		if oc != OutcomeOK || err != nil {
+			return oc, err
+		}
+	}
+	return OutcomeOK, nil
+}
+
+// interpNode handles one node. Kind-dispatch lives here so each recursive call
+// site shares the same per-kind switch.
+func interpNode(
+	ctx context.Context,
+	n ir.Node,
+	idx int,
+	parent string,
+	wf *ir.Workflow,
+	runstate *RunState,
+	dispatcher Dispatcher,
+	log state.Log,
+	blobs state.Blobs,
+	clk clock.Clock,
+	tap io.Writer,
+) (Outcome, error) {
+	switch v := n.(type) {
+	case *ir.CodeStep:
+		path := ir.PathFor(parent, "", v.ID, idx)
+		return runCodeStep(ctx, v, path, wf, runstate, dispatcher, log, blobs, clk, tap)
+	case *ir.If:
+		// Slice 2.5 Task 4 lands runIf; for the Task 3 commit, this case is the
+		// not-yet-implemented placeholder. The Task 4 step replaces this with the
+		// real handler — keeping the failure mode explicit (rather than e.g.
+		// falling through to AgentStep's branch) so a Task-3-only build can't
+		// silently accept an `if` and produce wrong behavior.
+		path := ir.PathFor(parent, "if", "", idx)
+		return "", fmt.Errorf("%w: if at path %q (Task 4 of slice 2.5 lands this)", ErrNodeNotImplementedInPhase2, path)
+	case *ir.Loop:
+		// Same placeholder shape as If — Task 5 replaces.
+		path := ir.PathFor(parent, "loop", "", idx)
+		return "", fmt.Errorf("%w: loop at path %q (Task 5 of slice 2.5 lands this)", ErrNodeNotImplementedInPhase2, path)
+	case *ir.AgentStep:
+		path := ir.PathFor(parent, "", v.ID, idx)
+		return "", fmt.Errorf("%w: agent at path %q (Phase 5)", ErrNodeNotImplementedInPhase2, path)
+	case *ir.SignalStep:
+		path := ir.PathFor(parent, "", v.ID, idx)
+		return "", fmt.Errorf("%w: signal at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+	case *ir.Try:
+		path := ir.PathFor(parent, "try", "", idx)
+		return "", fmt.Errorf("%w: try at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+	case *ir.Parallel:
+		path := ir.PathFor(parent, "parallel", "", idx)
+		return "", fmt.Errorf("%w: parallel at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+	case *ir.Gate:
+		path := ir.PathFor(parent, "gate", "", idx)
+		return "", fmt.Errorf("%w: gate at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+	case *ir.Map:
+		path := ir.PathFor(parent, "map", "", idx)
+		return "", fmt.Errorf("%w: map at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+	case *ir.Skip:
+		path := ir.PathFor(parent, "skip", "", idx)
+		return "", fmt.Errorf("%w: skip at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+	default:
+		return "", fmt.Errorf("engine: unknown node type %T at parent %q index %d (validator should have caught)", n, parent, idx)
+	}
+}
+
+// runCodeStep is the CodeStep handler — composes substitution, retry, dispatch,
+// classify, commit, AND failure-event emission. Each of those primitives is
+// slice 2.4's; this function is the connecting tissue.
+//
+// Flow:
+//
+//  1. Resume-check — if path ∈ runstate.Completed, skip silently.
+//  2. Build the template Scope rooted at this step's path; substitute cs.Run
+//     and cs.IdempotencyKey. Template errors → node.failed{permanent_failure}
+//     (slice 2.5 DQ7).
+//  3. Merge retry policy: default + cs.Retry. Unknown backoff → internal error
+//     halt (slice 2.4 DQ8).
+//  4. Build NodeIntent + ResolvedInputs.
+//  5. RunWithRetry — handles attempts + backoff + retry.attempt events.
+//  6. On OK: drain the live-tap channel, then Commit. Update Completed[path].
+//  7. On non-ok: drain the live-tap channel, then append node.failed{outcome,
+//     error}. Return (outcome, err) — propagate up.
+//  8. On internal error from RunWithRetry (unknown container, etc.): no
+//     node.failed event (the step never got to fail mechanically — this is
+//     the CLI's bug, not the step's). Return ("", err).
+func runCodeStep(
+	ctx context.Context,
+	cs *ir.CodeStep,
+	path string,
+	wf *ir.Workflow,
+	runstate *RunState,
+	dispatcher Dispatcher,
+	log state.Log,
+	blobs state.Blobs,
+	clk clock.Clock,
+	tap io.Writer,
+) (Outcome, error) {
+	if _, done := runstate.Completed[path]; done {
+		return OutcomeOK, nil
+	}
+
+	scope := NewScope(runstate, wf, path)
+	command, err := template.Substitute(cs.Run, scope)
+	if err != nil {
+		return failStep(log, path, OutcomePermanentFailure, err)
+	}
+	idemKey := ""
+	if cs.IdempotencyKey != nil {
+		idemKey, err = template.Substitute(string(*cs.IdempotencyKey), scope)
+		if err != nil {
+			return failStep(log, path, OutcomePermanentFailure, err)
+		}
+	}
+
+	policy, err := retry.Merge(retry.Default, cs.Retry)
+	if err != nil {
+		return "", fmt.Errorf("engine.Run: build retry policy at path %q: %w", path, err)
+	}
+
+	resolved := ResolvedInputs{
+		Command:               command,
+		Env:                   map[string]string{},
+		OutputFiles:           cs.OutputFiles,
+		OutputSchema:          cs.OutputSchema,
+		NonRetryableExitCodes: policy.NonRetryableExitCodes,
+	}
+	if cs.Timeout != nil {
+		resolved.Timeout = time.Duration(*cs.Timeout)
+	}
+
+	intent := NodeIntent{
+		Path:           path,
+		Node:           cs,
+		ResolvedInputs: resolved,
+		IdempotencyKey: idemKey,
+	}
+
+	dr, chunks, runErr := RunWithRetry(ctx, dispatcher, intent, policy, clk, log)
+	// Drain the live-tap channel (single consumer — fine for Phase 2's
+	// pre-closed fake channels; Phase 4's Docker streaming will require
+	// this be moved to a goroutine).
+	drainTap(chunks, cs.ID, tap)
+
+	if runErr != nil {
+		// Internal-error class: dispatcher.Run returned a non-nil error (unknown
+		// container, ErrUnsupportedKind, transport-classifier bug). NOT a step
+		// outcome — no node.failed event.
+		if dr.Outcome == "" {
+			return "", fmt.Errorf("engine.Run: dispatch at path %q: %w", path, runErr)
+		}
+		// Step outcome class: runErr is the underlying cause.
+		return failStep(log, path, dr.Outcome, runErr)
+	}
+
+	if dr.Outcome != OutcomeOK {
+		// Defensive — RunWithRetry should always return non-nil err on non-ok.
+		return failStep(log, path, dr.Outcome, errors.New("step did not commit (no underlying error reported)"))
+	}
+
+	nr, err := Commit(log, blobs, path, dr)
+	if err != nil {
+		return "", fmt.Errorf("engine.Run: commit at path %q: %w", path, err)
+	}
+	runstate.Completed[path] = nr
+	return OutcomeOK, nil
+}
+
+// failStep is the shared failure-emission helper. Appends a node.failed event
+// AND returns the (outcome, err) tuple the caller propagates. The event is
+// fsync'd via Log.Sync so a torn-tail post-halt still observes the failure
+// record — node.failed IS the terminal record for the step; losing it means
+// resume can't see what happened.
+func failStep(log state.Log, path string, outcome Outcome, cause error) (Outcome, error) {
+	errStr := ""
+	if cause != nil {
+		errStr = cause.Error()
+	}
+	data, err := json.Marshal(NodeFailedData{
+		Outcome: string(outcome),
+		Error:   errStr,
+	})
+	if err != nil {
+		return "", fmt.Errorf("engine.Run: marshal node.failed at path %q: %w", path, err)
+	}
+	if err := log.Append(state.Event{
+		Type: EventNodeFailed,
+		Path: path,
+		Data: data,
+	}); err != nil {
+		return "", fmt.Errorf("engine.Run: append node.failed at path %q: %w", path, err)
+	}
+	if err := log.Sync(); err != nil {
+		return "", fmt.Errorf("engine.Run: sync log after node.failed at path %q: %w", path, err)
+	}
+	return outcome, cause
+}
+
+// drainTap consumes the per-attempt IOChunk channel from RunWithRetry's last
+// attempt and writes each chunk to tap (prefixed with "[<stepID>] "). nil tap
+// or nil channel are both no-ops. Blocks until the channel is closed —
+// Phase 2's pre-closed fake channels make this finite.
+//
+// On tap-write error we KEEP DRAINING the channel (with tap disabled). A
+// streaming Phase 4 backend whose writer goroutine fills the channel buffer
+// would deadlock if the consumer stops reading.
+//
+// We track the "tap is still good" state in a LOCAL variable `w`, never
+// mutating the `tap` parameter.
+func drainTap(chunks <-chan container.IOChunk, stepID string, tap io.Writer) {
+	if chunks == nil {
+		return
+	}
+	w := tap
+	for c := range chunks {
+		if w == nil {
+			continue // still drain; don't write
+		}
+		if _, err := fmt.Fprintf(w, "[%s] %s", stepID, c.Data); err != nil {
+			w = nil
+		}
+	}
+}
