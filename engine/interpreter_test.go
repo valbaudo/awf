@@ -435,3 +435,193 @@ func TestRunUnknownContainerIsInternalError(t *testing.T) {
 		t.Fatal("err is nil; want unknown-container error")
 	}
 }
+
+func TestRunIfThenBranchTaken(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./step_in_then.sh", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("./step_in_else.sh", container.ExecResult{ExitCode: 0}, nil)
+	rs.Input = map[string]any{"do_it": true}
+
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.If{
+			Cond: ir.Expr("{{ input.do_it }}"),
+			Then: ir.NodeList{
+				&ir.CodeStep{ID: "in_then", Container: "lab", Run: "./step_in_then.sh"},
+			},
+			Else: ir.NodeList{
+				&ir.CodeStep{ID: "in_else", Container: "lab", Run: "./step_in_else.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run: %v / %v", oc, err)
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatalf("fake.Calls len = %d, want 1", len(fake.Calls))
+	}
+	if fake.Calls[0].Run != "./step_in_then.sh" {
+		t.Errorf("ran %q, want ./step_in_then.sh", fake.Calls[0].Run)
+	}
+	events, _ := log.Fold()
+	var bt *engine.BranchTakenData
+	var btPath string
+	for _, e := range events {
+		if e.Type == engine.EventBranchTaken {
+			var d engine.BranchTakenData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal branch.taken: %v", err)
+			}
+			bt = &d
+			btPath = e.Path
+		}
+	}
+	if bt == nil {
+		t.Fatal("no branch.taken event in log")
+	}
+	if bt.Which != "then" || btPath != "if[0]" {
+		t.Errorf("branch.taken = %+v at path %q, want {Which:then} at if[0]", bt, btPath)
+	}
+	if rs.Branches["if[0]"] != "then" {
+		t.Errorf("rs.Branches[if[0]] = %q, want %q", rs.Branches["if[0]"], "then")
+	}
+}
+
+func TestRunIfElseBranchTaken(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./step_in_else.sh", container.ExecResult{ExitCode: 0}, nil)
+	rs.Input = map[string]any{"do_it": false}
+
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.If{
+			Cond: ir.Expr("{{ input.do_it }}"),
+			Then: ir.NodeList{
+				&ir.CodeStep{ID: "in_then", Container: "lab", Run: "./step_in_then.sh"},
+			},
+			Else: ir.NodeList{
+				&ir.CodeStep{ID: "in_else", Container: "lab", Run: "./step_in_else.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	_, _ = engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if len(fake.Calls) != 1 || fake.Calls[0].Run != "./step_in_else.sh" {
+		t.Errorf("dispatched %+v, want only ./step_in_else.sh", fake.Calls)
+	}
+	if rs.Branches["if[0]"] != "else" {
+		t.Errorf("rs.Branches[if[0]] = %q, want %q", rs.Branches["if[0]"], "else")
+	}
+}
+
+func TestRunIfNoElseFalseCondIsNoOp(t *testing.T) {
+	// Spec §5.1: "A false cond with no else is a no-op." Branch.taken still
+	// fires (Which:"else") so resume knows the decision was made.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	rs.Input = map[string]any{"do_it": false}
+
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.If{
+			Cond: ir.Expr("{{ input.do_it }}"),
+			Then: ir.NodeList{
+				&ir.CodeStep{ID: "in_then", Container: "lab", Run: "./never.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run: %v / %v", oc, err)
+	}
+	if len(fake.Calls) != 0 {
+		t.Errorf("dispatched %d cmds, want 0", len(fake.Calls))
+	}
+	if rs.Branches["if[0]"] != "else" {
+		t.Errorf("rs.Branches[if[0]] = %q, want %q", rs.Branches["if[0]"], "else")
+	}
+}
+
+func TestRunIfResumeSkipsCondEvaluation(t *testing.T) {
+	// rs.Branches[if[0]]="then" simulates a resume where the branch decision
+	// was already committed. Re-evaluating cond would be wrong — cond depends
+	// on inputs/step outputs that may have changed.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./step_in_then.sh", container.ExecResult{ExitCode: 0}, nil)
+	rs.Branches["if[0]"] = "then"
+	// Input would evaluate to else if re-evaluated.
+	rs.Input = map[string]any{"do_it": false}
+
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.If{
+			Cond: ir.Expr("{{ input.do_it }}"),
+			Then: ir.NodeList{
+				&ir.CodeStep{ID: "in_then", Container: "lab", Run: "./step_in_then.sh"},
+			},
+			Else: ir.NodeList{
+				&ir.CodeStep{ID: "in_else", Container: "lab", Run: "./step_in_else.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run: %v / %v", oc, err)
+	}
+	if len(fake.Calls) != 1 || fake.Calls[0].Run != "./step_in_then.sh" {
+		t.Errorf("ran %+v, want ./step_in_then.sh (recorded branch)", fake.Calls)
+	}
+	events, _ := log.Fold()
+	var branchTakenCount int
+	for _, e := range events {
+		if e.Type == engine.EventBranchTaken {
+			branchTakenCount++
+		}
+	}
+	if branchTakenCount != 0 {
+		t.Errorf("emitted %d branch.taken events on resume, want 0 (recorded branch)", branchTakenCount)
+	}
+}
+
+func TestRunIfCondTypeMismatchIsPermanent(t *testing.T) {
+	// Spec §7: bounded evaluator, no coercion. Non-bool top-level cond is
+	// AWF4003. Per DQ7, route as permanent_failure for the if NODE.
+	t.Parallel()
+	_, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	rs.Input = map[string]any{"count": 5} // int, not bool
+
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.If{
+			Cond: ir.Expr("{{ input.count }}"),
+			Then: ir.NodeList{
+				&ir.CodeStep{ID: "in_then", Container: "lab", Run: "./never.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if oc != engine.OutcomePermanentFailure {
+		t.Errorf("Outcome = %v, want permanent_failure", oc)
+	}
+	if err == nil || !strings.Contains(err.Error(), "AWF4003") {
+		t.Errorf("err = %v, want AWF4003", err)
+	}
+	events, _ := log.Fold()
+	var found bool
+	for _, e := range events {
+		if e.Type == engine.EventNodeFailed && e.Path == "if[0]" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no node.failed event for if[0]; events: %+v", events)
+	}
+}

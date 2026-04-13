@@ -122,13 +122,8 @@ func interpNode(
 		path := ir.PathFor(parent, "", v.ID, idx)
 		return runCodeStep(ctx, v, path, wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.If:
-		// Slice 2.5 Task 4 lands runIf; for the Task 3 commit, this case is the
-		// not-yet-implemented placeholder. The Task 4 step replaces this with the
-		// real handler — keeping the failure mode explicit (rather than e.g.
-		// falling through to AgentStep's branch) so a Task-3-only build can't
-		// silently accept an `if` and produce wrong behavior.
 		path := ir.PathFor(parent, "if", "", idx)
-		return "", fmt.Errorf("%w: if at path %q (Task 4 of slice 2.5 lands this)", ErrNodeNotImplementedInPhase2, path)
+		return runIf(ctx, v, path, wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.Loop:
 		// Same placeholder shape as If — Task 5 replaces.
 		path := ir.PathFor(parent, "loop", "", idx)
@@ -264,6 +259,81 @@ func runCodeStep(
 	}
 	runstate.Completed[path] = nr
 	return OutcomeOK, nil
+}
+
+// runIf is the If handler. Spec §5.1 + design spec §F: evaluate cond, append
+// branch.taken, recurse into the chosen branch. Resume-safe: if
+// runstate.Branches[path] is already set, take the recorded branch without
+// re-evaluating (the §8 "committed steps are replayed, not recomputed"
+// invariant applies to the branch decision — re-evaluating could choose the
+// OTHER branch if cond depends on a step output that's now in Completed).
+//
+// The child branch path is `path + "." + which` — a literal join (path is
+// already "if[N]" via ir.PathFor at the interpNode dispatch). ir.ChildPath
+// isn't used here because we already have the if's path computed; ChildPath
+// is the parent→child computation for static analysis.
+func runIf(
+	ctx context.Context,
+	n *ir.If,
+	path string,
+	wf *ir.Workflow,
+	runstate *RunState,
+	dispatcher Dispatcher,
+	log state.Log,
+	blobs state.Blobs,
+	clk clock.Clock,
+	tap io.Writer,
+) (Outcome, error) {
+	which, recorded := runstate.Branches[path]
+	if !recorded {
+		scope := NewScope(runstate, wf, path)
+		inner := template.UnwrapEnvelope(string(n.Cond))
+		parsed, err := template.ParseExpr(inner)
+		if err != nil {
+			// Parse error is an author bug — permanent_failure for the if node.
+			return failStep(log, path, OutcomePermanentFailure, err)
+		}
+		cond, err := template.EvalBool(parsed, scope)
+		if err != nil {
+			// Template-error class (AWF4001 / 4002 / 4003 / 4004 / 4005) — DQ7:
+			// permanent_failure for the if NODE. The error is the author's bug.
+			return failStep(log, path, OutcomePermanentFailure, err)
+		}
+		if cond {
+			which = "then"
+		} else {
+			which = "else"
+		}
+		data, err := json.Marshal(BranchTakenData{Which: which})
+		if err != nil {
+			return "", fmt.Errorf("engine.Run: marshal branch.taken at path %q: %w", path, err)
+		}
+		if err := log.Append(state.Event{
+			Type: EventBranchTaken,
+			Path: path,
+			Data: data,
+		}); err != nil {
+			return "", fmt.Errorf("engine.Run: append branch.taken at path %q: %w", path, err)
+		}
+		// branch.taken is observational — no Log.Sync (rides the next fsync per
+		// spec §8 cost lever). A branch.taken lost to a torn tail means resume
+		// re-evaluates the cond, which is correct first-run-equivalent behavior.
+		runstate.Branches[path] = which
+	}
+
+	switch which {
+	case "then":
+		return interpNodes(ctx, n.Then, path+".then", wf, runstate, dispatcher, log, blobs, clk, tap)
+	case "else":
+		// nil/empty Else is a no-op per spec §5.1.
+		if len(n.Else) == 0 {
+			return OutcomeOK, nil
+		}
+		return interpNodes(ctx, n.Else, path+".else", wf, runstate, dispatcher, log, blobs, clk, tap)
+	default:
+		// Validator should reject; this is corruption / bug defense.
+		return "", fmt.Errorf("engine.Run: unknown branch %q at path %q", which, path)
+	}
 }
 
 // failStep is the shared failure-emission helper. Appends a node.failed event
