@@ -3,6 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -349,6 +350,72 @@ func TestRunPhase2UnsupportedKindsAllErrorWithSentinel(t *testing.T) {
 				t.Errorf("err = %v, want errors.Is(_, ErrNodeNotImplementedInPhase2)", err)
 			}
 		})
+	}
+}
+
+func TestRunCodeStepRetryableExhaustionAppendsNodeFailed(t *testing.T) {
+	// After retry exhaustion, the interpreter's runCodeStep MUST route through
+	// failStep with outcome=retryable_failure — the node.failed event records
+	// the LAST attempt's error (matches RunWithRetry's "exhausted-as-failure"
+	// contract). Distinct from the permanent_failure path (exit code in
+	// NonRetryableExitCodes), which is already covered by
+	// TestRunCodeStepFailureAppendsNodeFailed.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	// Exit 1 is a generic nonzero (retryable). With retry.Default (3 attempts),
+	// all 3 attempts fail; RunWithRetry returns the last attempt's error.
+	fake.ProgramExec("./flaky.sh", container.ExecResult{
+		ExitCode: 1,
+		Stdout:   []byte("transient failure\n"),
+	}, nil)
+
+	// Override the retry policy so attempts run instantly (no real sleeps);
+	// the fake clock advances synthetically via clock.Fake.Sleep, but we
+	// still pay the overhead of the 3-attempt loop. Use a CodeStep with an
+	// explicit no-backoff override so the test is fast.
+	noBackoff := "none"
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.CodeStep{
+			ID: "flaky", Container: "lab", Run: "./flaky.sh",
+			Retry: &ir.RetryPolicy{Attempts: 2, Backoff: noBackoff},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if oc != engine.OutcomeRetryableFailure {
+		t.Errorf("Outcome = %v, want retryable_failure", oc)
+	}
+	if err == nil {
+		t.Fatal("err = nil; want last-attempt error")
+	}
+	// No node.completed for the failed step.
+	if _, ok := rs.Completed["flaky"]; ok {
+		t.Error("RunState.Completed has 'flaky' — failed steps must NOT commit")
+	}
+	// node.failed event landed with outcome=retryable_failure.
+	events, _ := log.Fold()
+	var failedFound bool
+	var failedOutcome string
+	for _, e := range events {
+		if e.Type == engine.EventNodeFailed && e.Path == "flaky" {
+			failedFound = true
+			var d engine.NodeFailedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal node.failed: %v", err)
+			}
+			failedOutcome = d.Outcome
+		}
+	}
+	if !failedFound {
+		t.Errorf("no node.failed event for 'flaky'; events: %+v", events)
+	}
+	if failedOutcome != string(engine.OutcomeRetryableFailure) {
+		t.Errorf("node.failed outcome = %q, want %q", failedOutcome, engine.OutcomeRetryableFailure)
+	}
+	// Verify all retry attempts actually ran (2 dispatches for Attempts:2).
+	if len(fake.Calls) != 2 {
+		t.Errorf("fake.Calls len = %d, want 2 (retry exhaustion)", len(fake.Calls))
 	}
 }
 

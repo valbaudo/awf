@@ -238,9 +238,14 @@ func runCodeStep(
 	drainTap(chunks, cs.ID, tap)
 
 	if runErr != nil {
-		// Internal-error class: dispatcher.Run returned a non-nil error (unknown
-		// container, ErrUnsupportedKind, transport-classifier bug). NOT a step
-		// outcome — no node.failed event.
+		// dr.Outcome == "" means RunWithRetry never successfully dispatched (the
+		// dispatcher itself returned a non-nil error on the first attempt — unknown
+		// container, ErrUnsupportedKind, transport-classifier bug). No step outcome
+		// was produced; treat as an internal error, no node.failed event.
+		// Note: RunWithRetry can also return non-nil errors with a non-empty Outcome
+		// (ctx cancellation mid-backoff, retry.attempt log failure). Those fall
+		// through to failStep below — the last attempt's outcome is the right
+		// classification, and node.failed records the underlying cause.
 		if dr.Outcome == "" {
 			return "", fmt.Errorf("engine.Run: dispatch at path %q: %w", path, runErr)
 		}
