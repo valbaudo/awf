@@ -545,6 +545,26 @@ func TestRunIfNoElseFalseCondIsNoOp(t *testing.T) {
 	if rs.Branches["if[0]"] != "else" {
 		t.Errorf("rs.Branches[if[0]] = %q, want %q", rs.Branches["if[0]"], "else")
 	}
+	// Verify the branch.taken event landed in the log (not just in the in-mem
+	// map). A divergence between rs.Branches and the log would mean resume
+	// re-evaluates the cond — the test was previously weaker than the spec.
+	events, _ := log.Fold()
+	var bt *engine.BranchTakenData
+	for _, e := range events {
+		if e.Type == engine.EventBranchTaken && e.Path == "if[0]" {
+			var d engine.BranchTakenData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal branch.taken: %v", err)
+			}
+			bt = &d
+		}
+	}
+	if bt == nil {
+		t.Fatal("no branch.taken event in log")
+	}
+	if bt.Which != "else" {
+		t.Errorf("branch.taken Which = %q, want %q", bt.Which, "else")
+	}
 }
 
 func TestRunIfResumeSkipsCondEvaluation(t *testing.T) {

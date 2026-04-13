@@ -176,7 +176,7 @@ func checkExprRefs(src, path string, c *collector, producers map[string]producer
 	if src == "" {
 		return
 	}
-	inner := unwrapEnvelope(src)
+	inner := template.UnwrapEnvelope(src)
 	e, err := template.ParseExpr(inner)
 	if err != nil {
 		c.errf(path, "AWF3001", fmt.Sprintf("invalid expression: %s", syntaxMessage(err)))
@@ -185,17 +185,6 @@ func checkExprRefs(src, path string, c *collector, producers map[string]producer
 	for _, ref := range template.References(e) {
 		checkRef(ref, path, c, producers, referenced)
 	}
-}
-
-// unwrapEnvelope strips a leading `{{` and trailing `}}` (with optional surrounding
-// whitespace) if both are present. ir.Expr values may be written either bare or wrapped per
-// AWF convention; the parser consumes the bare form, so the validator strips the envelope.
-func unwrapEnvelope(src string) string {
-	s := strings.TrimSpace(src)
-	if strings.HasPrefix(s, "{{") && strings.HasSuffix(s, "}}") {
-		return strings.TrimSpace(s[2 : len(s)-2])
-	}
-	return src
 }
 
 // checkRef classifies a ref by its first segment and applies the appropriate cross-check.
