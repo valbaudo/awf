@@ -3,10 +3,11 @@ package engine
 // Phase 2.1 event-type names — the events the fold dispatches on. These are the
 // wire-format string values stored in state.Event.Type; renaming any of them would
 // invalidate every existing log. The vocabulary expands as later slices add writers:
-// 2.4 added "retry.attempt"; 2.5 introduces "node.started" / "node.failed" /
-// "run.finished"; future phases add "signal.received" / "map.item" / "agent.event" /
-// "io.chunk" / …. The fold's default switch arm ignores anything unknown — obs
-// (Phase 6) projects them via its own dispatch.
+// 2.4 added "retry.attempt"; 2.5 adds "node.failed" + "run.finished" (terminal events
+// the interpreter / CLI emit). node.started is intentionally deferred — no Phase 2
+// consumer (Phase 6's obs is the natural consumer; the Fold's default-switch-arm
+// means a later writer can land additively without breaking old logs). Future phases
+// add "signal.received" / "map.item" / "agent.event" / "io.chunk" / ….
 const (
 	EventRunStarted    = "run.started"
 	EventRunResumed    = "run.resumed"
@@ -14,6 +15,8 @@ const (
 	EventBranchTaken   = "branch.taken"
 	EventLoopIter      = "loop.iter"
 	EventRetryAttempt  = "retry.attempt"
+	EventNodeFailed    = "node.failed"
+	EventRunFinished   = "run.finished"
 )
 
 // RunStartedData is the payload of the first event in a run (and the only event the
@@ -92,4 +95,30 @@ type RetryAttemptData struct {
 	N       int    `json:"n"`
 	Outcome string `json:"outcome"`
 	Error   string `json:"error,omitempty"`
+}
+
+// NodeFailedData is the payload of a node.failed event — emitted by the
+// interpreter when a step terminates without committing. Outcome is always
+// "retryable_failure" (exhausted retries) or "permanent_failure" (declared
+// non_retryable_exit_codes hit, or the interpreter classifying a template-eval
+// error per slice 2.5 Design question 7). Error is the free-text rendering of
+// the underlying cause; on retryable exhaustion it's the LAST attempt's error
+// (the same string RunWithRetry returns to the interpreter).
+//
+// The fold ignores node.failed events — they're observational only. Phase 6's
+// obs will project them as failed spans; slice 2.6's resume will refuse to
+// resume a run whose tail event is node.failed (the run is terminal).
+type NodeFailedData struct {
+	Outcome string `json:"outcome"`
+	Error   string `json:"error,omitempty"`
+}
+
+// RunFinishedData is the payload of the run.finished event — the terminal
+// marker the CLI appends after engine.Run returns. Outcome is the run-level
+// rollup: "ok" if every step committed; otherwise the failing step's outcome.
+// The fold ignores run.finished (it's observational); slice 2.6's resume
+// refuses to resume a run with a run.finished event in its log (the run is
+// terminal and shouldn't be re-entered).
+type RunFinishedData struct {
+	Outcome string `json:"outcome"`
 }

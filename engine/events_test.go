@@ -176,3 +176,77 @@ func TestRetryAttemptDataRoundTrip(t *testing.T) {
 		t.Errorf("marshal w/o Error = %s, must NOT contain %q (omitempty)", b, "error")
 	}
 }
+
+func TestNodeFailedDataRoundTrip(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   NodeFailedData
+	}{
+		{"retryable_with_error", NodeFailedData{Outcome: string(OutcomeRetryableFailure), Error: "exit 1 after 3 attempts: 'connection refused'"}},
+		{"permanent_with_error", NodeFailedData{Outcome: string(OutcomePermanentFailure), Error: "exit code 78 (declared non-retryable)"}},
+		{"empty_error_is_omitted", NodeFailedData{Outcome: string(OutcomePermanentFailure)}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b, err := json.Marshal(c.in)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			// Verify omitempty on Error.
+			if c.in.Error == "" && strings.Contains(string(b), `"error"`) {
+				t.Errorf("empty Error should be omitted, got %s", b)
+			}
+			var got NodeFailedData
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if got != c.in {
+				t.Errorf("round-trip mismatch: got %+v, want %+v", got, c.in)
+			}
+		})
+	}
+}
+
+func TestRunFinishedDataRoundTrip(t *testing.T) {
+	t.Parallel()
+	cases := []RunFinishedData{
+		{Outcome: string(OutcomeOK)},
+		{Outcome: string(OutcomeRetryableFailure)},
+		{Outcome: string(OutcomePermanentFailure)},
+	}
+	for _, in := range cases {
+		t.Run(in.Outcome, func(t *testing.T) {
+			b, err := json.Marshal(in)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			var got RunFinishedData
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if got != in {
+				t.Errorf("round-trip mismatch: got %+v, want %+v", got, in)
+			}
+		})
+	}
+}
+
+func TestEventTypeConstantsAreStable(t *testing.T) {
+	// Locks the wire-format strings. Renaming any of these would invalidate every
+	// existing log; CI catches the rename via this test before it ships.
+	cases := []struct {
+		name      string
+		got, want string
+	}{
+		{"NodeFailed", EventNodeFailed, "node.failed"},
+		{"RunFinished", EventRunFinished, "run.finished"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.got != c.want {
+				t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+			}
+		})
+	}
+}
