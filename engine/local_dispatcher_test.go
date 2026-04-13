@@ -230,7 +230,7 @@ func TestLocalDispatcherSchemaInvalidAWFOutputIsRetryable(t *testing.T) {
 }
 
 func TestLocalDispatcherTransportErrorIsRetryable(t *testing.T) {
-	d, fake, _ := newDispatcher(t)
+	d, _, _ := newDispatcher(t)
 	intent := engine.NodeIntent{
 		Path: "missing",
 		Node: &ir.CodeStep{ID: "missing", Container: "lab"},
@@ -248,7 +248,6 @@ func TestLocalDispatcherTransportErrorIsRetryable(t *testing.T) {
 	if dr.Err == nil {
 		t.Error("DispatchResult.Err is nil; want transport error")
 	}
-	_ = fake
 }
 
 func TestLocalDispatcherCapturesOutputFiles(t *testing.T) {
