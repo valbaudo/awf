@@ -15,6 +15,7 @@ func TestEventTypeConstants(t *testing.T) {
 		EventNodeCompleted: "node.completed",
 		EventBranchTaken:   "branch.taken",
 		EventLoopIter:      "loop.iter",
+		EventRetryAttempt:  "retry.attempt",
 	}
 	for got, want := range cases {
 		if got != want {
@@ -130,5 +131,48 @@ func TestLoopIterDataRoundTrip(t *testing.T) {
 	}
 	if out.N != 3 {
 		t.Errorf("LoopIterData.N = %d, want 3", out.N)
+	}
+}
+
+func TestRetryAttemptDataRoundTrip(t *testing.T) {
+	in := RetryAttemptData{
+		N:       2,
+		Outcome: string(OutcomeRetryableFailure),
+		Error:   "transient transport failure",
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(b)
+	for _, want := range []string{
+		`"n":2`,
+		`"outcome":"retryable_failure"`,
+		`"error":"transient transport failure"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("marshal = %s, want substring %q", got, want)
+		}
+	}
+
+	var out RetryAttemptData
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.N != in.N || out.Outcome != in.Outcome || out.Error != in.Error {
+		t.Errorf("round-trip mismatch: in=%+v out=%+v", in, out)
+	}
+
+	// Error is omitempty — an attempt that classified as retryable but carried
+	// no error message (e.g. a permanent exit code with no transport error)
+	// must marshal without the "error" key. Pin the wire shape so a future
+	// writer can't drift to `"error":""` or `"error":null`.
+	empty := RetryAttemptData{N: 1, Outcome: "retryable_failure"}
+	b, err = json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal without Error: %v", err)
+	}
+	if strings.Contains(string(b), "error") {
+		t.Errorf("marshal w/o Error = %s, must NOT contain %q (omitempty)", b, "error")
 	}
 }
