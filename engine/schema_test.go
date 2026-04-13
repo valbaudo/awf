@@ -50,3 +50,12 @@ func TestValidateAgainstSchemaRejectsBadJSON(t *testing.T) {
 		t.Fatal("err = nil, want decode error")
 	}
 }
+
+func TestValidateAgainstSchemaRejectsEmptyInput(t *testing.T) {
+	t.Parallel()
+	schema := &ir.JSONSchema{"type": "object"}
+	_, err := engine.ValidateAgainstSchema([]byte{}, schema)
+	if err == nil {
+		t.Fatal("err = nil, want error for empty input")
+	}
+}

@@ -90,6 +90,18 @@ func TestNewRunStateAllocatesMaps(t *testing.T) {
 	rs.LoopIters["z"] = 1
 }
 
+func TestNewRunStateNilInputIsValid(t *testing.T) {
+	t.Parallel()
+	rs := NewRunState("r1", "d1", nil)
+	if rs.Input != nil {
+		t.Errorf("Input = %v, want nil", rs.Input)
+	}
+	// Maps still allocated even with nil input — assigning must not panic.
+	rs.Completed["x"] = NodeResult{}
+	rs.Branches["y"] = "then"
+	rs.LoopIters["z"] = 1
+}
+
 func TestNodeResultCopyIsShallow(t *testing.T) {
 	// NodeResult is stored by value in RunState.Completed, but it embeds maps
 	// and slices (Outputs, Files, Stdout) which are reference types — copying
