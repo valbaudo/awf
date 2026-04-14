@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/valbaudo/awf/clock"
+	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/loader"
@@ -134,16 +136,87 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 7: signal handling — even the happy path stub takes a ctx so
-	// Task 3's wiring slot is in place. Ctrl-C halts the (placeholder) flow
-	// cleanly.
-	_, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Step 7: signal handling — same model as cli/run.go.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Task 3 of slice 2.6 lands the happy-path: recreate containers, append
-	// run.resumed{epoch}, engine.Run, append run.finished. For now, emit a
-	// non-zero placeholder.
-	fprintf(stderr, "awf resume: refusal checks passed (Task 3 of slice 2.6 lands the interpreter call)\n")
-	_ = rs
-	return ExitUsage
+	// Step 8: Create container handles. SAME pattern as cli/run.go — handles
+	// are CLI-owned (slice 2.5 Design question 3); resume rebuilds them from
+	// the workflow's containers map. Phase 2 fake: factory() per Create.
+	// Phase 4 Docker will honor the image / compose recipe (spec §8
+	// "containers are reconstructed from their image/compose recipe on every
+	// (re)creation, including resume").
+	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
+	defer func() {
+		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
+		defer cancel()
+		for _, h := range handles {
+			_ = r.Backend.Destroy(teardownCtx, h)
+		}
+	}()
+	for name := range ld.Workflow.Containers {
+		h, err := r.Backend.Create(ctx, container.ContainerSpec{Name: name})
+		if err != nil {
+			fprintf(stderr, "awf resume: create container %q: %v\n", name, err)
+			return ExitUsage
+		}
+		handles[name] = h
+	}
+
+	// Step 9: append run.resumed{epoch: rs.Epoch+1}. Slice 2.6 Design
+	// question 6: the new epoch lives in the EVENT PAYLOAD (the resume
+	// counter), distinct from FileLog's per-event Epoch field (which got
+	// bumped by OpenLog already).
+	newEpoch := rs.Epoch + 1
+	resumedData, err := json.Marshal(engine.RunResumedData{Epoch: newEpoch})
+	if err != nil {
+		fprintf(stderr, "awf resume: marshal run.resumed: %v\n", err)
+		return ExitUsage
+	}
+	if err := log.Append(state.Event{Type: engine.EventRunResumed, Data: resumedData}); err != nil {
+		fprintf(stderr, "awf resume: append run.resumed: %v\n", err)
+		return ExitUsage
+	}
+	if err := log.Sync(); err != nil {
+		fprintf(stderr, "awf resume: sync log after run.resumed: %v\n", err)
+		return ExitUsage
+	}
+	rs.Epoch = newEpoch
+
+	// Step 10: re-enter engine.Run with the folded RunState. The interpreter's
+	// resume-checks (slice 2.5: runstate.Completed / Branches / LoopIters)
+	// skip already-committed nodes — committed steps are replayed, not
+	// recomputed (CLAUDE.md invariant).
+	dispatcher := &engine.LocalDispatcher{Backend: r.Backend, Handles: handles}
+	outcome, runErr := engine.Run(ctx, ld, &rs, dispatcher, log, blobs, clock.System{}, stdout)
+
+	// Step 11: append run.finished. Same shape as cli/run.go Step 11.
+	if outcome != "" {
+		finishedData, mErr := json.Marshal(engine.RunFinishedData{Outcome: string(outcome)})
+		if mErr != nil {
+			fprintf(stderr, "awf resume: marshal run.finished: %v\n", mErr)
+			return ExitUsage
+		}
+		if err := log.Append(state.Event{Type: engine.EventRunFinished, Data: finishedData}); err != nil {
+			fprintf(stderr, "awf resume: append run.finished: %v\n", err)
+			return ExitUsage
+		}
+		if err := log.Sync(); err != nil {
+			fprintf(stderr, "awf resume: sync log after run.finished: %v\n", err)
+			return ExitUsage
+		}
+	}
+
+	// Step 12: outcome → exit code (same table as cli/run.go Step 12).
+	switch outcome {
+	case engine.OutcomeOK:
+		fprintf(stdout, "run %s: ok (resumed)\n", runID)
+		return ExitOK
+	case engine.OutcomeRetryableFailure, engine.OutcomePermanentFailure:
+		fprintf(stderr, "run %s: %s: %v\n", runID, outcome, runErr)
+		return ExitRunFailed
+	default:
+		fprintf(stderr, "run %s: internal error: %v\n", runID, runErr)
+		return ExitUsage
+	}
 }

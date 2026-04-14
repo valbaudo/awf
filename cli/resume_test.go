@@ -12,6 +12,8 @@ import (
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/loader"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -144,5 +146,180 @@ func TestCLIResumeRefusesNodeFailedInLog(t *testing.T) {
 	}
 	if strings.Contains(stderrStr, "already finished") {
 		t.Errorf("run.finished refusal fired instead of node.failed (precedence inversion): %q", stderrStr)
+	}
+}
+
+func TestCLIResumeHappyPathSkipsCommittedSteps(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runID := "test-resume-happy"
+
+	// Hand-craft an in-flight log: run.started + node.completed(touch_marker).
+	// The CLI's slice 2.5 cli/run.go always writes run.finished on engine.Run
+	// return — so we cannot produce an "in-flight" log via the CLI alone in a
+	// unit test (subprocess fork-and-kill is YAGNI per spec §H). The
+	// hand-crafted log models a real SIGKILL where defers don't run.
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
+	if err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	ld, err := loader.Load("testdata/phase2/seq.yaml")
+	if err != nil {
+		t.Fatalf("Load fixture: %v", err)
+	}
+	if diags := ir.Validate(ld); ir.HasErrors(diags) {
+		t.Fatalf("fixture invalid: %v", diags)
+	}
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	if err != nil {
+		t.Fatalf("ComputeDigest: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	log, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	runStartedData, _ := json.Marshal(engine.RunStartedData{
+		RunID: runID, WorkflowDigest: digest,
+	})
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
+		t.Fatalf("Append run.started: %v", err)
+	}
+	stdoutRef, err := blobs.Put([]byte("created marker\n"))
+	if err != nil {
+		t.Fatalf("Put stdout: %v", err)
+	}
+	exit0 := 0
+	completedData, _ := json.Marshal(engine.NodeCompletedData{
+		Outcome: string(engine.OutcomeOK), ExitCode: &exit0, StdoutRef: stdoutRef,
+	})
+	if err := log.Append(state.Event{
+		Type: engine.EventNodeCompleted, Path: "touch_marker", Data: completedData,
+	}); err != nil {
+		t.Fatalf("Append node.completed: %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Resume against the same fixture; program ONLY steps 2 and 3.
+	fake := container.NewFake()
+	fake.ProgramExec("echo step2", container.ExecResult{
+		ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`),
+	}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml",
+	}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	// touch_marker MUST NOT have been dispatched.
+	if len(fake.Calls) != 2 {
+		t.Fatalf("fake.Calls len = %d, want 2 (touch_marker must NOT re-execute)", len(fake.Calls))
+	}
+	if fake.Calls[0].Run != "echo step2" {
+		t.Errorf("fake.Calls[0].Run = %q, want %q", fake.Calls[0].Run, "echo step2")
+	}
+	// Log now contains run.resumed{epoch:2} + 2 new node.completed +
+	// run.finished{ok}.
+	logReopen, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog post-resume: %v", err)
+	}
+	defer func() { _ = logReopen.Close() }()
+	events, _ := logReopen.Fold()
+	var resumed, completed, finished int
+	var resumedEpoch uint32
+	var finishedOutcome string
+	for _, e := range events {
+		switch e.Type {
+		case engine.EventRunResumed:
+			resumed++
+			var d engine.RunResumedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal run.resumed: %v", err)
+			}
+			resumedEpoch = d.Epoch
+		case engine.EventNodeCompleted:
+			completed++
+		case engine.EventRunFinished:
+			finished++
+			var d engine.RunFinishedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal run.finished: %v", err)
+			}
+			finishedOutcome = d.Outcome
+		}
+	}
+	if resumed != 1 || resumedEpoch != 2 {
+		t.Errorf("run.resumed: count=%d epoch=%d, want 1/2", resumed, resumedEpoch)
+	}
+	if completed != 3 {
+		t.Errorf("node.completed total = %d, want 3 (1 pre-resume + 2 post-resume)", completed)
+	}
+	if finished != 1 || finishedOutcome != "ok" {
+		t.Errorf("run.finished = %d events outcome=%q, want 1/ok", finished, finishedOutcome)
+	}
+}
+
+func TestCLIResumeDigestMismatchHardError(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runID := "test-resume-digest-mismatch"
+
+	ld, _ := loader.Load("testdata/phase2/seq.yaml")
+	digest, _ := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if _, err := state.OpenBlobs(filepath.Join(stateDir, "blobs")); err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	log, _ := state.OpenLogExclusive(logPath, clock.System{})
+	runStartedData, _ := json.Marshal(engine.RunStartedData{RunID: runID, WorkflowDigest: digest})
+	_ = log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData})
+	_ = log.Sync()
+	_ = log.Close()
+
+	src, _ := os.ReadFile("testdata/phase2/seq.yaml")
+	mutated := strings.Replace(string(src),
+		"run: \"touch /tmp/awf-seq-marker\"",
+		"run: \"touch /tmp/awf-seq-marker-MUTATED\"", 1)
+	if mutated == string(src) {
+		t.Fatal("mutation no-op")
+	}
+	mutatedPath := filepath.Join(t.TempDir(), "seq-mutated.yaml")
+	if err := os.WriteFile(mutatedPath, []byte(mutated), 0o644); err != nil {
+		t.Fatalf("WriteFile mutated: %v", err)
+	}
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, runID, mutatedPath,
+	}, &stdout, &stderr)
+	if rc == cli.ExitOK {
+		t.Errorf("rc = %d, want non-zero (digest mismatch)", rc)
+	}
+	if !strings.Contains(stderr.String(), "digest mismatch") {
+		t.Errorf("stderr missing 'digest mismatch': %q", stderr.String())
+	}
+	logReopen, _ := state.OpenLog(logPath, clock.System{})
+	defer func() { _ = logReopen.Close() }()
+	events, _ := logReopen.Fold()
+	for _, e := range events {
+		if e.Type == engine.EventRunResumed {
+			t.Errorf("digest-mismatch refusal must NOT append run.resumed; events: %+v", events)
+		}
 	}
 }
