@@ -692,9 +692,10 @@ func TestRunLoopWithMaxItersOnly(t *testing.T) {
 	}
 }
 
-func TestRunLoopWithUntilOnly(t *testing.T) {
-	// Body produces a typed output `done: true`; until reads it → true on
-	// iter 1 → loop exits after 1 iter.
+func TestRunLoopUntilExitsBeforeMaxIters(t *testing.T) {
+	// Body returns a typed output `done: true`; until reads it → true on
+	// iter 1 → loop exits after iter 1, well before MaxIters=5. Verifies
+	// the until-true path takes precedence over MaxIters.
 	t.Parallel()
 	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
 	fake.ProgramExec("./body.sh", container.ExecResult{
@@ -730,6 +731,76 @@ func TestRunLoopWithUntilOnly(t *testing.T) {
 	}
 	if len(fake.Calls) != 1 {
 		t.Errorf("body dispatched %d times, want 1", len(fake.Calls))
+	}
+}
+
+func TestRunLoopUntilEvalErrorIsPermanent(t *testing.T) {
+	// Mirror of TestRunIfCondTypeMismatchIsPermanent for the loop's until.
+	// Body returns a non-bool typed output (`count: 5`); until's top-level
+	// eval result is an integer, not a bool → AWF4003.
+	//
+	// Subtle invariant exercised here: the until eval happens AFTER the body
+	// completes, so the loop.iter event for iter 1 WAS emitted before the
+	// until error fires. node.failed is appended at the loop's path (not
+	// the body's), per runLoop's failStep call.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./body.sh", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"count":5}`),
+	}, nil)
+	max := 3
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.Loop{
+			Until:    refExpr("{{ step.body_step.count }}"), // int, not bool
+			MaxIters: &max,
+			Body: ir.NodeList{
+				&ir.CodeStep{
+					ID: "body_step", Container: "lab", Run: "./body.sh",
+					OutputSchema: &ir.JSONSchema{
+						"type":                 "object",
+						"additionalProperties": false,
+						"required":             []any{"count"},
+						"properties":           map[string]any{"count": map[string]any{"type": "integer"}},
+					},
+				},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if oc != engine.OutcomePermanentFailure {
+		t.Errorf("Outcome = %v, want permanent_failure", oc)
+	}
+	if err == nil || !strings.Contains(err.Error(), "AWF4003") {
+		t.Errorf("err = %v, want AWF4003", err)
+	}
+	// The body's iter 1 DID complete — loop.iter was emitted before the
+	// until error fired.
+	events, _ := log.Fold()
+	var loopIterCount int
+	var nodeFailedPath string
+	for _, e := range events {
+		switch e.Type {
+		case engine.EventLoopIter:
+			if e.Path == "loop[0]" {
+				loopIterCount++
+			}
+		case engine.EventNodeFailed:
+			nodeFailedPath = e.Path
+		}
+	}
+	if loopIterCount != 1 {
+		t.Errorf("loop.iter events = %d, want 1 (body completed before until error)", loopIterCount)
+	}
+	if nodeFailedPath != "loop[0]" {
+		t.Errorf("node.failed at path %q, want %q (loop's path, not body's)", nodeFailedPath, "loop[0]")
+	}
+	// rs.LoopIters[loop[0]] = 1 — iter 1 DID complete, but the loop terminated
+	// in failure after that iter's until evaluation.
+	if rs.LoopIters["loop[0]"] != 1 {
+		t.Errorf("rs.LoopIters[loop[0]] = %d, want 1 (iter 1 committed before until error)", rs.LoopIters["loop[0]"])
 	}
 }
 
