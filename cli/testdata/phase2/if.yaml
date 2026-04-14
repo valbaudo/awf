@@ -1,0 +1,28 @@
+workflow: phase2-if
+version: 1
+
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+graph:
+  - id: triage
+    container: lab
+    run: "echo triage"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [web_exploitable]
+      properties:
+        web_exploitable: { type: boolean }
+
+  - if:
+      cond: "{{ step.triage.web_exploitable }}"
+      then:
+        - id: exploit
+          container: lab
+          run: "echo exploitable"
+      else:
+        - id: skip_explanation
+          container: lab
+          run: "echo not_exploitable"

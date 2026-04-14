@@ -1,0 +1,25 @@
+workflow: phase2-seq
+version: 1
+
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+graph:
+  - id: touch_marker
+    container: lab
+    run: "touch /tmp/awf-seq-marker"
+
+  - id: echo_step
+    container: lab
+    run: "echo step2"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: { type: string }
+
+  - id: cat_marker
+    container: lab
+    run: "cat /tmp/awf-seq-marker"

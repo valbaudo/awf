@@ -1,0 +1,20 @@
+workflow: phase2-loop
+version: 1
+
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+graph:
+  - loop:
+      max_iters: 3
+      body:
+        - id: iter_step
+          container: lab
+          run: "echo iter"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [counter]
+            properties:
+              counter: { type: integer }
