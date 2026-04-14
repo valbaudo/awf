@@ -72,6 +72,8 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return cliValidate(args[1:], stdout, stderr)
 	case "run":
 		return r.cliRun(args[1:], stdout, stderr)
+	case "resume":
+		return r.cliResume(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return ExitOK
@@ -86,12 +88,14 @@ func printUsage(w io.Writer) {
 	fprintln(w, "usage: awf <subcommand> [arguments]")
 	fprintln(w, "")
 	fprintln(w, "subcommands:")
-	fprintln(w, "  validate <path>     parse, validate, and print the workflow's digest")
-	fprintln(w, "  run <path> [flags]  execute a workflow against the configured backend")
-	fprintln(w, "                        --input <json>     run-input JSON (validated vs workflow.input)")
-	fprintln(w, "                        --run-id <id>      override the minted run id")
-	fprintln(w, "                        --state-dir <dir>  state directory (default: ./.awf)")
-	fprintln(w, "  help                print this usage")
+	fprintln(w, "  validate <path>           parse, validate, and print the workflow's digest")
+	fprintln(w, "  run <path> [flags]        execute a workflow against the configured backend")
+	fprintln(w, "                              --input <json>     run-input JSON (validated vs workflow.input)")
+	fprintln(w, "                              --run-id <id>      override the minted run id")
+	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")
+	fprintln(w, "  resume <run-id> <path>    re-enter an interrupted run against the same workflow file")
+	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")
+	fprintln(w, "  help                      print this usage")
 }
 
 // fprintf / fprintln are fmt.Fprintf / fmt.Fprintln with the (n int, err error)
