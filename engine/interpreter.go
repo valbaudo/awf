@@ -119,38 +119,36 @@ func interpNode(
 ) (Outcome, error) {
 	switch v := n.(type) {
 	case *ir.CodeStep:
-		path := ir.PathFor(parent, "", v.ID, idx)
-		return runCodeStep(ctx, v, path, wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runCodeStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.If:
-		path := ir.PathFor(parent, "if", "", idx)
-		return runIf(ctx, v, path, wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runIf(ctx, v, ir.PathFor(parent, "if", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.Loop:
-		path := ir.PathFor(parent, "loop", "", idx)
-		return runLoop(ctx, v, path, wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runLoop(ctx, v, ir.PathFor(parent, "loop", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.AgentStep:
-		path := ir.PathFor(parent, "", v.ID, idx)
-		return "", fmt.Errorf("%w: agent at path %q (Phase 5)", ErrNodeNotImplementedInPhase2, path)
+		return notImpl("agent", ir.PathFor(parent, "", v.ID, idx), "Phase 5")
 	case *ir.SignalStep:
-		path := ir.PathFor(parent, "", v.ID, idx)
-		return "", fmt.Errorf("%w: signal at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+		return notImpl("signal", ir.PathFor(parent, "", v.ID, idx), "Phase 3")
 	case *ir.Try:
-		path := ir.PathFor(parent, "try", "", idx)
-		return "", fmt.Errorf("%w: try at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+		return notImpl("try", ir.PathFor(parent, "try", "", idx), "Phase 3")
 	case *ir.Parallel:
-		path := ir.PathFor(parent, "parallel", "", idx)
-		return "", fmt.Errorf("%w: parallel at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+		return notImpl("parallel", ir.PathFor(parent, "parallel", "", idx), "Phase 3")
 	case *ir.Gate:
-		path := ir.PathFor(parent, "gate", "", idx)
-		return "", fmt.Errorf("%w: gate at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+		return notImpl("gate", ir.PathFor(parent, "gate", "", idx), "Phase 3")
 	case *ir.Map:
-		path := ir.PathFor(parent, "map", "", idx)
-		return "", fmt.Errorf("%w: map at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+		return notImpl("map", ir.PathFor(parent, "map", "", idx), "Phase 3")
 	case *ir.Skip:
-		path := ir.PathFor(parent, "skip", "", idx)
-		return "", fmt.Errorf("%w: skip at path %q (Phase 3)", ErrNodeNotImplementedInPhase2, path)
+		return notImpl("skip", ir.PathFor(parent, "skip", "", idx), "Phase 3")
 	default:
 		return "", fmt.Errorf("engine: unknown node type %T at parent %q index %d (validator should have caught)", n, parent, idx)
 	}
+}
+
+// notImpl builds the standard ErrNodeNotImplementedInPhase2 wrap for a node
+// kind whose Phase-2 handler isn't implemented. Centralizes the error format
+// so the 7 deferred cases in interpNode share one shape — adding/removing a
+// kind in Phase 3+ is a one-line edit at the call site.
+func notImpl(kind, path, phase string) (Outcome, error) {
+	return "", fmt.Errorf("%w: %s at path %q (%s)", ErrNodeNotImplementedInPhase2, kind, path, phase)
 }
 
 // runCodeStep is the CodeStep handler — composes substitution, retry, dispatch,
@@ -286,16 +284,10 @@ func runIf(
 	which, recorded := runstate.Branches[path]
 	if !recorded {
 		scope := NewScope(runstate, wf, path)
-		inner := template.UnwrapEnvelope(string(n.Cond))
-		parsed, err := template.ParseExpr(inner)
+		// Template-error class (parse: AWF4005; eval: AWF4001/4002/4003/4004) —
+		// DQ7: permanent_failure for the if NODE. The error is the author's bug.
+		cond, err := template.EvalBoolString(string(n.Cond), scope)
 		if err != nil {
-			// Parse error is an author bug — permanent_failure for the if node.
-			return failStep(log, path, OutcomePermanentFailure, err)
-		}
-		cond, err := template.EvalBool(parsed, scope)
-		if err != nil {
-			// Template-error class (AWF4001 / 4002 / 4003 / 4004 / 4005) — DQ7:
-			// permanent_failure for the if NODE. The error is the author's bug.
 			return failStep(log, path, OutcomePermanentFailure, err)
 		}
 		if cond {
@@ -388,15 +380,12 @@ func runLoop(
 		// loop.iter is observational — no Log.Sync (rides next fsync).
 		runstate.LoopIters[path] = k
 
-		// 3. Evaluate until (if set). True → exit.
+		// 3. Evaluate until (if set). True → exit. Scope rooted at bodyParent so
+		//    step.<id>.<field> refs resolve to THIS iter's outputs (spec §5.2
+		//    "most recent iteration"). Template errors → permanent_failure (DQ7).
 		if n.Until != nil {
 			scope := NewScope(runstate, wf, bodyParent)
-			inner := template.UnwrapEnvelope(string(*n.Until))
-			parsed, evalErr := template.ParseExpr(inner)
-			if evalErr != nil {
-				return failStep(log, path, OutcomePermanentFailure, evalErr)
-			}
-			done, evalErr := template.EvalBool(parsed, scope)
+			done, evalErr := template.EvalBoolString(string(*n.Until), scope)
 			if evalErr != nil {
 				return failStep(log, path, OutcomePermanentFailure, evalErr)
 			}

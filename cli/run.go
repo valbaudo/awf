@@ -41,13 +41,13 @@ const teardownGrace = 30 * time.Second
 // for the operation ordering rationale (OpenLogExclusive runs LAST among
 // could-fail setup steps to minimize the orphan-log window).
 func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("run", flag.ContinueOnError)
-	fs0.SetOutput(io.Discard)
-	fs0.Usage = func() {}
-	inputJSON := fs0.String("input", "", "run-input JSON")
-	runID := fs0.String("run-id", "", "override the run id")
-	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
-	if err := fs0.Parse(args); err != nil {
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Usage = func() {}
+	inputJSON := flags.String("input", "", "run-input JSON")
+	runID := flags.String("run-id", "", "override the run id")
+	stateDir := flags.String("state-dir", ".awf", "base directory for runs/ and blobs/")
+	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRunUsage(stdout)
 			return ExitOK
@@ -56,11 +56,11 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		printRunUsage(stderr)
 		return ExitUsage
 	}
-	if fs0.NArg() != 1 {
+	if flags.NArg() != 1 {
 		printRunUsage(stderr)
 		return ExitUsage
 	}
-	path := fs0.Arg(0)
+	path := flags.Arg(0)
 
 	// Step 1: load + validate + digest.
 	ld, err := loader.Load(path)

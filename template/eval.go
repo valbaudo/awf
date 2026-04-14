@@ -133,6 +133,21 @@ func EvalBool(e Expr, scope Scope) (bool, error) {
 	return requireBool("top-level expression", v)
 }
 
+// EvalBoolString is the string-input convenience over EvalBool: unwrap the
+// outer `{{ }}` envelope (if present), parse the inner as an Expr, then
+// evaluate as bool. Used by engine.runIf and engine.runLoop for if.cond /
+// loop.until — both fields' surface form is the `{{ <expr> }}` envelope per
+// spec §5.1/§5.2, but the parser wants the bare expression. Returning the
+// raw error from ParseExpr or EvalBool lets the caller route to its
+// permanent_failure path with the same diagnostic codes (AWF4001/2/3/4/5).
+func EvalBoolString(src string, scope Scope) (bool, error) {
+	e, err := ParseExpr(UnwrapEnvelope(src))
+	if err != nil {
+		return false, err
+	}
+	return EvalBool(e, scope)
+}
+
 // evalLogical handles both && (shortCircuitOn=false) and || (shortCircuitOn=true)
 // with short-circuit evaluation. When the LHS equals shortCircuitOn the RHS is
 // not evaluated; the function returns shortCircuitOn.
