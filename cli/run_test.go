@@ -28,14 +28,20 @@ func TestCLIRunOnSeqFixture(t *testing.T) {
 	fake := container.NewFake()
 	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{
 		ExitCode: 0, Stdout: []byte("created marker\n"),
-	}, nil)
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("created marker\n")},
+	})
 	fake.ProgramExec("echo step2", container.ExecResult{
 		ExitCode: 0, Stdout: []byte("step2\n"),
 		AWFOutput: []byte(`{"message":"step2"}`),
-	}, nil)
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("step2\n")},
+	})
 	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{
 		ExitCode: 0, Stdout: []byte("end-of-seq\n"),
-	}, nil)
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("end-of-seq\n")},
+	})
 
 	stateDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -46,6 +52,14 @@ func TestCLIRunOnSeqFixture(t *testing.T) {
 	)
 	if rc != cli.ExitOK {
 		t.Fatalf("rc = %d, want %d (ExitOK)\nstderr: %s", rc, cli.ExitOK, stderr.String())
+	}
+
+	// Live-tap output: each step's stdout was prefixed with [step.id].
+	out := stdout.String()
+	for _, want := range []string{"[touch_marker] created marker", "[echo_step] step2", "[cat_marker] end-of-seq"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q; got %q", want, out)
+		}
 	}
 
 	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
