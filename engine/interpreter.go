@@ -125,9 +125,8 @@ func interpNode(
 		path := ir.PathFor(parent, "if", "", idx)
 		return runIf(ctx, v, path, wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.Loop:
-		// Same placeholder shape as If — Task 5 replaces.
 		path := ir.PathFor(parent, "loop", "", idx)
-		return "", fmt.Errorf("%w: loop at path %q (Task 5 of slice 2.5 lands this)", ErrNodeNotImplementedInPhase2, path)
+		return runLoop(ctx, v, path, wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.AgentStep:
 		path := ir.PathFor(parent, "", v.ID, idx)
 		return "", fmt.Errorf("%w: agent at path %q (Phase 5)", ErrNodeNotImplementedInPhase2, path)
@@ -333,6 +332,83 @@ func runIf(
 	default:
 		// Validator should reject; this is corruption / bug defense.
 		return "", fmt.Errorf("engine.Run: unknown branch %q at path %q", which, path)
+	}
+}
+
+// runLoop is the Loop handler. Spec §5.2 + design spec §F + slice 2.5 DQ8:
+// do-while iteration. Body runs; loop.iter{n} appends ONLY after body succeeds
+// (DQ8 invariant — body failure means iter never completed, no loop.iter
+// event). until is tested AFTER each iter (so it can reference what the body
+// just produced); max_iters bounds the loop. Resume-safe: K starts at
+// runstate.LoopIters[path] + 1.
+//
+// The validator (ir/validate_structural.go) enforces "at least one of until /
+// max_iters" per spec §5.2. The runtime defends against validator regression
+// by erroring loud if both are nil (slice 2.5 R7) — silent exit on iter 1
+// would mask the validator bug.
+func runLoop(
+	ctx context.Context,
+	n *ir.Loop,
+	path string,
+	wf *ir.Workflow,
+	runstate *RunState,
+	dispatcher Dispatcher,
+	log state.Log,
+	blobs state.Blobs,
+	clk clock.Clock,
+	tap io.Writer,
+) (Outcome, error) {
+	// Defense-in-depth FIRST: avoid entering the loop with a definition that
+	// validation should have rejected.
+	if n.Until == nil && n.MaxIters == nil {
+		return "", fmt.Errorf("engine: loop at path %q has neither until nor max_iters — validator regression (AWF §5.2 requires one); please report", path)
+	}
+
+	startK := runstate.LoopIters[path] + 1
+	for k := startK; ; k++ {
+		bodyParent := IterPath(path+".body", k)
+		// 1. Walk the body for iter K.
+		oc, err := interpNodes(ctx, n.Body, bodyParent, wf, runstate, dispatcher, log, blobs, clk, tap)
+		if oc != OutcomeOK || err != nil {
+			// Body failed — DQ8: do NOT emit loop.iter for this iter.
+			return oc, err
+		}
+		// 2. Body completed. Append loop.iter{n: k}.
+		data, mErr := json.Marshal(LoopIterData{N: k})
+		if mErr != nil {
+			return "", fmt.Errorf("engine.Run: marshal loop.iter at path %q iter %d: %w", path, k, mErr)
+		}
+		if err := log.Append(state.Event{
+			Type: EventLoopIter,
+			Path: path,
+			Data: data,
+		}); err != nil {
+			return "", fmt.Errorf("engine.Run: append loop.iter at path %q iter %d: %w", path, k, err)
+		}
+		// loop.iter is observational — no Log.Sync (rides next fsync).
+		runstate.LoopIters[path] = k
+
+		// 3. Evaluate until (if set). True → exit.
+		if n.Until != nil {
+			scope := NewScope(runstate, wf, bodyParent)
+			inner := template.UnwrapEnvelope(string(*n.Until))
+			parsed, evalErr := template.ParseExpr(inner)
+			if evalErr != nil {
+				return failStep(log, path, OutcomePermanentFailure, evalErr)
+			}
+			done, evalErr := template.EvalBool(parsed, scope)
+			if evalErr != nil {
+				return failStep(log, path, OutcomePermanentFailure, evalErr)
+			}
+			if done {
+				return OutcomeOK, nil
+			}
+		}
+
+		// 4. Check max_iters. K >= max → exit.
+		if n.MaxIters != nil && k >= *n.MaxIters {
+			return OutcomeOK, nil
+		}
 	}
 }
 

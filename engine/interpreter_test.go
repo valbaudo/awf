@@ -16,6 +16,13 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
+// refExpr returns a *ir.Expr pointer to the given string — slim sugar for IR
+// construction in tests (ir.Loop.Until is *ir.Expr, omitempty).
+func refExpr(s string) *ir.Expr {
+	e := ir.Expr(s)
+	return &e
+}
+
 // newRunHarness builds the in-mem fakes + a default RunState seeded with
 // run.started + a single-container handle map.
 func newRunHarness(t *testing.T) (*container.Fake, container.Handle, *engine.LocalDispatcher, *state.InMemoryLog, *state.InMemoryBlobs, *clock.Fake, *engine.RunState) {
@@ -643,5 +650,221 @@ func TestRunIfCondTypeMismatchIsPermanent(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no node.failed event for if[0]; events: %+v", events)
+	}
+}
+
+func TestRunLoopWithMaxItersOnly(t *testing.T) {
+	// 3-iter loop, no until. Each iter runs the body once; loop.iter fires
+	// once per completed iter; LoopIters[path] ends at 3.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./body.sh", container.ExecResult{ExitCode: 0}, nil)
+	max := 3
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.Loop{
+			MaxIters: &max,
+			Body: ir.NodeList{
+				&ir.CodeStep{ID: "body_step", Container: "lab", Run: "./body.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run: %v / %v", oc, err)
+	}
+	if rs.LoopIters["loop[0]"] != 3 {
+		t.Errorf("rs.LoopIters[loop[0]] = %d, want 3", rs.LoopIters["loop[0]"])
+	}
+	if len(fake.Calls) != 3 {
+		t.Errorf("body dispatched %d times, want 3", len(fake.Calls))
+	}
+	events, _ := log.Fold()
+	var iterEvents int
+	for _, e := range events {
+		if e.Type == engine.EventLoopIter && e.Path == "loop[0]" {
+			iterEvents++
+		}
+	}
+	if iterEvents != 3 {
+		t.Errorf("emitted %d loop.iter events, want 3", iterEvents)
+	}
+}
+
+func TestRunLoopWithUntilOnly(t *testing.T) {
+	// Body produces a typed output `done: true`; until reads it → true on
+	// iter 1 → loop exits after 1 iter.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./body.sh", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"done":true}`),
+	}, nil)
+	max := 5
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.Loop{
+			Until:    refExpr("{{ step.body_step.done }}"),
+			MaxIters: &max,
+			Body: ir.NodeList{
+				&ir.CodeStep{
+					ID: "body_step", Container: "lab", Run: "./body.sh",
+					OutputSchema: &ir.JSONSchema{
+						"type":                 "object",
+						"additionalProperties": false,
+						"required":             []any{"done"},
+						"properties":           map[string]any{"done": map[string]any{"type": "boolean"}},
+					},
+				},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run: %v / %v", oc, err)
+	}
+	if rs.LoopIters["loop[0]"] != 1 {
+		t.Errorf("rs.LoopIters[loop[0]] = %d, want 1 (until true on iter 1)", rs.LoopIters["loop[0]"])
+	}
+	if len(fake.Calls) != 1 {
+		t.Errorf("body dispatched %d times, want 1", len(fake.Calls))
+	}
+}
+
+func TestRunLoopBodyFailureDoesNotEmitLoopIter(t *testing.T) {
+	// DQ8: if body[K] fails, loop.iter{K} is NOT emitted.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./flaky.sh", container.ExecResult{ExitCode: 78}, nil)
+	max := 3
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.Loop{
+			MaxIters: &max,
+			Body: ir.NodeList{
+				&ir.CodeStep{ID: "flaky", Container: "lab", Run: "./flaky.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, _ := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if oc != engine.OutcomePermanentFailure {
+		t.Errorf("Outcome = %v, want permanent_failure", oc)
+	}
+	if rs.LoopIters["loop[0]"] != 0 {
+		t.Errorf("rs.LoopIters[loop[0]] = %d, want 0 (iter 1 failed mid-flight, never committed)", rs.LoopIters["loop[0]"])
+	}
+	events, _ := log.Fold()
+	var iterEvents int
+	for _, e := range events {
+		if e.Type == engine.EventLoopIter {
+			iterEvents++
+		}
+	}
+	if iterEvents != 0 {
+		t.Errorf("emitted %d loop.iter events, want 0 (body failed before iter completed)", iterEvents)
+	}
+}
+
+func TestRunLoopResumeContinuesFromLastCompletedIter(t *testing.T) {
+	// Pre-populate rs.LoopIters[loop[0]] = 2 — simulates resume where iters
+	// 1 and 2 committed and iter 3 was in-flight.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./body.sh", container.ExecResult{ExitCode: 0}, nil)
+	rs.LoopIters["loop[0]"] = 2
+
+	max := 4
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.Loop{
+			MaxIters: &max,
+			Body: ir.NodeList{
+				&ir.CodeStep{ID: "body_step", Container: "lab", Run: "./body.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fake.Calls) != 2 {
+		t.Errorf("body dispatched %d times, want 2 (resume from iter 3 to max=4)", len(fake.Calls))
+	}
+	if rs.LoopIters["loop[0]"] != 4 {
+		t.Errorf("rs.LoopIters[loop[0]] = %d, want 4", rs.LoopIters["loop[0]"])
+	}
+}
+
+func TestRunLoopBodyStepPathIncludesIterSuffix(t *testing.T) {
+	// node.completed events must use path "loop[0].body.iter-K.body_step" —
+	// the addressing grammar from slice 2.1.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./body.sh", container.ExecResult{ExitCode: 0}, nil)
+	max := 2
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.Loop{
+			MaxIters: &max,
+			Body: ir.NodeList{
+				&ir.CodeStep{ID: "body_step", Container: "lab", Run: "./body.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	events, _ := log.Fold()
+	wantPaths := map[string]bool{
+		"loop[0].body.iter-1.body_step": false,
+		"loop[0].body.iter-2.body_step": false,
+	}
+	for _, e := range events {
+		if e.Type == engine.EventNodeCompleted {
+			if _, want := wantPaths[e.Path]; want {
+				wantPaths[e.Path] = true
+			}
+		}
+	}
+	for path, found := range wantPaths {
+		if !found {
+			t.Errorf("no node.completed event at path %q", path)
+		}
+	}
+}
+
+func TestRunLoopNeitherUntilNorMaxIsInternalError(t *testing.T) {
+	// Slice 2.5 R7: validator (ir/validate_structural.go:86) enforces
+	// "at least one of until / max_iters" (AWF §5.2). If validation
+	// regresses, the runtime must fail LOUD — silently exiting on iter 1
+	// would mask the bug.
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./body.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.Loop{
+			// Until nil, MaxIters nil — would be rejected by validator,
+			// but the runtime defends.
+			Body: ir.NodeList{
+				&ir.CodeStep{ID: "body_step", Container: "lab", Run: "./body.sh"},
+			},
+		},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
+	if oc != "" {
+		t.Errorf("Outcome = %q, want empty (internal error)", oc)
+	}
+	if err == nil {
+		t.Fatal("err is nil; want validator-regression error")
+	}
+	if !strings.Contains(err.Error(), "validator regression") {
+		t.Errorf("err = %v, want mention of 'validator regression'", err)
 	}
 }
