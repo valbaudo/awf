@@ -171,3 +171,66 @@ func TestInMemoryBlobsFailPutAfterN(t *testing.T) {
 		t.Errorf("Get(ref3) = %q, want %q", got, "third")
 	}
 }
+
+func TestInMemoryLogReopenBumpsEpoch(t *testing.T) {
+	t.Parallel()
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := NewInMemoryLog(clk)
+	if err := log.Append(Event{Type: "test.first"}); err != nil {
+		t.Fatalf("Append #1: %v", err)
+	}
+	events, _ := log.Fold()
+	if len(events) != 1 || events[0].Epoch != 0 {
+		t.Fatalf("pre-Reopen: events[0].Epoch = %d, want 0", events[0].Epoch)
+	}
+	if err := log.Reopen(); err != nil {
+		t.Fatalf("Reopen: %v", err)
+	}
+	if err := log.Append(Event{Type: "test.second"}); err != nil {
+		t.Fatalf("Append #2: %v", err)
+	}
+	events, _ = log.Fold()
+	if len(events) != 2 {
+		t.Fatalf("post-Reopen: len(events) = %d, want 2", len(events))
+	}
+	if events[1].Epoch != 1 {
+		t.Errorf("events[1].Epoch = %d, want 1 (bumped on Reopen)", events[1].Epoch)
+	}
+}
+
+func TestInMemoryLogReopenEmptyIsNoop(t *testing.T) {
+	t.Parallel()
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := NewInMemoryLog(clk)
+	if err := log.Reopen(); err != nil {
+		t.Fatalf("Reopen on empty: %v", err)
+	}
+	if err := log.Append(Event{Type: "test.first"}); err != nil {
+		t.Fatalf("Append after empty Reopen: %v", err)
+	}
+	events, _ := log.Fold()
+	if events[0].Epoch != 0 {
+		t.Errorf("first event after empty Reopen: Epoch = %d, want 0", events[0].Epoch)
+	}
+}
+
+func TestInMemoryLogClearFaultResetsFailAt(t *testing.T) {
+	t.Parallel()
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := NewInMemoryLog(clk)
+	log.FailAppendAfterN(0) // first append fails
+	log.ClearFault()
+	if err := log.Append(Event{Type: "after.clear"}); err != nil {
+		t.Errorf("Append after ClearFault: %v (want nil)", err)
+	}
+}
+
+func TestInMemoryBlobsClearFaultResetsFailAt(t *testing.T) {
+	t.Parallel()
+	b := NewInMemoryBlobs()
+	b.FailPutAfterN(0)
+	b.ClearFault()
+	if _, err := b.Put([]byte("hello")); err != nil {
+		t.Errorf("Put after ClearFault: %v (want nil)", err)
+	}
+}

@@ -233,3 +233,14 @@ func (f *Fake) FailExecAfterN(n int) { f.failExecAt = &n }
 // committed. Bucket-3 (atomic commit) is the job of FailAppendAfterN on
 // state.InMemoryLog, which crashes between Blobs.Put and Log.Append(node.completed).
 func (f *Fake) FailCaptureAfterN(n int) { f.failCapAt = &n }
+
+// ClearFault resets BOTH fault hooks (Exec + CaptureFiles). The conformance
+// harness uses this between bucket runs that share a fake instance — though
+// the standard pattern is to factory() a fresh fake per run/resume (matching
+// the "infra rebuilt from recipe" spec §8 semantic), ClearFault is the
+// in-place reset used when the same fake survives a crash-resume boundary
+// in the conformance harness's atomic-commit bucket.
+func (f *Fake) ClearFault() {
+	f.failExecAt = nil
+	f.failCapAt = nil
+}
