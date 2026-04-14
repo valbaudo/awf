@@ -111,6 +111,19 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// Step 5: Create container handles. Defer Destroy with a SEPARATE
 	// non-cancelled ctx so teardown survives signal-induced cancellation.
 	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
+	// Register the teardown defer BEFORE Create so a mid-Create failure still
+	// cleans up the handles that were already created. The closure reads
+	// `handles` at defer-time, so it sees whatever was successfully created.
+	// Latent Phase 4 hazard (Phase 2 fake's Create can't fail; Phase 4 Docker
+	// can): without this ordering, a 2-container workflow with the second
+	// Create failing would leak the first container.
+	defer func() {
+		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
+		defer cancel()
+		for _, h := range handles {
+			_ = r.Backend.Destroy(teardownCtx, h)
+		}
+	}()
 	for name := range ld.Workflow.Containers {
 		h, err := r.Backend.Create(ctx, container.ContainerSpec{Name: name})
 		if err != nil {
@@ -119,13 +132,6 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		}
 		handles[name] = h
 	}
-	defer func() {
-		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
-		defer cancel()
-		for _, h := range handles {
-			_ = r.Backend.Destroy(teardownCtx, h)
-		}
-	}()
 
 	// Step 6: open blobs (shared CAS dir; idempotent across runs).
 	blobsDir := filepath.Join(*stateDir, "blobs")

@@ -117,9 +117,15 @@ func TestCLIRunOnIfFixture(t *testing.T) {
 		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
 	}
 	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
-	fl, _ := state.OpenLog(logPath, clock.System{})
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
 	defer func() { _ = fl.Close() }()
-	events, _ := fl.Fold()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
 	var bt *engine.BranchTakenData
 	for _, e := range events {
 		if e.Type == engine.EventBranchTaken {
@@ -156,9 +162,15 @@ func TestCLIRunOnLoopFixture(t *testing.T) {
 		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
 	}
 	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
-	fl, _ := state.OpenLog(logPath, clock.System{})
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
 	defer func() { _ = fl.Close() }()
-	events, _ := fl.Fold()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
 	var iters int
 	for _, e := range events {
 		if e.Type == engine.EventLoopIter {
@@ -360,9 +372,15 @@ graph:
 		t.Errorf("rc = %d, want ExitRunFailed; stderr: %s", rc, stderr.String())
 	}
 	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
-	fl, _ := state.OpenLog(logPath, clock.System{})
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
 	defer func() { _ = fl.Close() }()
-	events, _ := fl.Fold()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
 	var rf *engine.RunFinishedData
 	for _, e := range events {
 		if e.Type == engine.EventRunFinished {
