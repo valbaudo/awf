@@ -247,3 +247,35 @@ func TestRunTryCtxCancelledAfterFinally(t *testing.T) {
 		t.Errorf("Try{ctx-cancelled}: finally must run even on ctx-cancel: Completed = %+v", rs.Completed)
 	}
 }
+
+func TestRunTryCtxCancelledSupersedeDoError(t *testing.T) {
+	// ctx cancelled mid-do AND Do also errored → ctx.Err() must win.
+	// Needed for slice 3.2's parallel handler that distinguishes
+	// sibling-cancelled branches via errors.Is(err, context.Canceled).
+	ctx, cancel := context.WithCancel(context.Background())
+	try := &ir.Try{
+		Do: ir.NodeList{
+			&ir.CodeStep{ID: "do-fails", Run: "exit 1"},
+		},
+		Finally: ir.NodeList{
+			&ir.CodeStep{ID: "finally-ok", Run: "echo finally"},
+		},
+	}
+	disp, logger, blobs := tryTestRig(t, map[string]scriptedResult{
+		"do-fails":   {outcome: OutcomeRetryableFailure, err: errors.New("do failed independently")},
+		"finally-ok": {outcome: OutcomeOK},
+	})
+	cancel() // cancel BEFORE running
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
+	rs := NewRunState("run-x", "digest", nil)
+	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Try{ctx-cancelled-AND-do-fails}: err = %v, want errors.Is(context.Canceled) true (cancellation supersedes Do's error so slice 3.2's parallel handler can detect sibling cancellation)", err)
+	}
+	if oc != OutcomeRetryableFailure {
+		t.Errorf("outcome got %q, want %q", oc, OutcomeRetryableFailure)
+	}
+	if _, done := rs.Completed["try[0].finally.finally-ok"]; !done {
+		t.Errorf("finally must run: Completed = %+v", rs.Completed)
+	}
+}

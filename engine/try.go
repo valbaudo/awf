@@ -68,11 +68,14 @@ func runTry(
 
 	// 2a continued: if Do skipped, propagated state is (OutcomeOK, nil) —
 	// Catch was skipped; runTry appends a node.skipped for trace.
+	// If appendNodeSkipped fails, we track the error in pendingErr so that
+	// Finally still runs ("ALWAYS run Finally") before we propagate the error.
+	var pendingErr error
 	if skipped {
 		propagatedOC = OutcomeOK
 		propagatedErr = nil
 		if appendErr := appendNodeSkipped(log, path, su.Reason); appendErr != nil {
-			return "", appendErr
+			pendingErr = appendErr
 		}
 	}
 
@@ -85,8 +88,18 @@ func runTry(
 		}
 	}
 
-	// 5. Final ctx check (design question 3). Cancellation signal supersedes ok.
-	if ctxErr := ctx.Err(); ctxErr != nil && propagatedErr == nil {
+	// If appendNodeSkipped errored AND Finally was clean, propagate the append error.
+	if pendingErr != nil {
+		return "", pendingErr
+	}
+
+	// 5. Final ctx check (design question 3). Cancellation signal supersedes
+	// Do/Catch errors — the parent NEEDS the cancellation signal (slice 3.2's
+	// parallel handler uses errors.Is(err, context.Canceled) to distinguish
+	// sibling-cancelled branches from independently-failed ones).
+	// Note: Finally errors already returned above; this check is intentionally
+	// unconditional (no propagatedErr == nil guard).
+	if ctxErr := ctx.Err(); ctxErr != nil {
 		return OutcomeRetryableFailure, ctxErr
 	}
 
