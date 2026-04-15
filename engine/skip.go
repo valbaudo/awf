@@ -11,7 +11,7 @@ import (
 // try.do, parallel branch, gate attempt, map item — the last three land in
 // slices 3.2 / 3.3 / 3.4). Implements `error` so it flows through the existing
 // `(Outcome, error)` propagation pattern; recognizing handlers use
-// `errors.As(err, &SkipUnwind{})` to distinguish it from a real failure.
+// `var su *SkipUnwind; errors.As(err, &su)` to distinguish it from a real failure.
 //
 // NOT an OutcomeError-equivalent — Skip is terminal-ok at its target scope,
 // not failure. `runTry` recognizes SkipUnwind from its Do block and skips
@@ -23,7 +23,7 @@ import (
 //
 // Phase 3 design decision 5 (revised): plain error returns + SkipUnwind
 // sentinel only — no typed OutcomeError wrapper, since unconditional catch
-// (decision 7) only needs `err != nil` and `errors.As(err, &SkipUnwind{})`.
+// (decision 7) only needs `err != nil` and `var su *SkipUnwind; errors.As(err, &su)`.
 type SkipUnwind struct {
 	TargetPath string
 	Reason     string
@@ -39,8 +39,8 @@ func (e *SkipUnwind) Error() string {
 // runSkip is the Skip handler. Returns (OutcomeOK, &SkipUnwind{...}). The
 // recursive walk propagates the tuple via the existing
 // `if oc != OutcomeOK || err != nil { return oc, err }` check until a target
-// scope (Run, runLoop, runTry, …) recognizes the *SkipUnwind via errors.As
-// and absorbs it as terminal-ok.
+// scope (Run, runLoop, runTry, …) recognizes the *SkipUnwind via
+// `var su *SkipUnwind; errors.As(err, &su)` and absorbs it as terminal-ok.
 //
 // runSkip does NOT populate SkipUnwind.TargetPath — the target is determined
 // by which handler recognizes the unwind first (workflow root, the nearest
