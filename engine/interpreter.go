@@ -77,7 +77,19 @@ func Run(
 	if runstate == nil {
 		return "", fmt.Errorf("engine.Run: nil runstate")
 	}
-	return interpNodes(ctx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, tap)
+	oc, err := interpNodes(ctx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, tap)
+	// SkipUnwind reaching Run = workflow-root unwind target (no enclosing
+	// loop/try/parallel/gate/map caught it). Per Phase 3 spec §5.6: "Cleanly
+	// terminates the nearest enclosing scope ... or (if none) the run, as ok."
+	var su *SkipUnwind
+	if errors.As(err, &su) {
+		// Append node.skipped{path: "", reason} for trace (Phase 6 obs).
+		if appendErr := appendNodeSkipped(log, "", su.Reason); appendErr != nil {
+			return "", appendErr
+		}
+		return OutcomeOK, nil
+	}
+	return oc, err
 }
 
 // interpNodes recursively walks a NodeList in order. Each node's path is
@@ -365,6 +377,19 @@ func runLoop(
 		bodyParent := IterPath(path+".body", k)
 		// 1. Walk the body for iter K.
 		oc, err := interpNodes(ctx, n.Body, bodyParent, wf, runstate, dispatcher, log, blobs, clk, tap)
+		// SkipUnwind from body = iteration end target. Append node.skipped for
+		// trace, then continue to the loop.iter append below — the iter
+		// completed (via skip) and loop.iter records that for resume.
+		var su *SkipUnwind
+		skipped := errors.As(err, &su)
+		if skipped {
+			if appendErr := appendNodeSkipped(log, bodyParent, su.Reason); appendErr != nil {
+				return "", appendErr
+			}
+			// Clear oc/err to fall through to the loop.iter + until/max_iters
+			// path — the iter is "complete" from the loop's perspective.
+			oc, err = OutcomeOK, nil
+		}
 		if oc != OutcomeOK || err != nil {
 			// Body failed — DQ8: do NOT emit loop.iter for this iter.
 			return oc, err

@@ -248,6 +248,95 @@ func TestRunTryCtxCancelledAfterFinally(t *testing.T) {
 	}
 }
 
+func TestRunSkipAtRootEndsRunOK(t *testing.T) {
+	// Workflow with a single root-scope Skip node:
+	//   graph: [- skip: "early exit"]
+	wf := &ir.Workflow{
+		ID:      "x",
+		Version: 1,
+		Graph: ir.NodeList{
+			&ir.Skip{Reason: "early exit"},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+	rs := NewRunState("run-x", "digest", nil)
+	// Skip doesn't invoke the dispatcher — pass a nil-safe sentinel.
+	disp := &scriptedDispatcher{t: t, script: map[string]scriptedResult{}}
+	logger := state.NewInMemoryLog(&clock.Fake{})
+	blobs := state.NewInMemoryBlobs()
+
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	if err != nil {
+		t.Errorf("Run with root Skip: err = %v, want nil", err)
+	}
+	if oc != OutcomeOK {
+		t.Errorf("Run with root Skip: outcome = %q, want %q", oc, OutcomeOK)
+	}
+	// Verify the node.skipped event was appended.
+	events, _ := logger.Fold()
+	var found bool
+	for _, e := range events {
+		if e.Type == EventNodeSkipped {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Run with root Skip: no node.skipped event in log: %+v", events)
+	}
+}
+
+func TestSkipInsideLoopEndsIterationLoopContinues(t *testing.T) {
+	// loop { max_iters: 3, body: [skip] } — each iter ends via skip, loop runs
+	// all 3 iters, 3 loop.iter events recorded (one per skipped iter).
+	maxIters := 3
+	wf := &ir.Workflow{
+		ID:      "x",
+		Version: 1,
+		Graph: ir.NodeList{
+			&ir.Loop{
+				MaxIters: &maxIters,
+				Body: ir.NodeList{
+					&ir.Skip{Reason: "skip iter"},
+				},
+			},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+	rs := NewRunState("run-x", "digest", nil)
+	disp := &scriptedDispatcher{t: t, script: map[string]scriptedResult{}}
+	logger := state.NewInMemoryLog(&clock.Fake{})
+	blobs := state.NewInMemoryBlobs()
+
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	if err != nil {
+		t.Errorf("Run with skip-in-loop: err = %v, want nil", err)
+	}
+	if oc != OutcomeOK {
+		t.Errorf("Run with skip-in-loop: outcome = %q, want %q", oc, OutcomeOK)
+	}
+	// Verify 3 loop.iter events (each skipped iter still records loop.iter).
+	events, _ := logger.Fold()
+	var loopIters, nodeSkippeds int
+	for _, e := range events {
+		if e.Type == EventLoopIter {
+			loopIters++
+		}
+		if e.Type == EventNodeSkipped {
+			nodeSkippeds++
+		}
+	}
+	if loopIters != 3 {
+		t.Errorf("Run with skip-in-loop: loop.iter count = %d, want 3 (one per skipped iter)", loopIters)
+	}
+	if nodeSkippeds != 3 {
+		t.Errorf("Run with skip-in-loop: node.skipped count = %d, want 3 (one per skipped iter)", nodeSkippeds)
+	}
+	if rs.LoopIters["loop[0]"] != 3 {
+		t.Errorf("RunState.LoopIters[loop[0]] = %d, want 3", rs.LoopIters["loop[0]"])
+	}
+}
+
 func TestRunTryCtxCancelledSupersedeDoError(t *testing.T) {
 	// ctx cancelled mid-do AND Do also errored → ctx.Err() must win.
 	// Needed for slice 3.2's parallel handler that distinguishes
