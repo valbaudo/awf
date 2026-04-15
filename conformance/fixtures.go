@@ -120,3 +120,56 @@ graph:
     run: "./step3.sh"
     retry: { attempts: 1 }
 `
+
+// skipAtRootWorkflow exercises Bucket 6 sub-test "at_root": a single Skip
+// node at the workflow root. The validator (Phase 1.4) requires containers
+// to be non-empty in some scenarios; this fixture declares a placeholder
+// container even though no step uses it — keeps the loader happy.
+const skipAtRootWorkflow = `workflow: conformance-skip-root
+version: 1
+containers:
+  unused:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - skip: "early exit"
+`
+
+// skipInLoopBodyWorkflow exercises Bucket 6 sub-test "in_loop_body":
+// loop{max_iters:3, body:[skip]} — each iter ends via skip, loop runs all
+// 3 iters, 3 loop.iter + 3 node.skipped recorded.
+const skipInLoopBodyWorkflow = `workflow: conformance-skip-loop
+version: 1
+containers:
+  unused:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - loop:
+      max_iters: 3
+      body:
+        - skip: "skip iter"
+`
+
+// skipInTryDoWorkflow exercises Bucket 6 sub-test "in_try_do": skip inside
+// try.do bypasses Catch, runs Finally, propagates ok. Catch contains a step
+// that — if run — fails the test (the fake has NO program for it; the
+// ProgramExec-miss error fires).
+const skipInTryDoWorkflow = `workflow: conformance-skip-try
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - try:
+      do:
+        - skip: "skip do"
+      catch:
+        - id: must-not-run
+          container: lab
+          run: "./must-not-run.sh"
+          retry: { attempts: 1 }
+      finally:
+        - id: must-run
+          container: lab
+          run: "./must-run.sh"
+          retry: { attempts: 1 }
+`
