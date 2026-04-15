@@ -133,7 +133,7 @@ func interpNode(
 	case *ir.SignalStep:
 		return notImpl("signal", ir.PathFor(parent, "", v.ID, idx), "Phase 3 slice 3.5")
 	case *ir.Try:
-		return notImpl("try", ir.PathFor(parent, "try", "", idx), "Phase 3 slice 3.1")
+		return runTry(ctx, v, ir.PathFor(parent, "try", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.Parallel:
 		return notImpl("parallel", ir.PathFor(parent, "parallel", "", idx), "Phase 3 slice 3.2")
 	case *ir.Gate:
@@ -141,7 +141,7 @@ func interpNode(
 	case *ir.Map:
 		return notImpl("map", ir.PathFor(parent, "map", "", idx), "Phase 3 slice 3.4")
 	case *ir.Skip:
-		return notImpl("skip", ir.PathFor(parent, "skip", "", idx), "Phase 3 slice 3.1")
+		return runSkip(v)
 	default:
 		return "", fmt.Errorf("engine: unknown node type %T at parent %q index %d (validator should have caught)", n, parent, idx)
 	}
