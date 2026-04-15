@@ -334,7 +334,6 @@ func TestRunPhase2UnsupportedKindsAllErrorWithSentinel(t *testing.T) {
 	}{
 		{"agent", &ir.AgentStep{ID: "ag", Container: "lab", Uses: "anthropic/claude-code"}},
 		{"signal", &ir.SignalStep{ID: "sig", Await: "human_review"}},
-		{"try", &ir.Try{Do: ir.NodeList{&ir.CodeStep{ID: "x", Container: "lab", Run: "./x.sh"}}}},
 		{"parallel", &ir.Parallel{Children: ir.NodeList{&ir.CodeStep{ID: "x", Container: "lab", Run: "./x.sh"}}}},
 		{"gate", &ir.Gate{
 			Generate:    ir.NodeList{&ir.CodeStep{ID: "g", Container: "lab", Run: "./g.sh"}},
@@ -346,15 +345,14 @@ func TestRunPhase2UnsupportedKindsAllErrorWithSentinel(t *testing.T) {
 			Over: ir.Expr("input.items"), As: "item", Container: "lab", Concurrency: 1,
 			Body: ir.NodeList{&ir.CodeStep{ID: "x", Container: "lab", Run: "./x.sh"}},
 		}},
-		{"skip", &ir.Skip{Reason: "phase-2-test"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			_, _, disp, log, blobs, clk, rs := newRunHarness(t)
 			def := &ir.LoadedDefinition{Workflow: &ir.Workflow{Graph: ir.NodeList{c.node}}}
 			_, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil)
-			if !errors.Is(err, engine.ErrNodeNotImplementedInPhase2) {
-				t.Errorf("err = %v, want errors.Is(_, ErrNodeNotImplementedInPhase2)", err)
+			if !errors.Is(err, engine.ErrNodeNotImplementedInPhase3) {
+				t.Errorf("err = %v, want errors.Is(_, ErrNodeNotImplementedInPhase3)", err)
 			}
 		})
 	}

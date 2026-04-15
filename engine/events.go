@@ -17,6 +17,12 @@ const (
 	EventRetryAttempt  = "retry.attempt"
 	EventNodeFailed    = "node.failed"
 	EventRunFinished   = "run.finished"
+	// Phase 3 slice 3.1 addition. Observational only — Fold default-arm-ignores
+	// the event. The state effect of a skip comes from the target scope recording
+	// its own normal completion event (loop.iter for a skipped iter, run.finished
+	// for a root skip, etc.). Phase 6 obs will project node.skipped as a "skipped"
+	// span marker; cli inspect/trace renders it.
+	EventNodeSkipped = "node.skipped"
 )
 
 // RunStartedData is the payload of the first event in a run (and the only event the
@@ -121,4 +127,17 @@ type NodeFailedData struct {
 // terminal and shouldn't be re-entered).
 type RunFinishedData struct {
 	Outcome string `json:"outcome"`
+}
+
+// NodeSkippedData is the observational marker emitted as a Skip unwinds
+// through a scope (Phase 3 design §B). Path is the path of the skipped scope
+// (e.g. "loop[0].body.iter-2" for a skipped loop iter, "" for a root skip).
+// Reason is the author's free-text from `skip: <reason>` (spec §5.6).
+//
+// Fold IGNORES this event (default arm). The state effect of a skip comes
+// from the target scope recording its own normal completion event (e.g.
+// loop.iter{k} for a skipped iter).
+type NodeSkippedData struct {
+	Path   string `json:"path,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }

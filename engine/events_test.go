@@ -16,6 +16,7 @@ func TestEventTypeConstants(t *testing.T) {
 		EventBranchTaken:   "branch.taken",
 		EventLoopIter:      "loop.iter",
 		EventRetryAttempt:  "retry.attempt",
+		EventNodeSkipped:   "node.skipped",
 	}
 	for got, want := range cases {
 		if got != want {
@@ -232,6 +233,30 @@ func TestRunFinishedDataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNodeSkippedDataRoundTrip(t *testing.T) {
+	in := NodeSkippedData{
+		Path:   "loop[0].body.iter-2",
+		Reason: "triage found no source",
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out NodeSkippedData
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out != in {
+		t.Errorf("round-trip mismatch: in=%+v out=%+v", in, out)
+	}
+	// Both-empty case — both fields omitempty, JSON should be "{}".
+	in2 := NodeSkippedData{}
+	b2, _ := json.Marshal(in2)
+	if string(b2) != "{}" {
+		t.Errorf("NodeSkippedData{} JSON = %q, want %q", string(b2), "{}")
+	}
+}
+
 func TestEventTypeConstantsAreStable(t *testing.T) {
 	// Locks the wire-format strings. Renaming any of these would invalidate every
 	// existing log; CI catches the rename via this test before it ships.
@@ -241,6 +266,7 @@ func TestEventTypeConstantsAreStable(t *testing.T) {
 	}{
 		{"NodeFailed", EventNodeFailed, "node.failed"},
 		{"RunFinished", EventRunFinished, "run.finished"},
+		{"NodeSkipped", EventNodeSkipped, "node.skipped"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -1,0 +1,34 @@
+workflow: phase3-try
+version: 1
+
+containers:
+  x:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+graph:
+  - id: setup
+    container: x
+    run: echo setup
+
+  - try:
+      do:
+        - id: try-step
+          container: x
+          run: exit 1
+          retry:
+            attempts: 1
+            backoff: exp
+            initial: 1ms
+            max: 10ms
+      catch:
+        - id: catch-step
+          container: x
+          run: echo caught
+      finally:
+        - id: finally-step
+          container: x
+          run: echo finally
+
+  - id: after
+    container: x
+    run: echo after
