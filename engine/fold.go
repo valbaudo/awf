@@ -164,10 +164,14 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 			rs.LoopIters[e.Path] = d.N
 
 		default:
-			// Future event types not in 2.1's dispatch (retry.attempt, node.started /
-			// node.failed / run.finished from 2.4/2.5; signal.received / map.item / ...
-			// from later phases) — ignored. obs (Phase 6) projects them via its own
-			// dispatch.
+			// Observational / future event types ignored by Fold (state effect, if
+			// any, comes from a sibling event):
+			//   - retry.attempt (2.4 — observational)
+			//   - node.failed, run.finished (2.5 — observational; resume refusal
+			//     uses these but reads them outside Fold)
+			//   - node.skipped (3.1 — observational; the target scope's own
+			//     completion event drives RunState)
+			// obs (Phase 6) projects these via its own dispatch.
 		}
 	}
 
