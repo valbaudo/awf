@@ -1,8 +1,9 @@
 // Package cli assembles the command-line surface. Slice 1.6 shipped
-// `awf validate <path>`; slice 2.5 adds `awf run <file> [--input <json>]
-// [--run-id <id>] [--state-dir <dir>]`. Later phases add `awf resume` (slice
-// 2.6), `signal`/`cancel`/`pause` (Phase 3), and `inspect`/`trace`/`ls`
-// (Phase 6). The entry point is Runner.Run, not init() or a package-level
+// `awf validate <path>`; slice 2.5 added `awf run <file> [--input <json>]
+// [--run-id <id>] [--state-dir <dir>]`; slice 2.6 added `awf resume
+// <run-id> <path> [--state-dir <dir>]`. Later phases add `signal`/
+// `cancel`/`pause` (Phase 3) and `inspect`/`trace`/`ls` (Phase 6).
+// The entry point is Runner.Run, not init() or a package-level
 // CLI framework, so tests drive the full surface with bytes.Buffer for IO
 // and an int return for the exit code — no real os.Exit ever called from
 // package code.
