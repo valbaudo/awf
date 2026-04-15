@@ -9,6 +9,10 @@
 //   - Atomic commit (Bucket 3): a crash between Blobs.Put and
 //     Log.Append(node.completed) leaves orphan blobs but no log entry;
 //     every node.completed references a present blob.
+//   - Propagation (Bucket 4): try.catch absorbs a retry-exhausted failure
+//     (caught sub-test); without try the failure propagates and halts the
+//     run (uncaught sub-test). Slice 3.2 adds a third sub-test (parallel
+//     sibling cancellation) under the same bucket.
 //
 // Phase 2 calls RunSuite with container.NewFake (conformance_fake_test.go).
 // Phase 4 adds conformance_docker_test.go with docker.NewFactory.
@@ -39,4 +43,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("pinning", func(t *testing.T) { testPinning(t, factory) })
 	t.Run("replay", func(t *testing.T) { testReplay(t, factory) })
 	t.Run("atomic", func(t *testing.T) { testAtomic(t, factory) })
+	t.Run("propagation", func(t *testing.T) { testPropagation(t, factory) })
 }

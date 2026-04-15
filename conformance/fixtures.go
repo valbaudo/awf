@@ -60,3 +60,63 @@ graph:
     container: lab
     run: "./step2.sh"
 `
+
+// propagationCaughtWorkflow exercises Bucket 4a sub-test "caught": step2 is
+// wrapped in try.catch.finally; step2's command always exits 1 (with
+// retry: { attempts: 1 } so the one-shot fake fault halts the step on the
+// first call). The catch absorbs the failure, finally runs, step3 runs, the
+// run completes ok.
+const propagationCaughtWorkflow = `workflow: conformance-propagation-caught
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: step1
+    container: lab
+    run: "./step1.sh"
+    retry: { attempts: 1 }
+  - try:
+      do:
+        - id: step2-failing
+          container: lab
+          run: "./step2-failing.sh"
+          retry: { attempts: 1 }
+      catch:
+        - id: catch-step
+          container: lab
+          run: "./catch.sh"
+          retry: { attempts: 1 }
+      finally:
+        - id: finally-step
+          container: lab
+          run: "./finally.sh"
+          retry: { attempts: 1 }
+  - id: step3
+    container: lab
+    run: "./step3.sh"
+    retry: { attempts: 1 }
+`
+
+// propagationUncaughtWorkflow is identical to propagationCaughtWorkflow
+// EXCEPT step2 is NOT wrapped in try.catch — its failure propagates to the
+// run root.
+const propagationUncaughtWorkflow = `workflow: conformance-propagation-uncaught
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: step1
+    container: lab
+    run: "./step1.sh"
+    retry: { attempts: 1 }
+  - id: step2-failing
+    container: lab
+    run: "./step2-failing.sh"
+    retry: { attempts: 1 }
+  - id: step3
+    container: lab
+    run: "./step3.sh"
+    retry: { attempts: 1 }
+`
