@@ -266,6 +266,7 @@ func TestEventTypeConstantsAreStable(t *testing.T) {
 	}{
 		{"NodeFailed", EventNodeFailed, "node.failed"},
 		{"RunFinished", EventRunFinished, "run.finished"},
+		{"NodeSkipped", EventNodeSkipped, "node.skipped"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
