@@ -56,7 +56,15 @@ func testReplay(t *testing.T, factory BackendFactory) {
 				return fake
 			}
 			h := newHarness(t, firstRunFactory, fiveStepSeqWorkflow)
-			outcome, _ := h.runWorkflow(t)
+			outcome, runErr := h.runWorkflow(t)
+			// Harness-level error guard: if outcome is empty + err non-nil, the harness
+			// failed before the workflow could be evaluated (loader.Load failed, engine
+			// internal error, container.Create failed, etc.). The empty outcome would slip past
+			// the OutcomeOK safety check below, and for k=0 the rest of the assertions would
+			// vacuously pass — silent regression. Fail fast.
+			if outcome == "" {
+				t.Fatalf("FailExecAfterN(%d): first run produced no outcome (harness error: %v)", k, runErr)
+			}
 			// Bucket 2's "crash" must actually halt the step. With the
 			// fixture's retry: {attempts: 1} (slice 2.6 Design question
 			// 7), the one-shot FailExecAfterN(k) is not recovered; the
