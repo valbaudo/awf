@@ -200,43 +200,9 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	runStartedAppended = true
 
-	// Step 10: build dispatcher + RunState; interpret.
-	dispatcher := &engine.LocalDispatcher{Backend: r.Backend, Handles: handles}
+	// Step 10: build RunState; dispatch engine.Run + write run.finished +
+	// map outcome → exit code. See cli/execute.go: the closing sequence is
+	// shared with `awf resume`.
 	rs := engine.NewRunState(id, digest, inputMap)
-
-	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout)
-
-	// Step 11: append run.finished (only if outcome is non-empty).
-	if outcome != "" {
-		finishedData, mErr := json.Marshal(engine.RunFinishedData{Outcome: string(outcome)})
-		if mErr != nil {
-			fprintf(stderr, "awf run: marshal run.finished: %v\n", mErr)
-			return ExitUsage
-		}
-		if err := log.Append(state.Event{
-			Type: engine.EventRunFinished,
-			Data: finishedData,
-		}); err != nil {
-			fprintf(stderr, "awf run: append run.finished: %v\n", err)
-			return ExitUsage
-		}
-		if err := log.Sync(); err != nil {
-			fprintf(stderr, "awf run: sync log after run.finished: %v\n", err)
-			return ExitUsage
-		}
-	}
-
-	// Step 12: outcome → exit code.
-	switch outcome {
-	case engine.OutcomeOK:
-		fprintf(stdout, "run %s: ok\n", id)
-		return ExitOK
-	case engine.OutcomeRetryableFailure, engine.OutcomePermanentFailure:
-		fprintf(stderr, "run %s: %s: %v\n", id, outcome, runErr)
-		return ExitRunFailed
-	default:
-		// Empty outcome — internal error.
-		fprintf(stderr, "run %s: internal error: %v\n", id, runErr)
-		return ExitUsage
-	}
+	return r.runAndFinish(ctx, ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "")
 }

@@ -32,8 +32,21 @@ func printResumeUsage(w io.Writer) {
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 }
 
-// cliResume implements `awf resume`. Slice 2.6 Task 2 ships the parsing +
-// refusal-only flow; Task 3 adds the happy-path interpreter call.
+// cliResume implements `awf resume <run-id> <path>`. The flow:
+//
+//  1. Parse flags + positional args.
+//  2. Open the existing log (NOT exclusive — this is the resume primitive).
+//  3. Open blobs; fold the log into a populated RunState.
+//  4. Refuse if a terminal event is in the log: run.finished (run is
+//     complete) or node.failed (Phase 2 has no try/catch; resuming would
+//     re-execute the failed step).
+//  5. Load + validate + digest the workflow file.
+//  6. Refuse on digest mismatch (spec §8 hard error).
+//  7. Signal context + Create container handles per the workflow's
+//     containers map (CLI-owned lifecycle, slice 2.5 Design question 3).
+//  8. Append run.resumed{epoch: rs.Epoch+1} + Sync.
+//  9. runAndFinish: build dispatcher, engine.Run, append run.finished,
+//     map outcome → exit code (shared with `awf run` — cli/execute.go).
 func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	fs0 := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
@@ -183,40 +196,10 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	}
 	rs.Epoch = newEpoch
 
-	// Step 10: re-enter engine.Run with the folded RunState. The interpreter's
-	// resume-checks (slice 2.5: runstate.Completed / Branches / LoopIters)
-	// skip already-committed nodes — committed steps are replayed, not
-	// recomputed (CLAUDE.md invariant).
-	dispatcher := &engine.LocalDispatcher{Backend: r.Backend, Handles: handles}
-	outcome, runErr := engine.Run(ctx, ld, &rs, dispatcher, log, blobs, clock.System{}, stdout)
-
-	// Step 11: append run.finished. Same shape as cli/run.go Step 11.
-	if outcome != "" {
-		finishedData, mErr := json.Marshal(engine.RunFinishedData{Outcome: string(outcome)})
-		if mErr != nil {
-			fprintf(stderr, "awf resume: marshal run.finished: %v\n", mErr)
-			return ExitUsage
-		}
-		if err := log.Append(state.Event{Type: engine.EventRunFinished, Data: finishedData}); err != nil {
-			fprintf(stderr, "awf resume: append run.finished: %v\n", err)
-			return ExitUsage
-		}
-		if err := log.Sync(); err != nil {
-			fprintf(stderr, "awf resume: sync log after run.finished: %v\n", err)
-			return ExitUsage
-		}
-	}
-
-	// Step 12: outcome → exit code (same table as cli/run.go Step 12).
-	switch outcome {
-	case engine.OutcomeOK:
-		fprintf(stdout, "run %s: ok (resumed)\n", runID)
-		return ExitOK
-	case engine.OutcomeRetryableFailure, engine.OutcomePermanentFailure:
-		fprintf(stderr, "run %s: %s: %v\n", runID, outcome, runErr)
-		return ExitRunFailed
-	default:
-		fprintf(stderr, "run %s: internal error: %v\n", runID, runErr)
-		return ExitUsage
-	}
+	// Step 10: dispatch engine.Run + write run.finished + map outcome → exit
+	// code. See cli/execute.go: the closing sequence is shared with `awf run`.
+	// The interpreter's resume-checks (slice 2.5: runstate.Completed /
+	// Branches / LoopIters) skip already-committed nodes — same code path on
+	// first run and resume (CLAUDE.md invariant).
+	return r.runAndFinish(ctx, ld, &rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)")
 }
