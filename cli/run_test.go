@@ -503,3 +503,117 @@ graph:
 		t.Errorf("run dir not at overridden path: %v", err)
 	}
 }
+
+func TestCLIRunOnTryFixture(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	// setup runs unconditionally.
+	fake.ProgramExec("echo setup", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("setup\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("setup\n")},
+	})
+	// try-step exits 1 — retry.attempts:1 in the fixture means one attempt only,
+	// so the fake needs exactly one programmed result. ExitCode:1 is a generic
+	// nonzero → retryable_failure → try.catch absorbs it.
+	fake.ProgramExec("exit 1", container.ExecResult{ExitCode: 1}, nil)
+	// catch-step runs because try.do failed.
+	fake.ProgramExec("echo caught", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("caught\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("caught\n")},
+	})
+	// finally-step always runs.
+	fake.ProgramExec("echo finally", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("finally\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("finally\n")},
+	})
+	// after runs because try.catch absorbed the failure, so the run continues ok.
+	fake.ProgramExec("echo after", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("after\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("after\n")},
+	})
+
+	stateDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	runner := newTestRunner(t, fake)
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "testdata/phase3/try.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want %d (ExitOK); try.catch should absorb the failure\nstderr: %s", rc, cli.ExitOK, stderr.String())
+	}
+
+	// Live-tap output must include catch-step, finally-step, and after outputs.
+	out := stdout.String()
+	for _, want := range []string{"caught", "finally", "after"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q; got:\n%s", want, out)
+		}
+	}
+
+	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var finishedOutcome string
+	for _, e := range events {
+		if e.Type == engine.EventRunFinished {
+			var d engine.RunFinishedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal run.finished: %v", err)
+			}
+			finishedOutcome = d.Outcome
+		}
+	}
+	if finishedOutcome != "ok" {
+		t.Errorf("run.finished outcome = %q, want %q", finishedOutcome, "ok")
+	}
+}
+
+func TestCLIRunOnSkipFixture(t *testing.T) {
+	t.Parallel()
+	// No containers used — skip never invokes the dispatcher.
+	fake := container.NewFake()
+
+	stateDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	runner := newTestRunner(t, fake)
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "testdata/phase3/skip.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want %d (ExitOK)\nstderr: %s", rc, cli.ExitOK, stderr.String())
+	}
+
+	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	// loop{max_iters:3, body:[skip]} must produce 3 loop.iter events.
+	var iters int
+	for _, e := range events {
+		if e.Type == engine.EventLoopIter {
+			iters++
+		}
+	}
+	if iters != 3 {
+		t.Errorf("loop.iter events = %d, want 3", iters)
+	}
+}

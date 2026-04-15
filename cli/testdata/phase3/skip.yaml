@@ -1,0 +1,12 @@
+workflow: phase3-skip
+version: 1
+
+containers:
+  unused:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+graph:
+  - loop:
+      max_iters: 3
+      body:
+        - skip: "skip iter"
