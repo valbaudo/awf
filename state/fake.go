@@ -52,6 +52,37 @@ func (l *InMemoryLog) Append(e Event) error {
 // test crash *between* Blobs.Put and Log.Append for a chosen attempt.
 func (l *InMemoryLog) FailAppendAfterN(n int) { l.failAppendAt = &n }
 
+// Reopen simulates a FileLog.OpenLog of an existing file: bumps the internal
+// epoch counter to (last-event.Epoch + 1) so subsequent Appends carry the new
+// epoch. On an empty log (no events) Reopen is a no-op — matches FileLog's
+// "fresh file → epoch=0" semantic.
+//
+// Conformance harness's crash-then-resume choreography calls this between the
+// simulated crash (programmed via Fail*AfterN) and the resume's first Append
+// (run.resumed). Mirrors what production FileLog.OpenLog does for free on an
+// existing file; the fake doesn't get that for free because it doesn't open
+// files.
+//
+// Returns error for signature symmetry with FileLog.OpenLog (which can fail on
+// I/O); the in-mem impl can't actually fail, but callers shouldn't rely on
+// that — Phase 4 Docker conformance may swap in a file-backed log where the
+// signature matters.
+func (l *InMemoryLog) Reopen() error {
+	if len(l.events) == 0 {
+		return nil
+	}
+	last := l.events[len(l.events)-1]
+	l.epoch = last.Epoch + 1
+	return nil
+}
+
+// ClearFault resets the FailAppendAfterN hook to "no fault programmed." Idempotent
+// on already-cleared. Conformance harness calls this before the resume so a
+// programmed crash doesn't replay on the resume's own Appends.
+func (l *InMemoryLog) ClearFault() {
+	l.failAppendAt = nil
+}
+
 func (*InMemoryLog) Sync() error { return nil }
 
 func (l *InMemoryLog) Fold() ([]Event, error) {
@@ -102,6 +133,11 @@ func (b *InMemoryBlobs) Put(content []byte) (string, error) {
 
 // FailPutAfterN — see InMemoryLog.FailAppendAfterN.
 func (b *InMemoryBlobs) FailPutAfterN(n int) { b.failPutAt = &n }
+
+// ClearFault resets the FailPutAfterN hook. See InMemoryLog.ClearFault.
+func (b *InMemoryBlobs) ClearFault() {
+	b.failPutAt = nil
+}
 
 func (b *InMemoryBlobs) Get(ref string) ([]byte, error) {
 	hashHex, err := parseRef(ref)

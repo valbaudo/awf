@@ -307,6 +307,26 @@ func TestFakeRecordsCallsHistory(t *testing.T) {
 	}
 }
 
+func TestFakeClearFaultResetsBothHooks(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	h, err := fake.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fake.ProgramExec("./x.sh", container.ExecResult{ExitCode: 0}, nil)
+	fake.FailExecAfterN(0)
+	fake.FailCaptureAfterN(0)
+	fake.ClearFault()
+	if _, _, err := fake.Exec(context.Background(), h, container.Cmd{Run: "./x.sh"}); err != nil {
+		t.Errorf("Exec after ClearFault: %v (want nil)", err)
+	}
+	// CaptureFiles on empty paths returns an empty slice without erroring.
+	if _, err := fake.CaptureFiles(context.Background(), h, nil); err != nil {
+		t.Errorf("CaptureFiles after ClearFault: %v (want nil)", err)
+	}
+}
+
 func TestFakeProgramExecDefensiveCopy(t *testing.T) {
 	// Mirror state.InMemoryBlobs.TestInMemoryBlobsDefensiveCopy. A caller that
 	// mutates the slices passed to ProgramExec after it returns must NOT
