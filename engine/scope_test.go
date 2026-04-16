@@ -3,7 +3,9 @@ package engine
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/valbaudo/awf/ir"
@@ -453,3 +455,39 @@ func mustParseRef(t *testing.T, src string) *template.Ref {
 // removes the boilerplate `exit := 0; ExitCode: &exit` pattern when
 // constructing NodeResult fixtures.
 func intp(n int) *int { return &n }
+
+func TestScopeResolveConcurrentWithCommit(t *testing.T) {
+	// Phase 3 slice 3.2 — inside a parallel branch, one goroutine calls
+	// runCodeStep (mutates RunState.Completed via RecordCompleted) while
+	// another evaluates a template through Scope.Resolve (reads
+	// RunState.Completed via LookupCompleted). Without the mutex, these
+	// race; Go panics on concurrent map read+write. Run under -race.
+	wf := &ir.Workflow{
+		ID:      "x",
+		Version: 1,
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "producer", Run: "echo", OutputSchema: &ir.JSONSchema{}},
+		},
+	}
+	rs := NewRunState("run-x", "digest", nil)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			rs.RecordCompleted(fmt.Sprintf("c-%d", i), NodeResult{Outcome: OutcomeOK})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			scope := NewScope(rs, wf, "")
+			ref := &template.Ref{Segments: []template.Segment{
+				{Ident: "step"}, {Ident: "producer"}, {Ident: "exit_code"},
+			}}
+			_, _ = scope.Resolve(ref) // err is allowed (unresolved); panic is the test failure
+		}
+	}()
+	wg.Wait()
+}

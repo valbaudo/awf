@@ -41,13 +41,13 @@ import (
 //   - Unknown Outcome string in node.completed (corruption — ParseOutcome catches it).
 //   - Non-`ok` Outcome in node.completed (corruption — only ok-steps commit; the
 //     extra check beyond ParseOutcome closes a gap a bare ParseOutcome would miss).
-func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
-	var rs RunState
+func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
+	rs := &RunState{}
 	if len(events) == 0 {
 		return rs, nil
 	}
 	if events[0].Type != EventRunStarted {
-		return RunState{}, fmt.Errorf("engine.Fold: first event must be %s, got %q at seq=%d",
+		return nil, fmt.Errorf("engine.Fold: first event must be %s, got %q at seq=%d",
 			EventRunStarted, events[0].Type, events[0].Seq)
 	}
 
@@ -65,13 +65,13 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 		switch e.Type {
 		case EventRunStarted:
 			if seenRunStarted {
-				return RunState{}, fmt.Errorf("engine.Fold: duplicate %s at seq=%d (corruption or writer bug)",
+				return nil, fmt.Errorf("engine.Fold: duplicate %s at seq=%d (corruption or writer bug)",
 					EventRunStarted, e.Seq)
 			}
 			seenRunStarted = true
 			var d RunStartedData
 			if err := json.Unmarshal(e.Data, &d); err != nil {
-				return RunState{}, fmt.Errorf("engine.Fold: parse %s at seq=%d: %w",
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d: %w",
 					EventRunStarted, e.Seq, err)
 			}
 			rs.RunID = d.RunID
@@ -80,12 +80,12 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 			if d.InputRef != "" {
 				raw, err := blobs.Get(d.InputRef)
 				if err != nil {
-					return RunState{}, fmt.Errorf("engine.Fold: read input ref %q: %w",
+					return nil, fmt.Errorf("engine.Fold: read input ref %q: %w",
 						d.InputRef, err)
 				}
 				var in map[string]any
 				if err := json.Unmarshal(raw, &in); err != nil {
-					return RunState{}, fmt.Errorf("engine.Fold: parse input blob %q: %w",
+					return nil, fmt.Errorf("engine.Fold: parse input blob %q: %w",
 						d.InputRef, err)
 				}
 				rs.Input = in
@@ -94,7 +94,7 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 		case EventRunResumed:
 			var d RunResumedData
 			if err := json.Unmarshal(e.Data, &d); err != nil {
-				return RunState{}, fmt.Errorf("engine.Fold: parse %s at seq=%d: %w",
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d: %w",
 					EventRunResumed, e.Seq, err)
 			}
 			rs.Epoch = d.Epoch
@@ -102,19 +102,19 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 		case EventNodeCompleted:
 			var d NodeCompletedData
 			if err := json.Unmarshal(e.Data, &d); err != nil {
-				return RunState{}, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
 					EventNodeCompleted, e.Seq, e.Path, err)
 			}
 			oc, err := ParseOutcome(d.Outcome)
 			if err != nil {
-				return RunState{}, fmt.Errorf("engine.Fold: %w at path=%q seq=%d", err, e.Path, e.Seq)
+				return nil, fmt.Errorf("engine.Fold: %w at path=%q seq=%d", err, e.Path, e.Seq)
 			}
 			// Spec §8 + CLAUDE.md commit invariant: only ok-steps commit. A node.completed
 			// with a non-ok outcome means corruption or a §8 violation by the writer.
 			// ParseOutcome alone would accept retryable_failure / permanent_failure here,
 			// which is wider than the invariant — this check closes the gap.
 			if oc != OutcomeOK {
-				return RunState{}, fmt.Errorf("engine.Fold: %s at path=%q seq=%d has outcome %q, only %q commits (spec §8)",
+				return nil, fmt.Errorf("engine.Fold: %s at path=%q seq=%d has outcome %q, only %q commits (spec §8)",
 					EventNodeCompleted, e.Path, e.Seq, oc, OutcomeOK)
 			}
 			nr := NodeResult{
@@ -126,12 +126,12 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 			if d.OutputsRef != "" {
 				raw, err := blobs.Get(d.OutputsRef)
 				if err != nil {
-					return RunState{}, fmt.Errorf("engine.Fold: read outputs ref %q at path=%q: %w",
+					return nil, fmt.Errorf("engine.Fold: read outputs ref %q at path=%q: %w",
 						d.OutputsRef, e.Path, err)
 				}
 				var out map[string]any
 				if err := json.Unmarshal(raw, &out); err != nil {
-					return RunState{}, fmt.Errorf("engine.Fold: parse outputs blob %q at path=%q: %w",
+					return nil, fmt.Errorf("engine.Fold: parse outputs blob %q at path=%q: %w",
 						d.OutputsRef, e.Path, err)
 				}
 				nr.Outputs = out
@@ -140,7 +140,7 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 			if d.StdoutRef != "" {
 				raw, err := blobs.Get(d.StdoutRef)
 				if err != nil {
-					return RunState{}, fmt.Errorf("engine.Fold: read stdout ref %q at path=%q: %w",
+					return nil, fmt.Errorf("engine.Fold: read stdout ref %q at path=%q: %w",
 						d.StdoutRef, e.Path, err)
 				}
 				nr.Stdout = raw
@@ -150,7 +150,7 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 		case EventBranchTaken:
 			var d BranchTakenData
 			if err := json.Unmarshal(e.Data, &d); err != nil {
-				return RunState{}, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
 					EventBranchTaken, e.Seq, e.Path, err)
 			}
 			rs.Branches[e.Path] = d.Which
@@ -158,7 +158,7 @@ func Fold(events []state.Event, blobs state.Blobs) (RunState, error) {
 		case EventLoopIter:
 			var d LoopIterData
 			if err := json.Unmarshal(e.Data, &d); err != nil {
-				return RunState{}, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
 					EventLoopIter, e.Seq, e.Path, err)
 			}
 			rs.LoopIters[e.Path] = d.N

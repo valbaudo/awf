@@ -1,6 +1,9 @@
 package engine
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // Outcome is the mechanical-only classification a step ends with (AWF standard §6).
 // Quality is the gate's job — there is no `success` / `semantic_failure` class.
@@ -83,6 +86,17 @@ type RunState struct {
 	Completed map[string]NodeResult // node.path → result
 	Branches  map[string]string     // if-node path → "then" | "else"
 	LoopIters map[string]int        // loop-node path → max completed iteration (1-based)
+
+	// mu serializes access to Completed / Branches / LoopIters. Phase 2
+	// callers were single-threaded; Phase 3 slice 3.2 (parallel) introduced
+	// concurrent branch goroutines.
+	//
+	// Slice 3.2+ callers MUST use the accessor methods (LookupCompleted /
+	// RecordCompleted / LookupBranch / RecordBranch / LookupLoopIters /
+	// RecordLoopIter). Direct field access is reserved for engine.Fold —
+	// Fold runs at resume time BEFORE engine.Run, never concurrent with
+	// any goroutine, so its direct map writes are race-free by construction.
+	mu sync.Mutex
 }
 
 // NewRunState constructs a fresh RunState with the three maps pre-allocated
@@ -105,4 +119,52 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		Branches:       map[string]string{},
 		LoopIters:      map[string]int{},
 	}
+}
+
+// LookupCompleted returns the NodeResult stored for path and a present flag.
+// Thread-safe; slice 3.2 (parallel) branches call this concurrently.
+func (rs *RunState) LookupCompleted(path string) (NodeResult, bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	nr, ok := rs.Completed[path]
+	return nr, ok
+}
+
+// RecordCompleted stores nr for path. Thread-safe.
+func (rs *RunState) RecordCompleted(path string, nr NodeResult) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.Completed[path] = nr
+}
+
+// LookupBranch returns the "then"|"else" recorded for if-path and a present
+// flag. Thread-safe.
+func (rs *RunState) LookupBranch(path string) (string, bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	which, ok := rs.Branches[path]
+	return which, ok
+}
+
+// RecordBranch stores which ("then"|"else") for if-path. Thread-safe.
+func (rs *RunState) RecordBranch(path string, which string) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.Branches[path] = which
+}
+
+// LookupLoopIters returns the latest committed iter for loop-path (0 if no
+// iter committed yet). Thread-safe.
+func (rs *RunState) LookupLoopIters(path string) int {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.LoopIters[path]
+}
+
+// RecordLoopIter stores k as the latest committed iter for loop-path.
+// Thread-safe.
+func (rs *RunState) RecordLoopIter(path string, k int) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.LoopIters[path] = k
 }

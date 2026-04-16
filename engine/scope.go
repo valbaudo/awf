@@ -138,7 +138,7 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 	if err != nil {
 		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: err.Error()}
 	}
-	nr, ok := s.rs.Completed[runtimePath]
+	nr, ok := s.rs.LookupCompleted(runtimePath)
 	if !ok {
 		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not yet committed (runtime path %q)", idSeg.Ident, runtimePath)
 	}
@@ -227,8 +227,8 @@ func (s *Scope) iterForLoop(loopBodyPath string) (int, error) {
 		return n, nil
 	}
 	loopPath := strings.TrimSuffix(loopBodyPath, ".body")
-	iter, ok := s.rs.LoopIters[loopPath]
-	if !ok || iter == 0 {
+	iter := s.rs.LookupLoopIters(loopPath)
+	if iter == 0 {
 		return 0, fmt.Errorf("loop %q has no completed iterations", loopPath)
 	}
 	return iter, nil

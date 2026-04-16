@@ -71,7 +71,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 		return "", err
 	}
 
-	var rs engine.RunState
+	var rs *engine.RunState
 	if isResume {
 		events, ferr := h.log.Fold()
 		if ferr != nil {
@@ -99,7 +99,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 			return "", err
 		}
 	} else {
-		rs = *engine.NewRunState(h.runID, digest, nil)
+		rs = engine.NewRunState(h.runID, digest, nil)
 		runStartedData, _ := json.Marshal(engine.RunStartedData{
 			RunID: h.runID, WorkflowDigest: digest,
 		})
@@ -127,7 +127,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 	}
 
 	dispatcher := &engine.LocalDispatcher{Backend: backend, Handles: handles}
-	outcome, runErr := engine.Run(ctx, ld, &rs, dispatcher, h.log, h.blobs, h.clk, nil)
+	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, nil)
 	return outcome, runErr
 }
 

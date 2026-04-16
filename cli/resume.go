@@ -201,5 +201,5 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// The interpreter's resume-checks (slice 2.5: runstate.Completed /
 	// Branches / LoopIters) skip already-committed nodes — same code path on
 	// first run and resume (CLAUDE.md invariant).
-	return r.runAndFinish(ctx, ld, &rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)")
+	return r.runAndFinish(ctx, ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)")
 }

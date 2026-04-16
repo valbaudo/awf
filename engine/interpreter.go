@@ -202,7 +202,7 @@ func runCodeStep(
 	clk clock.Clock,
 	tap io.Writer,
 ) (Outcome, error) {
-	if _, done := runstate.Completed[path]; done {
+	if _, done := runstate.LookupCompleted(path); done {
 		return OutcomeOK, nil
 	}
 
@@ -273,7 +273,7 @@ func runCodeStep(
 	if err != nil {
 		return "", fmt.Errorf("engine.Run: commit at path %q: %w", path, err)
 	}
-	runstate.Completed[path] = nr
+	runstate.RecordCompleted(path, nr)
 	return OutcomeOK, nil
 }
 
@@ -300,7 +300,7 @@ func runIf(
 	clk clock.Clock,
 	tap io.Writer,
 ) (Outcome, error) {
-	which, recorded := runstate.Branches[path]
+	which, recorded := runstate.LookupBranch(path)
 	if !recorded {
 		scope := NewScope(runstate, wf, path)
 		// Template-error class (parse: AWF4005; eval: AWF4001/4002/4003/4004) —
@@ -328,7 +328,7 @@ func runIf(
 		// branch.taken is observational — no Log.Sync (rides the next fsync per
 		// spec §8 cost lever). A branch.taken lost to a torn tail means resume
 		// re-evaluates the cond, which is correct first-run-equivalent behavior.
-		runstate.Branches[path] = which
+		runstate.RecordBranch(path, which)
 	}
 
 	switch which {
@@ -375,7 +375,7 @@ func runLoop(
 		return "", fmt.Errorf("engine: loop at path %q has neither until nor max_iters — validator regression (AWF §5.2 requires one); please report", path)
 	}
 
-	startK := runstate.LoopIters[path] + 1
+	startK := runstate.LookupLoopIters(path) + 1
 	for k := startK; ; k++ {
 		bodyParent := IterPath(path+".body", k)
 		// 1. Walk the body for iter K.
@@ -410,7 +410,7 @@ func runLoop(
 			return "", fmt.Errorf("engine.Run: append loop.iter at path %q iter %d: %w", path, k, err)
 		}
 		// loop.iter is observational — no Log.Sync (rides next fsync).
-		runstate.LoopIters[path] = k
+		runstate.RecordLoopIter(path, k)
 
 		// 3. Evaluate until (if set). True → exit. Scope rooted at bodyParent so
 		//    step.<id>.<field> refs resolve to THIS iter's outputs (spec §5.2

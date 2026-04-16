@@ -1,6 +1,10 @@
 package engine
 
-import "testing"
+import (
+	"fmt"
+	"sync"
+	"testing"
+)
 
 func TestParseOutcome(t *testing.T) {
 	cases := []struct {
@@ -150,4 +154,68 @@ func TestNodeResultCopyIsShallow(t *testing.T) {
 		t.Errorf("Stdout slice is unexpectedly NOT shared: original=%q cp=%q",
 			original.Stdout, cp.Stdout)
 	}
+}
+
+func TestRunStateMethodsRoundTrip(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+
+	rs.RecordCompleted("step1", NodeResult{Outcome: OutcomeOK})
+	got, ok := rs.LookupCompleted("step1")
+	if !ok || got.Outcome != OutcomeOK {
+		t.Errorf("Completed round-trip: got (%+v, %v), want (Outcome=ok, true)", got, ok)
+	}
+	if _, ok := rs.LookupCompleted("nope"); ok {
+		t.Errorf("Completed lookup for missing path: ok=true, want false")
+	}
+
+	rs.RecordBranch("if[0]", "then")
+	if which, ok := rs.LookupBranch("if[0]"); !ok || which != "then" {
+		t.Errorf("Branches round-trip: got (%q, %v), want (then, true)", which, ok)
+	}
+
+	rs.RecordLoopIter("loop[0]", 3)
+	if got := rs.LookupLoopIters("loop[0]"); got != 3 {
+		t.Errorf("LoopIters round-trip: got %d, want 3", got)
+	}
+	if got := rs.LookupLoopIters("loop[nope]"); got != 0 {
+		t.Errorf("LoopIters lookup for missing path: got %d, want 0 (zero value)", got)
+	}
+}
+
+func TestRunStateConcurrentAccessAllMaps(t *testing.T) {
+	// Stresses Completed + Branches + LoopIters concurrently. Run with
+	// `go test -race ./engine/` to verify race-freedom — Phase 3 slice 3.2
+	// (parallel) branches mutate all three maps from different goroutines.
+	rs := NewRunState("run-x", "digest", nil)
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(3 * N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			path := fmt.Sprintf("c-%d.s1", i)
+			rs.RecordCompleted(path, NodeResult{Outcome: OutcomeOK})
+			if _, ok := rs.LookupCompleted(path); !ok {
+				t.Errorf("Completed lookup after write %q: ok=false", path)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			path := fmt.Sprintf("if-%d", i)
+			rs.RecordBranch(path, "then")
+			if which, ok := rs.LookupBranch(path); !ok || which != "then" {
+				t.Errorf("Branches lookup after write %q: got (%q, %v)", path, which, ok)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			path := fmt.Sprintf("loop-%d", i)
+			rs.RecordLoopIter(path, i+1)
+			if got := rs.LookupLoopIters(path); got != i+1 {
+				t.Errorf("LoopIters lookup after write %q: got %d, want %d", path, got, i+1)
+			}
+		}()
+	}
+	wg.Wait()
 }
