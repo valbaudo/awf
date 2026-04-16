@@ -150,9 +150,10 @@ graph:
 `
 
 // skipInTryDoWorkflow exercises Bucket 6 sub-test "in_try_do": skip inside
-// try.do bypasses Catch, runs Finally, propagates ok. Catch contains a step
-// that — if run — fails the test (the fake has NO program for it; the
-// ProgramExec-miss error fires).
+// try.do bypasses Catch, runs Finally, and — per spec §5.6 — propagates past
+// the try to the workflow root, preventing siblings AFTER the try from running.
+// Steps that must NOT run are deliberately unprogrammed in the fake: the
+// ProgramExec-miss error would fire and surface the spec violation.
 const skipInTryDoWorkflow = `workflow: conformance-skip-try
 version: 1
 containers:
@@ -163,13 +164,17 @@ graph:
       do:
         - skip: "skip do"
       catch:
-        - id: must-not-run
+        - id: must-not-run-catch
           container: lab
-          run: "./must-not-run.sh"
+          run: "./must-not-run-catch.sh"
           retry: { attempts: 1 }
       finally:
-        - id: must-run
+        - id: must-run-finally
           container: lab
-          run: "./must-run.sh"
+          run: "./must-run-finally.sh"
           retry: { attempts: 1 }
+  - id: must-not-run-after-try
+    container: lab
+    run: "./must-not-run-after-try.sh"
+    retry: { attempts: 1 }
 `

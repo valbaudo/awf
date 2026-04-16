@@ -191,7 +191,10 @@ func TestRunTryFinallyErrorSupersedes(t *testing.T) {
 }
 
 func TestRunTrySkipInDoSkipsCatchRunsFinally(t *testing.T) {
-	// try.do = [skip]; catch = [should-not-run]; finally = [must-run] → ok, catch skipped, finally ran
+	// try.do = [skip]; catch = [should-not-run]; finally = [must-run]
+	// Spec §5.6: try is NOT a skip-target scope. SkipUnwind propagates THROUGH
+	// the try (with Finally running on the way), so runTry returns
+	// (OutcomeOK, &SkipUnwind{}) — not (OutcomeOK, nil).
 	try := &ir.Try{
 		Do: ir.NodeList{
 			&ir.Skip{Reason: "early exit"},
@@ -210,11 +213,56 @@ func TestRunTrySkipInDoSkipsCatchRunsFinally(t *testing.T) {
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
 	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
-	if oc != OutcomeOK || err != nil {
-		t.Errorf("Try{skip-in-do}: got (%q, %v); want (ok, nil)", oc, err)
+	if oc != OutcomeOK {
+		t.Errorf("Try{skip-in-do}: outcome got %q, want %q (skip is terminal-ok)", oc, OutcomeOK)
+	}
+	// Spec §5.6: try is NOT a skip-target scope. SkipUnwind must propagate
+	// through the try (with Finally running on the way) so the next enclosing
+	// scope (or Run) catches it.
+	var su *SkipUnwind
+	if !errors.As(err, &su) {
+		t.Errorf("Try{skip-in-do}: err = %v, want errors.As(*SkipUnwind) true (skip propagates THROUGH try per spec §5.6)", err)
 	}
 	if _, done := rs.Completed["try[0].finally.must-run"]; !done {
 		t.Errorf("Try{skip-in-do}: finally step not in Completed: %+v", rs.Completed)
+	}
+}
+
+func TestRunTrySkipInDoPropagatesToNextEnclosingScope(t *testing.T) {
+	// Spec §5.6: skip terminates the NEAREST enclosing loop/gate/parallel/run.
+	// Try is a passthrough — skip runs try's Finally on the way out, then
+	// continues propagating. Verify by wrapping the try in a workflow Graph
+	// and confirming a sibling AFTER the try does NOT run (Run absorbs the
+	// skip at workflow-root → run completes ok, sibling never reached).
+	try := &ir.Try{
+		Do: ir.NodeList{
+			&ir.Skip{Reason: "early exit"},
+		},
+		Finally: ir.NodeList{
+			&ir.CodeStep{ID: "must-run", Run: "echo finally"},
+		},
+	}
+	siblingAfter := &ir.CodeStep{ID: "must-not-run-after-try", Run: "echo after"}
+	disp, logger, blobs := tryTestRig(t, map[string]scriptedResult{
+		"must-run": {outcome: OutcomeOK},
+		// must-not-run-after-try deliberately NOT scripted — if it runs, scriptedDispatcher.t.Fatalf.
+	})
+	wf := &ir.Workflow{
+		ID:      "x",
+		Version: 1,
+		Graph:   ir.NodeList{try, siblingAfter},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+	rs := NewRunState("run-x", "digest", nil)
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("Run with skip-in-try.do + sibling-after-try: (oc, err) = (%q, %v), want (ok, nil) — skip should propagate through try to workflow root, terminating siblings", oc, err)
+	}
+	if _, done := rs.Completed["try[0].finally.must-run"]; !done {
+		t.Errorf("finally step not in Completed: %+v", rs.Completed)
+	}
+	if _, done := rs.Completed["must-not-run-after-try"]; done {
+		t.Errorf("sibling after try ran; spec §5.6 says skip propagates past try to workflow root: %+v", rs.Completed)
 	}
 }
 

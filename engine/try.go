@@ -20,10 +20,10 @@ import (
 //
 //  1. Run Do (recursive walk over n.Do).
 //  2. Inspect Do's result:
-//     a. *SkipUnwind escaped Do → terminal-ok unwind. Skip Catch. (runSkip
-//     records the skip sentinel; runTry as the target scope appends a
-//     node.skipped{path=tryPath} for trace.) Run Finally. Return
-//     (OutcomeOK, nil) unless ctx is cancelled or Finally errors.
+//     a. *SkipUnwind escaped Do → try is a PASSTHROUGH per spec §5.6. Try is
+//     NOT a target scope for skip. Skip Catch. Append node.skipped{path=tryPath}
+//     for trace (§5.3). Run Finally. Then RE-RAISE the SkipUnwind to the
+//     caller so it propagates to the next enclosing loop/gate/parallel/run.
 //     b. err != nil (any other) → run Catch if present; Catch's err, if
 //     any, becomes the propagating error; if no Catch, Do's err propagates.
 //     c. err == nil, oc == ok → skip Catch.
@@ -66,17 +66,25 @@ func runTry(
 		propagatedErr = catchErr
 	}
 
-	// 2a continued: if Do skipped, propagated state is (OutcomeOK, nil) —
-	// Catch was skipped; runTry appends a node.skipped for trace.
-	// If appendNodeSkipped fails, we track the error in pendingErr so that
-	// Finally still runs ("ALWAYS run Finally") before we propagate the error.
+	// 2a continued: if Do skipped, runTry is a PASSTHROUGH — spec §5.6 lists
+	// loop/gate/parallel/run as the skip target scopes; try is NOT listed.
+	// Append node.skipped{path=tryPath} for trace (§5.3). Then re-raise
+	// the SkipUnwind so the next enclosing scope (Run, runLoop, future
+	// parallel/gate) catches it.
+	// If appendNodeSkipped fails, track in pendingErr so that Finally still
+	// runs ("ALWAYS run Finally") before we propagate the error.
 	var pendingErr error
 	if skipped {
-		propagatedOC = OutcomeOK
-		propagatedErr = nil
+		// Spec §5.6: skip terminates the NEAREST enclosing loop/gate/parallel/run.
+		// Try is NOT a target scope — skip propagates THROUGH a try (running
+		// Finally on the way per spec §5.3). Re-raise the SkipUnwind after Finally
+		// runs so the next enclosing scope catches it.
 		if appendErr := appendNodeSkipped(log, path, su.Reason); appendErr != nil {
 			pendingErr = appendErr
 		}
+		// propagatedErr stays as the SkipUnwind from doErr — Finally runs, then
+		// (after Finally clean) we re-raise it to the caller.
+		propagatedOC = OutcomeOK // SkipUnwind carries the unwind signal; outcome is OK
 	}
 
 	// 3. ALWAYS run Finally (even on ctx-cancel, even if Catch errored).

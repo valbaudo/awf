@@ -69,24 +69,32 @@ func testSkipInLoopBody(t *testing.T, factory BackendFactory) {
 func testSkipInTryDo(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	programmedFactory := preProgramFake(t, factory, []execProgram{
-		// must-not-run.sh is DELIBERATELY not programmed — if Catch runs,
-		// the fake's ProgramExec-miss returns an error and the test catches it.
-		{cmd: "./must-run.sh", res: container.ExecResult{ExitCode: 0}},
+		// Only must-run-finally.sh is programmed. The other two steps
+		// (must-not-run-catch, must-not-run-after-try) are DELIBERATELY not
+		// programmed — if they run, the fake's ProgramExec-miss fires an error
+		// and the test catches the spec violation.
+		{cmd: "./must-run-finally.sh", res: container.ExecResult{ExitCode: 0}},
 	})
 	h := newHarness(t, programmedFactory, skipInTryDoWorkflow)
 	oc, err := h.runWorkflow(t)
 	if err != nil || oc != engine.OutcomeOK {
-		t.Fatalf("Bucket 6 in_try_do: (oc, err) = (%q, %v), want (ok, nil) — Skip in do should bypass Catch and run Finally", oc, err)
+		t.Fatalf("Bucket 6 in_try_do: (oc, err) = (%q, %v), want (ok, nil) — Skip in do should bypass Catch, run Finally, and propagate past try to workflow root", oc, err)
 	}
 	postEvents := mustFoldEvents(t, h)
 	postRS, ferr := engine.Fold(postEvents, h.blobs)
 	if ferr != nil {
 		t.Fatalf("Fold post-run: %v", ferr)
 	}
-	if _, mustRun := postRS.Completed["try[0].finally.must-run"]; !mustRun {
-		t.Errorf("Bucket 6 in_try_do: finally step must-run not in Completed: %+v", postRS.Completed)
+	// Finally MUST have run.
+	if _, mustRun := postRS.Completed["try[0].finally.must-run-finally"]; !mustRun {
+		t.Errorf("Bucket 6 in_try_do: finally step must-run-finally not in Completed: %+v", postRS.Completed)
 	}
-	if _, mustNotRun := postRS.Completed["try[0].catch.must-not-run"]; mustNotRun {
-		t.Errorf("Bucket 6 in_try_do: catch step must-not-run IS in Completed — catch should have been skipped (Skip in do bypasses Catch): %+v", postRS.Completed)
+	// Catch must NOT have run (skip bypasses catch).
+	if _, mustNotRun := postRS.Completed["try[0].catch.must-not-run-catch"]; mustNotRun {
+		t.Errorf("Bucket 6 in_try_do: catch step must-not-run-catch IS in Completed — catch should have been skipped (Skip in do bypasses Catch): %+v", postRS.Completed)
+	}
+	// Sibling after the try must NOT have run (spec §5.6: skip propagates past try).
+	if _, mustNotRun := postRS.Completed["must-not-run-after-try"]; mustNotRun {
+		t.Errorf("Bucket 6 in_try_do: sibling must-not-run-after-try IS in Completed — skip should propagate through try to workflow root per spec §5.6: %+v", postRS.Completed)
 	}
 }
