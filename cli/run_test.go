@@ -606,14 +606,32 @@ func TestCLIRunOnSkipFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fold: %v", err)
 	}
-	// loop{max_iters:3, body:[skip]} must produce 3 loop.iter events.
-	var iters int
+	// loop{max_iters:3, body:[skip]} must produce 3 loop.iter events
+	// (each skipped iter records loop.iter per Phase 3 §B design question 2)
+	// and 3 node.skipped events (one per skipped iter, observational).
+	var iters, skipped int
+	var finishedOutcome string
 	for _, e := range events {
-		if e.Type == engine.EventLoopIter {
+		switch e.Type {
+		case engine.EventLoopIter:
 			iters++
+		case engine.EventNodeSkipped:
+			skipped++
+		case engine.EventRunFinished:
+			var d engine.RunFinishedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal run.finished: %v", err)
+			}
+			finishedOutcome = d.Outcome
 		}
 	}
 	if iters != 3 {
 		t.Errorf("loop.iter events = %d, want 3", iters)
+	}
+	if skipped != 3 {
+		t.Errorf("node.skipped events = %d, want 3 (one per skipped iter)", skipped)
+	}
+	if finishedOutcome != "ok" {
+		t.Errorf("run.finished outcome = %q, want %q", finishedOutcome, "ok")
 	}
 }

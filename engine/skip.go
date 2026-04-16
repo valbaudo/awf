@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/state"
 )
 
 // SkipUnwind is the typed sentinel `Skip` (spec §5.6) raises to unwind the
@@ -49,4 +51,16 @@ func (e *SkipUnwind) Error() string {
 // reads TargetPath in slice 3.1.
 func runSkip(skip *ir.Skip) (Outcome, error) {
 	return OutcomeOK, &SkipUnwind{Reason: skip.Reason}
+}
+
+// appendNodeSkipped emits a node.skipped event for trace projection (Phase 6
+// obs). Fold ignores the event; it's purely observational. Called by the three
+// scope handlers that recognize SkipUnwind: runTry (engine/try.go), runLoop
+// (engine/interpreter.go), and Run (engine/interpreter.go).
+func appendNodeSkipped(log state.Log, path, reason string) error {
+	data, mErr := json.Marshal(NodeSkippedData{Path: path, Reason: reason})
+	if mErr != nil {
+		return mErr
+	}
+	return log.Append(state.Event{Type: EventNodeSkipped, Path: path, Data: data})
 }

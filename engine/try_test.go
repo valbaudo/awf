@@ -266,6 +266,41 @@ func TestRunTrySkipInDoPropagatesToNextEnclosingScope(t *testing.T) {
 	}
 }
 
+func TestRunTrySkipAppendFailsStillRunsFinally(t *testing.T) {
+	// The pendingErr machinery (Task 4 fixup 42482b3) ensures Finally runs
+	// even when appendNodeSkipped fails. Without it, a transient log-append
+	// failure during a skip would silently skip Finally cleanup, breaking
+	// the "ALWAYS run Finally" invariant from design §B step 3.
+	try := &ir.Try{
+		Do: ir.NodeList{
+			&ir.Skip{Reason: "skip do"},
+		},
+		Finally: ir.NodeList{
+			&ir.CodeStep{ID: "must-run", Run: "echo finally"},
+		},
+	}
+	disp, _, blobs := tryTestRig(t, map[string]scriptedResult{
+		"must-run": {outcome: OutcomeOK},
+	})
+	clk := &clock.Fake{}
+	logger := state.NewInMemoryLog(clk)
+	// Fail the first Append: that's the node.skipped event runTry tries to
+	// emit when SkipUnwind escapes Do. The pendingErr machinery must capture
+	// this and STILL run Finally before returning.
+	logger.FailAppendAfterN(0)
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
+	rs := NewRunState("run-x", "digest", nil)
+	_, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, clk, nil)
+	if err == nil {
+		t.Error("expected non-nil err from appendNodeSkipped failure, got nil")
+	}
+	// The critical invariant: Finally MUST have run even though appendNodeSkipped
+	// failed (in fact, even though the runTry surface returns an internal error).
+	if _, done := rs.Completed["try[0].finally.must-run"]; !done {
+		t.Errorf("Finally MUST run even on appendNodeSkipped failure (\"ALWAYS run Finally\" invariant): Completed = %+v", rs.Completed)
+	}
+}
+
 func TestRunTryCtxCancelledAfterFinally(t *testing.T) {
 	// ctx cancelled before run → Finally still runs; runTry returns ctx.Err()
 	ctx, cancel := context.WithCancel(context.Background())

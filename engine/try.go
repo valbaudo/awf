@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 
@@ -112,15 +111,4 @@ func runTry(
 	}
 
 	return propagatedOC, propagatedErr
-}
-
-// appendNodeSkipped emits a node.skipped event for trace projection (Phase 6
-// obs). Fold ignores the event; it's purely observational. Used by runTry
-// (this file) and runLoop / Run (interpreter.go) in later slices.
-func appendNodeSkipped(log state.Log, path, reason string) error {
-	data, mErr := json.Marshal(NodeSkippedData{Path: path, Reason: reason})
-	if mErr != nil {
-		return mErr
-	}
-	return log.Append(state.Event{Type: EventNodeSkipped, Path: path, Data: data})
 }

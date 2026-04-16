@@ -122,26 +122,23 @@ graph:
 `
 
 // skipAtRootWorkflow exercises Bucket 6 sub-test "at_root": a single Skip
-// node at the workflow root. The validator (Phase 1.4) requires containers
-// to be non-empty in some scenarios; this fixture declares a placeholder
-// container even though no step uses it — keeps the loader happy.
+// node at the workflow root. The validator accepts an empty `containers: {}`
+// for workflows where no step references a container — skip never invokes
+// the dispatcher, so no container is needed (verified empirically).
 const skipAtRootWorkflow = `workflow: conformance-skip-root
 version: 1
-containers:
-  unused:
-    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+containers: {}
 graph:
   - skip: "early exit"
 `
 
 // skipInLoopBodyWorkflow exercises Bucket 6 sub-test "in_loop_body":
 // loop{max_iters:3, body:[skip]} — each iter ends via skip, loop runs all
-// 3 iters, 3 loop.iter + 3 node.skipped recorded.
+// 3 iters, 3 loop.iter + 3 node.skipped recorded. No container needed (the
+// body never reaches a step that uses one).
 const skipInLoopBodyWorkflow = `workflow: conformance-skip-loop
 version: 1
-containers:
-  unused:
-    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+containers: {}
 graph:
   - loop:
       max_iters: 3

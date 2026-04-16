@@ -34,13 +34,16 @@ var ErrNodeNotImplementedInPhase3 = errors.New("engine: node kind not implemente
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
 // recursively; for each node, computes its runtime path; consults runstate to
-// skip committed nodes (the resume invariant — slice 2.6 will exercise the
-// non-empty-Completed case, but this is the same code path); otherwise
-// dispatches per-kind. Halts on the first error or non-ok outcome (Phase 2 has
-// no try/catch — propagation is "stop the run").
+// skip committed nodes (the resume invariant — slice 2.6 exercises the
+// non-empty-Completed case); otherwise dispatches per-kind. Halts on the first
+// error or non-ok outcome that escapes any try/catch enclosing it (slice 3.1
+// added try/catch; future slices add gate/parallel/map — each defines its own
+// absorption rule per Phase 3 spec §5).
 //
 // Returns:
-//   - (OutcomeOK, nil)                              — every node committed ok
+//   - (OutcomeOK, nil)                              — every node committed ok,
+//     OR a Skip unwound to the
+//     workflow root (spec §5.6)
 //   - (OutcomeRetryableFailure | OutcomePermanentFailure, <step's err>)
 //     — a step terminated; the
 //     run.finished event records
