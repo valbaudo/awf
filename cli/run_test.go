@@ -635,3 +635,91 @@ func TestCLIRunOnSkipFixture(t *testing.T) {
 		t.Errorf("run.finished outcome = %q, want %q", finishedOutcome, "ok")
 	}
 }
+
+func TestCLIRunOnParallelFixture(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("echo pb0", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("pb0\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("pb0\n")},
+	})
+	fake.ProgramExec("echo pb1", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("pb1\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("pb1\n")},
+	})
+	fake.ProgramExec("echo pb2", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("pb2\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("pb2\n")},
+	})
+	fake.ProgramExec("echo after", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("after\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("after\n")},
+	})
+
+	stateDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	runner := newTestRunner(t, fake)
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "testdata/phase3/parallel.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want %d (ExitOK)\nstderr: %s", rc, cli.ExitOK, stderr.String())
+	}
+
+	// Live-tap output: each branch's stdout was prefixed with [step.id].
+	// Order is non-deterministic (concurrent goroutines) — only assert
+	// presence, not ordering.
+	out := stdout.String()
+	for _, want := range []string{"[pb0] pb0", "[pb1] pb1", "[pb2] pb2", "[after] after"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q; got %q", want, out)
+		}
+	}
+
+	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var completed, finished int
+	var finishedOutcome string
+	for _, e := range events {
+		switch e.Type {
+		case engine.EventNodeCompleted:
+			completed++
+		case engine.EventRunFinished:
+			finished++
+			var d engine.RunFinishedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal run.finished: %v", err)
+			}
+			finishedOutcome = d.Outcome
+		}
+	}
+	if completed != 4 {
+		t.Errorf("node.completed events = %d, want 4 (pb0 + pb1 + pb2 + after)", completed)
+	}
+	if finished != 1 || finishedOutcome != "ok" {
+		t.Errorf("run.finished = %d events outcome=%q, want 1/ok", finished, finishedOutcome)
+	}
+
+	// Verify Seq monotonicity — branch commits interleave by Seq through
+	// the serializingLog wrapper (design §C).
+	var lastSeq uint64
+	for _, e := range events {
+		if e.Seq <= lastSeq {
+			t.Errorf("non-monotonic Seq: e.Seq=%d after lastSeq=%d", e.Seq, lastSeq)
+		}
+		lastSeq = e.Seq
+	}
+}

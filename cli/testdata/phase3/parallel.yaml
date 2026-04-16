@@ -1,0 +1,23 @@
+workflow: phase3-parallel
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  c1:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  c2:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - parallel:
+      - id: pb0
+        container: c0
+        run: echo pb0
+      - id: pb1
+        container: c1
+        run: echo pb1
+      - id: pb2
+        container: c2
+        run: echo pb2
+  - id: after
+    container: c0
+    run: echo after
