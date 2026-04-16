@@ -493,6 +493,29 @@ func TestFold_NodeCompletedWithNonOkOutcomeIsError(t *testing.T) {
 	}
 }
 
+func TestFold_NodeCompletedRejectedFails(t *testing.T) {
+	// Spec §8 + CLAUDE.md commit invariant: only ok-steps commit.
+	// A node.completed event with outcome:"rejected" is corruption — a gate
+	// rejection never commits as node.completed (the gate.attempt event with
+	// attempt_outcome:"attempt_rejected" + the OutcomeRejected return from the
+	// gate handler are how rejections propagate, NOT node.completed).
+	// Fold MUST reject this event class to surface corruption immediately.
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventNodeCompleted, Path: "gate[0]",
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "rejected"})},
+	}
+	_, err := Fold(events, blobs)
+	if err == nil {
+		t.Fatal("Fold accepted node.completed{outcome:\"rejected\"}: want error per spec §8")
+	}
+	if !strings.Contains(err.Error(), "only") || !strings.Contains(err.Error(), "commits") {
+		t.Errorf("Fold error = %q, want mention of \"only %q commits\" (spec §8 wording)", err, OutcomeOK)
+	}
+}
+
 // TestFold_MalformedDataPerEventType covers JSON-unmarshal failures on every dispatch
 // case the fold handles. The pre-existing TestFold_MalformedDataIsError only hits the
 // run.started branch — this table covers run.resumed / node.completed / branch.taken

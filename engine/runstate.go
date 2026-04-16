@@ -19,6 +19,13 @@ const (
 	// OutcomePermanentFailure — agent refusal / policy block, or an exit code in
 	// non_retryable_exit_codes.
 	OutcomePermanentFailure Outcome = "permanent_failure"
+	// OutcomeRejected — a gate exhausted MaxAttempts without passing (Phase 3
+	// slice 3.3, spec §5.5). NOT a step-level outcome — the gate executor
+	// produces it; ClassifyOutcome never returns it. Per spec §8, only ok-steps
+	// commit: a node.completed event with outcome:"rejected" is corruption
+	// (Fold rejects it). Rejections propagate via the gate handler's
+	// return tuple + the gate.attempt event's attempt_outcome field.
+	OutcomeRejected Outcome = "rejected"
 )
 
 // ParseOutcome validates an on-disk / on-wire outcome string and returns the typed
@@ -29,11 +36,11 @@ const (
 // this function instead of casting `Outcome(s)` directly.
 func ParseOutcome(s string) (Outcome, error) {
 	switch Outcome(s) {
-	case OutcomeOK, OutcomeRetryableFailure, OutcomePermanentFailure:
+	case OutcomeOK, OutcomeRetryableFailure, OutcomePermanentFailure, OutcomeRejected:
 		return Outcome(s), nil
 	default:
-		return "", fmt.Errorf("engine: unknown outcome %q (want %q | %q | %q)",
-			s, OutcomeOK, OutcomeRetryableFailure, OutcomePermanentFailure)
+		return "", fmt.Errorf("engine: unknown outcome %q (want %q | %q | %q | %q)",
+			s, OutcomeOK, OutcomeRetryableFailure, OutcomePermanentFailure, OutcomeRejected)
 	}
 }
 
