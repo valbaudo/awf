@@ -12,17 +12,25 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
-// scriptedDispatcher is a tiny test dispatcher. For each Run call it consults
-// the script keyed by step id and returns the scripted outcome / error.
-// Used by the Try matrix tests.
+// scriptedDispatcher is a tiny test dispatcher shared by the Try (slice 3.1)
+// and Parallel (slice 3.2) handler tests. For each Run call it consults the
+// script keyed by step id and returns the scripted outcome / error.
+//
+// If a result's ctxAware flag is set, Run pre-checks ctx.Err() and returns
+// (RetryableFailure, ctx.Err()) without consulting the script — mirrors what
+// container.Fake does. The ctx-unaware path is the default (Phase 2 / slice
+// 3.1 patterns); ctx-aware is required to exercise sibling-cancellation
+// semantics (slice 3.2 parallel + the slice 3.1 try-finally-on-ctx-cancel
+// regression test).
 type scriptedDispatcher struct {
 	t      *testing.T
 	script map[string]scriptedResult // step id → result
 }
 
 type scriptedResult struct {
-	outcome Outcome
-	err     error // if non-nil, the dispatcher returns this error directly
+	outcome  Outcome
+	err      error // if non-nil, the dispatcher returns this error directly
+	ctxAware bool  // if true, return (RetryableFailure, ctx.Err()) when ctx is cancelled
 }
 
 func (d *scriptedDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error) {
@@ -33,6 +41,13 @@ func (d *scriptedDispatcher) Run(ctx context.Context, intent NodeIntent) (Dispat
 	res, ok := d.script[cs.ID]
 	if !ok {
 		d.t.Fatalf("scriptedDispatcher: no script entry for step %q at path %q", cs.ID, intent.Path)
+	}
+	if res.ctxAware {
+		if err := ctx.Err(); err != nil {
+			closed := make(chan container.IOChunk)
+			close(closed)
+			return DispatchResult{Outcome: OutcomeRetryableFailure}, closed, err
+		}
 	}
 	closedCh := make(chan container.IOChunk)
 	close(closedCh)
@@ -417,6 +432,57 @@ func TestSkipInsideLoopEndsIterationLoopContinues(t *testing.T) {
 	}
 	if rs.LoopIters["loop[0]"] != 3 {
 		t.Errorf("RunState.LoopIters[loop[0]] = %d, want 3", rs.LoopIters["loop[0]"])
+	}
+}
+
+func TestRunTryFinallyRunsEvenWhenCtxCancelledMidDo(t *testing.T) {
+	// Phase 3 design §B step 3: "ALWAYS run Finally (even on ctx-cancel)."
+	// Pre-fix: runTry passed the cancelled ctx straight through to Finally;
+	// a ctx-aware dispatcher (like container.Fake) would short-circuit each
+	// finally step via its pre-Run ctx.Err() check, so finally never
+	// committed. Post-fix: runTry passes context.WithoutCancel(ctx) to
+	// Finally, so dispatch proceeds normally; the step 5 ctx-check at the
+	// bottom of runTry still propagates the cancellation to the caller.
+	//
+	// Slice 3.2's Bucket 4b parallel_cancellation conformance test is the
+	// primary regression guard (it uses the real container.Fake and was
+	// flaky pre-fix). This engine-level test pins the contract so a future
+	// refactor of engine/try.go can't silently revert it without a red bar
+	// here.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel; simulates sibling-failure cancelling gctx mid-do
+	try := &ir.Try{
+		Do: ir.NodeList{
+			&ir.CodeStep{ID: "do-step", Run: "echo"},
+		},
+		Finally: ir.NodeList{
+			&ir.CodeStep{ID: "must-run-finally", Run: "echo"},
+		},
+	}
+	// ctxAware: true so the dispatcher mirrors container.Fake's pre-Run
+	// ctx.Err() short-circuit. Pre-fix, runTry would pass the cancelled
+	// ctx to Finally → must-run-finally's dispatch short-circuits, never
+	// commits. Post-fix, runTry passes WithoutCancel(ctx) → ctx.Err() in
+	// the dispatcher returns nil → step runs and commits.
+	disp, logger, blobs := tryTestRig(t, map[string]scriptedResult{
+		"do-step":          {outcome: OutcomeOK, ctxAware: true},
+		"must-run-finally": {outcome: OutcomeOK, ctxAware: true},
+	})
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
+	rs := NewRunState("run-x", "digest", nil)
+	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	// Step 5 ctx-check: cancellation must still propagate to caller.
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want errors.Is(context.Canceled) true (step 5 ctx-check must still propagate cancellation)", err)
+	}
+	if oc != OutcomeRetryableFailure {
+		t.Errorf("outcome = %q, want %q (cancelled run)", oc, OutcomeRetryableFailure)
+	}
+	// CRITICAL: finally MUST have committed despite ctx-cancel. Pre-fix
+	// this was the failing assertion (ctx-aware dispatch in Finally
+	// short-circuited before reaching the commit path).
+	if _, done := rs.LookupCompleted("try[0].finally.must-run-finally"); !done {
+		t.Errorf("Finally must run even on ctx-cancel (Phase 3 design §B step 3): must-run-finally not in Completed = %+v", rs.Completed)
 	}
 }
 

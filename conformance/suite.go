@@ -10,9 +10,11 @@
 //     Log.Append(node.completed) leaves orphan blobs but no log entry;
 //     every node.completed references a present blob.
 //   - Propagation (Bucket 4): try.catch absorbs a retry-exhausted failure
-//     (caught sub-test); without try the failure propagates and halts the
-//     run (uncaught sub-test). Slice 3.2 adds a third sub-test (parallel
-//     sibling cancellation) under the same bucket.
+//     (caught); without try the failure propagates (uncaught). Slice 3.2
+//     adds: a parallel with a failing branch has siblings observe
+//     ctx-cancel + run finally blocks + propagate to enclosing try
+//     (parallel_cancellation); a mid-parallel crash resumes with committed
+//     branches replayed and uncommitted re-executed (parallel_resume_consistency).
 //   - Skip (Bucket 6): skip at run root completes ok with node.skipped in
 //     log (at_root); skip in loop body records loop.iter + node.skipped per
 //     iter (in_loop_body); skip in try.do bypasses Catch, runs Finally,

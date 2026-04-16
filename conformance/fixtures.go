@@ -175,3 +175,87 @@ graph:
     run: "./must-not-run-after-try.sh"
     retry: { attempts: 1 }
 `
+
+// parallelCancellationWorkflow — Bucket 4b parallel_cancellation: try.catch
+// wraps a 3-branch parallel. Branch 0 fails (retry-exhausting); branches
+// 1+2 are each try { do, finally }. Distinct containers (AWF1010).
+const parallelCancellationWorkflow = `workflow: conformance-parallel-cancel
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  c1:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  c2:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - try:
+      do:
+        - parallel:
+            - id: b0-failing
+              container: c0
+              run: "./b0-failing.sh"
+              retry: { attempts: 1 }
+            - try:
+                do:
+                  - id: b1-do
+                    container: c1
+                    run: "./b1-do.sh"
+                    retry: { attempts: 1 }
+                finally:
+                  - id: b1-finally
+                    container: c1
+                    run: "./b1-finally.sh"
+                    retry: { attempts: 1 }
+            - try:
+                do:
+                  - id: b2-do
+                    container: c2
+                    run: "./b2-do.sh"
+                    retry: { attempts: 1 }
+                finally:
+                  - id: b2-finally
+                    container: c2
+                    run: "./b2-finally.sh"
+                    retry: { attempts: 1 }
+      catch:
+        - id: outer-catch
+          container: c0
+          run: "./outer-catch.sh"
+          retry: { attempts: 1 }
+`
+
+// parallelResumeWorkflow — Bucket 4b parallel_resume_consistency:
+// simple 3-branch parallel followed by a sequential after-step. The test
+// programs pb2.sh to fail deterministically on first run, then re-programs
+// it to succeed on resume. Expectation: pb0+pb1 commit pre-crash, pb2
+// doesn't; resume skips committed (replays from log), re-runs only pb2 +
+// after.
+const parallelResumeWorkflow = `workflow: conformance-parallel-resume
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  c1:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  c2:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - parallel:
+      - id: pb0
+        container: c0
+        run: "./pb0.sh"
+        retry: { attempts: 1 }
+      - id: pb1
+        container: c1
+        run: "./pb1.sh"
+        retry: { attempts: 1 }
+      - id: pb2
+        container: c2
+        run: "./pb2.sh"
+        retry: { attempts: 1 }
+  - id: after
+    container: c0
+    run: "./after.sh"
+    retry: { attempts: 1 }
+`

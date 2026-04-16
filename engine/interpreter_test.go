@@ -334,7 +334,8 @@ func TestRunPhase2UnsupportedKindsAllErrorWithSentinel(t *testing.T) {
 	}{
 		{"agent", &ir.AgentStep{ID: "ag", Container: "lab", Uses: "anthropic/claude-code"}},
 		{"signal", &ir.SignalStep{ID: "sig", Await: "human_review"}},
-		{"parallel", &ir.Parallel{Children: ir.NodeList{&ir.CodeStep{ID: "x", Container: "lab", Run: "./x.sh"}}}},
+		// "parallel" was here pre-slice-3.2; runParallel now ships in
+		// engine/parallel.go and its tests live in engine/parallel_test.go.
 		{"gate", &ir.Gate{
 			Generate:    ir.NodeList{&ir.CodeStep{ID: "g", Container: "lab", Run: "./g.sh"}},
 			Evaluate:    ir.NodeList{&ir.CodeStep{ID: "e", Container: "lab", Run: "./e.sh"}},

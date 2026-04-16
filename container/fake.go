@@ -3,17 +3,23 @@ package container
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // Fake is the in-memory Backend used by Phase 2 engine tests and the
 // conformance suite (slice 2.6). Deterministic: monotonic-counter handle
-// IDs, no time.Now, no OS-level process spawning, no goroutines. Single-
-// writer in Phase 2 (matches state.InMemoryLog precedent); Phase 3
-// (parallel) will add per-method synchronization when it lands.
+// IDs, no time.Now, no OS-level process spawning, no goroutines.
+//
+// Thread-safe (Phase 3 slice 3.2): per-method mutex protects handles /
+// execTable / streamTable / Calls / counters so parallel branch
+// goroutines dispatching to distinct containers (all backed by the same
+// *Fake via the harness's Handles map) can race-cleanly.
 //
 // Phase 4 Docker impl will live alongside this in container/docker.go;
 // backendtest.RunBasicContract runs against both unchanged.
 type Fake struct {
+	mu sync.Mutex
+
 	handles map[string]*fakeHandle
 	nextID  int
 
@@ -55,6 +61,8 @@ func (*Fake) Capabilities() Caps {
 }
 
 func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.nextID++
 	id := fmt.Sprintf("fake-%d", f.nextID)
 	f.handles[id] = &fakeHandle{files: map[string][]byte{}}
@@ -71,6 +79,8 @@ func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (ExecResult, <-chan 
 	if err := ctx.Err(); err != nil {
 		return ExecResult{}, nil, err
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, ok := f.handles[h.ID]; !ok {
 		return ExecResult{}, nil, fmt.Errorf("container/fake: Exec: unknown handle %q", h.ID)
 	}
@@ -106,6 +116,8 @@ func (f *Fake) CaptureFiles(ctx context.Context, h Handle, paths []string) ([]Ca
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	fh, ok := f.handles[h.ID]
 	if !ok {
 		return nil, fmt.Errorf("container/fake: CaptureFiles: unknown handle %q", h.ID)
@@ -139,6 +151,8 @@ func (*Fake) Restore(_ context.Context, _ SnapshotRef) (Handle, error) {
 }
 
 func (f *Fake) Destroy(_ context.Context, h Handle) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, ok := f.handles[h.ID]; !ok {
 		return fmt.Errorf("container/fake: Destroy: unknown handle %q (already destroyed or never Created)", h.ID)
 	}
@@ -154,6 +168,8 @@ func (f *Fake) Destroy(_ context.Context, h Handle) error {
 // chunk's Data) so a caller mutating its slices after ProgramExec returns
 // cannot corrupt the fake. Matches state.InMemoryBlobs.Put's discipline.
 func (f *Fake) ProgramExec(run string, result ExecResult, chunks []IOChunk) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.execTable == nil {
 		f.execTable = map[string]ExecResult{}
 	}
@@ -205,6 +221,8 @@ func cloneCmd(c Cmd) Cmd {
 // setting up CaptureFiles scenarios; not on the Backend interface (Phase 4
 // Docker would docker cp instead). Defensive-copies content on the way in.
 func (f *Fake) WriteFile(h Handle, path string, content []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	fh, ok := f.handles[h.ID]
 	if !ok {
 		return fmt.Errorf("container/fake: WriteFile: unknown handle %q", h.ID)
@@ -224,7 +242,11 @@ func (f *Fake) WriteFile(h Handle, path string, content []byte) error {
 // The check sits in Exec itself, so calling this method has no retroactive
 // effect on already-completed calls — the count is the live counter at the
 // next call.
-func (f *Fake) FailExecAfterN(n int) { f.failExecAt = &n }
+func (f *Fake) FailExecAfterN(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failExecAt = &n
+}
 
 // FailCaptureAfterN is the CaptureFiles analogue — same one-shot semantic,
 // same guarantees. Crashes BEFORE any blob is written (CaptureFiles runs
@@ -232,7 +254,11 @@ func (f *Fake) FailExecAfterN(n int) { f.failExecAt = &n }
 // bucket-2 (replay) to simulate a crash mid-execution before state is
 // committed. Bucket-3 (atomic commit) is the job of FailAppendAfterN on
 // state.InMemoryLog, which crashes between Blobs.Put and Log.Append(node.completed).
-func (f *Fake) FailCaptureAfterN(n int) { f.failCapAt = &n }
+func (f *Fake) FailCaptureAfterN(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failCapAt = &n
+}
 
 // ClearFault resets BOTH fault hooks (Exec + CaptureFiles). The conformance
 // harness uses this between bucket runs that share a fake instance — though
@@ -241,6 +267,8 @@ func (f *Fake) FailCaptureAfterN(n int) { f.failCapAt = &n }
 // in-place reset used when the same fake survives a crash-resume boundary
 // in the conformance harness's atomic-commit bucket.
 func (f *Fake) ClearFault() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.failExecAt = nil
 	f.failCapAt = nil
 }
