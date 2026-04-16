@@ -279,10 +279,11 @@ func runCodeStep(
 
 // runIf is the If handler. Spec §5.1 + design spec §F: evaluate cond, append
 // branch.taken, recurse into the chosen branch. Resume-safe: if
-// runstate.Branches[path] is already set, take the recorded branch without
-// re-evaluating (the §8 "committed steps are replayed, not recomputed"
-// invariant applies to the branch decision — re-evaluating could choose the
-// OTHER branch if cond depends on a step output that's now in Completed).
+// runstate.LookupBranch(path) returns recorded=true, take the recorded
+// branch without re-evaluating (the §8 "committed steps are replayed, not
+// recomputed" invariant applies to the branch decision — re-evaluating
+// could choose the OTHER branch if cond depends on a step output that's
+// now in Completed).
 //
 // The child branch path is `path + "." + which` — a literal join (path is
 // already "if[N]" via ir.PathFor at the interpNode dispatch). ir.ChildPath
@@ -351,7 +352,7 @@ func runIf(
 // (DQ8 invariant — body failure means iter never completed, no loop.iter
 // event). until is tested AFTER each iter (so it can reference what the body
 // just produced); max_iters bounds the loop. Resume-safe: K starts at
-// runstate.LoopIters[path] + 1.
+// runstate.LookupLoopIters(path) + 1.
 //
 // The validator (ir/validate_structural.go) enforces "at least one of until /
 // max_iters" per spec §5.2. The runtime defends against validator regression

@@ -11,65 +11,15 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/clock"
-	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
 
-// parallelTestDispatcher is a minimal Dispatcher used by parallel handler
-// tests. Fresh type (NOT a fork of slice 3.1's scriptedDispatcher) so
-// engine/try_test.go stays untouched per CLAUDE.md rule 3.
-//
-// script maps CodeStep.ID → result. If result.ctxAware is true and ctx is
-// already cancelled when Run is called, returns (RetryableFailure, ctx.Err()).
-type parallelTestDispatcher struct {
-	t *testing.T
-	// mu protects script against future tests that mutate it mid-run
-	// (e.g., transitioning from failing→ok between resume phases). Today
-	// all writes happen before runParallel's g.Go calls — happens-before
-	// via Go memory model — so the lock is uncontended. Cheap insurance.
-	mu     sync.Mutex
-	script map[string]parallelTestResult
-}
-
-type parallelTestResult struct {
-	outcome  Outcome
-	err      error
-	ctxAware bool
-}
-
-func (d *parallelTestDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error) {
-	cs, ok := intent.Node.(*ir.CodeStep)
-	if !ok {
-		d.t.Fatalf("parallelTestDispatcher: non-CodeStep intent %T at path %q", intent.Node, intent.Path)
-	}
-	d.mu.Lock()
-	res, ok := d.script[cs.ID]
-	d.mu.Unlock()
-	if !ok {
-		d.t.Fatalf("parallelTestDispatcher: no script entry for step %q at path %q", cs.ID, intent.Path)
-	}
-	if res.ctxAware {
-		if err := ctx.Err(); err != nil {
-			closed := make(chan container.IOChunk)
-			close(closed)
-			return DispatchResult{Outcome: OutcomeRetryableFailure}, closed, err
-		}
-	}
-	closed := make(chan container.IOChunk)
-	close(closed)
-	if res.err != nil {
-		return DispatchResult{Outcome: res.outcome}, closed, res.err
-	}
-	zero := 0
-	return DispatchResult{Outcome: res.outcome, ExitCode: &zero}, closed, nil
-}
-
-func newParallelRig(t *testing.T, script map[string]parallelTestResult) (*parallelTestDispatcher, *state.InMemoryLog, *state.InMemoryBlobs) {
-	t.Helper()
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	return &parallelTestDispatcher{t: t, script: script}, state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
-}
+// Parallel handler tests share the scriptedDispatcher / scriptedResult /
+// tryTestRig helpers from engine/try_test.go — same package, same test-
+// dispatch pattern. scriptedResult's ctxAware flag is what makes parallel
+// branches' sibling-cancellation testable (mirrors container.Fake's pre-Run
+// ctx.Err() short-circuit).
 
 // ----- serializingLog tests -----
 
@@ -121,7 +71,7 @@ func TestRunParallelAllBranchesOK(t *testing.T) {
 		&ir.CodeStep{ID: "b1", Run: "echo b", Container: "cb"},
 		&ir.CodeStep{ID: "b2", Run: "echo c", Container: "cc"},
 	}}
-	disp, lg, blobs := newParallelRig(t, map[string]parallelTestResult{
+	disp, lg, blobs := tryTestRig(t, map[string]scriptedResult{
 		"b0": {outcome: OutcomeOK}, "b1": {outcome: OutcomeOK}, "b2": {outcome: OutcomeOK},
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
@@ -144,7 +94,7 @@ func TestRunParallelOneBranchFailsCancelsSiblings(t *testing.T) {
 		&ir.CodeStep{ID: "b2", Run: "sleep", Container: "cc", Retry: &ir.RetryPolicy{Attempts: 1}},
 	}}
 	b0Err := errors.New("b0 exhausted retries")
-	disp, lg, blobs := newParallelRig(t, map[string]parallelTestResult{
+	disp, lg, blobs := tryTestRig(t, map[string]scriptedResult{
 		"b0-fail": {outcome: OutcomeRetryableFailure, err: b0Err},
 		"b1":      {outcome: OutcomeRetryableFailure, err: context.Canceled, ctxAware: true},
 		"b2":      {outcome: OutcomeRetryableFailure, err: context.Canceled, ctxAware: true},
@@ -166,7 +116,7 @@ func TestRunParallelDeterministicFirstError(t *testing.T) {
 		&ir.CodeStep{ID: "b1", Run: "echo", Container: "cb", Retry: &ir.RetryPolicy{Attempts: 1}},
 		&ir.CodeStep{ID: "b2", Run: "exit 2", Container: "cc", Retry: &ir.RetryPolicy{Attempts: 1}},
 	}}
-	disp, _, _ := newParallelRig(t, map[string]parallelTestResult{
+	disp, _, _ := tryTestRig(t, map[string]scriptedResult{
 		"b0": {outcome: OutcomeRetryableFailure, err: errors.New("b0 err")},
 		"b1": {outcome: OutcomeOK},
 		"b2": {outcome: OutcomeRetryableFailure, err: errors.New("b2 err")},
@@ -190,7 +140,7 @@ func TestRunParallelSkipInBranch(t *testing.T) {
 		&ir.Skip{Reason: "skip middle"},
 		&ir.CodeStep{ID: "b2", Run: "echo", Container: "cc"},
 	}}
-	disp, lg, blobs := newParallelRig(t, map[string]parallelTestResult{
+	disp, lg, blobs := tryTestRig(t, map[string]scriptedResult{
 		"b0": {outcome: OutcomeOK}, "b2": {outcome: OutcomeOK},
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
@@ -228,7 +178,7 @@ func TestRunParallelCtxCancelRunsSiblingFinally(t *testing.T) {
 			},
 		},
 	}}
-	disp, lg, blobs := newParallelRig(t, map[string]parallelTestResult{
+	disp, lg, blobs := tryTestRig(t, map[string]scriptedResult{
 		"b0-fail":    {outcome: OutcomeRetryableFailure, err: errors.New("b0 err")},
 		"b1-do":      {outcome: OutcomeRetryableFailure, err: context.Canceled, ctxAware: true},
 		"b1-finally": {outcome: OutcomeOK},
@@ -256,7 +206,7 @@ func TestRunParallelCrossBranchRefIsRaceTolerant(t *testing.T) {
 		&ir.CodeStep{ID: "producer", Run: "echo p", Container: "ca"},
 		&ir.CodeStep{ID: "consumer", Run: "echo {{ step.producer.exit_code }}", Container: "cb"},
 	}}
-	disp, lg, blobs := newParallelRig(t, map[string]parallelTestResult{
+	disp, lg, blobs := tryTestRig(t, map[string]scriptedResult{
 		"producer": {outcome: OutcomeOK},
 		"consumer": {outcome: OutcomeOK},
 	})
@@ -290,7 +240,7 @@ func TestRunParallelSiblingCancelInterruptsRetrySleepUnderSynctest(t *testing.T)
 			&ir.CodeStep{ID: "b1-transient", Run: "fail", Container: "cb",
 				Retry: &ir.RetryPolicy{Attempts: 3}}, // defaults: exp/1s/60s via retry.Default
 		}}
-		disp, lg, blobs := newParallelRig(t, map[string]parallelTestResult{
+		disp, lg, blobs := tryTestRig(t, map[string]scriptedResult{
 			"b0-fail":      {outcome: OutcomeRetryableFailure, err: errors.New("b0 err")},
 			"b1-transient": {outcome: OutcomeRetryableFailure, err: errors.New("transient")},
 		})
