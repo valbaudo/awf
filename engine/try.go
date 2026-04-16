@@ -87,8 +87,14 @@ func runTry(
 	}
 
 	// 3. ALWAYS run Finally (even on ctx-cancel, even if Catch errored).
+	// Phase 3 design §B step 3: Finally MUST run regardless of parent
+	// cancellation. Use context.WithoutCancel to detach the cancel signal
+	// while keeping ctx values intact. The final ctx-check (step 5 below)
+	// still propagates the cancellation signal to the caller — Finally
+	// runs first, then the cancellation propagates.
 	if len(n.Finally) > 0 {
-		finallyOC, finallyErr := interpNodes(ctx, n.Finally, path+".finally", wf, runstate, dispatcher, log, blobs, clk, tap)
+		finallyCtx := context.WithoutCancel(ctx)
+		finallyOC, finallyErr := interpNodes(finallyCtx, n.Finally, path+".finally", wf, runstate, dispatcher, log, blobs, clk, tap)
 		if finallyErr != nil {
 			// 4. Finally errored — its error wins.
 			return finallyOC, finallyErr

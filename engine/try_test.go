@@ -420,6 +420,95 @@ func TestSkipInsideLoopEndsIterationLoopContinues(t *testing.T) {
 	}
 }
 
+// ctxAwareTryDispatcher is a tiny ctx-aware dispatcher for the regression
+// test below. The slice 3.1 scriptedDispatcher above doesn't check ctx, so
+// it can't catch the engine/try.go bug where Finally was being passed the
+// cancelled ctx (which would short-circuit dispatch under a real ctx-aware
+// backend like container.Fake). This dispatcher mirrors what Fake does:
+// pre-Run ctx-check returns ctx.Err() without dispatching.
+type ctxAwareTryDispatcher struct {
+	t      *testing.T
+	script map[string]scriptedResult
+}
+
+func (d *ctxAwareTryDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error) {
+	if err := ctx.Err(); err != nil {
+		closed := make(chan container.IOChunk)
+		close(closed)
+		return DispatchResult{Outcome: OutcomeRetryableFailure}, closed, err
+	}
+	cs, ok := intent.Node.(*ir.CodeStep)
+	if !ok {
+		d.t.Fatalf("ctxAwareTryDispatcher: non-CodeStep intent %T at path %q", intent.Node, intent.Path)
+	}
+	res, ok := d.script[cs.ID]
+	if !ok {
+		d.t.Fatalf("ctxAwareTryDispatcher: no script entry for step %q at path %q", cs.ID, intent.Path)
+	}
+	closed := make(chan container.IOChunk)
+	close(closed)
+	if res.err != nil {
+		return DispatchResult{Outcome: res.outcome}, closed, res.err
+	}
+	return DispatchResult{Outcome: res.outcome, ExitCode: intPtr(0)}, closed, nil
+}
+
+func TestRunTryFinallyRunsEvenWhenCtxCancelledMidDo(t *testing.T) {
+	// Phase 3 design §B step 3: "ALWAYS run Finally (even on ctx-cancel)."
+	// Pre-fix: runTry passed the cancelled ctx straight through to Finally;
+	// a ctx-aware dispatcher (like container.Fake) would short-circuit each
+	// finally step via its pre-Run ctx.Err() check, so finally never
+	// committed. Post-fix: runTry passes context.WithoutCancel(ctx) to
+	// Finally, so dispatch proceeds normally; the step 5 ctx-check at the
+	// bottom of runTry still propagates the cancellation to the caller.
+	//
+	// Slice 3.2's Bucket 4b parallel_cancellation conformance test is the
+	// primary regression guard (it uses the real container.Fake and was
+	// flaky pre-fix). This engine-level test pins the contract so a future
+	// refactor of engine/try.go can't silently revert it without a red bar
+	// here.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel; simulates sibling-failure cancelling gctx mid-do
+	try := &ir.Try{
+		Do: ir.NodeList{
+			&ir.CodeStep{ID: "do-step", Run: "echo"},
+		},
+		Finally: ir.NodeList{
+			&ir.CodeStep{ID: "must-run-finally", Run: "echo"},
+		},
+	}
+	disp := &ctxAwareTryDispatcher{t: t, script: map[string]scriptedResult{
+		// do-step: will be called with the cancelled ctx → dispatcher
+		// short-circuits with ctx.Err(); we don't really need it scripted,
+		// but keep it for defence-in-depth.
+		"do-step": {outcome: OutcomeOK},
+		// must-run-finally: pre-fix, runTry passed cancelled ctx → this
+		// dispatcher would short-circuit with ctx.Err() before consulting
+		// script. Post-fix, runTry passes WithoutCancel(ctx) → ctx.Err()
+		// returns nil → we land here and return ok → step commits.
+		"must-run-finally": {outcome: OutcomeOK},
+	}}
+	clk := &clock.Fake{}
+	logger := state.NewInMemoryLog(clk)
+	blobs := state.NewInMemoryBlobs()
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
+	rs := NewRunState("run-x", "digest", nil)
+	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, clk, nil)
+	// Step 5 ctx-check: cancellation must still propagate to caller.
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want errors.Is(context.Canceled) true (step 5 ctx-check must still propagate cancellation)", err)
+	}
+	if oc != OutcomeRetryableFailure {
+		t.Errorf("outcome = %q, want %q (cancelled run)", oc, OutcomeRetryableFailure)
+	}
+	// CRITICAL: finally MUST have committed despite ctx-cancel. Pre-fix
+	// this was the failing assertion (ctx-aware dispatch in Finally
+	// short-circuited before reaching the commit path).
+	if _, done := rs.LookupCompleted("try[0].finally.must-run-finally"); !done {
+		t.Errorf("Finally must run even on ctx-cancel (Phase 3 design §B step 3): must-run-finally not in Completed = %+v", rs.Completed)
+	}
+}
+
 func TestRunTryCtxCancelledSupersedeDoError(t *testing.T) {
 	// ctx cancelled mid-do AND Do also errored → ctx.Err() must win.
 	// Needed for slice 3.2's parallel handler that distinguishes
