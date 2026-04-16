@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/valbaudo/awf/container"
@@ -324,6 +325,48 @@ func TestFakeClearFaultResetsBothHooks(t *testing.T) {
 	// CaptureFiles on empty paths returns an empty slice without erroring.
 	if _, err := fake.CaptureFiles(context.Background(), h, nil); err != nil {
 		t.Errorf("CaptureFiles after ClearFault: %v (want nil)", err)
+	}
+}
+
+func TestFakeConcurrentExec(t *testing.T) {
+	// Phase 3 slice 3.2 — parallel branches dispatch to distinct containers
+	// (spec §5.4, AWF1010 validator rule), but the harness backs every
+	// container with the same *Fake instance (conformance/harness.go).
+	// Without per-method sync, f.Calls + f.execCalls + f.execTable race.
+	f := container.NewFake()
+	ctx := context.Background()
+	const N = 8
+	handles := make([]container.Handle, N)
+	for i := 0; i < N; i++ {
+		h, err := f.Create(ctx, container.ContainerSpec{Name: fmt.Sprintf("c-%d", i)})
+		if err != nil {
+			t.Fatalf("Create c-%d: %v", i, err)
+		}
+		handles[i] = h
+		f.ProgramExec(fmt.Sprintf("./run-%d.sh", i), container.ExecResult{ExitCode: 0}, nil)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cmd := container.Cmd{Run: fmt.Sprintf("./run-%d.sh", i)}
+			res, ch, err := f.Exec(ctx, handles[i], cmd)
+			if err != nil {
+				t.Errorf("concurrent Exec %d: %v", i, err)
+				return
+			}
+			if res.ExitCode != 0 {
+				t.Errorf("Exec %d: ExitCode=%d, want 0", i, res.ExitCode)
+			}
+			for range ch {
+			}
+		}()
+	}
+	wg.Wait()
+	if len(f.Calls) != N {
+		t.Errorf("Calls len = %d, want %d", len(f.Calls), N)
 	}
 }
 
