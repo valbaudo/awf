@@ -314,3 +314,51 @@ func TestStructuralHappyMinimal(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateStructuralStepIDReserved exercises AWF1020: step ids must match the runtime
+// charset and must not collide with reserved control-keyword path segments (a step id of
+// `generate` or one containing dots would shadow keywords in engine.Scope path matching).
+func TestValidateStructuralStepIDReserved(t *testing.T) {
+	cases := []struct {
+		name     string
+		id       string
+		wantCode string // "" if id is valid
+	}{
+		{"plain", "step_one", ""},
+		{"hyphen-ok", "my-step", ""},
+		{"leading-underscore-ok", "_internal", ""},
+		{"digit-leading-bad", "1step", "AWF1020"},
+		{"dot-bad", "foo.bar", "AWF1020"},
+		{"bracket-bad", "gate[0]", "AWF1020"},
+		{"reserved-generate", "generate", "AWF1020"},
+		{"reserved-evaluate", "evaluate", "AWF1020"},
+		{"reserved-until", "until", "AWF1020"},
+		{"reserved-then", "then", "AWF1020"},
+		{"reserved-body", "body", "AWF1020"},
+		{"reserved-finally", "finally", "AWF1020"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ld := makeLD(&Workflow{
+				ID: "x", Version: 1,
+				Containers: map[string]Container{"c0": {Image: "oci://x@sha256:abc"}},
+				Graph: NodeList{
+					&CodeStep{ID: c.id, Container: "c0", Run: "true"},
+				},
+			})
+			diags := Validate(ld)
+			var found bool
+			for _, d := range diags {
+				if d.Code == "AWF1020" {
+					found = true
+				}
+			}
+			if c.wantCode == "AWF1020" && !found {
+				t.Errorf("id=%q: want AWF1020 emitted; diags = %v", c.id, diags)
+			}
+			if c.wantCode == "" && found {
+				t.Errorf("id=%q: AWF1020 emitted unexpectedly; diags = %v", c.id, diags)
+			}
+		})
+	}
+}

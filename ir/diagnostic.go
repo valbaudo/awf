@@ -112,11 +112,13 @@ func less(a, b Diagnostic) bool {
 // emission site references it (the validator references catalog[code] to compose the message
 // template, so an unregistered code is a compile-time-detectable mistake).
 //
-// Reserved ranges (per Phase 1 design §C):
+// Reserved ranges (per Phase 1 design §C, extended in Phase 3 slice 3.3):
 //
 //	AWF1xxx structural — §4 (steps), §5 (control flow), §3 (containers)
 //	AWF2xxx schema     — JSON Schema 2020-12 well-formedness + §7 floor
 //	AWF3xxx digest/ref — output_schema-iff-referenced, compose digest-pinning
+//	AWF5xxx control-flow scope — §5 (gate-scope evaluate.* rule, map
+//	                            aggregation rules)
 //
 // AWF1001/AWF1002 are emitted at PARSE time by ir/node_unmarshal.go (zero / multiple
 // kind-keys on a node) before Validate ever runs; they intentionally don't appear here.
@@ -138,6 +140,7 @@ var catalog = map[string]string{
 	"AWF1017": "workflow `version` is not the supported value (only 1 is defined by AWF §2)",
 	// AWF1018 is intentionally skipped (folded into AWF1009 after critique).
 	"AWF1019": "container or service reference uses template syntax (`{{ }}`); these fields must be static names",
+	"AWF1020": "step id has invalid characters or collides with a reserved addressing token",
 	"AWF2001": "JSON Schema does not compile per the JSON Schema 2020-12 metaschema",
 	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",
@@ -145,4 +148,5 @@ var catalog = map[string]string{
 	"AWF3003": "compose file contains a non-digest image (§3: every image in a referenced compose file must be @sha256:-pinned)",
 	"AWF3004": "compose file failed to parse",
 	"AWF3005": "compose file uses `extends:` or `include:` directives; the validator refuses these (they would follow arbitrary disk paths and bypass loader confinement)",
+	"AWF5001": "reference to `evaluate.<field>` outside a gate's generate or until",
 }

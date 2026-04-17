@@ -150,3 +150,104 @@ func TestRefsRunIDIsAccepted(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateRefsEvaluateScope exercises AWF5001: evaluate.<field> is only legal inside
+// gate.generate or gate.until. Anywhere else (top-level, gate.evaluate subtree) is a static
+// error — the static counterpart of the runtime scope check in engine.Scope.resolveEvaluate.
+func TestValidateRefsEvaluateScope(t *testing.T) {
+	// Reusable producer schema for the gate's evaluator final node — must declare a `verified`
+	// boolean so AWF1014 passes and the evaluate.verified reference also resolves.
+	verifySchema := &JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"verified"},
+		"properties":           map[string]any{"verified": map[string]any{"type": "boolean"}},
+	}
+
+	cases := []struct {
+		name     string
+		graph    NodeList
+		wantCode string // "" = no AWF5001 emitted
+	}{
+		{
+			name: "allowed in gate.generate",
+			graph: NodeList{
+				&Gate{
+					Generate: NodeList{
+						// Reference evaluate.feedback from inside gate.generate — allowed.
+						&CodeStep{ID: "gen1", Container: "c0", Run: "echo {{ evaluate.feedback }}"},
+					},
+					Evaluate: NodeList{
+						&CodeStep{ID: "eval1", Container: "c0", Run: "eval", OutputSchema: verifySchema},
+					},
+					Until:       "{{ evaluate.verified }}",
+					MaxAttempts: 3,
+				},
+			},
+			wantCode: "",
+		},
+		{
+			name: "allowed in gate.until",
+			graph: NodeList{
+				&Gate{
+					Generate: NodeList{
+						&CodeStep{ID: "gen1", Container: "c0", Run: "gen"},
+					},
+					Evaluate: NodeList{
+						&CodeStep{ID: "eval1", Container: "c0", Run: "eval", OutputSchema: verifySchema},
+					},
+					Until:       "{{ evaluate.verified }}", // until permits evaluate.*
+					MaxAttempts: 3,
+				},
+			},
+			wantCode: "",
+		},
+		{
+			name: "rejected outside any gate",
+			graph: NodeList{
+				&CodeStep{ID: "step1", Container: "c0", Run: "echo {{ evaluate.feedback }}"},
+			},
+			wantCode: "AWF5001",
+		},
+		{
+			name: "rejected in gate.evaluate",
+			graph: NodeList{
+				&Gate{
+					Generate: NodeList{
+						&CodeStep{ID: "gen1", Container: "c0", Run: "gen"},
+					},
+					Evaluate: NodeList{
+						// evaluate.* INSIDE the evaluator sub-tree — rejected (the evaluator
+						// cannot reference its own in-flight output).
+						&CodeStep{ID: "eval1", Container: "c0", Run: "echo {{ evaluate.verified }}", OutputSchema: verifySchema},
+					},
+					Until:       "{{ evaluate.verified }}",
+					MaxAttempts: 3,
+				},
+			},
+			wantCode: "AWF5001",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ld := makeLD(&Workflow{
+				ID: "x", Version: 1,
+				Containers: map[string]Container{"c0": {Image: "oci://e.com/r@sha256:0000000000000000000000000000000000000000000000000000000000000000"}},
+				Graph:      c.graph,
+			})
+			diags := Validate(ld)
+			var found bool
+			for _, d := range diags {
+				if d.Code == "AWF5001" {
+					found = true
+				}
+			}
+			if c.wantCode == "AWF5001" && !found {
+				t.Errorf("want AWF5001 emitted; diags = %v", diags)
+			}
+			if c.wantCode == "" && found {
+				t.Errorf("AWF5001 emitted unexpectedly; diags = %v", diags)
+			}
+		})
+	}
+}
