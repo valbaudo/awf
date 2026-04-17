@@ -13,44 +13,18 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
-// gateTestDispatcher is a minimal Dispatcher used by gate handler tests.
-// Fresh type so engine/{try,parallel}_test.go stay untouched per CLAUDE.md
-// rule 3. script maps CodeStep.ID → {outcome, optional err, optional outputs}.
-type gateTestDispatcher struct {
-	t      *testing.T
-	script map[string]gateTestResult
-	calls  []string // ordered list of dispatched step IDs (for the independence sub-test)
-}
-
-type gateTestResult struct {
-	outcome Outcome
-	err     error
-	outputs map[string]any
-}
-
-func (d *gateTestDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error) {
-	cs, ok := intent.Node.(*ir.CodeStep)
-	if !ok {
-		d.t.Fatalf("gateTestDispatcher: non-CodeStep intent %T at path %q", intent.Node, intent.Path)
-	}
-	d.calls = append(d.calls, cs.ID)
-	res, ok := d.script[cs.ID]
-	if !ok {
-		d.t.Fatalf("gateTestDispatcher: no script entry for step %q at path %q", cs.ID, intent.Path)
-	}
-	closed := make(chan container.IOChunk)
-	close(closed)
-	if res.err != nil {
-		return DispatchResult{Outcome: res.outcome}, closed, res.err
-	}
-	zero := 0
-	return DispatchResult{Outcome: res.outcome, ExitCode: &zero, Outputs: res.outputs}, closed, nil
-}
-
-func newGateRig(t *testing.T, script map[string]gateTestResult) (*gateTestDispatcher, *state.InMemoryLog, *state.InMemoryBlobs) {
+// newGateRig builds engine plumbing for a gate test. Shares scriptedDispatcher
+// with try / parallel tests (engine/try_test.go) — the gate-specific addition
+// is scriptedResult.outputs, which propagates to DispatchResult.Outputs so
+// the gate executor can read a typed verdict from the evaluator step.
+//
+// The clock is pinned to 2026-01-01 (vs try_test's zero-value default) so
+// gate.attempt events get a sane (non-1970) timestamp in the log — only
+// matters for log inspection in failing tests; assertions don't depend on it.
+func newGateRig(t *testing.T, script map[string]scriptedResult) (*scriptedDispatcher, *state.InMemoryLog, *state.InMemoryBlobs) {
 	t.Helper()
 	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	return &gateTestDispatcher{t: t, script: script}, state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
+	return &scriptedDispatcher{t: t, script: script}, state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
 }
 
 // schemaForVerdict returns a JSONSchema accepting the {verified, feedback}
@@ -80,7 +54,7 @@ func TestRunGateSingleAttemptPasses(t *testing.T) {
 		Until:       until,
 		MaxAttempts: 3,
 	}
-	disp, lg, blobs := newGateRig(t, map[string]gateTestResult{
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
 		"gen1":  {outcome: OutcomeOK},
 		"eval1": {outcome: OutcomeOK, outputs: map[string]any{"verified": true, "feedback": "all good"}},
 	})
@@ -114,14 +88,14 @@ func TestRunGateRepairsAndPassesOnAttempt2(t *testing.T) {
 	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	lg, blobs := state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
 	evalCount := 0
-	disp := &gateTestDispatcher{
+	disp := &scriptedDispatcher{
 		t: t,
-		script: map[string]gateTestResult{
+		script: map[string]scriptedResult{
 			"gen1": {outcome: OutcomeOK},
 		},
 	}
 	// Substitute the eval1 entry per attempt via an adapter:
-	disp.script["eval1"] = gateTestResult{} // placeholder — real result chosen below
+	disp.script["eval1"] = scriptedResult{} // placeholder — real result chosen below
 	wrapper := &perAttemptDispatcher{inner: disp, evalCallback: func() map[string]any {
 		evalCount++
 		if evalCount == 1 {
@@ -151,7 +125,7 @@ func TestRunGateRepairsAndPassesOnAttempt2(t *testing.T) {
 // script entry is consulted ONLY for {outcome, err}; the Outputs come from
 // the callback. (Generator steps go through unchanged.)
 type perAttemptDispatcher struct {
-	inner        *gateTestDispatcher
+	inner        *scriptedDispatcher
 	evalCallback func() map[string]any
 }
 
@@ -160,7 +134,6 @@ func (d *perAttemptDispatcher) Run(ctx context.Context, intent NodeIntent) (Disp
 	if !ok {
 		d.inner.t.Fatalf("perAttemptDispatcher: non-CodeStep intent %T at path %q", intent.Node, intent.Path)
 	}
-	d.inner.calls = append(d.inner.calls, cs.ID)
 	if cs.ID == "eval1" {
 		zero := 0
 		closed := make(chan container.IOChunk)
@@ -182,7 +155,7 @@ func TestRunGateMaxAttemptsReturnsRejected(t *testing.T) {
 		Until:       until,
 		MaxAttempts: 3,
 	}
-	disp, lg, blobs := newGateRig(t, map[string]gateTestResult{
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
 		"gen1":  {outcome: OutcomeOK},
 		"eval1": {outcome: OutcomeOK, outputs: map[string]any{"verified": false, "feedback": "X"}},
 	})
@@ -214,7 +187,7 @@ func TestRunGateGenerateCrashDoesNotCommitAttempt(t *testing.T) {
 		Until:       until,
 		MaxAttempts: 3,
 	}
-	disp, lg, blobs := newGateRig(t, map[string]gateTestResult{
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
 		"gen1": {outcome: OutcomeRetryableFailure, err: errors.New("gen crashed")},
 		// eval1 deliberately not scripted — must NOT be reached.
 	})
@@ -254,7 +227,7 @@ func TestRunGateEvaluateCrashDoesNotCommitAttempt(t *testing.T) {
 		Until:       until,
 		MaxAttempts: 3,
 	}
-	disp, lg, blobs := newGateRig(t, map[string]gateTestResult{
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
 		"gen1":  {outcome: OutcomeOK},
 		"eval1": {outcome: OutcomeRetryableFailure, err: errors.New("eval crashed")},
 	})
@@ -282,7 +255,7 @@ func TestRunGateSkipInGenerateEndsGateAsOK(t *testing.T) {
 		Until:       until,
 		MaxAttempts: 3,
 	}
-	disp, lg, blobs := newGateRig(t, map[string]gateTestResult{})
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
 	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
@@ -325,7 +298,7 @@ func TestRunGateMidResumeStartsAtNextAttempt(t *testing.T) {
 		Until:       until,
 		MaxAttempts: 5,
 	}
-	disp, lg, blobs := newGateRig(t, map[string]gateTestResult{
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
 		"gen1":  {outcome: OutcomeOK},
 		"eval1": {outcome: OutcomeOK, outputs: map[string]any{"verified": true, "feedback": "good"}},
 	})

@@ -20,11 +20,13 @@ const (
 	// non_retryable_exit_codes.
 	OutcomePermanentFailure Outcome = "permanent_failure"
 	// OutcomeRejected — a gate exhausted MaxAttempts without passing (Phase 3
-	// slice 3.3, spec §5.5). NOT a step-level outcome — the gate executor
-	// produces it; ClassifyOutcome never returns it. Per spec §8, only ok-steps
-	// commit: a node.completed event with outcome:"rejected" is corruption
-	// (Fold rejects it). Rejections propagate via the gate handler's
-	// return tuple + the gate.attempt event's attempt_outcome field.
+	// slice 3.3, spec §5.5). The gate executor is the SOLE PRODUCER in runtime
+	// code paths (ClassifyOutcome never returns it). ParseOutcome accepts it
+	// at the wire boundary so OTel/CLI consumers can round-trip the value, but
+	// per spec §8 only ok-steps commit: a node.completed event with
+	// outcome:"rejected" is corruption (Fold rejects it — pinned by
+	// TestFold_NodeCompletedRejectedFails). Rejections propagate via the gate
+	// handler's return tuple + the gate.attempt event's attempt_outcome field.
 	OutcomeRejected Outcome = "rejected"
 )
 

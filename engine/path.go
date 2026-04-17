@@ -23,6 +23,16 @@ import (
 // invariant in action.
 const iterSep = ".iter-"
 
+// Exported segment prefixes for callers that need to recognize the
+// runtime-addressing tokens (e.g. engine/gate_path.go's
+// enclosingGateForEvaluate string-walks ctxPaths to find an enclosing
+// gate). Centralized here so the addressing-token vocabulary has a single
+// source of truth.
+const (
+	AttemptSegmentPrefix = "attempt-"
+	GateSegmentPrefix    = "gate["
+)
+
 // iterPrefix returns the prefix shared by every iter-suffixed runtime path
 // for a given loop body, e.g. iterPrefix("loop[0].body") → "loop[0].body.iter-".
 // Used by engine.Scope to detect "is ctxPath inside this loop body's iter-K?"

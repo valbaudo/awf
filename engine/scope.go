@@ -226,51 +226,6 @@ func (s *Scope) resolveEvaluate(ref *template.Ref) (any, error) {
 	return descendPath(latest.Verdict, ref.Segments[1:], "evaluate.")
 }
 
-// enclosingGateForEvaluate walks ctxPath looking for the INNERMOST gate whose
-// generate or until subtree contains the current node. Returns the gate's
-// runtime path (e.g. "gate[0]" for a top-level gate; "gate[0].attempt-1.generate.gate[2]"
-// for a nested gate inside the outer's generate).
-//
-// Patterns recognized as "inside generate / until":
-//   - <prefix>.gate[N].attempt-K.generate.<rest>  — anywhere under a generate subtree
-//   - <prefix>.gate[N].attempt-K.until            — the gate.until expression (terminal)
-//
-// gate.evaluate's subtree is NOT a valid context — evaluate.* there would
-// reference the evaluator's own in-flight output (chicken-and-egg). The
-// walker returns the gate path only if the innermost matching segment is
-// "generate" or "until" — NOT "evaluate".
-//
-// Nested gates: the rightmost matching triple wins. If a nested gate's
-// matching segment is "evaluate", the walker keeps walking left to find the
-// next-outer gate's generate (the test
-// TestEnclosingGateForEvaluateTable's "gate.evaluate inside outer.generate"
-// case pins this).
-func enclosingGateForEvaluate(ctxPath string) (string, bool) {
-	if ctxPath == "" {
-		return "", false
-	}
-	segments := strings.Split(ctxPath, ".")
-	// Walk from end backward. For each segment i ∈ ["generate", "until"]:
-	//   * segments[i-1] must start with "attempt-"
-	//   * segments[i-2] must start with "gate["
-	//   * Return the join of segments[:i-1] (i.e., up to and including gate[N]).
-	for i := len(segments) - 1; i >= 2; i-- {
-		seg := segments[i]
-		if seg != "generate" && seg != "until" {
-			continue
-		}
-		if !strings.HasPrefix(segments[i-1], "attempt-") {
-			continue
-		}
-		if !strings.HasPrefix(segments[i-2], "gate[") {
-			continue
-		}
-		// Gate path = segments[0:i-1] joined by ".".
-		return strings.Join(segments[:i-1], "."), true
-	}
-	return "", false
-}
-
 // stepRuntimePath converts a step's static IR path (from StepPathIndex) to the
 // runtime path that keys into RunState.Completed. Each `loop[N].body` segment
 // pair gets suffixed with `.iter-K` where K is the current iter (if ctxPath is
@@ -374,47 +329,4 @@ func segPath(segs []template.Segment) string {
 		parts = append(parts, s.Ident)
 	}
 	return strings.Join(parts, ".")
-}
-
-// StepPathIndex walks wf.Graph and returns a map from step id → static IR path.
-// Phase 2 supports CodeStep / AgentStep / SignalStep / If / Loop kinds; the
-// remaining control kinds (Try / Parallel / Gate / Map / Skip) are skipped —
-// the interpreter (slice 2.5) errors on them at runtime in Phase 2, so any
-// step buried inside them is unreachable. Phase 3+ extends this walker.
-//
-// Duplicate step ids are caught by the validator (AWF1004, slice 1.4) — this
-// function trusts the input was validated and last-write-wins on duplicates.
-//
-// The returned strings are exactly what ir.PathFor / ir.ChildPath produce; see
-// ir/path_test.go for the canonical examples ("triage" / "loop[1].body.echo" /
-// "loop[1].body.if[1].then.deep_step").
-func StepPathIndex(wf *ir.Workflow) map[string]string {
-	out := map[string]string{}
-	walkNodes(wf.Graph, "", out)
-	return out
-}
-
-// walkNodes is StepPathIndex's recursive worker. Appends a (step id → static
-// path) entry for each step under `list`, recursing into If branches and Loop
-// bodies. Phase 3 kinds (Try / Parallel / Gate / Map / Skip) are silently
-// skipped — slice 2.5's interpreter errors on them at runtime in Phase 2.
-func walkNodes(list ir.NodeList, parent string, out map[string]string) {
-	for i, n := range list {
-		switch v := n.(type) {
-		case *ir.CodeStep:
-			out[v.ID] = ir.PathFor(parent, "", v.ID, i)
-		case *ir.AgentStep:
-			out[v.ID] = ir.PathFor(parent, "", v.ID, i)
-		case *ir.SignalStep:
-			out[v.ID] = ir.PathFor(parent, "", v.ID, i)
-		case *ir.If:
-			walkNodes(v.Then, ir.ChildPath(parent, "if", i, "then"), out)
-			walkNodes(v.Else, ir.ChildPath(parent, "if", i, "else"), out)
-		case *ir.Loop:
-			walkNodes(v.Body, ir.ChildPath(parent, "loop", i, "body"), out)
-			// Try / Parallel / Gate / Map / Skip — Phase 2 doesn't execute them; skip.
-			// Slice 2.5 will fail at the interpreter for any workflow that uses them.
-			// Phase 3+ extends this walker to recurse into them.
-		}
-	}
 }

@@ -3,7 +3,6 @@ package conformance
 import (
 	"encoding/json"
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/container"
@@ -42,16 +41,20 @@ func testGate(t *testing.T, factory BackendFactory) {
 	t.Run("rejected_caught_by_try", func(t *testing.T) { testGateRejectedCaughtByTry(t, factory) })
 }
 
-// verdictRejected is the per-call AWFOutput JSON the fake returns from the
+// verdictRejectedJSON is the per-call AWFOutput JSON the fake returns from the
 // evaluator step. Decoded by engine.ValidateAgainstSchema, the typed
 // verdict becomes {verified: false, feedback: "missing X"} — the
 // evaluator's last step's Outputs map. gate.until ({{ evaluate.verified }})
 // resolves to false → AttemptRejected. Used by max_attempts_rejected and
 // mid_resume.
-var verdictRejected = []byte(`{"verified":false,"feedback":"missing X"}`)
+//
+// Stored as a string constant (not []byte) so a future test can't mutate
+// the package-level value and silently corrupt sibling tests. Call sites
+// convert to []byte explicitly per use.
+const verdictRejectedJSON = `{"verified":false,"feedback":"missing X"}`
 
-// verdictPassed: until evaluates to true → AttemptPassed.
-var verdictPassed = []byte(`{"verified":true,"feedback":"all good"}`)
+// verdictPassedJSON: until evaluates to true → AttemptPassed.
+const verdictPassedJSON = `{"verified":true,"feedback":"all good"}`
 
 func testGateFeedbackThreading(t *testing.T, factory BackendFactory) {
 	t.Helper()
@@ -83,14 +86,14 @@ func testGateFeedbackThreading(t *testing.T, factory BackendFactory) {
 		}
 		fake.ProgramExec("./gen.sh ", container.ExecResult{ExitCode: 0}, nil)          // attempt 1 (empty feedback)
 		fake.ProgramExec("./gen.sh missing X", container.ExecResult{ExitCode: 0}, nil) // attempt 2 (threaded)
-		fake.ProgramExec("./eval.sh", container.ExecResult{ExitCode: 0, AWFOutput: verdictRejected}, nil)
+		fake.ProgramExec("./eval.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(verdictRejectedJSON)}, nil)
 		runFake = fake
 		return fake
 	}
 	h := newHarness(t, capturingFactory, gateFeedbackThreadingWorkflow)
 	oc, err := h.runWorkflow(t)
 	if oc != engine.OutcomeRejected {
-		// Both attempts run; both return verdictRejected; gate exhausts max_attempts:2 → rejected.
+		// Both attempts run; both return verdictRejectedJSON; gate exhausts max_attempts:2 → rejected.
 		t.Errorf("Bucket 5 feedback_threading: outcome = %q, want %q", oc, engine.OutcomeRejected)
 	}
 	if err == nil {
@@ -127,7 +130,7 @@ func testGateMaxAttemptsRejected(t *testing.T, factory BackendFactory) {
 		{cmd: "./gen.sh", res: container.ExecResult{ExitCode: 0}},
 		// eval.sh returns the rejected verdict on every call. until
 		// resolves to false → AttemptRejected. Three attempts → rejected.
-		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: verdictRejected}},
+		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(verdictRejectedJSON)}},
 	})
 	h := newHarness(t, programmedFactory, gateMaxAttemptsRejectedWorkflow)
 	oc, err := h.runWorkflow(t)
@@ -156,7 +159,7 @@ func testGateCrashNotVerdict(t *testing.T, factory BackendFactory) {
 		// eval.sh: would-be-pass; must NOT be reached. AWFOutput present for
 		// defense-in-depth — if a regression makes eval run, schema validation
 		// passes and we'd see a gate.attempt event (the assertion below catches that).
-		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: verdictPassed}},
+		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(verdictPassedJSON)}},
 	})
 	h := newHarness(t, programmedFactory, gateCrashNotVerdictWorkflow)
 	oc, err := h.runWorkflow(t)
@@ -205,7 +208,7 @@ func testGateMidResume(t *testing.T, factory BackendFactory) {
 			return b
 		}
 		fake.ProgramExec("./gen.sh", container.ExecResult{ExitCode: 0}, nil)
-		fake.ProgramExec("./eval.sh", container.ExecResult{ExitCode: 0, AWFOutput: verdictRejected}, nil)
+		fake.ProgramExec("./eval.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(verdictRejectedJSON)}, nil)
 		fake.FailExecAfterN(2) // first 2 calls succeed; call 3 fails
 		return fake
 	}
@@ -243,7 +246,7 @@ func testGateMidResume(t *testing.T, factory BackendFactory) {
 			return b
 		}
 		fake.ProgramExec("./gen.sh", container.ExecResult{ExitCode: 0}, nil)
-		fake.ProgramExec("./eval.sh", container.ExecResult{ExitCode: 0, AWFOutput: verdictRejected}, nil)
+		fake.ProgramExec("./eval.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(verdictRejectedJSON)}, nil)
 		// No FailExecAfterN — resume runs cleanly.
 		return fake
 	}
@@ -305,7 +308,7 @@ func testGateRejectedCaughtByTry(t *testing.T, factory BackendFactory) {
 	// catch runs the handler step; run completes ok.
 	programmedFactory := preProgramFake(t, factory, []execProgram{
 		{cmd: "./gen.sh", res: container.ExecResult{ExitCode: 0}},
-		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: verdictRejected}},
+		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(verdictRejectedJSON)}},
 		{cmd: "./handler.sh", res: container.ExecResult{ExitCode: 0}},
 	})
 	h := newHarness(t, programmedFactory, gateRejectedCaughtWorkflow)
@@ -358,7 +361,7 @@ func testGateIndependencePlaceholder(t *testing.T, factory BackendFactory) {
 		// We only care that all 3 steps committed independently — passing
 		// keeps the assertion focused on the dispatch sequence, not the
 		// rejection branch.
-		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: verdictPassed}},
+		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(verdictPassedJSON)}},
 	})
 	h := newHarness(t, programmedFactory, gateIndependencePlaceholderWorkflow)
 	if _, err := h.runWorkflow(t); err != nil {
@@ -383,10 +386,6 @@ func testGateIndependencePlaceholder(t *testing.T, factory BackendFactory) {
 			t.Errorf("Bucket 5 independence_placeholder: step path %q not in node.completed events; got %v",
 				path, sortedKeysBool(stepPaths))
 		}
-	}
-	if !strings.Contains(t.Name(), "independence_placeholder") {
-		// Bare sanity — test name guard so a refactor doesn't lose the placeholder marker.
-		t.Errorf("test name lost placeholder marker")
 	}
 }
 

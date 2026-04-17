@@ -282,11 +282,15 @@ func TestGateAttemptDataRoundTrip(t *testing.T) {
 		t.Errorf("on-wire: got %s, want %s", b, wantJSON)
 	}
 
-	// Empty VerdictRef: with omitempty the field MAY be omitted. Both shapes
-	// are acceptable; the field's PRESENCE in the struct is what we pin.
 	d2 := GateAttemptData{N: 1, AttemptOutcome: AttemptPassed, VerdictRef: ""}
-	b2, _ := json.Marshal(d2)
-	t.Logf("empty VerdictRef serialization: %s", b2)
+	b2, err := json.Marshal(d2)
+	if err != nil {
+		t.Fatalf("Marshal empty VerdictRef: %v", err)
+	}
+	// With `verdict_ref,omitempty`, the field should be absent from the JSON.
+	if strings.Contains(string(b2), "verdict_ref") {
+		t.Errorf("empty VerdictRef serialization: %s contains verdict_ref; omitempty should drop it", b2)
+	}
 }
 
 func TestEventTypeConstantsAreStable(t *testing.T) {
