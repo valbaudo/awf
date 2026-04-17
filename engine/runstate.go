@@ -44,15 +44,6 @@ func ParseOutcome(s string) (Outcome, error) {
 	}
 }
 
-// AttemptPassed / AttemptRejected are the two valid AttemptOutcome values on
-// an AttemptResult. Defined here temporarily for Task 2; Task 3 (slice 3.3)
-// MOVES them to engine/events.go alongside the gate.attempt event constants
-// once the wire format ships.
-const (
-	AttemptPassed   = "attempt_passed"
-	AttemptRejected = "attempt_rejected"
-)
-
 // AttemptResult is one element of RunState.GateAttempts[gatePath]. Records
 // what happened on a single gate.attempt — the per-attempt verdict and whether
 // `until` accepted it. Built by the Fold from a gate.attempt event (slice 3.3

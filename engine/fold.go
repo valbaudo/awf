@@ -31,6 +31,10 @@ import (
 //   - branch.taken populates Branches[path] (which side of an if).
 //   - loop.iter populates LoopIters[path] (events are seq-ordered, so the latest
 //     assignment gives the max — which is correct, since loops only advance forward).
+//   - gate.attempt populates GateAttempts[path] (slice 3.3) — verdict_ref dereferenced
+//     via Blobs.Get; events arrive in seq-order so append-order is the natural
+//     attempt-order. Missing verdict_ref is a hard error (spec §8 commit-atomicity
+//     invariant — the writer must Put the verdict blob BEFORE appending gate.attempt).
 //   - Anything else (future event types not yet written by Phase 2 slices) → ignored.
 //
 // Errors (any fold error → resume cannot proceed safely):
@@ -51,14 +55,16 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			EventRunStarted, events[0].Type, events[0].Seq)
 	}
 
-	// Pre-allocate the three maps with capacity hints proportional to event count.
+	// Pre-allocate the four maps with capacity hints proportional to event count.
 	// Phase 1.5 logs grow with event count, not payload size, so len(events) is the
-	// right upper bound. The heuristics (÷4, ÷8, ÷8) reflect that most events are
-	// node.completed; branches and loop iterations are sparser. Sized hints save the
-	// geometric resize cycles for the resume-from-large-log path Phase 6 will exercise.
+	// right upper bound. The heuristics (÷4, ÷8, ÷8, ÷16) reflect that most events
+	// are node.completed; branches, loop iterations, and gate attempts are sparser.
+	// Sized hints save the geometric resize cycles for the resume-from-large-log path
+	// Phase 6 will exercise.
 	rs.Completed = make(map[string]NodeResult, len(events)/4)
 	rs.Branches = make(map[string]string, len(events)/8)
 	rs.LoopIters = make(map[string]int, len(events)/8)
+	rs.GateAttempts = make(map[string][]AttemptResult, len(events)/16) // sparse — gates are uncommon
 
 	seenRunStarted := false
 	for _, e := range events {
@@ -162,6 +168,31 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 					EventLoopIter, e.Seq, e.Path, err)
 			}
 			rs.LoopIters[e.Path] = d.N
+
+		case EventGateAttempt:
+			var d GateAttemptData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+					EventGateAttempt, e.Seq, e.Path, err)
+			}
+			ar := AttemptResult{
+				N:              d.N,
+				AttemptOutcome: d.AttemptOutcome,
+			}
+			if d.VerdictRef != "" {
+				raw, err := blobs.Get(d.VerdictRef)
+				if err != nil {
+					return nil, fmt.Errorf("engine.Fold: read verdict_ref %q at path=%q seq=%d: %w",
+						d.VerdictRef, e.Path, e.Seq, err)
+				}
+				var v map[string]any
+				if err := json.Unmarshal(raw, &v); err != nil {
+					return nil, fmt.Errorf("engine.Fold: parse verdict blob %q at path=%q: %w",
+						d.VerdictRef, e.Path, err)
+				}
+				ar.Verdict = v
+			}
+			rs.GateAttempts[e.Path] = append(rs.GateAttempts[e.Path], ar)
 
 		default:
 			// Observational / future event types ignored by Fold (state effect, if

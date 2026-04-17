@@ -25,6 +25,41 @@ const (
 	EventNodeSkipped = "node.skipped"
 )
 
+const (
+	// Phase 3 slice 3.3. Committed by the gate executor (engine/gate.go) at the
+	// END of each attempt — i.e., AFTER the evaluator's last step committed and
+	// the gate's `until` evaluated against the verdict. Crash≠verdict invariant:
+	// a mechanical failure of any generate/evaluate step propagates BEFORE this
+	// event is written (design §D step 1-2); only a real evaluation consumes an
+	// attempt.
+	EventGateAttempt = "gate.attempt"
+)
+
+// Gate attempt outcomes — the AttemptOutcome field on GateAttemptData. NOT
+// the same vocabulary as the Outcome enum (engine/runstate.go): a gate attempt
+// can pass or reject as a verdict; the gate as a WHOLE returns OutcomeOK on
+// passed-attempt OR OutcomeRejected on max-attempts-reached.
+const (
+	AttemptPassed   = "attempt_passed"
+	AttemptRejected = "attempt_rejected"
+)
+
+// GateAttemptData is the payload of a gate.attempt event (Phase 3 slice 3.3).
+// N is 1-based. AttemptOutcome is one of AttemptPassed / AttemptRejected.
+//
+// VerdictRef points at the last evaluator step's typed outputs in Blobs
+// (same CAS namespace as NodeCompletedData.OutputsRef); the Fold
+// dereferences it to populate RunState.GateAttempts[gatePath]'s
+// AttemptResult.Verdict. Per spec §5.5 the final evaluate node MUST
+// declare output_schema, so VerdictRef is always non-empty for a
+// well-formed gate.attempt; omitempty is only to avoid a spurious
+// "verdict_ref":"" key on the wire.
+type GateAttemptData struct {
+	N              int    `json:"n"`
+	AttemptOutcome string `json:"attempt_outcome"`
+	VerdictRef     string `json:"verdict_ref,omitempty"`
+}
+
 // RunStartedData is the payload of the first event in a run (and the only event the
 // run.id, workflow_digest, and input_ref live in — the fold reads them from here).
 //

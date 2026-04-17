@@ -550,6 +550,87 @@ func TestFold_MalformedDataPerEventType(t *testing.T) {
 	}
 }
 
+func TestFold_GateAttemptPopulatesAttempts(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	verdictRef, err := blobs.Put([]byte(`{"verified":false,"feedback":"missing X"}`))
+	if err != nil {
+		t.Fatalf("seed verdict blob: %v", err)
+	}
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventGateAttempt, Path: "gate[0]",
+			Data: marshalOrFatal(t, GateAttemptData{N: 1, AttemptOutcome: AttemptRejected, VerdictRef: verdictRef})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	attempts := rs.GateAttempts["gate[0]"]
+	if len(attempts) != 1 {
+		t.Fatalf("attempts len = %d, want 1", len(attempts))
+	}
+	if attempts[0].N != 1 || attempts[0].AttemptOutcome != AttemptRejected {
+		t.Errorf("attempts[0] = %+v, want N=1 AttemptRejected", attempts[0])
+	}
+	if attempts[0].Verdict["verified"] != false || attempts[0].Verdict["feedback"] != "missing X" {
+		t.Errorf("attempts[0].Verdict = %+v, want verified=false feedback=\"missing X\"", attempts[0].Verdict)
+	}
+}
+
+func TestFold_GateAttemptMultipleAttemptsOrdered(t *testing.T) {
+	// Two attempts on the SAME gate path. Order MUST be preserved (oldest first)
+	// so resolveEvaluate's "latest verdict = attempts[len-1]" semantics work.
+	blobs := state.NewInMemoryBlobs()
+	ref1, _ := blobs.Put([]byte(`{"verified":false}`))
+	ref2, _ := blobs.Put([]byte(`{"verified":true}`))
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventGateAttempt, Path: "gate[0]",
+			Data: marshalOrFatal(t, GateAttemptData{N: 1, AttemptOutcome: AttemptRejected, VerdictRef: ref1})},
+		{Seq: 3, TS: fixedTS, Type: EventGateAttempt, Path: "gate[0]",
+			Data: marshalOrFatal(t, GateAttemptData{N: 2, AttemptOutcome: AttemptPassed, VerdictRef: ref2})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := rs.GateAttempts["gate[0]"]
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].N != 1 || got[1].N != 2 {
+		t.Errorf("order: got Ns %d,%d; want 1,2", got[0].N, got[1].N)
+	}
+	if got[1].AttemptOutcome != AttemptPassed {
+		t.Errorf("latest AttemptOutcome = %q, want %q", got[1].AttemptOutcome, AttemptPassed)
+	}
+}
+
+func TestFold_GateAttemptUnknownVerdictRefErrors(t *testing.T) {
+	// Phase 3 design §D + spec §8: the verdict_ref is the CAS pointer to the
+	// last evaluator step's typed outputs, stored via the same Blobs interface
+	// as node.completed's OutputsRef. A gate.attempt event referencing a
+	// missing blob is corruption (the §8 commit-atomicity invariant was
+	// violated by the writer). Fold MUST surface this.
+	blobs := state.NewInMemoryBlobs() // empty — verdict_ref will miss
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventGateAttempt, Path: "gate[0]",
+			Data: marshalOrFatal(t, GateAttemptData{N: 1, AttemptOutcome: AttemptPassed,
+				VerdictRef: "awf-blob-v1:sha256:nonexistent"})},
+	}
+	_, err := Fold(events, blobs)
+	if err == nil {
+		t.Fatal("Fold accepted gate.attempt with missing verdict_ref: want error")
+	}
+	if !strings.Contains(err.Error(), "verdict") {
+		t.Errorf("err = %v, want mention of \"verdict\"", err)
+	}
+}
+
 // TestFold_Golden_Sequential — a flat 3-step sequential workflow with no branches or
 // loops. Verifies the most common shape — a linear pipeline — folds correctly with
 // Completed entries keyed by step id.
