@@ -336,12 +336,8 @@ func TestRunPhase2UnsupportedKindsAllErrorWithSentinel(t *testing.T) {
 		{"signal", &ir.SignalStep{ID: "sig", Await: "human_review"}},
 		// "parallel" was here pre-slice-3.2; runParallel now ships in
 		// engine/parallel.go and its tests live in engine/parallel_test.go.
-		{"gate", &ir.Gate{
-			Generate:    ir.NodeList{&ir.CodeStep{ID: "g", Container: "lab", Run: "./g.sh"}},
-			Evaluate:    ir.NodeList{&ir.CodeStep{ID: "e", Container: "lab", Run: "./e.sh"}},
-			Until:       ir.Expr("true"),
-			MaxAttempts: 1,
-		}},
+		// "gate" was here pre-slice-3.3; runGate now ships in
+		// engine/gate.go and its tests live in engine/gate_test.go.
 		{"map", &ir.Map{
 			Over: ir.Expr("input.items"), As: "item", Container: "lab", Concurrency: 1,
 			Body: ir.NodeList{&ir.CodeStep{ID: "x", Container: "lab", Run: "./x.sh"}},
