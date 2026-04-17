@@ -44,6 +44,35 @@ func ParseOutcome(s string) (Outcome, error) {
 	}
 }
 
+// AttemptPassed / AttemptRejected are the two valid AttemptOutcome values on
+// an AttemptResult. Defined here temporarily for Task 2; Task 3 (slice 3.3)
+// MOVES them to engine/events.go alongside the gate.attempt event constants
+// once the wire format ships.
+const (
+	AttemptPassed   = "attempt_passed"
+	AttemptRejected = "attempt_rejected"
+)
+
+// AttemptResult is one element of RunState.GateAttempts[gatePath]. Records
+// what happened on a single gate.attempt — the per-attempt verdict and whether
+// `until` accepted it. Built by the Fold from a gate.attempt event (slice 3.3
+// engine/fold.go) and by the gate executor's runtime RecordGateAttempt call
+// (engine/gate.go). The template evaluator's `evaluate.*` scope reads the
+// LATEST entry for the enclosing gate path (engine/scope.go).
+//
+// AttemptOutcome is one of AttemptPassed / AttemptRejected. N is 1-based —
+// the first attempt is N=1.
+//
+// Verdict is the materialized typed outputs of the last evaluator step (its
+// output_schema-validated map); the wire format stores VerdictRef (CAS
+// pointer), the Fold materializes via Blobs.Get. READ-ONLY (callers MUST NOT
+// mutate — same caveat as NodeResult.Outputs).
+type AttemptResult struct {
+	N              int
+	AttemptOutcome string
+	Verdict        map[string]any
+}
+
 // NodeResult is the fold result for one completed node — stored in RunState.Completed
 // keyed by node.path. Phase 2 populates this from a `node.completed` event; Phase 3+
 // adds gate-attempt aggregation but the per-node shape stays the same.
@@ -74,8 +103,8 @@ type NodeResult struct {
 // Built by Fold (engine/fold.go). The same code path serves first-run (empty log →
 // empty RunState) and resume (folded log → populated RunState).
 //
-// Phase 2 fields only — Phase 3 will add signals (await), gate attempts (per
-// gate[N].attempt-K), and map items (per map[N].item-K).
+// Phase 2 + Phase 3 slice 3.3 fields — Phase 3 will further add signals
+// (await) and map items (per map[N].item-K).
 // RunState.Epoch ≠ state.Event.Epoch — see comment on the Epoch field below.
 type RunState struct {
 	RunID          string
@@ -94,13 +123,24 @@ type RunState struct {
 	Branches  map[string]string     // if-node path → "then" | "else"
 	LoopIters map[string]int        // loop-node path → max completed iteration (1-based)
 
-	// mu serializes access to Completed / Branches / LoopIters. Phase 2
-	// callers were single-threaded; Phase 3 slice 3.2 (parallel) introduced
-	// concurrent branch goroutines.
+	// GateAttempts records the per-attempt verdicts for every gate that has
+	// committed at least one attempt. Slice 3.3 addition; gate path → ordered
+	// slice of AttemptResult (oldest first). The slice grows as the gate
+	// executor records additional attempts; resume's Fold rebuilds it from
+	// gate.attempt events.
+	//
+	// The template evaluator's `evaluate.*` scope reads the LAST element for
+	// the enclosing gate path on attempt n > 1 (slice 3.3 engine/scope.go).
+	GateAttempts map[string][]AttemptResult
+
+	// mu serializes access to Completed / Branches / LoopIters / GateAttempts.
+	// Phase 2 callers were single-threaded; Phase 3 slice 3.2 (parallel)
+	// introduced concurrent branch goroutines.
 	//
 	// Slice 3.2+ callers MUST use the accessor methods (LookupCompleted /
 	// RecordCompleted / LookupBranch / RecordBranch / LookupLoopIters /
-	// RecordLoopIter). Direct field access is reserved for engine.Fold —
+	// RecordLoopIter / LookupGateAttempts / RecordGateAttempt). Direct field
+	// access is reserved for engine.Fold —
 	// Fold runs at resume time BEFORE engine.Run, never concurrent with
 	// any goroutine, so its direct map writes are race-free by construction.
 	mu sync.Mutex
@@ -125,6 +165,7 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		Completed:      map[string]NodeResult{},
 		Branches:       map[string]string{},
 		LoopIters:      map[string]int{},
+		GateAttempts:   map[string][]AttemptResult{},
 	}
 }
 
@@ -174,4 +215,28 @@ func (rs *RunState) RecordLoopIter(path string, k int) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.LoopIters[path] = k
+}
+
+// LookupGateAttempts returns the per-attempt slice recorded for gatePath, or
+// nil if no attempt has been recorded yet (the attempt-1 case for the
+// template `evaluate.*` scope's empty-feedback contract). Thread-safe.
+//
+// READ-ONLY: callers MUST NOT mutate elements of the returned slice or any
+// AttemptResult.Verdict map within it — the slice is the live internal
+// backing array (same aliasing contract as NodeResult.Outputs). Pinned by
+// TestGateAttemptsReturnedSliceIsReadOnly (engine/runstate_test.go).
+func (rs *RunState) LookupGateAttempts(gatePath string) []AttemptResult {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.GateAttempts[gatePath]
+}
+
+// RecordGateAttempt appends ar to the slice at gatePath. The gate executor
+// (engine/gate.go) calls this AFTER a successful Log.Append + Log.Sync of the
+// corresponding gate.attempt event — in-memory state mirrors the durable log,
+// not the other way around. Thread-safe.
+func (rs *RunState) RecordGateAttempt(gatePath string, ar AttemptResult) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.GateAttempts[gatePath] = append(rs.GateAttempts[gatePath], ar)
 }
