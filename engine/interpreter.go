@@ -17,10 +17,10 @@ import (
 )
 
 // ErrNodeNotImplementedInPhase3 is the sentinel the interpreter returns for any
-// node kind Phase 3 doesn't execute. After slice 3.2: Try, Skip, and Parallel
-// ship; SignalStep / Gate / Map remain unimplemented (each shipping in its own
-// Phase 3 slice). After all five Phase 3 slices ship, only AgentStep remains —
-// slice 3.5 will rename to ErrNodeNotImplemented (phase-agnostic).
+// node kind Phase 3 doesn't execute. After slice 3.3: Try, Skip, Parallel, Gate
+// ship; SignalStep / Map remain unimplemented (each shipping in its own Phase 3
+// slice). After all five Phase 3 slices ship, only AgentStep remains — slice
+// 3.5 will rename to ErrNodeNotImplemented (phase-agnostic).
 //
 // The per-slice phase-string in notImpl identifies the landing slice per kind.
 // Distinct from engine.ErrUnsupportedKind (the dispatcher's per-step sentinel)
@@ -152,7 +152,7 @@ func interpNode(
 	case *ir.Parallel:
 		return runParallel(ctx, v, ir.PathFor(parent, "parallel", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.Gate:
-		return notImpl("gate", ir.PathFor(parent, "gate", "", idx), "Phase 3 slice 3.3")
+		return runGate(ctx, v, ir.PathFor(parent, "gate", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.Map:
 		return notImpl("map", ir.PathFor(parent, "map", "", idx), "Phase 3 slice 3.4")
 	case *ir.Skip:

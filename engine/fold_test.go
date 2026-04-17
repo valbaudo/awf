@@ -493,6 +493,29 @@ func TestFold_NodeCompletedWithNonOkOutcomeIsError(t *testing.T) {
 	}
 }
 
+func TestFold_NodeCompletedRejectedFails(t *testing.T) {
+	// Spec §8 + CLAUDE.md commit invariant: only ok-steps commit.
+	// A node.completed event with outcome:"rejected" is corruption — a gate
+	// rejection never commits as node.completed (the gate.attempt event with
+	// attempt_outcome:"attempt_rejected" + the OutcomeRejected return from the
+	// gate handler are how rejections propagate, NOT node.completed).
+	// Fold MUST reject this event class to surface corruption immediately.
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventNodeCompleted, Path: "gate[0]",
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "rejected"})},
+	}
+	_, err := Fold(events, blobs)
+	if err == nil {
+		t.Fatal("Fold accepted node.completed{outcome:\"rejected\"}: want error per spec §8")
+	}
+	if !strings.Contains(err.Error(), "only") || !strings.Contains(err.Error(), "commits") {
+		t.Errorf("Fold error = %q, want mention of \"only %q commits\" (spec §8 wording)", err, OutcomeOK)
+	}
+}
+
 // TestFold_MalformedDataPerEventType covers JSON-unmarshal failures on every dispatch
 // case the fold handles. The pre-existing TestFold_MalformedDataIsError only hits the
 // run.started branch — this table covers run.resumed / node.completed / branch.taken
@@ -524,6 +547,87 @@ func TestFold_MalformedDataPerEventType(t *testing.T) {
 				t.Errorf("Fold with malformed Data on %s should error, got nil", c.eventType)
 			}
 		})
+	}
+}
+
+func TestFold_GateAttemptPopulatesAttempts(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	verdictRef, err := blobs.Put([]byte(`{"verified":false,"feedback":"missing X"}`))
+	if err != nil {
+		t.Fatalf("seed verdict blob: %v", err)
+	}
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventGateAttempt, Path: "gate[0]",
+			Data: marshalOrFatal(t, GateAttemptData{N: 1, AttemptOutcome: AttemptRejected, VerdictRef: verdictRef})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	attempts := rs.GateAttempts["gate[0]"]
+	if len(attempts) != 1 {
+		t.Fatalf("attempts len = %d, want 1", len(attempts))
+	}
+	if attempts[0].N != 1 || attempts[0].AttemptOutcome != AttemptRejected {
+		t.Errorf("attempts[0] = %+v, want N=1 AttemptRejected", attempts[0])
+	}
+	if attempts[0].Verdict["verified"] != false || attempts[0].Verdict["feedback"] != "missing X" {
+		t.Errorf("attempts[0].Verdict = %+v, want verified=false feedback=\"missing X\"", attempts[0].Verdict)
+	}
+}
+
+func TestFold_GateAttemptMultipleAttemptsOrdered(t *testing.T) {
+	// Two attempts on the SAME gate path. Order MUST be preserved (oldest first)
+	// so resolveEvaluate's "latest verdict = attempts[len-1]" semantics work.
+	blobs := state.NewInMemoryBlobs()
+	ref1, _ := blobs.Put([]byte(`{"verified":false}`))
+	ref2, _ := blobs.Put([]byte(`{"verified":true}`))
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventGateAttempt, Path: "gate[0]",
+			Data: marshalOrFatal(t, GateAttemptData{N: 1, AttemptOutcome: AttemptRejected, VerdictRef: ref1})},
+		{Seq: 3, TS: fixedTS, Type: EventGateAttempt, Path: "gate[0]",
+			Data: marshalOrFatal(t, GateAttemptData{N: 2, AttemptOutcome: AttemptPassed, VerdictRef: ref2})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := rs.GateAttempts["gate[0]"]
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].N != 1 || got[1].N != 2 {
+		t.Errorf("order: got Ns %d,%d; want 1,2", got[0].N, got[1].N)
+	}
+	if got[1].AttemptOutcome != AttemptPassed {
+		t.Errorf("latest AttemptOutcome = %q, want %q", got[1].AttemptOutcome, AttemptPassed)
+	}
+}
+
+func TestFold_GateAttemptUnknownVerdictRefErrors(t *testing.T) {
+	// Phase 3 design §D + spec §8: the verdict_ref is the CAS pointer to the
+	// last evaluator step's typed outputs, stored via the same Blobs interface
+	// as node.completed's OutputsRef. A gate.attempt event referencing a
+	// missing blob is corruption (the §8 commit-atomicity invariant was
+	// violated by the writer). Fold MUST surface this.
+	blobs := state.NewInMemoryBlobs() // empty — verdict_ref will miss
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventGateAttempt, Path: "gate[0]",
+			Data: marshalOrFatal(t, GateAttemptData{N: 1, AttemptOutcome: AttemptPassed,
+				VerdictRef: "awf-blob-v1:sha256:nonexistent"})},
+	}
+	_, err := Fold(events, blobs)
+	if err == nil {
+		t.Fatal("Fold accepted gate.attempt with missing verdict_ref: want error")
+	}
+	if !strings.Contains(err.Error(), "verdict") {
+		t.Errorf("err = %v, want mention of \"verdict\"", err)
 	}
 }
 

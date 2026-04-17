@@ -29,8 +29,9 @@ type scriptedDispatcher struct {
 
 type scriptedResult struct {
 	outcome  Outcome
-	err      error // if non-nil, the dispatcher returns this error directly
-	ctxAware bool  // if true, return (RetryableFailure, ctx.Err()) when ctx is cancelled
+	err      error          // if non-nil, the dispatcher returns this error directly
+	ctxAware bool           // if true, return (RetryableFailure, ctx.Err()) when ctx is cancelled
+	outputs  map[string]any // if non-nil, propagated to DispatchResult.Outputs (gate tests need this)
 }
 
 func (d *scriptedDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error) {
@@ -54,7 +55,7 @@ func (d *scriptedDispatcher) Run(ctx context.Context, intent NodeIntent) (Dispat
 	if res.err != nil {
 		return DispatchResult{Outcome: res.outcome}, closedCh, res.err
 	}
-	return DispatchResult{Outcome: res.outcome, ExitCode: intPtr(0)}, closedCh, nil
+	return DispatchResult{Outcome: res.outcome, ExitCode: intPtr(0), Outputs: res.outputs}, closedCh, nil
 }
 
 func intPtr(i int) *int { return &i }

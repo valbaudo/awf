@@ -75,6 +75,9 @@ func TestRunStateZeroValueIsUsable(t *testing.T) {
 	if rs.LoopIters["nope"] != 0 {
 		t.Errorf("zero-value RunState.LoopIters non-zero")
 	}
+	if rs.GateAttempts["nope"] != nil {
+		t.Errorf("zero-value RunState.GateAttempts[\"nope\"] = non-nil, want nil")
+	}
 }
 
 func TestNewRunStateAllocatesMaps(t *testing.T) {
@@ -92,6 +95,7 @@ func TestNewRunStateAllocatesMaps(t *testing.T) {
 	rs.Completed["x"] = NodeResult{}
 	rs.Branches["y"] = "then"
 	rs.LoopIters["z"] = 1
+	rs.GateAttempts["z"] = nil // must not panic — map is allocated
 }
 
 func TestNewRunStateNilInputIsValid(t *testing.T) {
@@ -218,4 +222,95 @@ func TestRunStateConcurrentAccessAllMaps(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestRunStateGateAttemptsRoundTrip(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+
+	// Empty state: LookupGateAttempts returns nil (the zero-value slice).
+	if got := rs.LookupGateAttempts("gate[0]"); got != nil {
+		t.Errorf("empty LookupGateAttempts: got %v, want nil", got)
+	}
+
+	// Record one attempt and read back.
+	ar1 := AttemptResult{
+		N:              1,
+		AttemptOutcome: AttemptRejected,
+		Verdict:        map[string]any{"verified": false, "feedback": "missing X"},
+	}
+	rs.RecordGateAttempt("gate[0]", ar1)
+	got := rs.LookupGateAttempts("gate[0]")
+	if len(got) != 1 {
+		t.Fatalf("after 1 record: len = %d, want 1", len(got))
+	}
+	if got[0].N != 1 || got[0].AttemptOutcome != AttemptRejected {
+		t.Errorf("got[0] = %+v, want {N:1, AttemptOutcome:%q}", got[0], AttemptRejected)
+	}
+	if got[0].Verdict["feedback"] != "missing X" {
+		t.Errorf("got[0].Verdict = %+v, want feedback=\"missing X\"", got[0].Verdict)
+	}
+
+	// Record a second attempt; order preserved.
+	ar2 := AttemptResult{N: 2, AttemptOutcome: AttemptPassed, Verdict: map[string]any{"verified": true}}
+	rs.RecordGateAttempt("gate[0]", ar2)
+	got = rs.LookupGateAttempts("gate[0]")
+	if len(got) != 2 {
+		t.Fatalf("after 2 records: len = %d, want 2", len(got))
+	}
+	if got[0].N != 1 || got[1].N != 2 {
+		t.Errorf("order broken: got Ns %d,%d; want 1,2", got[0].N, got[1].N)
+	}
+
+	// Disjoint gate path is independent.
+	rs.RecordGateAttempt("gate[1]", AttemptResult{N: 1, AttemptOutcome: AttemptPassed})
+	if len(rs.LookupGateAttempts("gate[0]")) != 2 {
+		t.Errorf("disjoint write affected gate[0]")
+	}
+	if len(rs.LookupGateAttempts("gate[1]")) != 1 {
+		t.Errorf("gate[1] not recorded")
+	}
+}
+
+func TestRunStateConcurrentGateAttempts(t *testing.T) {
+	// Phase 3 slice 3.2 (parallel) introduced concurrent RunState mutation.
+	// Slice 3.3's GateAttempts must follow the same thread-safety contract —
+	// even though gates themselves run sequentially within a single workflow,
+	// a parallel containing two gates (one per branch) WOULD have two
+	// goroutines calling RecordGateAttempt on disjoint paths concurrently.
+	// Run under -race.
+	rs := NewRunState("run-x", "digest", nil)
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			path := fmt.Sprintf("gate-%d", i)
+			rs.RecordGateAttempt(path, AttemptResult{N: 1, AttemptOutcome: AttemptPassed})
+			if got := rs.LookupGateAttempts(path); len(got) != 1 || got[0].N != 1 {
+				t.Errorf("concurrent path %q: got %v", path, got)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestGateAttemptsReturnedSliceIsReadOnly(t *testing.T) {
+	// Pin that the returned slice aliases the internal backing array. Callers
+	// MUST NOT mutate (per LookupGateAttempts doc-comment) — this test
+	// documents that the aliasing EXISTS, so a future defensive-copy refactor
+	// breaks the test and forces re-pinning. Same philosophy as
+	// TestNodeResultCopyIsShallow.
+	rs := NewRunState("r", "d", nil)
+	rs.RecordGateAttempt("g", AttemptResult{
+		N: 1, AttemptOutcome: AttemptPassed,
+		Verdict: map[string]any{"k": "v"},
+	})
+	got := rs.LookupGateAttempts("g")
+	got[0].N = 999
+	internal := rs.LookupGateAttempts("g")
+	if internal[0].N != 999 {
+		t.Errorf("aliasing contract broken: returned slice no longer aliases internal; got N=%d, want 999 (the test asserts aliasing EXISTS — see doc-comment)", internal[0].N)
+	}
 }

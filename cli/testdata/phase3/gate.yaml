@@ -1,0 +1,27 @@
+workflow: phase3-gate
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: c0
+          run: echo gen1
+      evaluate:
+        - id: eval1
+          container: c0
+          run: echo eval1
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+      until: "{{ evaluate.verified }}"
+      max_attempts: 1
+  - id: after
+    container: c0
+    run: echo after

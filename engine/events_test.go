@@ -17,6 +17,7 @@ func TestEventTypeConstants(t *testing.T) {
 		EventLoopIter:      "loop.iter",
 		EventRetryAttempt:  "retry.attempt",
 		EventNodeSkipped:   "node.skipped",
+		EventGateAttempt:   "gate.attempt",
 	}
 	for got, want := range cases {
 		if got != want {
@@ -257,6 +258,41 @@ func TestNodeSkippedDataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGateAttemptDataRoundTrip(t *testing.T) {
+	d := GateAttemptData{
+		N:              2,
+		AttemptOutcome: AttemptRejected,
+		VerdictRef:     "awf-blob-v1:sha256:abc123",
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got GateAttemptData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got != d {
+		t.Errorf("round-trip: got %+v, want %+v", got, d)
+	}
+
+	// Wire field names — pin them, since renaming any breaks every existing log.
+	wantJSON := `{"n":2,"attempt_outcome":"attempt_rejected","verdict_ref":"awf-blob-v1:sha256:abc123"}`
+	if string(b) != wantJSON {
+		t.Errorf("on-wire: got %s, want %s", b, wantJSON)
+	}
+
+	d2 := GateAttemptData{N: 1, AttemptOutcome: AttemptPassed, VerdictRef: ""}
+	b2, err := json.Marshal(d2)
+	if err != nil {
+		t.Fatalf("Marshal empty VerdictRef: %v", err)
+	}
+	// With `verdict_ref,omitempty`, the field should be absent from the JSON.
+	if strings.Contains(string(b2), "verdict_ref") {
+		t.Errorf("empty VerdictRef serialization: %s contains verdict_ref; omitempty should drop it", b2)
+	}
+}
+
 func TestEventTypeConstantsAreStable(t *testing.T) {
 	// Locks the wire-format strings. Renaming any of these would invalidate every
 	// existing log; CI catches the rename via this test before it ships.
@@ -274,5 +310,17 @@ func TestEventTypeConstantsAreStable(t *testing.T) {
 				t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
 			}
 		})
+	}
+}
+
+func TestAttemptOutcomeConstantsAreStable(t *testing.T) {
+	// Pin the exact string values — these are the wire format for
+	// GateAttemptData.AttemptOutcome. Renaming either would invalidate every
+	// existing gate.attempt event in persisted logs.
+	if AttemptPassed != "attempt_passed" {
+		t.Errorf("AttemptPassed = %q, want \"attempt_passed\"", AttemptPassed)
+	}
+	if AttemptRejected != "attempt_rejected" {
+		t.Errorf("AttemptRejected = %q, want \"attempt_rejected\"", AttemptRejected)
 	}
 }

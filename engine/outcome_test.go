@@ -47,6 +47,22 @@ func TestClassifyOutcomeMatrix(t *testing.T) {
 	}
 }
 
+func TestParseOutcomeAcceptsRejected(t *testing.T) {
+	oc, err := ParseOutcome("rejected")
+	if err != nil {
+		t.Fatalf("ParseOutcome(\"rejected\"): err = %v, want nil (slice 3.3 adds OutcomeRejected)", err)
+	}
+	if oc != OutcomeRejected {
+		t.Errorf("ParseOutcome(\"rejected\") = %q, want %q", oc, OutcomeRejected)
+	}
+}
+
+func TestParseOutcomeRejectsUnknown(t *testing.T) {
+	if _, err := ParseOutcome("bogus"); err == nil {
+		t.Errorf("ParseOutcome(\"bogus\"): err = nil, want non-nil (unknown outcome)")
+	}
+}
+
 func TestClassifyOutcomeReadsPolicy(t *testing.T) {
 	// Smoke test the integration: retry.Policy.NonRetryableExitCodes is what
 	// callers actually pass in; ClassifyOutcome doesn't reach for a global

@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -139,9 +140,39 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 	}
 }
 
+// stepIDPattern is the allowed step id charset. Phase 3 slice 3.3 tightening (AWF1020):
+// unrestricted step ids could collide with the runtime path addressing scheme — a step id
+// like `generate` or containing a `.` / `[` would confuse engine.Scope.enclosingGateForEvaluate
+// (which segment-matches against reserved gate tokens) and shadow keywords in journal keys
+// and OTel `awf.node.path`. Restricting the charset pre-empts the collision and aligns with
+// every other workflow system (Step Functions, Argo, GitHub Actions all constrain identifier
+// charset). The AWF standard §2 doesn't pin allowed characters; this is a unilateral runtime
+// tightening.
+var stepIDPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+
+// reservedStepIDTokens are control-keyword path segments the runtime addressing scheme uses;
+// a step id equal to one of these would shadow the keyword in a runtime path. The charset
+// rule above (no brackets, no dots) already excludes `gate[N]`, `attempt-N`, `iter-N`,
+// `item-N`. This catches the single-token shadows.
+var reservedStepIDTokens = map[string]bool{
+	"generate": true, "evaluate": true, "until": true,
+	"then": true, "else": true, "body": true,
+	"do": true, "catch": true, "finally": true,
+}
+
 func checkStepID(id, path string, c *collector, seen map[string]string) {
 	if id == "" {
 		return // empty step id surfaces as AWFxxxx in a later slice / Schema; not our concern here.
+	}
+	if !stepIDPattern.MatchString(id) {
+		c.errf(path, "AWF1020", fmt.Sprintf("%s: id=%q (must match %s)",
+			catalog["AWF1020"], id, stepIDPattern))
+		// Fall through to uniqueness — a bad-charset id may still duplicate, and emitting both
+		// diagnostics gives the author the full picture.
+	}
+	if reservedStepIDTokens[id] {
+		c.errf(path, "AWF1020", fmt.Sprintf("%s: id=%q collides with reserved control keyword",
+			catalog["AWF1020"], id))
 	}
 	if prev, dup := seen[id]; dup {
 		c.errf(path, "AWF1004", fmt.Sprintf("%s (first seen at %s)", catalog["AWF1004"], prev))

@@ -35,9 +35,9 @@ type producer struct {
 //     (the §7 iff-referenced contract).
 //
 // Reference roots understood by the walker: `step.<id>.<field>`, `input.<field>`,
-// `evaluate.<field>` (only meaningful inside a gate's generate; deferred to Phase 2 for
-// scope check), `run.id` (always OK), `<as>.<field>` (only meaningful inside a map;
-// deferred to Phase 2's evaluator scope check).
+// `evaluate.<field>` (legal only inside gate.generate or gate.until — enforced statically by
+// AWF5001 via the evaluateAllowed bool threaded through walkRefs), `run.id` (always OK),
+// `<as>.<field>` (only meaningful inside a map; deferred to Phase 2's evaluator scope check).
 func validateRefs(ld *LoadedDefinition, c *collector) {
 	wf := ld.Workflow
 
@@ -54,8 +54,9 @@ func validateRefs(ld *LoadedDefinition, c *collector) {
 	// Track which producers had at least one ref into them (for AWF3002).
 	referenced := map[string]bool{}
 
-	// Walk the graph collecting refs from every Template and Expr field.
-	walkRefs(wf.Graph, "", c, producers, referenced)
+	// Walk the graph collecting refs from every Template and Expr field. evaluateAllowed=false
+	// at the top level — only the gate frame's generate/until flip it true (see walkRefs).
+	walkRefs(wf.Graph, "", c, producers, referenced, false)
 
 	// AWF3002: any AgentStep with an output_schema but no inbound ref → warning.
 	for id, p := range producers {
@@ -95,58 +96,67 @@ func indexProducers(nodes NodeList, parent string, producers map[string]producer
 }
 
 // walkRefs visits every Template and Expr field in the graph and processes its refs.
-func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]producer, referenced map[string]bool) {
+//
+// evaluateAllowed gates emission of AWF5001 in checkRef's `evaluate` case: true means
+// `evaluate.<field>` is legal in this subtree, false means it errors. The bool propagates
+// unchanged through every non-Gate node, so it represents the innermost gate frame's
+// allow/deny — nested gates OVERRIDE (the inner frame's value is what walkRefs passes down).
+func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]producer, referenced map[string]bool, evaluateAllowed bool) {
 	for i, n := range nodes {
 		switch v := n.(type) {
 		case *CodeStep:
 			path := PathFor(parent, "", v.ID, i)
-			checkTemplateRefs(v.Run, path+".run", c, producers, referenced)
+			checkTemplateRefs(v.Run, path+".run", c, producers, referenced, evaluateAllowed)
 			if v.IdempotencyKey != nil {
-				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced)
+				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced, evaluateAllowed)
 			}
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
 			if v.IdempotencyKey != nil {
-				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced)
+				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced, evaluateAllowed)
 			}
 			// v.With is opaque RawConfig per CLAUDE.md — do NOT walk it.
 		case *SignalStep:
 			// no Template / Expr fields beyond the schema itself.
 		case *If:
 			path := PathFor(parent, "if", "", i)
-			checkExprRefs(string(v.Cond), path+".cond", c, producers, referenced)
-			walkRefs(v.Then, ChildPath(parent, "if", i, "then"), c, producers, referenced)
-			walkRefs(v.Else, ChildPath(parent, "if", i, "else"), c, producers, referenced)
+			checkExprRefs(string(v.Cond), path+".cond", c, producers, referenced, evaluateAllowed)
+			walkRefs(v.Then, ChildPath(parent, "if", i, "then"), c, producers, referenced, evaluateAllowed)
+			walkRefs(v.Else, ChildPath(parent, "if", i, "else"), c, producers, referenced, evaluateAllowed)
 		case *Loop:
 			path := PathFor(parent, "loop", "", i)
 			if v.Until != nil {
-				checkExprRefs(string(*v.Until), path+".until", c, producers, referenced)
+				checkExprRefs(string(*v.Until), path+".until", c, producers, referenced, evaluateAllowed)
 			}
-			walkRefs(v.Body, ChildPath(parent, "loop", i, "body"), c, producers, referenced)
+			walkRefs(v.Body, ChildPath(parent, "loop", i, "body"), c, producers, referenced, evaluateAllowed)
 		case *Try:
-			walkRefs(v.Do, ChildPath(parent, "try", i, "do"), c, producers, referenced)
-			walkRefs(v.Catch, ChildPath(parent, "try", i, "catch"), c, producers, referenced)
-			walkRefs(v.Finally, ChildPath(parent, "try", i, "finally"), c, producers, referenced)
+			walkRefs(v.Do, ChildPath(parent, "try", i, "do"), c, producers, referenced, evaluateAllowed)
+			walkRefs(v.Catch, ChildPath(parent, "try", i, "catch"), c, producers, referenced, evaluateAllowed)
+			walkRefs(v.Finally, ChildPath(parent, "try", i, "finally"), c, producers, referenced, evaluateAllowed)
 		case *Parallel:
-			walkRefs(v.Children, PathFor(parent, "parallel", "", i), c, producers, referenced)
+			walkRefs(v.Children, PathFor(parent, "parallel", "", i), c, producers, referenced, evaluateAllowed)
 		case *Gate:
 			path := PathFor(parent, "gate", "", i)
-			checkExprRefs(string(v.Until), path+".until", c, producers, referenced)
-			walkRefs(v.Generate, ChildPath(parent, "gate", i, "generate"), c, producers, referenced)
-			walkRefs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c, producers, referenced)
+			// gate.until: evaluate.* allowed (single Expr field, no recursion).
+			checkExprRefs(string(v.Until), path+".until", c, producers, referenced, true)
+			// gate.generate: evaluate.* allowed (innermost frame OVERRIDES enclosing).
+			walkRefs(v.Generate, ChildPath(parent, "gate", i, "generate"), c, producers, referenced, true)
+			// gate.evaluate: evaluate.* REJECTED (the evaluator can't reference its own in-flight output).
+			walkRefs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c, producers, referenced, false)
 		case *Map:
 			path := PathFor(parent, "map", "", i)
-			checkExprRefs(string(v.Over), path+".over", c, producers, referenced)
+			checkExprRefs(string(v.Over), path+".over", c, producers, referenced, evaluateAllowed)
 			// v.Container is a STATIC container name (AWF §5.7); validated by walkStructural
 			// (AWF1009/AWF1019). Not a Template — no Slots/ParseRef walk here.
-			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, referenced)
+			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, referenced, evaluateAllowed)
 		}
 	}
 }
 
 // checkTemplateRefs scans src (an ir.Template field) for `{{ … }}` slots, parses each as a
-// ref via the template package, and runs each through checkRef.
-func checkTemplateRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool) {
+// ref via the template package, and runs each through checkRef. evaluateAllowed is propagated
+// to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire.
+func checkTemplateRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool, evaluateAllowed bool) {
 	if src == "" {
 		return
 	}
@@ -166,13 +176,14 @@ func checkTemplateRefs(src, path string, c *collector, producers map[string]prod
 			c.errf(path, "AWF3001", fmt.Sprintf("invalid reference %q: %s", inner, syntaxMessage(err)))
 			continue
 		}
-		checkRef(*ref, path, c, producers, referenced)
+		checkRef(*ref, path, c, producers, referenced, evaluateAllowed)
 	}
 }
 
 // checkExprRefs unwraps the outer `{{ }}` envelope (if present), parses the inner as an
-// Expr via the template package, and runs each Ref in the AST through checkRef.
-func checkExprRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool) {
+// Expr via the template package, and runs each Ref in the AST through checkRef. evaluateAllowed
+// is propagated to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire.
+func checkExprRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool, evaluateAllowed bool) {
 	if src == "" {
 		return
 	}
@@ -183,12 +194,14 @@ func checkExprRefs(src, path string, c *collector, producers map[string]producer
 		return
 	}
 	for _, ref := range template.References(e) {
-		checkRef(ref, path, c, producers, referenced)
+		checkRef(ref, path, c, producers, referenced, evaluateAllowed)
 	}
 }
 
 // checkRef classifies a ref by its first segment and applies the appropriate cross-check.
-func checkRef(ref template.Ref, path string, c *collector, producers map[string]producer, referenced map[string]bool) {
+// evaluateAllowed controls whether `evaluate.<field>` is legal in this position — false
+// emits AWF5001 (the static counterpart of engine.Scope.resolveEvaluate's runtime check).
+func checkRef(ref template.Ref, path string, c *collector, producers map[string]producer, referenced map[string]bool, evaluateAllowed bool) {
 	if len(ref.Segments) == 0 {
 		return
 	}
@@ -252,8 +265,12 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			c.errf(path, "AWF3001", fmt.Sprintf("only `run.id` is defined under the `run` root: %s", renderRef(ref)))
 		}
 	case "evaluate":
-		// evaluate.<field> requires gate context — Phase 2 evaluator's scope check enforces
-		// "evaluate only meaningful inside a gate's generate."
+		// evaluate.<field> is only legal inside a gate's generate sub-tree or in the gate's
+		// until expression — walkRefs flips evaluateAllowed=true when entering those positions.
+		// AWF5001 is the static counterpart of engine.Scope.resolveEvaluate's runtime check.
+		if !evaluateAllowed {
+			c.errf(path, "AWF5001", fmt.Sprintf("%s: %s", catalog["AWF5001"], renderRef(ref)))
+		}
 	default:
 		// Unknown root (e.g. an `<as>` binding from a map) — slice 1.4 doesn't track binding
 		// scopes; defer to Phase 2's evaluator scope check.

@@ -15,6 +15,16 @@
 //     ctx-cancel + run finally blocks + propagate to enclosing try
 //     (parallel_cancellation); a mid-parallel crash resumes with committed
 //     branches replayed and uncommitted re-executed (parallel_resume_consistency).
+//   - Gate (Bucket 5): a gate with max_attempts:2 threads evaluator
+//     feedback into the next attempt's generator (feedback_threading);
+//     a gate whose evaluator always rejects exhausts max_attempts and
+//     returns OutcomeRejected (max_attempts_rejected); a generator
+//     crash propagates BEFORE any gate.attempt commits, never
+//     consuming an attempt (crash_not_verdict); a mid-gate resume
+//     continues at the committed attempt N+1 (mid_resume); each step
+//     in the gate is dispatched independently (independence_placeholder —
+//     Phase 5 replaces with fresh-context agent-launch proof); gate
+//     rejection propagates to the nearest try.catch (rejected_caught_by_try).
 //   - Skip (Bucket 6): skip at run root completes ok with node.skipped in
 //     log (at_root); skip in loop body records loop.iter + node.skipped per
 //     iter (in_loop_body); skip in try.do bypasses Catch, runs Finally,
@@ -50,5 +60,6 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("replay", func(t *testing.T) { testReplay(t, factory) })
 	t.Run("atomic", func(t *testing.T) { testAtomic(t, factory) })
 	t.Run("propagation", func(t *testing.T) { testPropagation(t, factory) })
+	t.Run("gate", func(t *testing.T) { testGate(t, factory) })
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 }

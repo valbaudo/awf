@@ -10,25 +10,29 @@ import (
 )
 
 // Scope is the slice 2.3 adapter that satisfies template.Scope by reading from
-// a RunState and a workflow IR. The interpreter (slice 2.5) constructs one per
-// template evaluation (substitute a run: command, evaluate an if.cond) with the
-// ctxPath set to the runtime path of the node about to be processed (the path
-// MAY include iter-N segments — Scope reads them to implement the "same-iter"
-// step-resolution case in spec §5.2).
+// a RunState and a workflow IR. The interpreter constructs one per template
+// evaluation (substitute a run: command, evaluate an if.cond, evaluate a
+// gate.until) with the ctxPath set to the runtime path of the node about to
+// be processed.
 //
-// Phase 2 reference vocabulary: run.id, input.<field>, step.<id>.exit_code,
-// step.<id>.stdout, step.<id>.<field>. Roots not in this list — evaluate.*
-// (Phase 3 gate), <as>.* (Phase 3 map) — return AWF4002 unresolved. The
-// validator (slice 1.4) already catches the static cases; the runtime closes
-// the loop on anything that slipped past.
+// Phase 3 reference vocabulary: run.id, input.<field>, step.<id>.exit_code,
+// step.<id>.stdout, step.<id>.<field>, evaluate.<field> (slice 3.3). Roots
+// not in this list — <as>.* (Phase 3 map) — return AWF4002 unresolved.
+//
+// verdictOverride: optional. When non-nil, evaluate.* resolves against it
+// directly INSTEAD of consulting RunState.GateAttempts. The gate executor
+// (engine/gate.go) sets this when evaluating gate.until — the just-produced
+// verdict isn't yet in GateAttempts (the gate.attempt event hasn't committed),
+// so the override carries the verdict through.
 //
 // Nested loops are out of scope for slice 2.3 (see plan Design question 3);
 // stepRuntimePath errors with a clear "nested loops not supported" message
 // rather than silently computing a wrong path.
 type Scope struct {
-	rs        *RunState
-	ctxPath   string
-	stepIndex map[string]string // step id → static IR path (computed at NewScope; one IR walk per scope)
+	rs              *RunState
+	ctxPath         string
+	stepIndex       map[string]string // step id → static IR path (computed at NewScope; one IR walk per scope)
+	verdictOverride map[string]any
 }
 
 // NewScope wires the inputs into a Scope. ctxPath is the runtime path of the
@@ -40,6 +44,22 @@ func NewScope(rs *RunState, wf *ir.Workflow, ctxPath string) *Scope {
 		rs:        rs,
 		ctxPath:   ctxPath,
 		stepIndex: StepPathIndex(wf),
+	}
+}
+
+// NewScopeWithVerdict constructs a Scope with verdictOverride set. Used by the
+// gate executor (engine/gate.go) when evaluating gate.until: the just-produced
+// verdict is bound to evaluate.* before the gate.attempt event commits.
+//
+// gatePath is the static gate path (e.g. "gate[0]"); ctxPath is synthesized as
+// "<gatePath>.attempt-<N>.until" — but callers pass the full synthesized path,
+// not gatePath alone (this constructor doesn't synthesize).
+func NewScopeWithVerdict(rs *RunState, wf *ir.Workflow, ctxPath string, verdict map[string]any) *Scope {
+	return &Scope{
+		rs:              rs,
+		ctxPath:         ctxPath,
+		stepIndex:       StepPathIndex(wf),
+		verdictOverride: verdict,
 	}
 }
 
@@ -65,8 +85,10 @@ func (s *Scope) Resolve(ref *template.Ref) (any, error) {
 		return s.resolveInput(ref)
 	case "step":
 		return s.resolveStep(ref)
+	case "evaluate":
+		return s.resolveEvaluate(ref)
 	default:
-		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "unknown ref root %q (Phase 2 supports run / input / step)", head.Ident)
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "unknown ref root %q (Phase 3 supports run / input / step / evaluate)", head.Ident)
 	}
 }
 
@@ -163,6 +185,45 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 		}
 		return descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
 	}
+}
+
+// resolveEvaluate handles `evaluate.<field>` refs. Per Phase 3 slice 3.3
+// design §D + decision 9:
+//
+//  1. If verdictOverride is set (gate.until evaluation against just-produced
+//     verdict that isn't yet in GateAttempts), descend into it.
+//  2. Else, identify the enclosing gate via enclosingGateForEvaluate(ctxPath).
+//     If none (ctxPath isn't under a gate's generate / until), error.
+//  3. Read RunState.GateAttempts[gatePath]; if empty (attempt 1, no prior
+//     verdict), resolve to empty string "" — safe substitution for the
+//     typical {{ evaluate.feedback }} template per design §D.
+//  4. Else, descend into the LATEST attempt's verdict.
+func (s *Scope) resolveEvaluate(ref *template.Ref) (any, error) {
+	if len(ref.Segments) < 2 {
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "`evaluate` requires a field selector (e.g. evaluate.feedback)")
+	}
+	if s.verdictOverride != nil {
+		return descendPath(s.verdictOverride, ref.Segments[1:], "evaluate.")
+	}
+	gatePath, ok := enclosingGateForEvaluate(s.ctxPath)
+	if !ok {
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved,
+			"`evaluate.<field>` is only meaningful inside a gate's generate or until (ctxPath=%q)", s.ctxPath)
+	}
+	attempts := s.rs.LookupGateAttempts(gatePath)
+	if len(attempts) == 0 {
+		// Attempt 1: no prior verdict. Return "" so {{ evaluate.feedback }}
+		// safely substitutes to empty (design §D — feedback safe on attempt 1).
+		// Arithmetic comparisons on attempt 1 will type-mismatch (AWF4003); the
+		// author should guard with conditionals if mixing typed reads with
+		// attempt-1 evaluations.
+		return "", nil
+	}
+	latest := attempts[len(attempts)-1]
+	if latest.Verdict == nil {
+		return "", nil
+	}
+	return descendPath(latest.Verdict, ref.Segments[1:], "evaluate.")
 }
 
 // stepRuntimePath converts a step's static IR path (from StepPathIndex) to the
@@ -268,47 +329,4 @@ func segPath(segs []template.Segment) string {
 		parts = append(parts, s.Ident)
 	}
 	return strings.Join(parts, ".")
-}
-
-// StepPathIndex walks wf.Graph and returns a map from step id → static IR path.
-// Phase 2 supports CodeStep / AgentStep / SignalStep / If / Loop kinds; the
-// remaining control kinds (Try / Parallel / Gate / Map / Skip) are skipped —
-// the interpreter (slice 2.5) errors on them at runtime in Phase 2, so any
-// step buried inside them is unreachable. Phase 3+ extends this walker.
-//
-// Duplicate step ids are caught by the validator (AWF1004, slice 1.4) — this
-// function trusts the input was validated and last-write-wins on duplicates.
-//
-// The returned strings are exactly what ir.PathFor / ir.ChildPath produce; see
-// ir/path_test.go for the canonical examples ("triage" / "loop[1].body.echo" /
-// "loop[1].body.if[1].then.deep_step").
-func StepPathIndex(wf *ir.Workflow) map[string]string {
-	out := map[string]string{}
-	walkNodes(wf.Graph, "", out)
-	return out
-}
-
-// walkNodes is StepPathIndex's recursive worker. Appends a (step id → static
-// path) entry for each step under `list`, recursing into If branches and Loop
-// bodies. Phase 3 kinds (Try / Parallel / Gate / Map / Skip) are silently
-// skipped — slice 2.5's interpreter errors on them at runtime in Phase 2.
-func walkNodes(list ir.NodeList, parent string, out map[string]string) {
-	for i, n := range list {
-		switch v := n.(type) {
-		case *ir.CodeStep:
-			out[v.ID] = ir.PathFor(parent, "", v.ID, i)
-		case *ir.AgentStep:
-			out[v.ID] = ir.PathFor(parent, "", v.ID, i)
-		case *ir.SignalStep:
-			out[v.ID] = ir.PathFor(parent, "", v.ID, i)
-		case *ir.If:
-			walkNodes(v.Then, ir.ChildPath(parent, "if", i, "then"), out)
-			walkNodes(v.Else, ir.ChildPath(parent, "if", i, "else"), out)
-		case *ir.Loop:
-			walkNodes(v.Body, ir.ChildPath(parent, "loop", i, "body"), out)
-			// Try / Parallel / Gate / Map / Skip — Phase 2 doesn't execute them; skip.
-			// Slice 2.5 will fail at the interpreter for any workflow that uses them.
-			// Phase 3+ extends this walker to recurse into them.
-		}
-	}
 }
