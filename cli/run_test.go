@@ -723,3 +723,93 @@ func TestCLIRunOnParallelFixture(t *testing.T) {
 		lastSeq = e.Seq
 	}
 }
+
+func TestCLIRunOnGateFixture(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("echo gen1", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("gen1\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("gen1\n")},
+	})
+	// Eval step's AWFOutput is the typed verdict — engine validates against
+	// the output_schema on commit, then the gate executor reads
+	// step.eval1.Outputs to evaluate `until`. With verified:true, gate passes.
+	fake.ProgramExec("echo eval1", container.ExecResult{
+		ExitCode:  0,
+		Stdout:    []byte("eval1\n"),
+		AWFOutput: []byte(`{"verified":true,"feedback":"good"}`),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("eval1\n")},
+	})
+	fake.ProgramExec("echo after", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("after\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("after\n")},
+	})
+
+	stateDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	runner := newTestRunner(t, fake)
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "testdata/phase3/gate.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want %d (ExitOK)\nstderr: %s", rc, cli.ExitOK, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"[gen1] gen1", "[eval1] eval1", "[after] after"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q; got %q", want, out)
+		}
+	}
+
+	// Inspect log: gen1 + eval1 + after committed; exactly one gate.attempt
+	// event with attempt_outcome:attempt_passed; one run.finished{ok}.
+	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var completed, gateAttempts, finished int
+	var lastAttemptOutcome string
+	var finishedOutcome string
+	for _, e := range events {
+		switch e.Type {
+		case engine.EventNodeCompleted:
+			completed++
+		case engine.EventGateAttempt:
+			gateAttempts++
+			var d engine.GateAttemptData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal gate.attempt: %v", err)
+			}
+			lastAttemptOutcome = d.AttemptOutcome
+		case engine.EventRunFinished:
+			finished++
+			var d engine.RunFinishedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal run.finished: %v", err)
+			}
+			finishedOutcome = d.Outcome
+		}
+	}
+	if completed != 3 {
+		t.Errorf("node.completed events = %d, want 3 (gen1 + eval1 + after)", completed)
+	}
+	if gateAttempts != 1 {
+		t.Errorf("gate.attempt events = %d, want 1", gateAttempts)
+	}
+	if lastAttemptOutcome != engine.AttemptPassed {
+		t.Errorf("gate.attempt.attempt_outcome = %q, want %q", lastAttemptOutcome, engine.AttemptPassed)
+	}
+	if finished != 1 || finishedOutcome != "ok" {
+		t.Errorf("run.finished: count=%d outcome=%q; want 1/ok", finished, finishedOutcome)
+	}
+}
