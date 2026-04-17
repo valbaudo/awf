@@ -225,6 +225,213 @@ graph:
           retry: { attempts: 1 }
 `
 
+// gateFeedbackThreadingWorkflow — Bucket 5 feedback_threading. Generator's
+// run command interpolates {{ evaluate.feedback }}; the fake's ProgramExec
+// can only program one result per command, so the test asserts dispatch
+// SEQUENCE (attempt 1 with empty feedback, attempt 2 with "missing X" from
+// attempt-1's verdict). max_attempts: 2 so both attempts run, both reject
+// (eval returns same verdict each call), gate exhausts → OutcomeRejected.
+// Pass-on-2 verdict-roundtrip is covered by the engine-level test.
+const gateFeedbackThreadingWorkflow = `workflow: conformance-gate-feedback
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: c0
+          run: "./gen.sh {{ evaluate.feedback }}"
+          retry: { attempts: 1 }
+      evaluate:
+        - id: eval1
+          container: c0
+          run: "./eval.sh"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+      until: "{{ evaluate.verified }}"
+      max_attempts: 2
+`
+
+// gateMaxAttemptsRejectedWorkflow — Bucket 5 max_attempts_rejected. Evaluator
+// always returns verified:false; gate exhausts max_attempts:3 attempts and
+// returns OutcomeRejected.
+const gateMaxAttemptsRejectedWorkflow = `workflow: conformance-gate-max-attempts
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: c0
+          run: "./gen.sh"
+          retry: { attempts: 1 }
+      evaluate:
+        - id: eval1
+          container: c0
+          run: "./eval.sh"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+      until: "{{ evaluate.verified }}"
+      max_attempts: 3
+`
+
+// gateCrashNotVerdictWorkflow — Bucket 5 crash_not_verdict. Generator
+// crashes (retry-exhausted) on attempt 1; gate must propagate WITHOUT
+// committing a gate.attempt event. The evaluator script entry is deliberately
+// programmed to verified:true — if it ran (it should NOT), the gate would
+// pass on attempt 1 and the test would mis-judge as "no rejection."
+const gateCrashNotVerdictWorkflow = `workflow: conformance-gate-crash
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: c0
+          run: "./gen-crash.sh"
+          retry: { attempts: 1 }
+      evaluate:
+        - id: eval1
+          container: c0
+          run: "./eval.sh"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+      until: "{{ evaluate.verified }}"
+      max_attempts: 3
+`
+
+// gateMidResumeWorkflow — Bucket 5 mid_resume. max_attempts:5. Evaluator
+// always returns verified:false on the first run, then is re-programmed to
+// also keep failing on resume (5 total attempts → rejected). The test asserts
+// the post-run + post-resume RunState has GateAttempts of length 5, with N
+// monotonically increasing 1..5 across the run boundary.
+const gateMidResumeWorkflow = `workflow: conformance-gate-mid-resume
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: c0
+          run: "./gen.sh"
+          retry: { attempts: 1 }
+      evaluate:
+        - id: eval1
+          container: c0
+          run: "./eval.sh"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+      until: "{{ evaluate.verified }}"
+      max_attempts: 5
+`
+
+// gateIndependencePlaceholderWorkflow — Bucket 5 independence_placeholder.
+// Trivial gate (2-step generate, 1-step evaluator). The test asserts the
+// recordingDispatcher captured 3 DISTINCT NodeIntent paths (gen1, gen2, eval1)
+// — the Phase 5 fresh-context proof replaces this assertion when the
+// agent.Adapter lands.
+const gateIndependencePlaceholderWorkflow = `workflow: conformance-gate-independence
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: c0
+          run: "./gen1.sh"
+          retry: { attempts: 1 }
+        - id: gen2
+          container: c0
+          run: "./gen2.sh"
+          retry: { attempts: 1 }
+      evaluate:
+        - id: eval1
+          container: c0
+          run: "./eval.sh"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+      until: "{{ evaluate.verified }}"
+      max_attempts: 1
+`
+
+// gateRejectedCaughtWorkflow — Bucket 5 rejected_caught_by_try (critique-pass
+// addition). Gate wrapped in try.catch; gate rejects (eval returns verified:false,
+// max_attempts:1); catch absorbs; handler step runs; run completes ok.
+const gateRejectedCaughtWorkflow = `workflow: conformance-gate-rejected-caught
+version: 1
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - try:
+      do:
+        - gate:
+            generate:
+              - id: gen1
+                container: c0
+                run: "./gen.sh"
+                retry: { attempts: 1 }
+            evaluate:
+              - id: eval1
+                container: c0
+                run: "./eval.sh"
+                retry: { attempts: 1 }
+                output_schema:
+                  type: object
+                  additionalProperties: false
+                  required: [verified, feedback]
+                  properties:
+                    verified: { type: boolean }
+                    feedback: { type: string }
+            until: "{{ evaluate.verified }}"
+            max_attempts: 1
+      catch:
+        - id: handler
+          container: c0
+          run: "./handler.sh"
+          retry: { attempts: 1 }
+`
+
 // parallelResumeWorkflow — Bucket 4b parallel_resume_consistency:
 // simple 3-branch parallel followed by a sequential after-step. The test
 // programs pb2.sh to fail deterministically on first run, then re-programs
