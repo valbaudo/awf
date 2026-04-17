@@ -442,6 +442,149 @@ func TestScopeWithEvalBool(t *testing.T) {
 	}
 }
 
+func TestScopeResolveEvaluateInsideGenerate(t *testing.T) {
+	// Simulates: a code step inside gate[0].attempt-2.generate references
+	// {{ evaluate.feedback }}. RunState.GateAttempts has one prior attempt
+	// (n=1) with feedback "missing X". resolveEvaluate returns that.
+	wf := &ir.Workflow{ID: "x", Version: 1}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordGateAttempt("gate[0]", AttemptResult{
+		N: 1, AttemptOutcome: AttemptRejected,
+		Verdict: map[string]any{"feedback": "missing X", "verified": false},
+	})
+
+	scope := NewScope(rs, wf, "gate[0].attempt-2.generate.step1")
+	got, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "evaluate"}, {Ident: "feedback"},
+	}})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != "missing X" {
+		t.Errorf("got %v, want \"missing X\"", got)
+	}
+}
+
+func TestScopeResolveEvaluateInsideUntil(t *testing.T) {
+	// gate.until evaluates against the just-produced verdict via verdictOverride.
+	wf := &ir.Workflow{ID: "x", Version: 1}
+	rs := NewRunState("run-x", "digest", nil)
+	scope := NewScopeWithVerdict(rs, wf, "gate[0].attempt-1.until",
+		map[string]any{"verified": true, "detections": 5})
+
+	verified, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "evaluate"}, {Ident: "verified"},
+	}})
+	if err != nil {
+		t.Fatalf("Resolve verified: %v", err)
+	}
+	if verified != true {
+		t.Errorf("verified = %v, want true", verified)
+	}
+	detections, _ := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "evaluate"}, {Ident: "detections"},
+	}})
+	if detections != 5 {
+		t.Errorf("detections = %v (%T), want 5", detections, detections)
+	}
+}
+
+func TestScopeResolveEvaluateOutsideGate(t *testing.T) {
+	wf := &ir.Workflow{ID: "x", Version: 1}
+	rs := NewRunState("run-x", "digest", nil)
+	scope := NewScope(rs, wf, "step1")
+	_, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "evaluate"}, {Ident: "feedback"},
+	}})
+	if err == nil {
+		t.Fatal("Resolve evaluate.feedback outside gate: err = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "gate") {
+		t.Errorf("err = %v, want mention of \"gate\" (clarity for the author)", err)
+	}
+}
+
+func TestScopeResolveEvaluateAttempt1Empty(t *testing.T) {
+	// Design §D: on attempt 1, evaluate.* resolves to empty.
+	wf := &ir.Workflow{ID: "x", Version: 1}
+	rs := NewRunState("run-x", "digest", nil)
+	scope := NewScope(rs, wf, "gate[0].attempt-1.generate.step1")
+	got, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "evaluate"}, {Ident: "feedback"},
+	}})
+	if err != nil {
+		t.Fatalf("Resolve attempt-1: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %v, want \"\" (empty on attempt 1)", got)
+	}
+}
+
+func TestScopeResolveEvaluateNestedGates(t *testing.T) {
+	wf := &ir.Workflow{ID: "x", Version: 1}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordGateAttempt("gate[0]", AttemptResult{
+		N: 1, AttemptOutcome: AttemptRejected,
+		Verdict: map[string]any{"feedback": "outer-feedback"},
+	})
+	rs.RecordGateAttempt("gate[0].attempt-1.generate.gate[2]", AttemptResult{
+		N: 1, AttemptOutcome: AttemptRejected,
+		Verdict: map[string]any{"feedback": "inner-feedback"},
+	})
+
+	scope := NewScope(rs, wf, "gate[0].attempt-1.generate.gate[2].attempt-2.generate.step1")
+	got, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "evaluate"}, {Ident: "feedback"},
+	}})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != "inner-feedback" {
+		t.Errorf("nested: got %v, want \"inner-feedback\" (innermost gate's verdict)", got)
+	}
+}
+
+func TestScopeResolveEvaluateInsideEvaluateRejected(t *testing.T) {
+	wf := &ir.Workflow{ID: "x", Version: 1}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 1, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"feedback": "X"}})
+
+	scope := NewScope(rs, wf, "gate[0].attempt-2.evaluate.eval_step")
+	_, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "evaluate"}, {Ident: "feedback"},
+	}})
+	if err == nil {
+		t.Fatal("evaluate.* in gate.evaluate ctxPath: err = nil, want non-nil")
+	}
+}
+
+func TestEnclosingGateForEvaluateTable(t *testing.T) {
+	cases := []struct {
+		ctxPath string
+		want    string
+		wantOk  bool
+	}{
+		{"", "", false},
+		{"step1", "", false},
+		{"gate[0]", "", false},
+		{"gate[0].attempt-1", "", false},
+		{"gate[0].attempt-1.evaluate.x", "", false},
+		{"gate[0].attempt-1.generate.step1", "gate[0]", true},
+		{"gate[0].attempt-12.until", "gate[0]", true},
+		{"gate[0].attempt-1.generate.gate[2].attempt-2.generate.step1", "gate[0].attempt-1.generate.gate[2]", true},
+		{"gate[0].attempt-1.generate.gate[2].attempt-2.evaluate.x", "gate[0]", true},
+		{"gate[0].attempt-1.generate.loop[0].body.iter-3.step1", "gate[0]", true},
+	}
+	for _, c := range cases {
+		t.Run(c.ctxPath, func(t *testing.T) {
+			got, ok := enclosingGateForEvaluate(c.ctxPath)
+			if got != c.want || ok != c.wantOk {
+				t.Errorf("enclosingGateForEvaluate(%q) = (%q, %v); want (%q, %v)", c.ctxPath, got, ok, c.want, c.wantOk)
+			}
+		})
+	}
+}
+
 func mustParseRef(t *testing.T, src string) *template.Ref {
 	t.Helper()
 	r, err := template.ParseRef(src)

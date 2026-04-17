@@ -10,25 +10,29 @@ import (
 )
 
 // Scope is the slice 2.3 adapter that satisfies template.Scope by reading from
-// a RunState and a workflow IR. The interpreter (slice 2.5) constructs one per
-// template evaluation (substitute a run: command, evaluate an if.cond) with the
-// ctxPath set to the runtime path of the node about to be processed (the path
-// MAY include iter-N segments — Scope reads them to implement the "same-iter"
-// step-resolution case in spec §5.2).
+// a RunState and a workflow IR. The interpreter constructs one per template
+// evaluation (substitute a run: command, evaluate an if.cond, evaluate a
+// gate.until) with the ctxPath set to the runtime path of the node about to
+// be processed.
 //
-// Phase 2 reference vocabulary: run.id, input.<field>, step.<id>.exit_code,
-// step.<id>.stdout, step.<id>.<field>. Roots not in this list — evaluate.*
-// (Phase 3 gate), <as>.* (Phase 3 map) — return AWF4002 unresolved. The
-// validator (slice 1.4) already catches the static cases; the runtime closes
-// the loop on anything that slipped past.
+// Phase 3 reference vocabulary: run.id, input.<field>, step.<id>.exit_code,
+// step.<id>.stdout, step.<id>.<field>, evaluate.<field> (slice 3.3). Roots
+// not in this list — <as>.* (Phase 3 map) — return AWF4002 unresolved.
+//
+// verdictOverride: optional. When non-nil, evaluate.* resolves against it
+// directly INSTEAD of consulting RunState.GateAttempts. The gate executor
+// (engine/gate.go) sets this when evaluating gate.until — the just-produced
+// verdict isn't yet in GateAttempts (the gate.attempt event hasn't committed),
+// so the override carries the verdict through.
 //
 // Nested loops are out of scope for slice 2.3 (see plan Design question 3);
 // stepRuntimePath errors with a clear "nested loops not supported" message
 // rather than silently computing a wrong path.
 type Scope struct {
-	rs        *RunState
-	ctxPath   string
-	stepIndex map[string]string // step id → static IR path (computed at NewScope; one IR walk per scope)
+	rs              *RunState
+	ctxPath         string
+	stepIndex       map[string]string // step id → static IR path (computed at NewScope; one IR walk per scope)
+	verdictOverride map[string]any
 }
 
 // NewScope wires the inputs into a Scope. ctxPath is the runtime path of the
@@ -40,6 +44,22 @@ func NewScope(rs *RunState, wf *ir.Workflow, ctxPath string) *Scope {
 		rs:        rs,
 		ctxPath:   ctxPath,
 		stepIndex: StepPathIndex(wf),
+	}
+}
+
+// NewScopeWithVerdict constructs a Scope with verdictOverride set. Used by the
+// gate executor (engine/gate.go) when evaluating gate.until: the just-produced
+// verdict is bound to evaluate.* before the gate.attempt event commits.
+//
+// gatePath is the static gate path (e.g. "gate[0]"); ctxPath is synthesized as
+// "<gatePath>.attempt-<N>.until" — but callers pass the full synthesized path,
+// not gatePath alone (this constructor doesn't synthesize).
+func NewScopeWithVerdict(rs *RunState, wf *ir.Workflow, ctxPath string, verdict map[string]any) *Scope {
+	return &Scope{
+		rs:              rs,
+		ctxPath:         ctxPath,
+		stepIndex:       StepPathIndex(wf),
+		verdictOverride: verdict,
 	}
 }
 
@@ -65,8 +85,10 @@ func (s *Scope) Resolve(ref *template.Ref) (any, error) {
 		return s.resolveInput(ref)
 	case "step":
 		return s.resolveStep(ref)
+	case "evaluate":
+		return s.resolveEvaluate(ref)
 	default:
-		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "unknown ref root %q (Phase 2 supports run / input / step)", head.Ident)
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "unknown ref root %q (Phase 3 supports run / input / step / evaluate)", head.Ident)
 	}
 }
 
@@ -163,6 +185,90 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 		}
 		return descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
 	}
+}
+
+// resolveEvaluate handles `evaluate.<field>` refs. Per Phase 3 slice 3.3
+// design §D + decision 9:
+//
+//  1. If verdictOverride is set (gate.until evaluation against just-produced
+//     verdict that isn't yet in GateAttempts), descend into it.
+//  2. Else, identify the enclosing gate via enclosingGateForEvaluate(ctxPath).
+//     If none (ctxPath isn't under a gate's generate / until), error.
+//  3. Read RunState.GateAttempts[gatePath]; if empty (attempt 1, no prior
+//     verdict), resolve to empty string "" — safe substitution for the
+//     typical {{ evaluate.feedback }} template per design §D.
+//  4. Else, descend into the LATEST attempt's verdict.
+func (s *Scope) resolveEvaluate(ref *template.Ref) (any, error) {
+	if len(ref.Segments) < 2 {
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "`evaluate` requires a field selector (e.g. evaluate.feedback)")
+	}
+	if s.verdictOverride != nil {
+		return descendPath(s.verdictOverride, ref.Segments[1:], "evaluate.")
+	}
+	gatePath, ok := enclosingGateForEvaluate(s.ctxPath)
+	if !ok {
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved,
+			"`evaluate.<field>` is only meaningful inside a gate's generate or until (ctxPath=%q)", s.ctxPath)
+	}
+	attempts := s.rs.LookupGateAttempts(gatePath)
+	if len(attempts) == 0 {
+		// Attempt 1: no prior verdict. Return "" so {{ evaluate.feedback }}
+		// safely substitutes to empty (design §D — feedback safe on attempt 1).
+		// Arithmetic comparisons on attempt 1 will type-mismatch (AWF4003); the
+		// author should guard with conditionals if mixing typed reads with
+		// attempt-1 evaluations.
+		return "", nil
+	}
+	latest := attempts[len(attempts)-1]
+	if latest.Verdict == nil {
+		return "", nil
+	}
+	return descendPath(latest.Verdict, ref.Segments[1:], "evaluate.")
+}
+
+// enclosingGateForEvaluate walks ctxPath looking for the INNERMOST gate whose
+// generate or until subtree contains the current node. Returns the gate's
+// runtime path (e.g. "gate[0]" for a top-level gate; "gate[0].attempt-1.generate.gate[2]"
+// for a nested gate inside the outer's generate).
+//
+// Patterns recognized as "inside generate / until":
+//   - <prefix>.gate[N].attempt-K.generate.<rest>  — anywhere under a generate subtree
+//   - <prefix>.gate[N].attempt-K.until            — the gate.until expression (terminal)
+//
+// gate.evaluate's subtree is NOT a valid context — evaluate.* there would
+// reference the evaluator's own in-flight output (chicken-and-egg). The
+// walker returns the gate path only if the innermost matching segment is
+// "generate" or "until" — NOT "evaluate".
+//
+// Nested gates: the rightmost matching triple wins. If a nested gate's
+// matching segment is "evaluate", the walker keeps walking left to find the
+// next-outer gate's generate (the test
+// TestEnclosingGateForEvaluateTable's "gate.evaluate inside outer.generate"
+// case pins this).
+func enclosingGateForEvaluate(ctxPath string) (string, bool) {
+	if ctxPath == "" {
+		return "", false
+	}
+	segments := strings.Split(ctxPath, ".")
+	// Walk from end backward. For each segment i ∈ ["generate", "until"]:
+	//   * segments[i-1] must start with "attempt-"
+	//   * segments[i-2] must start with "gate["
+	//   * Return the join of segments[:i-1] (i.e., up to and including gate[N]).
+	for i := len(segments) - 1; i >= 2; i-- {
+		seg := segments[i]
+		if seg != "generate" && seg != "until" {
+			continue
+		}
+		if !strings.HasPrefix(segments[i-1], "attempt-") {
+			continue
+		}
+		if !strings.HasPrefix(segments[i-2], "gate[") {
+			continue
+		}
+		// Gate path = segments[0:i-1] joined by ".".
+		return strings.Join(segments[:i-1], "."), true
+	}
+	return "", false
 }
 
 // stepRuntimePath converts a step's static IR path (from StepPathIndex) to the
