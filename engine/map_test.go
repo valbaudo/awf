@@ -16,41 +16,93 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
-// newMapRig builds the inputs needed for runMap tests: a real LocalDispatcher
-// backed by a real container.Fake, with one entry in Handles for the map's
-// declared container name. Mirrors gateTestDispatcher's setup but uses real
-// types because Design Q2 requires *LocalDispatcher.
-func newMapRig(t *testing.T, mapContainerName string) (*LocalDispatcher, *container.Fake, *state.InMemoryLog, *state.InMemoryBlobs) {
+// Test-wide constants — shared across all runMap tests to remove magic-string
+// duplication. The map handler is container-agnostic (per-item handles are
+// minted via Backend.Create regardless of name), so a single name suffices.
+//
+// testRunID is already declared in engine/scope_test.go (same package).
+const (
+	testMapContainer = "c0"
+	testMapPath      = "map[0]"
+	testDigest       = "digest"
+)
+
+// testClockEpoch is the fixed clock instant fake-clock-backed tests use so
+// log Seq/TS ordering is deterministic across the suite.
+var testClockEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// mapRig bundles every dependency runMap takes. Returned by newMapRig; tests
+// thread the fields into runMap directly. Keeps test bodies focused on the
+// scenario instead of plumbing.
+type mapRig struct {
+	ld    *LocalDispatcher
+	fake  *container.Fake
+	clk   *clock.Fake
+	lg    *state.InMemoryLog
+	blobs *state.InMemoryBlobs
+}
+
+// newMapRig builds the inputs needed for runMap tests. The variadic programs
+// argument pre-loads the fake's exec table (one ProgramExec call per pair).
+// Mirrors gateTestDispatcher's setup but uses real types because Design Q2
+// requires *LocalDispatcher.
+//
+// Why pre-create a base handle: LocalDispatcher's Handles map must have an
+// entry for the map's declared container name (the dispatch path expects it
+// even though runMap layers per-item handles via WithItemHandle).
+//
+// programs is a variadic of `cmd → result` pairs. Use ok(cmd) / fail(cmd)
+// helpers for the common cases; pass `container.ExecResult{...}` directly
+// when you need stdout/AWFOutput/etc.
+func newMapRig(t *testing.T, programs ...execProgram) *mapRig {
 	t.Helper()
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	fake := container.NewFake()
-	// Pre-create a "base" handle for the map's declared container name.
-	// The handler doesn't use this directly — it Creates per-item handles —
-	// but LocalDispatcher's Handles map must have the key for the validator
-	// pathway. (In production CLI flow, the CLI pre-creates one handle per
-	// declared container; the map handler then layers per-item handles via
-	// WithItemHandle.)
-	baseHandle, err := fake.Create(context.Background(), container.ContainerSpec{Name: mapContainerName})
+	for _, p := range programs {
+		fake.ProgramExec(p.cmd, p.res, nil)
+	}
+	baseHandle, err := fake.Create(context.Background(), container.ContainerSpec{Name: testMapContainer})
 	if err != nil {
 		t.Fatalf("seed Create: %v", err)
 	}
-	ld := &LocalDispatcher{
-		Backend: fake,
-		Handles: map[string]container.Handle{
-			mapContainerName: baseHandle,
-		},
+	clk := &clock.Fake{T: testClockEpoch}
+	return &mapRig{
+		ld:    &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{testMapContainer: baseHandle}},
+		fake:  fake,
+		clk:   clk,
+		lg:    state.NewInMemoryLog(clk),
+		blobs: state.NewInMemoryBlobs(),
 	}
-	return ld, fake, state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
 }
 
+// execProgram pairs a command string with its scripted exec result. Used by
+// newMapRig's variadic argument. Defined locally to avoid leaking a
+// test-helper type into the engine package's public surface.
+type execProgram struct {
+	cmd string
+	res container.ExecResult
+}
+
+// ok / fail are convenience constructors for execProgram entries.
+func ok(cmd string) execProgram { return execProgram{cmd: cmd, res: container.ExecResult{ExitCode: 0}} }
+func fail(cmd string) execProgram {
+	return execProgram{cmd: cmd, res: container.ExecResult{ExitCode: 1}}
+}
+
+// runOverItems is the standard input map: `{"items": items}`. Used by every
+// non-trivial map test (the over expression resolves to input.items).
+func runOverItems(items ...any) map[string]any { return map[string]any{"items": items} }
+
 // staticOverWorkflow builds a Workflow with a top-level input and a Map node.
-// Helper to keep tests focused on handler behavior.
-func staticOverWorkflow(asName string, overItems []any, body ir.NodeList, mapContainer string, concurrency int, minSuccess *ir.Ratio) *ir.Workflow {
-	_ = overItems // value provided to NewRunState by callers; the map's over expr reads it via {{ input.items }}
+// Body steps reference `{{ <asName> }}` to access the bound item value.
+//
+// All slice-3.4 unit tests use the same workflow ID + container name (via
+// testMapContainer); only asName, body, concurrency, and minSuccess vary
+// across tests.
+func staticOverWorkflow(asName string, body ir.NodeList, concurrency int, minSuccess *ir.Ratio) *ir.Workflow {
 	mapNode := &ir.Map{
 		Over:        ir.Expr("{{ input.items }}"),
 		As:          asName,
-		Container:   mapContainer,
+		Container:   testMapContainer,
 		Concurrency: concurrency,
 		MinSuccess:  minSuccess,
 		Body:        body,
@@ -58,7 +110,7 @@ func staticOverWorkflow(asName string, overItems []any, body ir.NodeList, mapCon
 	return &ir.Workflow{
 		ID: "x", Version: 1,
 		Containers: map[string]ir.Container{
-			mapContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
+			testMapContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
 		},
 		Input: &ir.JSONSchema{
 			"type": "object",
@@ -70,20 +122,26 @@ func staticOverWorkflow(asName string, overItems []any, body ir.NodeList, mapCon
 	}
 }
 
-func TestRunMapEmptyOver(t *testing.T) {
-	wf := staticOverWorkflow("cve", nil, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ cve }}", Container: "c0"},
-	}, "c0", 1, nil)
-	mapNode := wf.Graph[0].(*ir.Map)
-	ld, _, lg, blobs := newMapRig(t, "c0")
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{}})
+// echoStep is the body used by most tests — a single code step that echoes
+// the bound item value into stdout via {{ <asName> }} substitution.
+func echoStep(asName string, retry *ir.RetryPolicy) ir.NodeList {
+	return ir.NodeList{
+		&ir.CodeStep{ID: "echo", Run: "echo {{ " + asName + " }}", Container: testMapContainer, Retry: retry},
+	}
+}
 
-	oc, err := runMap(context.Background(), mapNode, "map[0]", wf, rs, ld, lg, blobs, &clock.Fake{}, nil)
+func TestRunMapEmptyOver(t *testing.T) {
+	rig := newMapRig(t)
+	wf := staticOverWorkflow("cve", echoStep("cve", nil), 1, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, runOverItems())
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("empty over: got (%q, %v), want (ok, nil)", oc, err)
 	}
 	// No map.item events (no items dispatched).
-	events, _ := lg.Fold()
+	events, _ := rig.lg.Fold()
 	for _, e := range events {
 		if e.Type == EventMapItem {
 			t.Errorf("unexpected map.item event with empty over: %+v", e)
@@ -92,52 +150,32 @@ func TestRunMapEmptyOver(t *testing.T) {
 }
 
 func TestRunMapSingleItemPasses(t *testing.T) {
-	fake := container.NewFake()
-	fake.ProgramExec("echo cve-1", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld := &LocalDispatcher{
-		Backend: fake,
-		Handles: map[string]container.Handle{"c0": baseHandle},
-	}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	lg := state.NewInMemoryLog(clk)
-	blobs := state.NewInMemoryBlobs()
-	wf := staticOverWorkflow("cve", []any{"cve-1"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ cve }}", Container: "c0"},
-	}, "c0", 1, nil)
+	rig := newMapRig(t, ok("echo cve-1"))
+	wf := staticOverWorkflow("cve", echoStep("cve", nil), 1, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{"cve-1"}})
+	rs := NewRunState(testRunID, testDigest, runOverItems("cve-1"))
 
-	oc, err := runMap(context.Background(), mapNode, "map[0]", wf, rs, ld, lg, blobs, clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("got (%q, %v), want (ok, nil)", oc, err)
 	}
-	items := rs.LookupMapItems("map[0]")
+	items := rs.LookupMapItems(testMapPath)
 	if len(items) != 1 || items[0].Status != ItemPassed {
 		t.Errorf("MapItems = %+v, want 1 passed", items)
 	}
 }
 
 func TestRunMapMultipleItemsAllPass(t *testing.T) {
-	fake := container.NewFake()
-	fake.ProgramExec("echo a", container.ExecResult{ExitCode: 0}, nil)
-	fake.ProgramExec("echo b", container.ExecResult{ExitCode: 0}, nil)
-	fake.ProgramExec("echo c", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld := &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"c0": baseHandle}}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	lg, blobs := state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
-	wf := staticOverWorkflow("x", []any{"a", "b", "c"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ x }}", Container: "c0"},
-	}, "c0", 2, nil)
+	rig := newMapRig(t, ok("echo a"), ok("echo b"), ok("echo c"))
+	wf := staticOverWorkflow("x", echoStep("x", nil), 2, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{"a", "b", "c"}})
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := runMap(context.Background(), mapNode, "map[0]", wf, rs, ld, lg, blobs, clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}
-	items := rs.LookupMapItems("map[0]")
+	items := rs.LookupMapItems(testMapPath)
 	if len(items) != 3 {
 		t.Fatalf("MapItems len = %d, want 3", len(items))
 	}
@@ -151,30 +189,25 @@ func TestRunMapMultipleItemsAllPass(t *testing.T) {
 func TestRunMapConcurrencyCapEnforced(t *testing.T) {
 	// concurrency: 2; 5 items, each item's exec blocks until released.
 	// Assert at most 2 concurrent in-flight at any time.
+	//
+	// Uses countingBackend (not the standard fake) because we need to count
+	// inflight calls + block — newMapRig doesn't apply here.
 	fake := container.NewFake()
 	var inflight int64
 	var maxInflight int64
 	release := make(chan struct{})
-	// Custom Backend that counts inflight on Exec, blocks until release.
-	cb := &countingBackend{
-		Fake:        fake,
-		release:     release,
-		inflight:    &inflight,
-		maxInflight: &maxInflight,
-	}
-	baseHandle, _ := cb.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld := &LocalDispatcher{Backend: cb, Handles: map[string]container.Handle{"c0": baseHandle}}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	cb := &countingBackend{Fake: fake, release: release, inflight: &inflight, maxInflight: &maxInflight}
+	baseHandle, _ := cb.Create(context.Background(), container.ContainerSpec{Name: testMapContainer})
+	ld := &LocalDispatcher{Backend: cb, Handles: map[string]container.Handle{testMapContainer: baseHandle}}
+	clk := &clock.Fake{T: testClockEpoch}
 	lg, blobs := state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
-	wf := staticOverWorkflow("x", []any{"a", "b", "c", "d", "e"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ x }}", Container: "c0"},
-	}, "c0", 2, nil)
+	wf := staticOverWorkflow("x", echoStep("x", nil), 2, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{"a", "b", "c", "d", "e"}})
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c", "d", "e"))
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = runMap(context.Background(), mapNode, "map[0]", wf, rs, ld, lg, blobs, clk, nil)
+		_, _ = runMap(context.Background(), mapNode, testMapPath, wf, rs, ld, lg, blobs, clk, nil)
 		close(done)
 	}()
 	// Wait until in-flight reaches 2 (or timeout).
@@ -225,58 +258,30 @@ func (b *countingBackend) Exec(ctx context.Context, h container.Handle, cmd cont
 
 func TestRunMapMinSuccessTolerates(t *testing.T) {
 	// 3 items, min_success: 2; one fails, two pass → map ends ok.
-	fake := container.NewFake()
-	fake.ProgramExec("echo a", container.ExecResult{ExitCode: 0}, nil)
-	fake.ProgramExec("echo b", container.ExecResult{ExitCode: 1}, nil) // fails
-	fake.ProgramExec("echo c", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld := &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"c0": baseHandle}}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	lg, blobs := state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
+	rig := newMapRig(t, ok("echo a"), fail("echo b"), ok("echo c"))
 	minSuccess := ir.Ratio("2")
-	wf := staticOverWorkflow("x", []any{"a", "b", "c"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ x }}", Container: "c0", Retry: &ir.RetryPolicy{Attempts: 1}},
-	}, "c0", 3, &minSuccess)
+	wf := staticOverWorkflow("x", echoStep("x", &ir.RetryPolicy{Attempts: 1}), 3, &minSuccess)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{"a", "b", "c"}})
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := runMap(context.Background(), mapNode, "map[0]", wf, rs, ld, lg, blobs, clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("min_success met: got (%q, %v), want (ok, nil)", oc, err)
 	}
-	// Verify success/fail counts.
-	items := rs.LookupMapItems("map[0]")
-	var pass, fail int
-	for _, mr := range items {
-		switch mr.Status {
-		case ItemPassed:
-			pass++
-		case ItemFailed:
-			fail++
-		}
-	}
+	pass, fail := countStatuses(rs.LookupMapItems(testMapPath))
 	if pass != 2 || fail != 1 {
 		t.Errorf("pass=%d fail=%d; want pass=2 fail=1", pass, fail)
 	}
 }
 
 func TestRunMapMinSuccessFailsBelow(t *testing.T) {
-	// 3 items, min_success: 3 (default = all); one fails → map fails.
-	fake := container.NewFake()
-	fake.ProgramExec("echo a", container.ExecResult{ExitCode: 0}, nil)
-	fake.ProgramExec("echo b", container.ExecResult{ExitCode: 1}, nil)
-	fake.ProgramExec("echo c", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld := &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"c0": baseHandle}}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	lg, blobs := state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
-	wf := staticOverWorkflow("x", []any{"a", "b", "c"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ x }}", Container: "c0", Retry: &ir.RetryPolicy{Attempts: 1}},
-	}, "c0", 3, nil) // nil MinSuccess → default = all (3)
+	// 3 items, default min_success (= all); one fails → map fails.
+	rig := newMapRig(t, ok("echo a"), fail("echo b"), ok("echo c"))
+	wf := staticOverWorkflow("x", echoStep("x", &ir.RetryPolicy{Attempts: 1}), 3, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{"a", "b", "c"}})
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := runMap(context.Background(), mapNode, "map[0]", wf, rs, ld, lg, blobs, clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc == OutcomeOK {
 		t.Errorf("default min_success not met: got ok, want non-ok")
 	}
@@ -289,31 +294,24 @@ func TestRunMapSkipInItemEndsAsOK(t *testing.T) {
 	// Item-1's body contains a Skip; that item ends as item_passed (skip ends
 	// the item as ok per design §E step 5). The other items pass normally.
 	// MinSuccess default = all → map ends ok.
-	fake := container.NewFake()
-	fake.ProgramExec("echo a", container.ExecResult{ExitCode: 0}, nil)
-	fake.ProgramExec("echo c", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld := &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"c0": baseHandle}}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	lg, blobs := state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
-	// Body: an if-statement that runs Skip on item-1 (x == "b"), else runs echo.
-	// Phase 3 templating supports == in if.cond.
+	rig := newMapRig(t, ok("echo a"), ok("echo c"))
+	// Body: if cond=="b" → skip; else → echo.
 	body := ir.NodeList{
 		&ir.If{
-			Cond: ir.Expr("{{ x == \"b\" }}"),
+			Cond: ir.Expr(`{{ x == "b" }}`),
 			Then: ir.NodeList{&ir.Skip{Reason: "skip middle"}},
-			Else: ir.NodeList{&ir.CodeStep{ID: "echo", Run: "echo {{ x }}", Container: "c0"}},
+			Else: echoStep("x", nil),
 		},
 	}
-	wf := staticOverWorkflow("x", []any{"a", "b", "c"}, body, "c0", 3, nil)
+	wf := staticOverWorkflow("x", body, 3, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{"a", "b", "c"}})
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := runMap(context.Background(), mapNode, "map[0]", wf, rs, ld, lg, blobs, clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("skip-in-item: got (%q, %v), want (ok, nil)", oc, err)
 	}
-	items := rs.LookupMapItems("map[0]")
+	items := rs.LookupMapItems(testMapPath)
 	if len(items) != 3 {
 		t.Fatalf("MapItems len = %d, want 3", len(items))
 	}
@@ -324,15 +322,26 @@ func TestRunMapSkipInItemEndsAsOK(t *testing.T) {
 	}
 }
 
+// countStatuses tallies ItemPassed / ItemFailed across a MapItems slice.
+// Used by min_success tests to assert pass/fail counts.
+func countStatuses(items []MapItemRecord) (pass, fail int) {
+	for _, mr := range items {
+		switch mr.Status {
+		case ItemPassed:
+			pass++
+		case ItemFailed:
+			fail++
+		}
+	}
+	return pass, fail
+}
+
 // seedRunStartedWithInput appends a run.started event to lg carrying an
 // InputRef that points at a freshly-Put input blob. Lets the round-2 Fold
-// reconstruct rs2.Input via the realistic CLI path (no manual
-// rs2.Input = ... hack). Returns the input map the test should also seed
-// into rs1 for round-1's NewRunState call.
-//
-// HI3: replaces the prior approach of manually overriding rs2.Input
-// post-Fold; the runtime invariant "Fold reconstructs Input from
-// run.started's InputRef" (engine/fold.go:86-98) is exercised end-to-end.
+// reconstruct rs.Input via the realistic CLI path (matches cli/run.go's
+// pattern). Required because Fold reads Input from RunStartedData.InputRef
+// via Blobs.Get (engine/fold.go:86-98) — without this seed, round-2 Fold
+// leaves rs.Input nil and `over: "{{ input.items }}"` fails to evaluate.
 func seedRunStartedWithInput(t *testing.T, lg state.Log, blobs state.Blobs, input map[string]any) {
 	t.Helper()
 	inputBytes, err := json.Marshal(input)
@@ -344,8 +353,8 @@ func seedRunStartedWithInput(t *testing.T, lg state.Log, blobs state.Blobs, inpu
 		t.Fatalf("put input blob: %v", err)
 	}
 	runStartedData, err := json.Marshal(RunStartedData{
-		RunID:          "run-x",
-		WorkflowDigest: "digest",
+		RunID:          testRunID,
+		WorkflowDigest: testDigest,
 		InputRef:       inputRef,
 	})
 	if err != nil {
@@ -356,196 +365,160 @@ func seedRunStartedWithInput(t *testing.T, lg state.Log, blobs state.Blobs, inpu
 	}
 }
 
+// foldFromRig folds the rig's log into a fresh RunState. Used by resume tests
+// to simulate the CLI's `awf resume` path (Fold the log → fresh RunState →
+// re-enter runMap).
+func foldFromRig(t *testing.T, rig *mapRig) *RunState {
+	t.Helper()
+	events, err := rig.lg.Fold()
+	if err != nil {
+		t.Fatalf("rig log Fold: %v", err)
+	}
+	rs, err := Fold(events, rig.blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	return rs
+}
+
+// bareRig returns a fresh mapRig (no programs) sharing the source rig's log
+// + blobs. Used by resume tests: round 2 needs a NEW backend (the CLI
+// re-creates containers on resume) but the SAME log + blobs (the
+// committed state to fold). Pre-creates the base container handle.
+func bareRig(t *testing.T, src *mapRig, programs ...execProgram) *mapRig {
+	t.Helper()
+	fake := container.NewFake()
+	for _, p := range programs {
+		fake.ProgramExec(p.cmd, p.res, nil)
+	}
+	baseHandle, _ := fake.Create(context.Background(), container.ContainerSpec{Name: testMapContainer})
+	return &mapRig{
+		ld:    &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{testMapContainer: baseHandle}},
+		fake:  fake,
+		clk:   src.clk,
+		lg:    src.lg,
+		blobs: src.blobs,
+	}
+}
+
 func TestRunMapResumeReplaysCommittedItems(t *testing.T) {
 	// Per spec §8 + Design Q6: committed items are REPLAYED on resume,
 	// not re-executed. Round 1 commits all 3 as item_passed; round 2
 	// resumes against a BARE fake (no programmed Exec entries). If
 	// runMap correctly skips committed items, no Exec calls happen on
 	// round 2 → resume completes ok. If it incorrectly re-executes,
-	// the bare fake errors them → the assertion catches it via
-	// round2Fake.Calls len > 0.
+	// the bare fake errors them → fake.Calls is non-empty.
 
-	// Round 1: program all 3 to succeed.
-	fake1 := container.NewFake()
-	fake1.ProgramExec("echo a", container.ExecResult{ExitCode: 0}, nil)
-	fake1.ProgramExec("echo b", container.ExecResult{ExitCode: 0}, nil)
-	fake1.ProgramExec("echo c", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle1, _ := fake1.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld1 := &LocalDispatcher{Backend: fake1, Handles: map[string]container.Handle{"c0": baseHandle1}}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	lg := state.NewInMemoryLog(clk)
-	blobs := state.NewInMemoryBlobs()
-
-	// HI3: realistic Fold path — InputRef-seeded run.started lets round-2
-	// Fold reconstruct rs2.Input without manual override.
-	input := map[string]any{"items": []any{"a", "b", "c"}}
-	seedRunStartedWithInput(t, lg, blobs, input)
-
-	wf := staticOverWorkflow("x", []any{"a", "b", "c"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ x }}", Container: "c0"},
-	}, "c0", 3, nil)
+	rig1 := newMapRig(t, ok("echo a"), ok("echo b"), ok("echo c"))
+	input := runOverItems("a", "b", "c")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	wf := staticOverWorkflow("x", echoStep("x", nil), 3, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs1 := NewRunState("run-x", "digest", input)
+	rs1 := NewRunState(testRunID, testDigest, input)
 
-	oc1, err1 := runMap(context.Background(), mapNode, "map[0]", wf, rs1, ld1, lg, blobs, clk, nil)
+	oc1, err1 := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil)
 	if oc1 != OutcomeOK || err1 != nil {
 		t.Fatalf("round-1: got (%q, %v), want (ok, nil)", oc1, err1)
 	}
-	pre := rs1.LookupMapItems("map[0]")
-	if len(pre) != 3 {
+	if pre := rs1.LookupMapItems(testMapPath); len(pre) != 3 {
 		t.Fatalf("pre-resume MapItems len = %d, want 3", len(pre))
 	}
 
-	// Round 2: simulate resume via Fold. Use a BARE fake — no programs.
-	// runMap MUST skip all 3 committed items; any Exec call would error.
-	events, _ := lg.Fold()
-	rs2, ferr := Fold(events, blobs)
-	if ferr != nil {
-		t.Fatalf("Fold: %v", ferr)
-	}
-	// Sanity: Fold reconstructed Input from InputRef.
+	// Round 2: BARE fake (no programs). Any body re-execution would error.
+	rig2 := bareRig(t, rig1) // no programs
+	rs2 := foldFromRig(t, rig2)
 	if rs2.Input == nil {
-		t.Fatal("Fold did not reconstruct rs2.Input from InputRef (HI3 fix did not take effect)")
+		t.Fatal("Fold did not reconstruct rs2.Input from InputRef")
 	}
-	fake2 := container.NewFake() // NO programs — any Exec call will error.
-	baseHandle2, _ := fake2.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld2 := &LocalDispatcher{Backend: fake2, Handles: map[string]container.Handle{"c0": baseHandle2}}
 
-	oc2, err2 := runMap(context.Background(), mapNode, "map[0]", wf, rs2, ld2, lg, blobs, clk, nil)
+	oc2, err2 := runMap(context.Background(), mapNode, testMapPath, wf, rs2, rig2.ld, rig2.lg, rig2.blobs, rig2.clk, nil)
 	if oc2 != OutcomeOK || err2 != nil {
 		t.Fatalf("resume: got (%q, %v), want (ok, nil) — committed items must replay, not re-execute", oc2, err2)
 	}
-
-	// The load-bearing assertion: fake2 received ZERO Exec calls beyond
-	// the one Create. Any body re-execution would hit fake2.Exec → error
-	// (no program) → propagated. Count via fake2.Calls.
-	if len(fake2.Calls) != 0 {
-		t.Errorf("resume re-executed body steps: fake2.Calls = %v, want [] (committed items should replay, not re-run)", fake2.Calls)
+	// Load-bearing: round-2 fake received ZERO Exec calls.
+	if len(rig2.fake.Calls) != 0 {
+		t.Errorf("resume re-executed body steps: fake.Calls = %v, want []", rig2.fake.Calls)
 	}
 
-	// Verify the post-resume RunState has all 3 items still passed.
-	post := rs2.LookupMapItems("map[0]")
+	post := rs2.LookupMapItems(testMapPath)
 	if len(post) != 3 {
 		t.Fatalf("post-resume MapItems len = %d, want 3", len(post))
 	}
 	for _, mr := range post {
 		if mr.Status != ItemPassed {
-			t.Errorf("post-resume N=%d status=%q, want item_passed (Q6 contract: committed status is preserved)", mr.N, mr.Status)
+			t.Errorf("post-resume N=%d status=%q, want item_passed (Q6: committed status preserved)", mr.N, mr.Status)
 		}
 	}
 }
 
 func TestRunMapResumeFailedItemsStayFailed(t *testing.T) {
 	// Per Design Q6: failed items are FINAL across resume — they are
-	// committed as item_failed and resume SKIPS them. Pin this contract
-	// by:
-	//   Round 1: 2 succeed + 1 fail with min_success: 3 → map fails.
-	//   Round 2: resume on a fresh fake with ALL 3 programmed to succeed.
-	//   Assertion: resume returns the SAME OutcomeRetryableFailure; no
-	//   item re-executes (round-2 fake.Calls is empty).
+	// committed as item_failed and resume SKIPS them.
 	//
-	// CALLER NOTE: This exercises engine.runMap directly. Via the CLI,
-	// `awf resume` refuses runs with terminal run.finished events (slice
-	// 2.6 refusal); failed runs aren't user-resumable through that path.
-	// This test pins the engine-level Q6 contract for callers that bypass
-	// the refusal (the conformance harness; future tooling).
+	// Round 1: 2 pass + 1 fail with min_success: 3 → map fails.
+	// Round 2: fresh fake with ALL 3 programmed to succeed. If item-1
+	// got a second chance, map would return ok. Q6 says NO retry — resume
+	// returns the SAME failure with no body re-execution.
+	//
+	// CALLER NOTE: exercises runMap directly. Via the CLI, `awf resume`
+	// refuses runs with terminal run.finished (slice 2.6); failed runs
+	// aren't user-resumable through that path. This test pins the engine-
+	// level Q6 contract for callers that bypass the refusal.
 
-	// Round 1: program a, b, c — b returns ExitCode 1 (item_failed).
-	fake1 := container.NewFake()
-	fake1.ProgramExec("echo a", container.ExecResult{ExitCode: 0}, nil)
-	fake1.ProgramExec("echo b", container.ExecResult{ExitCode: 1}, nil)
-	fake1.ProgramExec("echo c", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle1, _ := fake1.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld1 := &LocalDispatcher{Backend: fake1, Handles: map[string]container.Handle{"c0": baseHandle1}}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	lg := state.NewInMemoryLog(clk)
-	blobs := state.NewInMemoryBlobs()
-
-	input := map[string]any{"items": []any{"a", "b", "c"}}
-	seedRunStartedWithInput(t, lg, blobs, input)
-
-	minSuccess := ir.Ratio("3") // require all 3
-	wf := staticOverWorkflow("x", []any{"a", "b", "c"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ x }}", Container: "c0", Retry: &ir.RetryPolicy{Attempts: 1}},
-	}, "c0", 3, &minSuccess)
+	rig1 := newMapRig(t, ok("echo a"), fail("echo b"), ok("echo c"))
+	input := runOverItems("a", "b", "c")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	minSuccess := ir.Ratio("3")
+	wf := staticOverWorkflow("x", echoStep("x", &ir.RetryPolicy{Attempts: 1}), 3, &minSuccess)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs1 := NewRunState("run-x", "digest", input)
+	rs1 := NewRunState(testRunID, testDigest, input)
 
-	oc1, err1 := runMap(context.Background(), mapNode, "map[0]", wf, rs1, ld1, lg, blobs, clk, nil)
+	oc1, err1 := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil)
 	if oc1 != OutcomeRetryableFailure {
-		t.Fatalf("round-1: outcome = %q, want OutcomeRetryableFailure (2 pass, 1 fail, min_success: 3)", oc1)
+		t.Fatalf("round-1: outcome = %q, want OutcomeRetryableFailure", oc1)
 	}
 	if err1 == nil {
 		t.Fatal("round-1: err = nil, want non-nil")
 	}
-	pre := rs1.LookupMapItems("map[0]")
-	var prePass, preFail int
-	for _, mr := range pre {
-		switch mr.Status {
-		case ItemPassed:
-			prePass++
-		case ItemFailed:
-			preFail++
-		}
-	}
-	if prePass != 2 || preFail != 1 {
-		t.Fatalf("round-1: pre-resume pass=%d fail=%d, want 2/1", prePass, preFail)
+	pass, fail := countStatuses(rs1.LookupMapItems(testMapPath))
+	if pass != 2 || fail != 1 {
+		t.Fatalf("round-1: pre-resume pass=%d fail=%d, want 2/1", pass, fail)
 	}
 
-	// Round 2: fresh fake with ALL 3 programmed to succeed. If item-1
-	// gets a second chance (per a hypothetical "retry on resume" bug),
-	// it would now succeed → map would return ok. Q6 says NO retry —
-	// resume returns the SAME failure.
-	events, _ := lg.Fold()
-	rs2, ferr := Fold(events, blobs)
-	if ferr != nil {
-		t.Fatalf("Fold: %v", ferr)
-	}
-	fake2 := container.NewFake()
-	fake2.ProgramExec("echo a", container.ExecResult{ExitCode: 0}, nil)
-	fake2.ProgramExec("echo b", container.ExecResult{ExitCode: 0}, nil) // would-pass on retry
-	fake2.ProgramExec("echo c", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle2, _ := fake2.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld2 := &LocalDispatcher{Backend: fake2, Handles: map[string]container.Handle{"c0": baseHandle2}}
+	// Round 2: fresh fake with ALL 3 programmed to succeed (would-pass-on-retry).
+	rig2 := bareRig(t, rig1, ok("echo a"), ok("echo b"), ok("echo c"))
+	rs2 := foldFromRig(t, rig2)
 
-	oc2, err2 := runMap(context.Background(), mapNode, "map[0]", wf, rs2, ld2, lg, blobs, clk, nil)
+	oc2, err2 := runMap(context.Background(), mapNode, testMapPath, wf, rs2, rig2.ld, rig2.lg, rig2.blobs, rig2.clk, nil)
 	if oc2 != OutcomeRetryableFailure {
-		t.Errorf("resume: outcome = %q, want OutcomeRetryableFailure (Q6: failed items are final; resume does not retry)", oc2)
+		t.Errorf("resume: outcome = %q, want OutcomeRetryableFailure (Q6: failed items final)", oc2)
 	}
 	if err2 == nil {
-		t.Error("resume: err = nil, want non-nil (same failure as round 1)")
+		t.Error("resume: err = nil, want non-nil")
 	}
-	// Load-bearing assertion: no body Exec calls on round-2. fake2 was
-	// programmed but never invoked — items are all committed (Q6 skip).
-	if len(fake2.Calls) != 0 {
-		t.Errorf("resume re-executed body steps: fake2.Calls = %v, want [] (Q6: failed items must NOT retry on resume)", fake2.Calls)
+	if len(rig2.fake.Calls) != 0 {
+		t.Errorf("resume re-executed body: fake.Calls = %v, want [] (Q6)", rig2.fake.Calls)
 	}
 }
 
 func TestRunMapAsBindingThreaded(t *testing.T) {
-	// Verifies that {{ x }} substitution in body actually receives over[K] value.
-	// Use 2 items with distinct values; assert each item's dispatched command
-	// has the right substitution.
-	fake := container.NewFake()
-	fake.ProgramExec("./run.sh apple", container.ExecResult{ExitCode: 0}, nil)
-	fake.ProgramExec("./run.sh banana", container.ExecResult{ExitCode: 0}, nil)
-	baseHandle, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "c0"})
-	ld := &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"c0": baseHandle}}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	lg, blobs := state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
-	wf := staticOverWorkflow("fruit", []any{"apple", "banana"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "./run.sh {{ fruit }}", Container: "c0"},
-	}, "c0", 2, nil)
+	// Verifies {{ x }} substitution in body actually receives over[K] value.
+	// Uses 2 items with distinct values; asserts each item's dispatched
+	// command had the right substitution.
+	rig := newMapRig(t, ok("./run.sh apple"), ok("./run.sh banana"))
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "echo", Run: "./run.sh {{ fruit }}", Container: testMapContainer},
+	}
+	wf := staticOverWorkflow("fruit", body, 2, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{"apple", "banana"}})
+	rs := NewRunState(testRunID, testDigest, runOverItems("apple", "banana"))
 
-	oc, err := runMap(context.Background(), mapNode, "map[0]", wf, rs, ld, lg, blobs, clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}
-	// Verify both expected commands were dispatched.
 	var sawApple, sawBanana bool
-	for _, c := range fake.Calls {
+	for _, c := range rig.fake.Calls {
 		switch c.Run {
 		case "./run.sh apple":
 			sawApple = true
@@ -554,7 +527,7 @@ func TestRunMapAsBindingThreaded(t *testing.T) {
 		}
 	}
 	if !sawApple || !sawBanana {
-		t.Errorf("substitution failed: sawApple=%v sawBanana=%v; calls=%+v", sawApple, sawBanana, fake.Calls)
+		t.Errorf("substitution failed: sawApple=%v sawBanana=%v; calls=%+v", sawApple, sawBanana, rig.fake.Calls)
 	}
 }
 
@@ -601,15 +574,13 @@ func TestRunMapNonLocalDispatcherErrors(t *testing.T) {
 	// Design Q2: runMap requires *LocalDispatcher. Non-local dispatchers
 	// (the gate test rigs) error clearly.
 	mockDispatcher := &nonLocalMapDispatcher{}
-	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	clk := &clock.Fake{T: testClockEpoch}
 	lg, blobs := state.NewInMemoryLog(clk), state.NewInMemoryBlobs()
-	wf := staticOverWorkflow("x", []any{"a"}, ir.NodeList{
-		&ir.CodeStep{ID: "echo", Run: "echo {{ x }}", Container: "c0"},
-	}, "c0", 1, nil)
+	wf := staticOverWorkflow("x", echoStep("x", nil), 1, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	rs := NewRunState("run-x", "digest", map[string]any{"items": []any{"a"}})
+	rs := NewRunState(testRunID, testDigest, runOverItems("a"))
 
-	_, err := runMap(context.Background(), mapNode, "map[0]", wf, rs, mockDispatcher, lg, blobs, clk, nil)
+	_, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, mockDispatcher, lg, blobs, clk, nil)
 	if err == nil {
 		t.Fatal("non-local dispatcher: err = nil, want non-nil")
 	}
