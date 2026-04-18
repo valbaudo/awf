@@ -76,7 +76,7 @@ type AttemptResult struct {
 //
 // ItemValue is the materialized over[N] value, populated by the map executor
 // (engine/map.go) BEFORE dispatching the item's body. On resume, the Fold
-// populates Status from the gate.attempt event but leaves ItemValue NIL
+// populates Status from the map.item event but leaves ItemValue NIL
 // (Design Q3); the runtime re-evaluates `over` and calls UpdateMapItemValue
 // to fill it in before body re-execution. READ-ONLY (callers MUST NOT mutate
 // — same caveat as NodeResult.Outputs).
@@ -148,9 +148,10 @@ type RunState struct {
 
 	// MapItems records the per-item status for every map that has committed
 	// at least one map.item event. Slice 3.4 addition; map path → ordered
-	// slice of MapItemRecord (N-ascending, but not necessarily 0,1,2,... —
-	// items may commit out-of-N-order due to concurrent goroutines, so the
-	// slice is whatever order events arrived in the log).
+	// slice of MapItemRecord in arrival order (the order RecordMapItem was
+	// called, which mirrors log-append order). NOT N-ascending: concurrent
+	// item-body goroutines may commit out-of-N-order, so item N=3 can land
+	// in the slice before N=1. Pinned by TestRunStateMapItemsRoundTrip.
 	//
 	// LookupByN(N) helpers are NOT provided — the map handler walks the
 	// slice (typically ≤ Concurrency items in flight) when it needs to
@@ -160,13 +161,15 @@ type RunState struct {
 	// reads MapItems to find the bound value for an enclosing map's item.
 	MapItems map[string][]MapItemRecord
 
-	// mu serializes access to Completed / Branches / LoopIters / GateAttempts.
-	// Phase 2 callers were single-threaded; Phase 3 slice 3.2 (parallel)
-	// introduced concurrent branch goroutines.
+	// mu serializes access to Completed / Branches / LoopIters / GateAttempts
+	// / MapItems. Phase 2 callers were single-threaded; Phase 3 slice 3.2
+	// (parallel) introduced concurrent branch goroutines, and slice 3.4 (map)
+	// adds concurrent item-body goroutines.
 	//
 	// Slice 3.2+ callers MUST use the accessor methods (LookupCompleted /
 	// RecordCompleted / LookupBranch / RecordBranch / LookupLoopIters /
-	// RecordLoopIter / LookupGateAttempts / RecordGateAttempt). Direct field
+	// RecordLoopIter / LookupGateAttempts / RecordGateAttempt /
+	// LookupMapItems / RecordMapItem / UpdateMapItemValue). Direct field
 	// access is reserved for engine.Fold —
 	// Fold runs at resume time BEFORE engine.Run, never concurrent with
 	// any goroutine, so its direct map writes are race-free by construction.
