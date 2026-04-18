@@ -17,10 +17,10 @@ import (
 )
 
 // ErrNodeNotImplementedInPhase3 is the sentinel the interpreter returns for any
-// node kind Phase 3 doesn't execute. After slice 3.3: Try, Skip, Parallel, Gate
-// ship; SignalStep / Map remain unimplemented (each shipping in its own Phase 3
-// slice). After all five Phase 3 slices ship, only AgentStep remains — slice
-// 3.5 will rename to ErrNodeNotImplemented (phase-agnostic).
+// node kind Phase 3 doesn't execute. After slice 3.4: Try, Skip, Parallel,
+// Gate, Map ship; SignalStep remains unimplemented (slice 3.5). After slice
+// 3.5 ships, only AgentStep remains — the sentinel will be renamed to
+// ErrNodeNotImplemented (phase-agnostic) by slice 3.5 per Phase 3 design.
 //
 // The per-slice phase-string in notImpl identifies the landing slice per kind.
 // Distinct from engine.ErrUnsupportedKind (the dispatcher's per-step sentinel)
