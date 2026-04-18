@@ -139,3 +139,22 @@ func copyIntPtr(v int) *int {
 	out := v
 	return &out
 }
+
+// WithItemHandle returns a shallow clone of d with Handles cloned and the
+// (name → h) entry overridden (or inserted). Slice 3.4: the map executor
+// (engine/map.go) calls this per item to retarget body's container lookup
+// to a per-item handle. Cheap — Handles is typically 1-3 entries.
+//
+// The returned LocalDispatcher shares Backend with d. Mutating the returned
+// dispatcher's Handles after construction is safe (it's a fresh map).
+func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *LocalDispatcher {
+	cloned := make(map[string]container.Handle, len(d.Handles)+1)
+	for k, v := range d.Handles {
+		cloned[k] = v
+	}
+	cloned[name] = h
+	return &LocalDispatcher{
+		Backend: d.Backend,
+		Handles: cloned,
+	}
+}
