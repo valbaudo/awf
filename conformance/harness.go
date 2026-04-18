@@ -19,6 +19,11 @@ import (
 // harness simulates run-then-resume against in-mem fakes. One per bucket
 // sub-test; bucket calls runWorkflow then resumeWorkflow (with fault hooks
 // programmed in between if needed).
+//
+// input is an optional pre-bound input map (Phase 3 slice 3.4): if non-nil,
+// it's passed to engine.NewRunState on the FIRST run. Resume reads input
+// back from the log's run.started entry via Fold; this field is only
+// consulted on the first-run branch. Use newHarnessWithInput to set it.
 type harness struct {
 	wfPath  string
 	clk     *clock.Fake
@@ -26,6 +31,7 @@ type harness struct {
 	blobs   *state.InMemoryBlobs
 	factory BackendFactory
 	runID   string
+	input   map[string]any
 }
 
 func newHarness(t *testing.T, factory BackendFactory, workflowYAML string) *harness {
@@ -44,6 +50,17 @@ func newHarness(t *testing.T, factory BackendFactory, workflowYAML string) *harn
 		factory: factory,
 		runID:   "conformance-run",
 	}
+}
+
+// newHarnessWithInput is a variant of newHarness that pre-binds an input map
+// to the RunState (passes through engine.NewRunState's input parameter).
+// Slice 3.4 conformance Bucket 7 uses this for map fixtures whose `over`
+// templates reference {{ input.<field> }}.
+func newHarnessWithInput(t *testing.T, factory BackendFactory, workflowYAML string, input map[string]any) *harness {
+	t.Helper()
+	h := newHarness(t, factory, workflowYAML)
+	h.input = input
+	return h
 }
 
 func (h *harness) runWorkflow(t *testing.T) (engine.Outcome, error) {
@@ -99,9 +116,26 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 			return "", err
 		}
 	} else {
-		rs = engine.NewRunState(h.runID, digest, nil)
+		rs = engine.NewRunState(h.runID, digest, h.input)
+		// If the harness has a pre-bound input, persist it as a blob and
+		// record the InputRef in run.started so resume's Fold can restore
+		// RunState.Input (engine/fold.go reads d.InputRef and re-materializes
+		// via Blobs.Get). Without this, a resume after Bucket 7 map fixtures
+		// would see rs.Input == nil and fail to evaluate `over: "{{ input.items }}"`.
+		var inputRef string
+		if h.input != nil {
+			raw, mErr := json.Marshal(h.input)
+			if mErr != nil {
+				return "", mErr
+			}
+			ref, pErr := h.blobs.Put(raw)
+			if pErr != nil {
+				return "", pErr
+			}
+			inputRef = ref
+		}
 		runStartedData, _ := json.Marshal(engine.RunStartedData{
-			RunID: h.runID, WorkflowDigest: digest,
+			RunID: h.runID, WorkflowDigest: digest, InputRef: inputRef,
 		})
 		if err := h.log.Append(state.Event{
 			Type: engine.EventRunStarted, Data: runStartedData,

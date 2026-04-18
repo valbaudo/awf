@@ -29,6 +29,13 @@
 //     log (at_root); skip in loop body records loop.iter + node.skipped per
 //     iter (in_loop_body); skip in try.do bypasses Catch, runs Finally,
 //     propagates ok (in_try_do).
+//   - Map (Bucket 7): a 3-item map commits 3 distinct map.item events at
+//     independently-addressable per-item paths (map_per_item_commits);
+//     round-1 commits all 3 items, round-2 resumes against a BARE fake
+//     (no programmed Exec) and completes ok — committed items are
+//     REPLAYED, not re-executed (map_resume_skips_committed_items); skip
+//     inside an item commits item_passed (map_skip_in_item_records_passed —
+//     pins design §E step 5).
 //
 // Phase 2 calls RunSuite with container.NewFake (conformance_fake_test.go).
 // Phase 4 adds conformance_docker_test.go with docker.NewFactory.
@@ -62,4 +69,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("propagation", func(t *testing.T) { testPropagation(t, factory) })
 	t.Run("gate", func(t *testing.T) { testGate(t, factory) })
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
+	t.Run("map", func(t *testing.T) { testMap(t, factory) })
 }
