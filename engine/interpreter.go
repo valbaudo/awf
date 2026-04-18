@@ -154,7 +154,7 @@ func interpNode(
 	case *ir.Gate:
 		return runGate(ctx, v, ir.PathFor(parent, "gate", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.Map:
-		return notImpl("map", ir.PathFor(parent, "map", "", idx), "Phase 3 slice 3.4")
+		return runMap(ctx, v, ir.PathFor(parent, "map", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
 	case *ir.Skip:
 		return runSkip(v)
 	default:
