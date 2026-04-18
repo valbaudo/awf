@@ -631,6 +631,102 @@ func TestFold_GateAttemptUnknownVerdictRefErrors(t *testing.T) {
 	}
 }
 
+func TestFold_MapItemPopulatesItems(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventMapItem, Path: "map[0]",
+			Data: marshalOrFatal(t, MapItemData{N: 0, Status: ItemPassed})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	items := rs.MapItems["map[0]"]
+	if len(items) != 1 {
+		t.Fatalf("items len = %d, want 1", len(items))
+	}
+	if items[0].N != 0 || items[0].Status != ItemPassed {
+		t.Errorf("items[0] = %+v, want N=0 Status=item_passed", items[0])
+	}
+	// Design Q3: ItemValue is NOT in the wire format; Fold leaves it nil.
+	// The runtime executor fills it via UpdateMapItemValue on re-entry.
+	if items[0].ItemValue != nil {
+		t.Errorf("items[0].ItemValue = %v, want nil (slice 3.4 Design Q3 contract)", items[0].ItemValue)
+	}
+}
+
+func TestFold_MapItemMultipleItemsArrivalOrdered(t *testing.T) {
+	// Items may commit OUT of N-order (concurrent goroutines). Fold preserves
+	// ARRIVAL order in the slice. The handler walks N-by-N when it needs to
+	// check completion; arrival order is for fidelity to the log.
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		// N=2 arrives BEFORE N=0 (concurrent dispatch).
+		{Seq: 2, TS: fixedTS, Type: EventMapItem, Path: "map[0]",
+			Data: marshalOrFatal(t, MapItemData{N: 2, Status: ItemPassed})},
+		{Seq: 3, TS: fixedTS, Type: EventMapItem, Path: "map[0]",
+			Data: marshalOrFatal(t, MapItemData{N: 0, Status: ItemFailed})},
+		{Seq: 4, TS: fixedTS, Type: EventMapItem, Path: "map[0]",
+			Data: marshalOrFatal(t, MapItemData{N: 1, Status: ItemPassed})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := rs.MapItems["map[0]"]
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	// Arrival order pinned.
+	if got[0].N != 2 || got[1].N != 0 || got[2].N != 1 {
+		t.Errorf("arrival order broken: got Ns %d,%d,%d; want 2,0,1",
+			got[0].N, got[1].N, got[2].N)
+	}
+}
+
+func TestFold_MapItemMalformedDataErrors(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventMapItem, Path: "map[0]",
+			Data: []byte(`{not valid json`)},
+	}
+	_, err := Fold(events, blobs)
+	if err == nil {
+		t.Fatal("Fold accepted malformed map.item: want error")
+	}
+	if !strings.Contains(err.Error(), "map.item") {
+		t.Errorf("err = %v, want mention of \"map.item\"", err)
+	}
+}
+
+func TestFold_MapItemNoBlobsAccess(t *testing.T) {
+	// Defense-in-depth: unlike gate.attempt (which dereferences VerdictRef via
+	// Blobs.Get and can fail with "verdict_ref not in blobs"), map.item has NO
+	// CAS reference. The Fold of a map.item event MUST NOT call blobs.Get —
+	// verified by passing a nil-ish blobs and asserting Fold succeeds.
+	// (We use a real InMemoryBlobs but assert no entries get added by Fold.)
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventMapItem, Path: "map[0]",
+			Data: marshalOrFatal(t, MapItemData{N: 0, Status: ItemPassed})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if got := rs.MapItems["map[0]"]; len(got) != 1 {
+		t.Errorf("MapItems = %+v, want 1 entry", got)
+	}
+}
+
 // TestFold_Golden_Sequential — a flat 3-step sequential workflow with no branches or
 // loops. Verifies the most common shape — a linear pipeline — folds correctly with
 // Completed entries keyed by step id.

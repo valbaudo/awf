@@ -367,3 +367,53 @@ func TestLocalDispatcherCancelledContextIsRetryable(t *testing.T) {
 		t.Errorf("Outcome = %v, want retryable on ctx cancel", dr.Outcome)
 	}
 }
+
+func TestLocalDispatcherWithItemHandle(t *testing.T) {
+	// Setup: a LocalDispatcher with two Handles entries.
+	original := &engine.LocalDispatcher{
+		Backend: container.NewFake(),
+		Handles: map[string]container.Handle{
+			"workspace": {Name: "workspace", ID: "ws-0"},
+			"lab":       {Name: "lab", ID: "lab-0"},
+		},
+	}
+	// Per-item override: "workspace" maps to a different handle.
+	itemHandle := container.Handle{Name: "workspace", ID: "ws-item-3"}
+	clone := original.WithItemHandle("workspace", itemHandle)
+
+	// Clone has the override.
+	if got := clone.Handles["workspace"]; got.ID != "ws-item-3" {
+		t.Errorf("clone.Handles[\"workspace\"].ID = %q, want \"ws-item-3\"", got.ID)
+	}
+	// Clone preserves the other entry.
+	if got := clone.Handles["lab"]; got.ID != "lab-0" {
+		t.Errorf("clone.Handles[\"lab\"].ID = %q, want \"lab-0\"", got.ID)
+	}
+	// Original UNTOUCHED — the clone must not mutate the source map.
+	if got := original.Handles["workspace"]; got.ID != "ws-0" {
+		t.Errorf("original.Handles[\"workspace\"].ID = %q after clone, want \"ws-0\" (clone mutated source!)", got.ID)
+	}
+	// Backend is the same reference (shallow — both dispatchers Exec against the same fake).
+	if clone.Backend != original.Backend {
+		t.Error("clone.Backend != original.Backend; WithItemHandle should share the Backend")
+	}
+}
+
+func TestLocalDispatcherWithItemHandleNewEntry(t *testing.T) {
+	// If the name doesn't already exist in Handles, WithItemHandle adds it.
+	original := &engine.LocalDispatcher{
+		Backend: container.NewFake(),
+		Handles: map[string]container.Handle{
+			"workspace": {Name: "workspace", ID: "ws-0"},
+		},
+	}
+	itemHandle := container.Handle{Name: "scratch", ID: "scratch-0"}
+	clone := original.WithItemHandle("scratch", itemHandle)
+
+	if got := clone.Handles["scratch"]; got.ID != "scratch-0" {
+		t.Errorf("clone.Handles[\"scratch\"].ID = %q, want \"scratch-0\"", got.ID)
+	}
+	if _, ok := original.Handles["scratch"]; ok {
+		t.Errorf("original.Handles got \"scratch\" entry; WithItemHandle should not mutate source")
+	}
+}

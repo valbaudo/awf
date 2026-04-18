@@ -51,17 +51,55 @@ func validateRefs(ld *LoadedDefinition, c *collector) {
 		producers["input"] = producer{path: "input", kind: "input", schema: wf.Input}
 	}
 
+	// Slice 3.4: also index map runtime paths so checkRef can emit AWF5002 for aggregation
+	// refs (deferred per spec §11 item 4). The runtime ships per-item dispatch + commits
+	// but NOT aggregated downstream output addressing.
+	mapIDs := map[string]bool{}
+	indexMapIDs(wf.Graph, "", mapIDs)
+
 	// Track which producers had at least one ref into them (for AWF3002).
 	referenced := map[string]bool{}
 
 	// Walk the graph collecting refs from every Template and Expr field. evaluateAllowed=false
 	// at the top level — only the gate frame's generate/until flip it true (see walkRefs).
-	walkRefs(wf.Graph, "", c, producers, referenced, false)
+	walkRefs(wf.Graph, "", c, producers, referenced, mapIDs, false)
 
 	// AWF3002: any AgentStep with an output_schema but no inbound ref → warning.
 	for id, p := range producers {
 		if p.kind == "agent" && p.schema != nil && !referenced[id] {
 			c.warnf(p.path, "AWF3002", fmt.Sprintf("%s (step %q)", catalog["AWF3002"], id))
+		}
+	}
+}
+
+// indexMapIDs walks wf.Graph and records every Map node's runtime path — these are the
+// addresses that `step.<map_id>.items[*]` / `.summary` refs claim to read. Slice 3.4 uses
+// this set to emit AWF5002 (aggregation refs deferred per spec §11 item 4).
+//
+// NB: Maps don't have IDs in the IR (only step kinds do). The "map id" an author writes
+// in a ref is the map's RUNTIME PATH LEAF NAME — i.e. "map" (the leaf of "map[0]" or
+// "loop[0].body.map[1]"). isMapID strips the trailing `[N]` index to extract the leaf
+// kind-name for matching.
+func indexMapIDs(nodes NodeList, parent string, mapIDs map[string]bool) {
+	for i, n := range nodes {
+		switch v := n.(type) {
+		case *Map:
+			mapIDs[PathFor(parent, "map", "", i)] = true
+			indexMapIDs(v.Body, ChildPath(parent, "map", i, "body"), mapIDs)
+		case *If:
+			indexMapIDs(v.Then, ChildPath(parent, "if", i, "then"), mapIDs)
+			indexMapIDs(v.Else, ChildPath(parent, "if", i, "else"), mapIDs)
+		case *Loop:
+			indexMapIDs(v.Body, ChildPath(parent, "loop", i, "body"), mapIDs)
+		case *Try:
+			indexMapIDs(v.Do, ChildPath(parent, "try", i, "do"), mapIDs)
+			indexMapIDs(v.Catch, ChildPath(parent, "try", i, "catch"), mapIDs)
+			indexMapIDs(v.Finally, ChildPath(parent, "try", i, "finally"), mapIDs)
+		case *Parallel:
+			indexMapIDs(v.Children, PathFor(parent, "parallel", "", i), mapIDs)
+		case *Gate:
+			indexMapIDs(v.Generate, ChildPath(parent, "gate", i, "generate"), mapIDs)
+			indexMapIDs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), mapIDs)
 		}
 	}
 }
@@ -101,62 +139,66 @@ func indexProducers(nodes NodeList, parent string, producers map[string]producer
 // `evaluate.<field>` is legal in this subtree, false means it errors. The bool propagates
 // unchanged through every non-Gate node, so it represents the innermost gate frame's
 // allow/deny — nested gates OVERRIDE (the inner frame's value is what walkRefs passes down).
-func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]producer, referenced map[string]bool, evaluateAllowed bool) {
+//
+// mapIDs is the set of map runtime paths (built by indexMapIDs); threaded through so
+// checkRef's step case can detect aggregation refs and emit AWF5002 (slice 3.4 / spec §11).
+func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]producer, referenced map[string]bool, mapIDs map[string]bool, evaluateAllowed bool) {
 	for i, n := range nodes {
 		switch v := n.(type) {
 		case *CodeStep:
 			path := PathFor(parent, "", v.ID, i)
-			checkTemplateRefs(v.Run, path+".run", c, producers, referenced, evaluateAllowed)
+			checkTemplateRefs(v.Run, path+".run", c, producers, referenced, mapIDs, evaluateAllowed)
 			if v.IdempotencyKey != nil {
-				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced, evaluateAllowed)
+				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced, mapIDs, evaluateAllowed)
 			}
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
 			if v.IdempotencyKey != nil {
-				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced, evaluateAllowed)
+				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced, mapIDs, evaluateAllowed)
 			}
 			// v.With is opaque RawConfig per CLAUDE.md — do NOT walk it.
 		case *SignalStep:
 			// no Template / Expr fields beyond the schema itself.
 		case *If:
 			path := PathFor(parent, "if", "", i)
-			checkExprRefs(string(v.Cond), path+".cond", c, producers, referenced, evaluateAllowed)
-			walkRefs(v.Then, ChildPath(parent, "if", i, "then"), c, producers, referenced, evaluateAllowed)
-			walkRefs(v.Else, ChildPath(parent, "if", i, "else"), c, producers, referenced, evaluateAllowed)
+			checkExprRefs(string(v.Cond), path+".cond", c, producers, referenced, mapIDs, evaluateAllowed)
+			walkRefs(v.Then, ChildPath(parent, "if", i, "then"), c, producers, referenced, mapIDs, evaluateAllowed)
+			walkRefs(v.Else, ChildPath(parent, "if", i, "else"), c, producers, referenced, mapIDs, evaluateAllowed)
 		case *Loop:
 			path := PathFor(parent, "loop", "", i)
 			if v.Until != nil {
-				checkExprRefs(string(*v.Until), path+".until", c, producers, referenced, evaluateAllowed)
+				checkExprRefs(string(*v.Until), path+".until", c, producers, referenced, mapIDs, evaluateAllowed)
 			}
-			walkRefs(v.Body, ChildPath(parent, "loop", i, "body"), c, producers, referenced, evaluateAllowed)
+			walkRefs(v.Body, ChildPath(parent, "loop", i, "body"), c, producers, referenced, mapIDs, evaluateAllowed)
 		case *Try:
-			walkRefs(v.Do, ChildPath(parent, "try", i, "do"), c, producers, referenced, evaluateAllowed)
-			walkRefs(v.Catch, ChildPath(parent, "try", i, "catch"), c, producers, referenced, evaluateAllowed)
-			walkRefs(v.Finally, ChildPath(parent, "try", i, "finally"), c, producers, referenced, evaluateAllowed)
+			walkRefs(v.Do, ChildPath(parent, "try", i, "do"), c, producers, referenced, mapIDs, evaluateAllowed)
+			walkRefs(v.Catch, ChildPath(parent, "try", i, "catch"), c, producers, referenced, mapIDs, evaluateAllowed)
+			walkRefs(v.Finally, ChildPath(parent, "try", i, "finally"), c, producers, referenced, mapIDs, evaluateAllowed)
 		case *Parallel:
-			walkRefs(v.Children, PathFor(parent, "parallel", "", i), c, producers, referenced, evaluateAllowed)
+			walkRefs(v.Children, PathFor(parent, "parallel", "", i), c, producers, referenced, mapIDs, evaluateAllowed)
 		case *Gate:
 			path := PathFor(parent, "gate", "", i)
 			// gate.until: evaluate.* allowed (single Expr field, no recursion).
-			checkExprRefs(string(v.Until), path+".until", c, producers, referenced, true)
+			checkExprRefs(string(v.Until), path+".until", c, producers, referenced, mapIDs, true)
 			// gate.generate: evaluate.* allowed (innermost frame OVERRIDES enclosing).
-			walkRefs(v.Generate, ChildPath(parent, "gate", i, "generate"), c, producers, referenced, true)
+			walkRefs(v.Generate, ChildPath(parent, "gate", i, "generate"), c, producers, referenced, mapIDs, true)
 			// gate.evaluate: evaluate.* REJECTED (the evaluator can't reference its own in-flight output).
-			walkRefs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c, producers, referenced, false)
+			walkRefs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c, producers, referenced, mapIDs, false)
 		case *Map:
 			path := PathFor(parent, "map", "", i)
-			checkExprRefs(string(v.Over), path+".over", c, producers, referenced, evaluateAllowed)
+			checkExprRefs(string(v.Over), path+".over", c, producers, referenced, mapIDs, evaluateAllowed)
 			// v.Container is a STATIC container name (AWF §5.7); validated by walkStructural
 			// (AWF1009/AWF1019). Not a Template — no Slots/ParseRef walk here.
-			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, referenced, evaluateAllowed)
+			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, referenced, mapIDs, evaluateAllowed)
 		}
 	}
 }
 
 // checkTemplateRefs scans src (an ir.Template field) for `{{ … }}` slots, parses each as a
 // ref via the template package, and runs each through checkRef. evaluateAllowed is propagated
-// to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire.
-func checkTemplateRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool, evaluateAllowed bool) {
+// to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire. mapIDs is propagated
+// so the step case can emit AWF5002 for aggregation refs.
+func checkTemplateRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool, mapIDs map[string]bool, evaluateAllowed bool) {
 	if src == "" {
 		return
 	}
@@ -176,14 +218,15 @@ func checkTemplateRefs(src, path string, c *collector, producers map[string]prod
 			c.errf(path, "AWF3001", fmt.Sprintf("invalid reference %q: %s", inner, syntaxMessage(err)))
 			continue
 		}
-		checkRef(*ref, path, c, producers, referenced, evaluateAllowed)
+		checkRef(*ref, path, c, producers, referenced, mapIDs, evaluateAllowed)
 	}
 }
 
 // checkExprRefs unwraps the outer `{{ }}` envelope (if present), parses the inner as an
 // Expr via the template package, and runs each Ref in the AST through checkRef. evaluateAllowed
-// is propagated to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire.
-func checkExprRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool, evaluateAllowed bool) {
+// is propagated to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire. mapIDs
+// is propagated so the step case can emit AWF5002 for aggregation refs.
+func checkExprRefs(src, path string, c *collector, producers map[string]producer, referenced map[string]bool, mapIDs map[string]bool, evaluateAllowed bool) {
 	if src == "" {
 		return
 	}
@@ -194,14 +237,16 @@ func checkExprRefs(src, path string, c *collector, producers map[string]producer
 		return
 	}
 	for _, ref := range template.References(e) {
-		checkRef(ref, path, c, producers, referenced, evaluateAllowed)
+		checkRef(ref, path, c, producers, referenced, mapIDs, evaluateAllowed)
 	}
 }
 
 // checkRef classifies a ref by its first segment and applies the appropriate cross-check.
 // evaluateAllowed controls whether `evaluate.<field>` is legal in this position — false
 // emits AWF5001 (the static counterpart of engine.Scope.resolveEvaluate's runtime check).
-func checkRef(ref template.Ref, path string, c *collector, producers map[string]producer, referenced map[string]bool, evaluateAllowed bool) {
+// mapIDs is consulted in the step case to emit AWF5002 for `step.<map>.items[*]` /
+// `step.<map>.summary.<field>` aggregation refs (deferred per spec §11 item 4).
+func checkRef(ref template.Ref, path string, c *collector, producers map[string]producer, referenced map[string]bool, mapIDs map[string]bool, evaluateAllowed bool) {
 	if len(ref.Segments) == 0 {
 		return
 	}
@@ -215,6 +260,19 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 		}
 		id := ref.Segments[1].Ident
 		field := ref.Segments[2].Ident
+		// Slice 3.4 HI-A precedence: AWF5002 fires ONLY when (a) the id is NOT a known step
+		// producer AND (b) it matches a known map leaf-name. This ordering prevents AWF5002
+		// from tripping on a legit `step.foo.items` ref when `foo` is a real step (whose
+		// schema may declare `items`) and `foo` also happens to share a leaf-name with a
+		// Map kind in the same workflow. The step-producer branch wins; AWF3001 below
+		// handles the case where `items` isn't in the step's schema with its clear
+		// "field not declared" message.
+		if _, isStep := producers[id]; !isStep && isMapID(id, mapIDs) {
+			if field == "items" || field == "summary" {
+				c.errf(path, "AWF5002", fmt.Sprintf("%s: %s", catalog["AWF5002"], renderRef(ref)))
+				return
+			}
+		}
 		p, ok := producers[id]
 		if !ok {
 			c.errf(path, "AWF3001", fmt.Sprintf("reference to undeclared step %q", id))
@@ -275,6 +333,39 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 		// Unknown root (e.g. an `<as>` binding from a map) — slice 1.4 doesn't track binding
 		// scopes; defer to Phase 2's evaluator scope check.
 	}
+}
+
+// isMapID reports whether name matches the LEAF of any known map runtime path.
+// E.g. mapIDs contains paths like "map[0]" and "loop[0].body.map[1]" — for an author
+// writing `step.map.items[0]`, the leaf-name "map" matches the leaf of "map[0]" after
+// stripping the trailing `[N]` index. Multiple maps at different positions all share
+// the leaf kind-name "map" — any match is sufficient since AWF5002 is a "this syntax
+// is deferred" diagnostic, not a precise binding resolver.
+//
+// PRECEDENCE (HI-A, slice 3.4): callers MUST check producers[id] FIRST and only fall
+// through to isMapID when id is NOT a known step producer. A workflow with both
+// `step.id: "map"` AND a literal Map kind shares the leaf-name "map"; the step
+// interpretation takes precedence so AWF5002 doesn't trip on a legit step ref. The
+// corner case where a step AND a map share the name AND the step has `items` in its
+// schema AND the author meant map aggregation silently mis-resolves (no diagnostic) —
+// acceptable false-negative; aggregation is deferred anyway, so the author can't
+// actually use the result until a later phase.
+func isMapID(name string, mapIDs map[string]bool) bool {
+	for mapPath := range mapIDs {
+		// Take the LAST dotted segment (the leaf): e.g. "loop[0].body.map[1]" → "map[1]".
+		leaf := mapPath
+		if dot := strings.LastIndex(leaf, "."); dot >= 0 {
+			leaf = leaf[dot+1:]
+		}
+		// Strip the trailing positional "[N]" suffix: "map[1]" → "map".
+		if br := strings.Index(leaf, "["); br >= 0 {
+			leaf = leaf[:br]
+		}
+		if leaf == name {
+			return true
+		}
+	}
+	return false
 }
 
 // renderRef formats a Ref for inclusion in a diagnostic message.

@@ -423,6 +423,71 @@ graph:
           retry: { attempts: 1 }
 `, fakeImageDigest, strings.ReplaceAll(verdictSchemaYAML, "\n            ", "\n                  "))
 
+// mapStandardWorkflow — used by Bucket 7 map_per_item_commits AND
+// map_resume_skips_committed_items sub-tests. 3 items, body runs
+// `./process.sh {{ x }}` per item; default min_success (= all 3).
+// Per design §E: 3 map.item events committed at addressable per-item paths
+// (map[0].item-0.process etc).
+const mapStandardWorkflow = `workflow: conformance-map-standard
+version: 1
+input:
+  type: object
+  required: [items]
+  additionalProperties: false
+  properties:
+    items:
+      type: array
+      items: { type: string }
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: x
+      container: c0
+      concurrency: 2
+      body:
+        - id: process
+          container: c0
+          run: "./process.sh {{ x }}"
+          retry: { attempts: 1 }
+`
+
+// mapSkipInItemWorkflow — Bucket 7 map_skip_in_item_records_passed. Body is an
+// if-statement that runs `skip:` on item == "b" else echoes. Pins design §E
+// step 5: skip ends the item as item_passed.
+const mapSkipInItemWorkflow = `workflow: conformance-map-skip-in-item
+version: 1
+input:
+  type: object
+  required: [items]
+  additionalProperties: false
+  properties:
+    items:
+      type: array
+      items: { type: string }
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: x
+      container: c0
+      concurrency: 3
+      body:
+        - if:
+            cond: "{{ x == \"b\" }}"
+            then:
+              - skip: "skip middle item"
+            else:
+              - id: process
+                container: c0
+                run: "./process.sh {{ x }}"
+                retry: { attempts: 1 }
+`
+
 // parallelResumeWorkflow — Bucket 4b parallel_resume_consistency:
 // simple 3-branch parallel followed by a sequential after-step. The test
 // programs pb2.sh to fail deterministically on first run, then re-programs

@@ -634,3 +634,357 @@ func TestScopeResolveConcurrentWithCommit(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+func TestScopeResolveAsBindingInsideBody(t *testing.T) {
+	// A code step inside map[0].item-0.<stepID> references {{ cve }} where
+	// the map's as = "cve". The runtime walks ctxPath back, finds map[0].item-0,
+	// looks up wf for map[0]'s as-name (= "cve"), matches, returns over[0].
+	mapNode := &ir.Map{
+		Over: ir.Expr("{{ input.cves }}"),
+		As:   "cve",
+		// Container, Concurrency, Body filled below.
+	}
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Graph: ir.NodeList{mapNode},
+	}
+	rs := NewRunState("run-x", "digest", nil)
+	// Simulate the map executor having recorded the per-item binding.
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "cve-2026-1234", Status: ""})
+
+	scope := NewScope(rs, wf, "map[0].item-0.triage")
+	got, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "cve"},
+	}})
+	if err != nil {
+		t.Fatalf("Resolve cve: %v", err)
+	}
+	if got != "cve-2026-1234" {
+		t.Errorf("got %v, want \"cve-2026-1234\"", got)
+	}
+}
+
+func TestScopeResolveAsBindingIndex(t *testing.T) {
+	// {{ <as>.index }} resolves to the N-value REGARDLESS of ItemValue's type.
+	mapNode := &ir.Map{
+		Over: ir.Expr("{{ input.cves }}"),
+		As:   "cve",
+	}
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{mapNode}}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 2, ItemValue: "cve-X", Status: ""})
+
+	scope := NewScope(rs, wf, "map[0].item-2.triage")
+	got, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "cve"}, {Ident: "index"},
+	}})
+	if err != nil {
+		t.Fatalf("Resolve cve.index: %v", err)
+	}
+	// Numeric: int per the MapItemRecord.N storage type.
+	if got != 2 {
+		t.Errorf("got %v (%T), want 2 (int)", got, got)
+	}
+}
+
+func TestScopeResolveAsBindingObjectField(t *testing.T) {
+	// {{ <as>.<field> }} when over[N] is a map → descend into the field.
+	mapNode := &ir.Map{
+		Over: ir.Expr("{{ input.cves }}"),
+		As:   "cve",
+	}
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{mapNode}}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{
+		N:         0,
+		ItemValue: map[string]any{"id": "cve-2026-1234", "severity": "high"},
+		Status:    "",
+	})
+
+	scope := NewScope(rs, wf, "map[0].item-0.triage")
+	got, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "cve"}, {Ident: "id"},
+	}})
+	if err != nil {
+		t.Fatalf("Resolve cve.id: %v", err)
+	}
+	if got != "cve-2026-1234" {
+		t.Errorf("got %v, want \"cve-2026-1234\"", got)
+	}
+}
+
+func TestScopeResolveAsBindingOutsideMap(t *testing.T) {
+	// Not inside any map ctxPath → unknown ref root error.
+	wf := &ir.Workflow{ID: "x", Version: 1}
+	rs := NewRunState("run-x", "digest", nil)
+	scope := NewScope(rs, wf, "step1")
+	_, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "cve"},
+	}})
+	if err == nil {
+		t.Fatal("Resolve cve outside map: err = nil, want non-nil")
+	}
+	// The existing "unknown ref root" message includes the ident — that's
+	// expected; the as-binding resolver returns the same error class when
+	// no matching enclosing map is found.
+	if !strings.Contains(err.Error(), "unknown ref root") && !strings.Contains(err.Error(), "cve") {
+		t.Errorf("err = %v, want mention of \"unknown ref root\" or \"cve\"", err)
+	}
+}
+
+func TestScopeResolveAsBindingCompositeItemErrors(t *testing.T) {
+	// MD-A: bare `{{ <as> }}` on a composite (map/[]any) ItemValue returns
+	// an actionable error pointing the author at field/index access. Plain
+	// scalars pass through to the caller (template.renderScalar handles them).
+	mapNode := &ir.Map{
+		Over: ir.Expr("{{ input.items }}"),
+		As:   "x",
+	}
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{mapNode}}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{
+		N:         0,
+		ItemValue: map[string]any{"id": "cve-1", "severity": "high"},
+		Status:    "",
+	})
+
+	scope := NewScope(rs, wf, "map[0].item-0.triage")
+	_, err := scope.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "x"}}})
+	if err == nil {
+		t.Fatal("composite ItemValue bare ref: err = nil, want non-nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"composite", "x.<field>", "x.index"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("err = %q, missing actionable hint %q", msg, want)
+		}
+	}
+	// Available-fields hint includes sorted keys.
+	if !strings.Contains(msg, "id") || !strings.Contains(msg, "severity") {
+		t.Errorf("err = %q, want listing of fields [id severity]", msg)
+	}
+
+	// Array ItemValue case.
+	rs.RecordMapItem("map[0]", MapItemRecord{
+		N: 1, ItemValue: []any{"a", "b", "c"}, Status: "",
+	})
+	scope2 := NewScope(rs, wf, "map[0].item-1.triage")
+	_, err = scope2.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "x"}}})
+	if err == nil {
+		t.Fatal("array ItemValue bare ref: err = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "array") || !strings.Contains(err.Error(), "x.0") {
+		t.Errorf("err = %q, want mention of \"array\" and indexing hint", err)
+	}
+
+	// Scalar ItemValue still passes through.
+	rs.RecordMapItem("map[0]", MapItemRecord{
+		N: 2, ItemValue: "scalar-value", Status: "",
+	})
+	scope3 := NewScope(rs, wf, "map[0].item-2.triage")
+	got, err := scope3.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "x"}}})
+	if err != nil {
+		t.Fatalf("scalar ItemValue bare ref: err = %v, want nil", err)
+	}
+	if got != "scalar-value" {
+		t.Errorf("scalar ItemValue: got %v, want \"scalar-value\"", got)
+	}
+}
+
+func TestScopeResolveAsBindingItemValueNotBoundErrors(t *testing.T) {
+	// Defense-in-depth (Design Q3): if MapItemRecord exists for N=0 but
+	// ItemValue is nil (Fold-rebuilt without runtime re-eval), the
+	// resolver MUST error rather than silently return nil.
+	mapNode := &ir.Map{
+		Over: ir.Expr("{{ input.cves }}"),
+		As:   "cve",
+	}
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{mapNode}}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: nil, Status: ItemPassed})
+
+	scope := NewScope(rs, wf, "map[0].item-0.triage")
+	_, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "cve"},
+	}})
+	if err == nil {
+		t.Fatal("Resolve cve with nil ItemValue: err = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "value not bound") {
+		t.Errorf("err = %v, want mention of \"value not bound\" (runtime invariant violation)", err)
+	}
+}
+
+func TestScopeResolveAsBindingShadowsReservedRoots(t *testing.T) {
+	// Design Q4: reserved root cases (run/input/step/evaluate) win over
+	// <as> bindings. Author who writes `as: input` is silently shadowed.
+	// This test PINS the behavior so a refactor that swaps order is caught.
+	mapNode := &ir.Map{
+		Over: ir.Expr("{{ input.foo }}"),
+		As:   "input", // ← shadows reserved root; runtime ignores the as binding
+	}
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Input: &ir.JSONSchema{
+			"type": "object",
+			"properties": map[string]any{
+				"foo": map[string]any{"type": "string"},
+			},
+		},
+		Graph: ir.NodeList{mapNode},
+	}
+	rs := NewRunState("run-x", "digest", map[string]any{"foo": "from-workflow-input"})
+	rs.RecordMapItem("map[0]", MapItemRecord{
+		N: 0, ItemValue: map[string]any{"foo": "from-map-binding"}, Status: "",
+	})
+
+	scope := NewScope(rs, wf, "map[0].item-0.triage")
+	got, err := scope.Resolve(&template.Ref{Segments: []template.Segment{
+		{Ident: "input"}, {Ident: "foo"},
+	}})
+	if err != nil {
+		t.Fatalf("Resolve input.foo: %v", err)
+	}
+	// Reserved root wins: got the workflow input, NOT the map binding.
+	if got != "from-workflow-input" {
+		t.Errorf("got %v, want \"from-workflow-input\" (reserved root wins; Design Q4)", got)
+	}
+}
+
+func TestScopeResolveAsBindingNestedMaps(t *testing.T) {
+	// Inner map inside outer map's body. Inner as = "host", outer as = "cve".
+	// ctxPath: "map[0].item-0.map[1].item-2.scan_step"
+	// {{ host }} → innermost map's binding.
+	// {{ cve }} → outer map's binding (walk continues past inner).
+	outerMap := &ir.Map{
+		As:   "cve",
+		Over: ir.Expr("{{ input.cves }}"),
+		Body: ir.NodeList{
+			&ir.Map{
+				As:   "host",
+				Over: ir.Expr("{{ input.hosts }}"),
+			},
+		},
+	}
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{outerMap}}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "cve-A", Status: ""})
+	// The inner map's path under outer's item 0 is "map[0].item-0.map[0]"
+	// because ir.PathFor uses positional indices within the parent body.
+	// (See engine/path_test.go for the canonical examples.)
+	rs.RecordMapItem("map[0].item-0.map[0]", MapItemRecord{N: 2, ItemValue: "host-X", Status: ""})
+
+	scope := NewScope(rs, wf, "map[0].item-0.map[0].item-2.scan_step")
+	gotHost, err := scope.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "host"}}})
+	if err != nil {
+		t.Fatalf("Resolve host: %v", err)
+	}
+	if gotHost != "host-X" {
+		t.Errorf("inner: got %v, want \"host-X\"", gotHost)
+	}
+	gotCve, err := scope.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "cve"}}})
+	if err != nil {
+		t.Fatalf("Resolve cve: %v", err)
+	}
+	if gotCve != "cve-A" {
+		t.Errorf("outer-from-inner-ctx: got %v, want \"cve-A\"", gotCve)
+	}
+}
+
+func TestRuntimeMapPathToStatic(t *testing.T) {
+	// CR-A fix: pins the conversion rule (.item-K preceded by map[X] →
+	// .body) for the walker's static-idx lookup. Covers nested maps, leaves
+	// loop iter-K untouched, and doesn't false-positive on step IDs that
+	// happen to match "item-\d+".
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"top-level map (identity — no item-K to convert)",
+			"map[0]",
+			"map[0]",
+		},
+		{
+			"map at item-K boundary: item-K is converted to body",
+			"map[0].item-0",
+			"map[0].body",
+		},
+		{
+			"nested map: inner's runtime mapPath converts cleanly",
+			"map[0].item-0.map[0]",
+			"map[0].body.map[0]",
+		},
+		{
+			"two nested item-K segments both convert",
+			"map[0].item-0.map[0].item-2",
+			"map[0].body.map[0].body",
+		},
+		{
+			"loop iter inside map.body: iter-K untouched, item-K converts",
+			"map[0].item-0.loop[0].body.iter-3",
+			"map[0].body.loop[0].body.iter-3",
+		},
+		{
+			"step id literally 'item-3' inside map.body NOT preceded by map[X]",
+			"map[0].item-0.process.item-3",
+			// segs: [map[0], item-0, process, item-3]
+			//   i=1: item-0 after map[0] → body
+			//   i=2: process — not item-, skip
+			//   i=3: item-3 after "process" (not "map["), skip
+			"map[0].body.process.item-3",
+		},
+		{
+			"map nested inside loop body: no item-K-after-map[X] pattern",
+			"loop[0].body.iter-1.map[0]",
+			"loop[0].body.iter-1.map[0]",
+		},
+		{"empty string", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := runtimeMapPathToStatic(c.in)
+			if got != c.want {
+				t.Errorf("runtimeMapPathToStatic(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestEnclosingMapForBindingTable(t *testing.T) {
+	// Walker table — confirms the segment-pair match logic.
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Graph: ir.NodeList{
+			&ir.Map{As: "cve"},
+			// Other nodes at top level don't affect map[0]'s lookup.
+		},
+	}
+	idx := mapPathIndex(wf)
+	cases := []struct {
+		name     string
+		ctxPath  string
+		asName   string
+		wantPath string
+		wantN    int
+		wantOk   bool
+	}{
+		{"empty ctxPath", "", "cve", "", 0, false},
+		{"plain step", "step1", "cve", "", 0, false},
+		{"map ident alone", "map[0]", "cve", "", 0, false},
+		{"map + item", "map[0].item-0", "cve", "map[0]", 0, true},
+		{"map + item + step", "map[0].item-0.triage", "cve", "map[0]", 0, true},
+		{"map + item + deep", "map[0].item-3.try[0].do.echo", "cve", "map[0]", 3, true},
+		{"wrong asName", "map[0].item-0.triage", "host", "", 0, false}, // map[0]'s as is "cve", not "host"
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotPath, gotN, ok := enclosingMapForBinding(c.ctxPath, idx, c.asName)
+			if gotPath != c.wantPath || gotN != c.wantN || ok != c.wantOk {
+				t.Errorf("enclosingMapForBinding(%q, idx, %q) = (%q, %d, %v); want (%q, %d, %v)",
+					c.ctxPath, c.asName, gotPath, gotN, ok, c.wantPath, c.wantN, c.wantOk)
+			}
+		})
+	}
+}

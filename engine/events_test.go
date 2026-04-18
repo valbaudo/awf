@@ -18,6 +18,7 @@ func TestEventTypeConstants(t *testing.T) {
 		EventRetryAttempt:  "retry.attempt",
 		EventNodeSkipped:   "node.skipped",
 		EventGateAttempt:   "gate.attempt",
+		EventMapItem:       "map.item",
 	}
 	for got, want := range cases {
 		if got != want {
@@ -290,6 +291,40 @@ func TestGateAttemptDataRoundTrip(t *testing.T) {
 	// With `verdict_ref,omitempty`, the field should be absent from the JSON.
 	if strings.Contains(string(b2), "verdict_ref") {
 		t.Errorf("empty VerdictRef serialization: %s contains verdict_ref; omitempty should drop it", b2)
+	}
+}
+
+func TestMapItemDataRoundTrip(t *testing.T) {
+	d := MapItemData{
+		N:      3,
+		Status: ItemPassed,
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got MapItemData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got != d {
+		t.Errorf("round-trip: got %+v, want %+v", got, d)
+	}
+
+	// Wire field names — pin them, since renaming any breaks every existing log.
+	wantJSON := `{"n":3,"status":"item_passed"}`
+	if string(b) != wantJSON {
+		t.Errorf("on-wire: got %s, want %s", b, wantJSON)
+	}
+
+	// item_failed wire-format check.
+	d2 := MapItemData{N: 1, Status: ItemFailed}
+	b2, err := json.Marshal(d2)
+	if err != nil {
+		t.Fatalf("Marshal item_failed: %v", err)
+	}
+	if string(b2) != `{"n":1,"status":"item_failed"}` {
+		t.Errorf("item_failed on-wire: got %s, want {\"n\":1,\"status\":\"item_failed\"}", b2)
 	}
 }
 

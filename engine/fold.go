@@ -35,6 +35,11 @@ import (
 //     via Blobs.Get; events arrive in seq-order so append-order is the natural
 //     attempt-order. Missing verdict_ref is a hard error (spec §8 commit-atomicity
 //     invariant — the writer must Put the verdict blob BEFORE appending gate.attempt).
+//   - map.item populates MapItems[path] (slice 3.4) — MapItemRecord{N, Status,
+//     ItemValue: nil}. ItemValue is NOT in the wire format (derived from `over` per
+//     Design Q3); the runtime fills it via UpdateMapItemValue BEFORE body
+//     re-execution on resume. Append-order = arrival-order; items may commit
+//     out-of-N-order because the map dispatches concurrently (spec §5.7).
 //   - Anything else (future event types not yet written by Phase 2 slices) → ignored.
 //
 // Errors (any fold error → resume cannot proceed safely):
@@ -65,6 +70,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 	rs.Branches = make(map[string]string, len(events)/8)
 	rs.LoopIters = make(map[string]int, len(events)/8)
 	rs.GateAttempts = make(map[string][]AttemptResult, len(events)/16) // sparse — gates are uncommon
+	rs.MapItems = make(map[string][]MapItemRecord, len(events)/16)     // sparse — maps are uncommon
 
 	seenRunStarted := false
 	for _, e := range events {
@@ -193,6 +199,20 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				ar.Verdict = v
 			}
 			rs.GateAttempts[e.Path] = append(rs.GateAttempts[e.Path], ar)
+
+		case EventMapItem:
+			var d MapItemData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+					EventMapItem, e.Seq, e.Path, err)
+			}
+			// ItemValue stays nil — Design Q3: the runtime re-evaluates `over` on
+			// re-entry and fills via UpdateMapItemValue before body re-exec.
+			rs.MapItems[e.Path] = append(rs.MapItems[e.Path], MapItemRecord{
+				N:      d.N,
+				Status: d.Status,
+				// ItemValue: nil (zero-value)
+			})
 
 		default:
 			// Observational / future event types ignored by Fold (state effect, if

@@ -66,6 +66,26 @@ type AttemptResult struct {
 	Verdict        map[string]any
 }
 
+// MapItemRecord is one element of RunState.MapItems[mapPath]. Records what
+// happened on a single map item — its bound over[N] value and whether body
+// completed ok (slice 3.4, design §E).
+//
+// N is 0-based (matching engine.ItemPath's "item-N" suffix + spec §5.7's
+// `{{ <as>.index }}` convention). Status is one of ItemPassed / ItemFailed
+// (defined in engine/events.go).
+//
+// ItemValue is the materialized over[N] value, populated by the map executor
+// (engine/map.go) BEFORE dispatching the item's body. On resume, the Fold
+// populates Status from the map.item event but leaves ItemValue NIL
+// (Design Q3); the runtime re-evaluates `over` and calls UpdateMapItemValue
+// to fill it in before body re-execution. READ-ONLY (callers MUST NOT mutate
+// — same caveat as NodeResult.Outputs).
+type MapItemRecord struct {
+	N         int
+	ItemValue any
+	Status    string
+}
+
 // NodeResult is the fold result for one completed node — stored in RunState.Completed
 // keyed by node.path. Phase 2 populates this from a `node.completed` event; Phase 3+
 // adds gate-attempt aggregation but the per-node shape stays the same.
@@ -126,13 +146,30 @@ type RunState struct {
 	// the enclosing gate path on attempt n > 1 (slice 3.3 engine/scope.go).
 	GateAttempts map[string][]AttemptResult
 
-	// mu serializes access to Completed / Branches / LoopIters / GateAttempts.
-	// Phase 2 callers were single-threaded; Phase 3 slice 3.2 (parallel)
-	// introduced concurrent branch goroutines.
+	// MapItems records the per-item status for every map that has committed
+	// at least one map.item event. Slice 3.4 addition; map path → ordered
+	// slice of MapItemRecord in arrival order (the order RecordMapItem was
+	// called, which mirrors log-append order). NOT N-ascending: concurrent
+	// item-body goroutines may commit out-of-N-order, so item N=3 can land
+	// in the slice before N=1. Pinned by TestRunStateMapItemsRoundTrip.
+	//
+	// LookupByN(N) helpers are NOT provided — the map handler walks the
+	// slice (typically ≤ Concurrency items in flight) when it needs to
+	// check "is item N already committed?"
+	//
+	// The template evaluator's `<as>` resolution scope (engine/scope.go)
+	// reads MapItems to find the bound value for an enclosing map's item.
+	MapItems map[string][]MapItemRecord
+
+	// mu serializes access to Completed / Branches / LoopIters / GateAttempts
+	// / MapItems. Phase 2 callers were single-threaded; Phase 3 slice 3.2
+	// (parallel) introduced concurrent branch goroutines, and slice 3.4 (map)
+	// adds concurrent item-body goroutines.
 	//
 	// Slice 3.2+ callers MUST use the accessor methods (LookupCompleted /
 	// RecordCompleted / LookupBranch / RecordBranch / LookupLoopIters /
-	// RecordLoopIter / LookupGateAttempts / RecordGateAttempt). Direct field
+	// RecordLoopIter / LookupGateAttempts / RecordGateAttempt /
+	// LookupMapItems / RecordMapItem / UpdateMapItemValue). Direct field
 	// access is reserved for engine.Fold —
 	// Fold runs at resume time BEFORE engine.Run, never concurrent with
 	// any goroutine, so its direct map writes are race-free by construction.
@@ -159,6 +196,7 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		Branches:       map[string]string{},
 		LoopIters:      map[string]int{},
 		GateAttempts:   map[string][]AttemptResult{},
+		MapItems:       map[string][]MapItemRecord{},
 	}
 }
 
@@ -232,4 +270,62 @@ func (rs *RunState) RecordGateAttempt(gatePath string, ar AttemptResult) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.GateAttempts[gatePath] = append(rs.GateAttempts[gatePath], ar)
+}
+
+// LookupMapItems returns a SHALLOW COPY of the per-item slice recorded for
+// mapPath (a fresh slice header pointing at copies of the MapItemRecord values;
+// the MapItemRecord.ItemValue interfaces still alias the underlying maps).
+// Returns nil if no item has been recorded yet. Thread-safe.
+//
+// Why a copy, not the live backing array (slice 3.4 design Q3 + C1):
+// updateMapItemStatus mutates the live backing array under mu when a body
+// goroutine terminates. If LookupMapItems returned the live header, concurrent
+// resolveAsBinding callers reading other items' fields would race with that
+// update (the mutation is past the LookupMapItems mu.Unlock). A shallow copy
+// gives the caller an immutable snapshot — race-clean under -race.
+//
+// READ-ONLY: callers MUST NOT mutate the returned slice or the
+// MapItemRecord.ItemValue maps within it (aliasing through `any` is shared).
+// Pinned by TestMapItemRecordCopyIsShallow (ItemValue maps are aliased; the
+// slice header is fresh).
+func (rs *RunState) LookupMapItems(mapPath string) []MapItemRecord {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	src := rs.MapItems[mapPath]
+	if src == nil {
+		return nil
+	}
+	cp := make([]MapItemRecord, len(src))
+	copy(cp, src)
+	return cp
+}
+
+// RecordMapItem appends mr to the slice at mapPath. The map executor
+// (engine/map.go) calls this AFTER a successful Log.Append + Log.Sync of the
+// corresponding map.item event — in-memory state mirrors the durable log,
+// not the other way around. Thread-safe.
+func (rs *RunState) RecordMapItem(mapPath string, mr MapItemRecord) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.MapItems[mapPath] = append(rs.MapItems[mapPath], mr)
+}
+
+// UpdateMapItemValue sets the ItemValue field of the existing MapItemRecord
+// at (mapPath, n). Used post-resume by the map executor: Fold rebuilds
+// MapItems from map.item events with ItemValue:nil; the executor re-evaluates
+// `over` and calls this to populate ItemValue before the body's templates
+// resolve `<as>` refs (Design Q3).
+//
+// No-op if no record at (mapPath, n) exists — UpdateMapItemValue is an
+// in-memory mirror update, not a writer of truth. Thread-safe.
+func (rs *RunState) UpdateMapItemValue(mapPath string, n int, value any) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	items := rs.MapItems[mapPath]
+	for i, mr := range items {
+		if mr.N == n {
+			items[i].ItemValue = value
+			return
+		}
+	}
 }

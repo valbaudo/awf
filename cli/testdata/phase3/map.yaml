@@ -1,0 +1,27 @@
+workflow: phase3-map
+version: 1
+input:
+  type: object
+  required: [items]
+  additionalProperties: false
+  properties:
+    items:
+      type: array
+      items: { type: string }
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: item
+      container: c0
+      concurrency: 2
+      min_success: 2
+      body:
+        - id: process
+          container: c0
+          run: "./process.sh {{ item }} {{ item.index }}"
+  - id: after
+    container: c0
+    run: echo after

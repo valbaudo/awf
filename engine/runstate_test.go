@@ -314,3 +314,143 @@ func TestGateAttemptsReturnedSliceIsReadOnly(t *testing.T) {
 		t.Errorf("aliasing contract broken: returned slice no longer aliases internal; got N=%d, want 999 (the test asserts aliasing EXISTS — see doc-comment)", internal[0].N)
 	}
 }
+
+func TestRunStateMapItemsRoundTrip(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+
+	// Empty state: LookupMapItems returns nil.
+	if got := rs.LookupMapItems("map[0]"); got != nil {
+		t.Errorf("empty LookupMapItems: got %v, want nil", got)
+	}
+
+	// Record one item and read back.
+	mr1 := MapItemRecord{
+		N:         0,
+		ItemValue: "first-cve",
+		Status:    ItemPassed,
+	}
+	rs.RecordMapItem("map[0]", mr1)
+	got := rs.LookupMapItems("map[0]")
+	if len(got) != 1 {
+		t.Fatalf("after 1 record: len = %d, want 1", len(got))
+	}
+	if got[0].N != 0 || got[0].Status != ItemPassed {
+		t.Errorf("got[0] = %+v, want {N:0, Status:%q}", got[0], ItemPassed)
+	}
+	if got[0].ItemValue != "first-cve" {
+		t.Errorf("got[0].ItemValue = %v, want \"first-cve\"", got[0].ItemValue)
+	}
+
+	// Record a second item; order preserved.
+	mr2 := MapItemRecord{N: 1, ItemValue: "second-cve", Status: ItemFailed}
+	rs.RecordMapItem("map[0]", mr2)
+	got = rs.LookupMapItems("map[0]")
+	if len(got) != 2 {
+		t.Fatalf("after 2 records: len = %d, want 2", len(got))
+	}
+	if got[0].N != 0 || got[1].N != 1 {
+		t.Errorf("order broken: got Ns %d,%d; want 0,1", got[0].N, got[1].N)
+	}
+
+	// Disjoint map path is independent.
+	rs.RecordMapItem("map[1]", MapItemRecord{N: 0, ItemValue: "other", Status: ItemPassed})
+	if len(rs.LookupMapItems("map[0]")) != 2 {
+		t.Errorf("disjoint write affected map[0]")
+	}
+}
+
+func TestRunStateUpdateMapItemValue(t *testing.T) {
+	// Post-resume contract (Design Q3): Fold rebuilds MapItems with
+	// ItemValue: nil; the map handler calls UpdateMapItemValue to fill
+	// in the re-derived over[N] value BEFORE body re-execution.
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: nil, Status: ItemPassed})
+
+	rs.UpdateMapItemValue("map[0]", 0, "post-resume-value")
+
+	got := rs.LookupMapItems("map[0]")
+	if len(got) != 1 || got[0].ItemValue != "post-resume-value" {
+		t.Errorf("UpdateMapItemValue: got %+v, want ItemValue=\"post-resume-value\"", got)
+	}
+	// Status untouched.
+	if got[0].Status != ItemPassed {
+		t.Errorf("UpdateMapItemValue clobbered Status: got %q, want %q", got[0].Status, ItemPassed)
+	}
+}
+
+func TestRunStateUpdateMapItemValueNoMatchIsNoop(t *testing.T) {
+	// Defense-in-depth: if the (path, N) pair doesn't exist, UpdateMapItemValue
+	// silently no-ops (it's an in-memory mirror update, not a writer of truth).
+	rs := NewRunState("run-x", "digest", nil)
+	// Should not panic; should not create the entry.
+	rs.UpdateMapItemValue("map[0]", 0, "ignored")
+	if got := rs.LookupMapItems("map[0]"); got != nil {
+		t.Errorf("UpdateMapItemValue on missing entry created one: %+v", got)
+	}
+}
+
+func TestRunStateConcurrentMapItems(t *testing.T) {
+	// Like Task 2 of slice 3.3 for GateAttempts: map handler dispatches
+	// goroutines that concurrently RecordMapItem. Run under -race.
+	rs := NewRunState("run-x", "digest", nil)
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			path := fmt.Sprintf("map-%d", i)
+			rs.RecordMapItem(path, MapItemRecord{N: 0, ItemValue: i, Status: ItemPassed})
+			if got := rs.LookupMapItems(path); len(got) != 1 || got[0].N != 0 {
+				t.Errorf("concurrent path %q: got %v", path, got)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestMapItemRecordCopyIsShallow(t *testing.T) {
+	// Aliasing pin (slice 3.4 design Q3 + C1). LookupMapItems returns a SHALLOW
+	// COPY: the slice header is fresh (race-clean for concurrent readers vs
+	// updateMapItemStatus), but MapItemRecord.ItemValue (typed `any` pointing
+	// at a map) is ALIASED — mutating the underlying map through one path
+	// is visible through the other.
+	rs := NewRunState("run-x", "digest", nil)
+	original := map[string]any{"id": "cve-1"}
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: original, Status: ItemPassed})
+
+	got := rs.LookupMapItems("map[0]")
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	// ItemValue map IS aliased (mutating the bound map shows through).
+	original["id"] = "MUTATED"
+	got2 := rs.LookupMapItems("map[0]")
+	gotMap2, ok := got2[0].ItemValue.(map[string]any)
+	if !ok {
+		t.Fatalf("ItemValue type = %T, want map[string]any", got2[0].ItemValue)
+	}
+	if gotMap2["id"] != "MUTATED" {
+		t.Errorf("LookupMapItems deep-copied ItemValue (want aliased per slice 3.4 contract); got id=%v", gotMap2["id"])
+	}
+}
+
+func TestLookupMapItemsReturnsSliceCopy(t *testing.T) {
+	// Slice-header copy pin (slice 3.4 design Q3 + C1). LookupMapItems must
+	// NOT return the live backing array — concurrent readers + writers would
+	// race on the slice elements. The returned slice header is fresh; mutating
+	// it does NOT affect subsequent lookups.
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "a", Status: ItemPassed})
+
+	first := rs.LookupMapItems("map[0]")
+	// Mutate the returned slice element's Status.
+	first[0].Status = "MUTATED"
+	// Re-lookup; should NOT see the mutation (the live backing array was unchanged).
+	second := rs.LookupMapItems("map[0]")
+	if second[0].Status != ItemPassed {
+		t.Errorf("LookupMapItems returned live backing array (mutation persisted); got Status=%q, want %q",
+			second[0].Status, ItemPassed)
+	}
+}
