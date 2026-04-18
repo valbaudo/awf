@@ -18,6 +18,7 @@ func TestEventTypeConstants(t *testing.T) {
 		EventRetryAttempt:  "retry.attempt",
 		EventNodeSkipped:   "node.skipped",
 		EventGateAttempt:   "gate.attempt",
+		EventMapItem:       "map.item",
 	}
 	for got, want := range cases {
 		if got != want {
@@ -318,7 +319,10 @@ func TestMapItemDataRoundTrip(t *testing.T) {
 
 	// item_failed wire-format check.
 	d2 := MapItemData{N: 1, Status: ItemFailed}
-	b2, _ := json.Marshal(d2)
+	b2, err := json.Marshal(d2)
+	if err != nil {
+		t.Fatalf("Marshal item_failed: %v", err)
+	}
 	if string(b2) != `{"n":1,"status":"item_failed"}` {
 		t.Errorf("item_failed on-wire: got %s, want {\"n\":1,\"status\":\"item_failed\"}", b2)
 	}

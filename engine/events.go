@@ -46,10 +46,10 @@ const (
 )
 
 // Map item statuses — the Status field on MapItemData. NOT the same vocabulary
-// as the Outcome enum (engine/runstate.go) or AttemptPassed/AttemptRejected
-// (engine/events.go): a map item's body can succeed (item_passed) or fail
-// (item_failed); the map as a WHOLE returns OutcomeOK if the success count
-// meets MinSuccess, else returns an error.
+// as the Outcome enum (engine/runstate.go) or AttemptPassed/AttemptRejected:
+// a map item's body can succeed (item_passed) or fail (item_failed); the map
+// as a WHOLE returns OutcomeOK if the success count meets MinSuccess, else
+// returns an error.
 const (
 	ItemPassed = "item_passed"
 	ItemFailed = "item_failed"
