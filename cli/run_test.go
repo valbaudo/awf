@@ -724,6 +724,93 @@ func TestCLIRunOnParallelFixture(t *testing.T) {
 	}
 }
 
+func TestCLIRunOnMapFixture(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("./process.sh apple 0", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("apple\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("apple\n")},
+	})
+	fake.ProgramExec("./process.sh banana 1", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("banana\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("banana\n")},
+	})
+	fake.ProgramExec("./process.sh cherry 2", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("cherry\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("cherry\n")},
+	})
+	fake.ProgramExec("echo after", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("after\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("after\n")},
+	})
+
+	stateDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	runner := newTestRunner(t, fake)
+	rc := runner.Run(
+		[]string{
+			"run", "--state-dir", stateDir,
+			"--input", `{"items":["apple","banana","cherry"]}`,
+			"testdata/phase3/map.yaml",
+		},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want %d (ExitOK)\nstderr: %s", rc, cli.ExitOK, stderr.String())
+	}
+
+	// Live-tap output: each item's stdout was prefixed with [process].
+	out := stdout.String()
+	for _, want := range []string{"[process] apple", "[process] banana", "[process] cherry", "[after] after"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q; got %q", want, out)
+		}
+	}
+
+	// Inspect log: 4 node.completed (3 items + 1 after), 3 map.item events,
+	// 1 run.finished{outcome: ok}.
+	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var completed, mapItems, finished int
+	var finishedOutcome string
+	for _, e := range events {
+		switch e.Type {
+		case engine.EventNodeCompleted:
+			completed++
+		case engine.EventMapItem:
+			mapItems++
+		case engine.EventRunFinished:
+			finished++
+			var d engine.RunFinishedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("unmarshal run.finished: %v", err)
+			}
+			finishedOutcome = d.Outcome
+		}
+	}
+	if completed != 4 {
+		t.Errorf("node.completed events = %d, want 4 (3 items + after)", completed)
+	}
+	if mapItems != 3 {
+		t.Errorf("map.item events = %d, want 3", mapItems)
+	}
+	if finished != 1 || finishedOutcome != "ok" {
+		t.Errorf("run.finished = %d events outcome=%q, want 1/ok", finished, finishedOutcome)
+	}
+}
+
 func TestCLIRunOnGateFixture(t *testing.T) {
 	t.Parallel()
 	fake := container.NewFake()
