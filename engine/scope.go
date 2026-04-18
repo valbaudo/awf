@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,8 +17,9 @@ import (
 // be processed.
 //
 // Phase 3 reference vocabulary: run.id, input.<field>, step.<id>.exit_code,
-// step.<id>.stdout, step.<id>.<field>, evaluate.<field> (slice 3.3). Roots
-// not in this list — <as>.* (Phase 3 map) — return AWF4002 unresolved.
+// step.<id>.stdout, step.<id>.<field>, evaluate.<field> (slice 3.3),
+// <as>.<field> (slice 3.4 — bound inside a map body via the per-item record
+// in RunState.MapItems). Roots not in this list return AWF4002 unresolved.
 //
 // verdictOverride: optional. When non-nil, evaluate.* resolves against it
 // directly INSTEAD of consulting RunState.GateAttempts. The gate executor
@@ -33,6 +35,7 @@ type Scope struct {
 	ctxPath         string
 	stepIndex       map[string]string // step id → static IR path (computed at NewScope; one IR walk per scope)
 	verdictOverride map[string]any
+	wfRef           *ir.Workflow // slice 3.4 — needed by resolveAsBinding's mapPathIndex
 }
 
 // NewScope wires the inputs into a Scope. ctxPath is the runtime path of the
@@ -44,6 +47,7 @@ func NewScope(rs *RunState, wf *ir.Workflow, ctxPath string) *Scope {
 		rs:        rs,
 		ctxPath:   ctxPath,
 		stepIndex: StepPathIndex(wf),
+		wfRef:     wf,
 	}
 }
 
@@ -60,6 +64,7 @@ func NewScopeWithVerdict(rs *RunState, wf *ir.Workflow, ctxPath string, verdict 
 		ctxPath:         ctxPath,
 		stepIndex:       StepPathIndex(wf),
 		verdictOverride: verdict,
+		wfRef:           wf,
 	}
 }
 
@@ -88,7 +93,9 @@ func (s *Scope) Resolve(ref *template.Ref) (any, error) {
 	case "evaluate":
 		return s.resolveEvaluate(ref)
 	default:
-		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "unknown ref root %q (Phase 3 supports run / input / step / evaluate)", head.Ident)
+		// Slice 3.4: try to resolve as a map <as> binding.
+		// resolveAsBinding returns AWF4002 if no enclosing map matches.
+		return s.resolveAsBinding(ref)
 	}
 }
 
@@ -224,6 +231,255 @@ func (s *Scope) resolveEvaluate(ref *template.Ref) (any, error) {
 		return "", nil
 	}
 	return descendPath(latest.Verdict, ref.Segments[1:], "evaluate.")
+}
+
+// resolveAsBinding handles `<as>` refs from within a map's body. Slice 3.4 +
+// spec §5.7. Walks ctxPath back-to-front looking for `map[N].item-K` segment
+// pairs; for each, looks up the corresponding ir.Map node and checks
+// map.As == ref.Segments[0].Ident. The INNERMOST matching map wins.
+//
+// Segment semantics:
+//   - `<as>` alone (1 segment): the bound ItemValue (over[K]).
+//   - `<as>.index`: the integer K (regardless of ItemValue type — even if
+//     ItemValue is itself a map with an "index" key, the special-case wins).
+//   - `<as>.<field>` (or deeper): descend into ItemValue via descendPath.
+//
+// Errors:
+//   - No enclosing map with matching `as` → "unknown ref root" (mirrors the
+//     pre-slice-3.4 behavior for any non-reserved root).
+//   - MapItemRecord present but ItemValue is nil → "value not bound"
+//     (defense-in-depth: runtime invariant violated; the map executor MUST
+//     have populated via UpdateMapItemValue BEFORE body's templates resolve).
+func (s *Scope) resolveAsBinding(ref *template.Ref) (any, error) {
+	head := ref.Segments[0]
+	// Build/cache the wf map-path index. For Phase 3 minimum, rebuild per
+	// call — cheap (small wfs); a future slice can cache on Scope if hot.
+	idx := mapPathIndex(s.wf())
+	mapPath, n, ok := enclosingMapForBinding(s.ctxPath, idx, head.Ident)
+	if !ok {
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved,
+			"unknown ref root %q (Phase 3 supports run / input / step / evaluate / <as> inside a map body)", head.Ident)
+	}
+	items := s.rs.LookupMapItems(mapPath)
+	var itemValue any
+	var found bool
+	for _, mr := range items {
+		if mr.N == n {
+			itemValue = mr.ItemValue
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved,
+			"map %q item N=%d not recorded in RunState — runtime invariant violation (map executor must RecordMapItem before body templates resolve)", mapPath, n)
+	}
+	if itemValue == nil {
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved,
+			"map %q item N=%d value not bound — runtime invariant violation (executor must UpdateMapItemValue before body templates resolve)", mapPath, n)
+	}
+	// `<as>` alone → the bound value itself.
+	//
+	// MD-A: if ItemValue is a composite (map / []any), the downstream
+	// template.renderScalar will reject it with a cryptic "non-renderable
+	// composite" error. Detect here and emit an actionable error pointing
+	// the author at the field-access form (`{{ <as>.<field> }}` or
+	// `{{ <as>.index }}`). Scalars (string / number / bool) pass through
+	// to renderScalar normally.
+	if len(ref.Segments) == 1 {
+		switch v := itemValue.(type) {
+		case map[string]any:
+			fields := mapKeysFor(v)
+			return nil, template.EvalErrf(template.EvalCodeRefUnresolved,
+				"`{{ %s }}` resolves to a composite (object) — use field access like `{{ %s.<field> }}` or `{{ %s.index }}`; available fields: %v",
+				head.Ident, head.Ident, head.Ident, fields)
+		case []any:
+			return nil, template.EvalErrf(template.EvalCodeRefUnresolved,
+				"`{{ %s }}` resolves to an array (len=%d) — use index access like `{{ %s.0 }}` or `{{ %s.index }}`",
+				head.Ident, len(v), head.Ident, head.Ident)
+		}
+		return itemValue, nil
+	}
+	// `<as>.index` → the integer N, regardless of ItemValue type.
+	if len(ref.Segments) == 2 && !ref.Segments[1].IsIndex && ref.Segments[1].Ident == "index" {
+		return n, nil
+	}
+	// `<as>.<field>...` → descend into ItemValue.
+	return descendPath(itemValue, ref.Segments[1:], head.Ident+".")
+}
+
+// mapKeysFor returns the sorted keys of m for inclusion in diagnostic
+// messages. Sorted for stable error text (test-friendly).
+func mapKeysFor(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// wf returns the workflow stored in this Scope. The existing scope holds wf
+// only indirectly via stepIndex; slice 3.4 adds a direct reference for the
+// mapPathIndex walker.
+func (s *Scope) wf() *ir.Workflow {
+	return s.wfRef
+}
+
+// mapPathIndex walks wf.Graph and returns a map: static-map-path → *ir.Map.
+// Used by resolveAsBinding to look up the As name for a given map path.
+//
+// Mirrors StepPathIndex's walker shape; includes recursion into all Phase 3
+// control kinds so nested maps (Map inside Map.Body, Map inside Loop.Body,
+// etc.) are addressable.
+//
+// KNOWN SMELL (slice 3.4 design M11): this is the 5th copy of the same
+// recursive node walker (StepPathIndex / indexProducers / walkSchemas /
+// walkStructural / mapPathIndex), and indexMapIDs in ir/validate_refs.go
+// makes it 6. A future slice should hoist a single `WalkNodes(fn func(Node,
+// path string))` higher-order helper to ir/ and migrate each caller. Out of
+// scope per CLAUDE.md rule 3 ("don't touch unrelated code"); flagging for
+// the future cleanup slice.
+func mapPathIndex(wf *ir.Workflow) map[string]*ir.Map {
+	out := map[string]*ir.Map{}
+	walkMapNodes(wf.Graph, "", out)
+	return out
+}
+
+func walkMapNodes(list ir.NodeList, parent string, out map[string]*ir.Map) {
+	for i, n := range list {
+		switch v := n.(type) {
+		case *ir.Map:
+			path := ir.PathFor(parent, "map", "", i)
+			out[path] = v
+			walkMapNodes(v.Body, ir.ChildPath(parent, "map", i, "body"), out)
+		case *ir.If:
+			walkMapNodes(v.Then, ir.ChildPath(parent, "if", i, "then"), out)
+			walkMapNodes(v.Else, ir.ChildPath(parent, "if", i, "else"), out)
+		case *ir.Loop:
+			walkMapNodes(v.Body, ir.ChildPath(parent, "loop", i, "body"), out)
+		case *ir.Try:
+			walkMapNodes(v.Do, ir.ChildPath(parent, "try", i, "do"), out)
+			walkMapNodes(v.Catch, ir.ChildPath(parent, "try", i, "catch"), out)
+			walkMapNodes(v.Finally, ir.ChildPath(parent, "try", i, "finally"), out)
+		case *ir.Parallel:
+			walkMapNodes(v.Children, ir.PathFor(parent, "parallel", "", i), out)
+		case *ir.Gate:
+			walkMapNodes(v.Generate, ir.ChildPath(parent, "gate", i, "generate"), out)
+			walkMapNodes(v.Evaluate, ir.ChildPath(parent, "gate", i, "evaluate"), out)
+		}
+		// Step kinds (CodeStep / AgentStep / SignalStep / Skip) don't recurse.
+	}
+}
+
+// enclosingMapForBinding walks ctxPath back-to-front looking for `map[N].item-K`
+// segment pairs. For each, looks up the map in idx (converting the runtime
+// mapPath to its static-path equivalent first — see runtimeMapPathToStatic);
+// if the map's As matches the asName, returns the map's runtime path + the K
+// value. INNERMOST match wins.
+//
+// Returns (runtimePath, n, true) on match — the path is the RUNTIME form so
+// callers can pass it to RunState.LookupMapItems (which keys on runtime paths).
+//
+// Patterns recognized:
+//   - <prefix>.map[N].item-K.<rest>        — inside a map's body at item K
+//   - <prefix>.map[N].item-K              — directly at item-K (no body step yet)
+//
+// The walker requires segments[i] starts with "item-" AND segments[i-1] starts
+// with "map[" — so a step id literally "item-3" buried elsewhere in the path
+// (e.g. as a step ID inside a loop's body that's inside a map.body) doesn't
+// false-positive (verified by TestEnclosingMapForBindingTable's "step-id
+// item-3" case).
+//
+// idx is keyed by STATIC IR paths (built by mapPathIndex via ir.PathFor +
+// ir.ChildPath which uses ".body" between map and inner). Runtime paths use
+// ".item-K" instead of ".body" at map-body junctions. runtimeMapPathToStatic
+// performs the conversion at lookup time so nested-map bindings resolve
+// correctly (slice 3.4 CR-A fix; pinned by TestRuntimeMapPathToStatic +
+// TestScopeResolveAsBindingNestedMaps).
+func enclosingMapForBinding(ctxPath string, idx map[string]*ir.Map, asName string) (string, int, bool) {
+	if ctxPath == "" {
+		return "", 0, false
+	}
+	segments := strings.Split(ctxPath, ".")
+	// Walk from end backward. For each i ≥ 1 where segments[i] starts with
+	// "item-" AND segments[i-1] starts with "map[":
+	//   * mapPath = strings.Join(segments[:i], ".")   (runtime form)
+	//   * static  = runtimeMapPathToStatic(mapPath)    (for idx lookup)
+	//   * n = parseN(segments[i] after "item-")
+	//   * if idx[static].As == asName → match.
+	for i := len(segments) - 1; i >= 1; i-- {
+		seg := segments[i]
+		if !strings.HasPrefix(seg, "item-") {
+			continue
+		}
+		if !strings.HasPrefix(segments[i-1], "map[") {
+			continue
+		}
+		mapPath := strings.Join(segments[:i], ".") // runtime path (with .item-K)
+		// CR-A: convert to static form for idx lookup. Nested maps have
+		// ctxPaths like "map[0].item-0.map[0].item-2.step"; the runtime
+		// mapPath for the inner map is "map[0].item-0.map[0]", but idx
+		// keys are "map[0]" and "map[0].body.map[0]" (static). The
+		// converter replaces ".item-K" with ".body" where preceded by
+		// "map[X]" — only at map-body junctions; loop.body.iter-K is
+		// left untouched (loop static path already uses ".body.iter-K"
+		// in NEITHER form — actually loop's runtime IS the static form
+		// for loops, since loop.body + iter-K matches both).
+		staticMapPath := runtimeMapPathToStatic(mapPath)
+		m, ok := idx[staticMapPath]
+		if !ok {
+			// idx may be incomplete (e.g. ctxPath references a map nested in
+			// a kind walkMapNodes doesn't recurse into — Skip / dead branches).
+			// Defense-in-depth: skip and continue walking.
+			continue
+		}
+		if m.As != asName {
+			// This map's binding name doesn't match; keep walking outward.
+			continue
+		}
+		nStr := strings.TrimPrefix(seg, "item-")
+		n, perr := strconv.Atoi(nStr)
+		if perr != nil {
+			// Malformed item segment — should never happen (engine.ItemPath
+			// produces valid ints); defense-in-depth: skip.
+			continue
+		}
+		return mapPath, n, true // return RUNTIME path for LookupMapItems
+	}
+	return "", 0, false
+}
+
+// runtimeMapPathToStatic converts a runtime path to its static-IR-path
+// equivalent by replacing ".item-K" segments with ".body" wherever the
+// preceding segment starts with "map[". Used by enclosingMapForBinding to
+// look up nested maps in the static-keyed mapPathIndex (CR-A fix).
+//
+// Examples (also pinned by TestRuntimeMapPathToStatic):
+//
+//	"map[0]"                              → "map[0]"               (identity)
+//	"map[0].item-0.map[0]"                → "map[0].body.map[0]"   (nested)
+//	"map[0].item-0.map[0].item-2"         → "map[0].body.map[0].body"
+//	"map[0].item-0.loop[0].body.iter-3"   → "map[0].body.loop[0].body.iter-3"
+//	    (loop's body+iter is untouched — only map.item-K gets converted)
+//	"map[0].item-0.item-3"                → "map[0].body.item-3"
+//	    (a step id literally "item-3" inside map body: not preceded by "map[",
+//	     stays as item-3)
+//
+// The replacement rule (item-K preceded by map[X] → body) is safe because:
+//   - Loop bodies use ".body.iter-K" both in static AND runtime forms (ir.ChildPath +
+//     runtime IterPath both produce the same ".body.iter-K" suffix).
+//   - Step ids matching `item-\d+` are valid per AWF1020 but, because they're
+//     leaves (no preceding "map[" in the segments array), the walker skips
+//     them via the same check.
+func runtimeMapPathToStatic(runtimePath string) string {
+	segs := strings.Split(runtimePath, ".")
+	for i := 1; i < len(segs); i++ {
+		if strings.HasPrefix(segs[i], "item-") && strings.HasPrefix(segs[i-1], "map[") {
+			segs[i] = "body"
+		}
+	}
+	return strings.Join(segs, ".")
 }
 
 // stepRuntimePath converts a step's static IR path (from StepPathIndex) to the
