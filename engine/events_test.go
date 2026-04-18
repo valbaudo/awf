@@ -293,6 +293,37 @@ func TestGateAttemptDataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMapItemDataRoundTrip(t *testing.T) {
+	d := MapItemData{
+		N:      3,
+		Status: ItemPassed,
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got MapItemData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got != d {
+		t.Errorf("round-trip: got %+v, want %+v", got, d)
+	}
+
+	// Wire field names — pin them, since renaming any breaks every existing log.
+	wantJSON := `{"n":3,"status":"item_passed"}`
+	if string(b) != wantJSON {
+		t.Errorf("on-wire: got %s, want %s", b, wantJSON)
+	}
+
+	// item_failed wire-format check.
+	d2 := MapItemData{N: 1, Status: ItemFailed}
+	b2, _ := json.Marshal(d2)
+	if string(b2) != `{"n":1,"status":"item_failed"}` {
+		t.Errorf("item_failed on-wire: got %s, want {\"n\":1,\"status\":\"item_failed\"}", b2)
+	}
+}
+
 func TestEventTypeConstantsAreStable(t *testing.T) {
 	// Locks the wire-format strings. Renaming any of these would invalidate every
 	// existing log; CI catches the rename via this test before it ships.

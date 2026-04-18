@@ -35,6 +35,39 @@ const (
 	EventGateAttempt = "gate.attempt"
 )
 
+const (
+	// Phase 3 slice 3.4. Committed by the map handler (engine/map.go) per item,
+	// AFTER the item's body terminates (whether the body produced an ok-final-
+	// outcome, a failure, or a skip-target-detected ok). N is the 0-based item
+	// index (matching engine.ItemPath's "item-N" suffix and spec §5.7's
+	// `{{ <as>.index }}` 0-based convention). Status is one of ItemPassed /
+	// ItemFailed.
+	EventMapItem = "map.item"
+)
+
+// Map item statuses — the Status field on MapItemData. NOT the same vocabulary
+// as the Outcome enum (engine/runstate.go) or AttemptPassed/AttemptRejected
+// (engine/events.go): a map item's body can succeed (item_passed) or fail
+// (item_failed); the map as a WHOLE returns OutcomeOK if the success count
+// meets MinSuccess, else returns an error.
+const (
+	ItemPassed = "item_passed"
+	ItemFailed = "item_failed"
+)
+
+// MapItemData is the payload of a map.item event (Phase 3 slice 3.4).
+// N is 0-based (per engine.ItemPath + spec §5.7). Status is one of
+// ItemPassed / ItemFailed.
+//
+// NB: unlike gate.attempt (which carries verdict_ref), map.item carries NO
+// item-value reference — the bound over[N] value is derived from re-evaluating
+// `over` on resume entry (slice 3.4 Design Q3). Adding it later would be a
+// backward-compatible extension (omitempty on the new field).
+type MapItemData struct {
+	N      int    `json:"n"`
+	Status string `json:"status"`
+}
+
 // Gate attempt outcomes — the AttemptOutcome field on GateAttemptData. NOT
 // the same vocabulary as the Outcome enum (engine/runstate.go): a gate attempt
 // can pass or reject as a verdict; the gate as a WHOLE returns OutcomeOK on
