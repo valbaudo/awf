@@ -40,6 +40,17 @@ import (
 //     Design Q3); the runtime fills it via UpdateMapItemValue BEFORE body
 //     re-execution on resume. Append-order = arrival-order; items may commit
 //     out-of-N-order because the map dispatches concurrently (spec §5.7).
+//   - signal.received populates Signals[d.Name] (observational queue) AND
+//     SignalReceivedAt[e.Path] (path-keyed half-commit-resume entry — slice
+//     3.5 design Q7). REFS ONLY — no Blobs.Get inside Fold; payloads are
+//     materialized at use to support non-object payloads from unschema'd
+//     signal steps (C6 fix).
+//   - run.paused is OBSERVATIONAL — Fold IGNORES it (default arm, same as
+//     node.failed). rs.Paused is a runtime-only flag set exclusively by
+//     engine.Run's live pollControls goroutine (C7 fix — avoids stale-Paused
+//     bug on resume).
+//   - run.cancelled sets Cancelled to true (slice 3.5; TERMINAL — cli/resume.go
+//     refuses).
 //   - Anything else (future event types not yet written by Phase 2 slices) → ignored.
 //
 // Errors (any fold error → resume cannot proceed safely):
@@ -71,6 +82,8 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 	rs.LoopIters = make(map[string]int, len(events)/8)
 	rs.GateAttempts = make(map[string][]AttemptResult, len(events)/16) // sparse — gates are uncommon
 	rs.MapItems = make(map[string][]MapItemRecord, len(events)/16)     // sparse — maps are uncommon
+	rs.Signals = make(map[string][]SignalEntry, len(events)/16)        // sparse — signals are uncommon
+	rs.SignalReceivedAt = make(map[string]SignalReceivedEntry, len(events)/16)
 
 	seenRunStarted := false
 	for _, e := range events {
@@ -110,6 +123,8 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 					EventRunResumed, e.Seq, err)
 			}
 			rs.Epoch = d.Epoch
+			// NB: no Paused-clearing here. Paused is no longer Fold-populated
+			// (C7 fix); no clearing needed.
 
 		case EventNodeCompleted:
 			var d NodeCompletedData
@@ -213,6 +228,42 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				Status: d.Status,
 				// ItemValue: nil (zero-value)
 			})
+
+		case EventSignalReceived:
+			var d SignalReceivedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+					EventSignalReceived, e.Seq, e.Path, err)
+			}
+			// REFS ONLY — no Blobs.Get here (C6 fix). Payloads are
+			// materialized at use (signal_step's half-commit-resume path
+			// re-derives via Blobs.Get + ValidateAgainstSchema; Phase 6 obs
+			// materializes on demand). Avoids the "non-object payload breaks
+			// json.Unmarshal into map[string]any" bug for unschema'd signals.
+			//
+			// Observational per-name queue (Phase 6 obs reads this).
+			rs.Signals[d.Name] = append(rs.Signals[d.Name], SignalEntry{
+				Seq:        d.Seq,
+				PayloadRef: d.PayloadRef,
+			})
+			// Path-keyed half-commit-resume entry (slice 3.5 design Q7).
+			// Only populated for events with a non-empty Path — defense-in-depth
+			// against malformed events. signal.received events ALWAYS carry the
+			// step's runtime path (runSignalStep sets it on Append), so a missing
+			// path here is corruption.
+			if e.Path != "" {
+				rs.SignalReceivedAt[e.Path] = SignalReceivedEntry{
+					Seq:        d.Seq,
+					PayloadRef: d.PayloadRef,
+				}
+			}
+
+		case EventRunCancelled:
+			// Terminal — set the flag. cli/resume.go's 4-class refusal catches
+			// this first; defense-in-depth here so engine.Run can refuse to
+			// start a run that was already cancelled (e.g. if cli/resume.go's
+			// refusal check was bypassed by a test or future tool).
+			rs.Cancelled = true
 
 		default:
 			// Observational / future event types ignored by Fold (state effect, if
