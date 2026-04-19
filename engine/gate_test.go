@@ -60,7 +60,7 @@ func TestRunGateSingleAttemptPasses(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -105,7 +105,7 @@ func TestRunGateRepairsAndPassesOnAttempt2(t *testing.T) {
 	}}
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, wrapper, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, wrapper, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -161,7 +161,7 @@ func TestRunGateMaxAttemptsReturnsRejected(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeRejected {
 		t.Errorf("oc = %q, want %q", oc, OutcomeRejected)
 	}
@@ -193,7 +193,7 @@ func TestRunGateGenerateCrashDoesNotCommitAttempt(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc == OutcomeOK {
 		t.Errorf("oc = ok, want propagation of generate crash")
 	}
@@ -233,7 +233,7 @@ func TestRunGateEvaluateCrashDoesNotCommitAttempt(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	_, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	_, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "eval crashed") {
 		t.Errorf("err = %v, want contains \"eval crashed\"", err)
 	}
@@ -258,7 +258,7 @@ func TestRunGateSkipInGenerateEndsGateAsOK(t *testing.T) {
 	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("got (%q, %v), want (ok, nil) — skip ends gate as ok per design §D", oc, err)
 	}
@@ -307,7 +307,7 @@ func TestRunGateMidResumeStartsAtNextAttempt(t *testing.T) {
 	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 1, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false, "feedback": "X"}})
 	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 2, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false, "feedback": "Y"}})
 
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}

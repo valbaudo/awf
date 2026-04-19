@@ -9,6 +9,7 @@ import (
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 	"github.com/valbaudo/awf/template"
 )
@@ -65,6 +66,7 @@ func runGate(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (Outcome, error) {
 	if len(g.Generate) == 0 {
 		// Validator (AWF1013) rejects; defense-in-depth.
@@ -85,7 +87,7 @@ func runGate(
 		evaluatePath := attemptPath + ".evaluate"
 
 		// 1. Run generate.
-		genOC, genErr := interpNodes(ctx, g.Generate, generatePath, wf, runstate, dispatcher, log, blobs, clk, tap)
+		genOC, genErr := interpNodes(ctx, g.Generate, generatePath, wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 		var su *SkipUnwind
 		if errors.As(genErr, &su) {
 			// Skip ends WHOLE gate as ok (design §D + slice 3.3 design Q3).
@@ -100,7 +102,7 @@ func runGate(
 		}
 
 		// 2. Run evaluate.
-		evalOC, evalErr := interpNodes(ctx, g.Evaluate, evaluatePath, wf, runstate, dispatcher, log, blobs, clk, tap)
+		evalOC, evalErr := interpNodes(ctx, g.Evaluate, evaluatePath, wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 		if errors.As(evalErr, &su) {
 			if appErr := appendNodeSkipped(log, gatePath, su.Reason); appErr != nil {
 				return "", appErr

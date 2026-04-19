@@ -81,7 +81,7 @@ func TestRunTryDoOK(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("Try{do-ok}: got (%q, %v); want (ok, nil)", oc, err)
 	}
@@ -100,7 +100,7 @@ func TestRunTryDoFailsNoCatch(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeRetryableFailure {
 		t.Errorf("Try{do-fails-no-catch}: outcome got %q, want %q", oc, OutcomeRetryableFailure)
 	}
@@ -125,7 +125,7 @@ func TestRunTryDoFailsWithCatch(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("Try{do-fails-with-catch}: got (%q, %v); want (ok, nil)", oc, err)
 	}
@@ -147,7 +147,7 @@ func TestRunTryDoFailsCatchFails(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeRetryableFailure {
 		t.Errorf("Try{catch-fails}: outcome got %q, want %q", oc, OutcomeRetryableFailure)
 	}
@@ -172,7 +172,7 @@ func TestRunTryFinallyAlwaysRuns(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("Try{finally-always-runs}: got (%q, %v); want (ok, nil)", oc, err)
 	}
@@ -197,7 +197,7 @@ func TestRunTryFinallyErrorSupersedes(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeRetryableFailure {
 		t.Errorf("Try{finally-fails}: outcome got %q, want %q", oc, OutcomeRetryableFailure)
 	}
@@ -228,7 +228,7 @@ func TestRunTrySkipInDoSkipsCatchRunsFinally(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK {
 		t.Errorf("Try{skip-in-do}: outcome got %q, want %q (skip is terminal-ok)", oc, OutcomeOK)
 	}
@@ -270,7 +270,7 @@ func TestRunTrySkipInDoPropagatesToNextEnclosingScope(t *testing.T) {
 	}
 	def := &ir.LoadedDefinition{Workflow: wf}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if err != nil || oc != OutcomeOK {
 		t.Fatalf("Run with skip-in-try.do + sibling-after-try: (oc, err) = (%q, %v), want (ok, nil) — skip should propagate through try to workflow root, terminating siblings", oc, err)
 	}
@@ -306,7 +306,7 @@ func TestRunTrySkipAppendFailsStillRunsFinally(t *testing.T) {
 	logger.FailAppendAfterN(0)
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	_, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, clk, nil)
+	_, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, clk, nil, nil)
 	if err == nil {
 		t.Error("expected non-nil err from appendNodeSkipped failure, got nil")
 	}
@@ -335,7 +335,7 @@ func TestRunTryCtxCancelledAfterFinally(t *testing.T) {
 	cancel() // cancel BEFORE running; the scripted dispatcher doesn't check ctx, but runTry's final check does
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Try{ctx-cancelled}: err = %v, want errors.Is(context.Canceled) true", err)
 	}
@@ -364,7 +364,7 @@ func TestRunSkipAtRootEndsRunOK(t *testing.T) {
 	logger := state.NewInMemoryLog(&clock.Fake{})
 	blobs := state.NewInMemoryBlobs()
 
-	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if err != nil {
 		t.Errorf("Run with root Skip: err = %v, want nil", err)
 	}
@@ -407,7 +407,7 @@ func TestSkipInsideLoopEndsIterationLoopContinues(t *testing.T) {
 	logger := state.NewInMemoryLog(&clock.Fake{})
 	blobs := state.NewInMemoryBlobs()
 
-	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if err != nil {
 		t.Errorf("Run with skip-in-loop: err = %v, want nil", err)
 	}
@@ -471,7 +471,7 @@ func TestRunTryFinallyRunsEvenWhenCtxCancelledMidDo(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	// Step 5 ctx-check: cancellation must still propagate to caller.
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want errors.Is(context.Canceled) true (step 5 ctx-check must still propagate cancellation)", err)
@@ -507,7 +507,7 @@ func TestRunTryCtxCancelledSupersedeDoError(t *testing.T) {
 	cancel() // cancel BEFORE running
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil)
+	oc, err := runTry(ctx, try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Try{ctx-cancelled-AND-do-fails}: err = %v, want errors.Is(context.Canceled) true (cancellation supersedes Do's error so slice 3.2's parallel handler can detect sibling cancellation)", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/retry"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 	"github.com/valbaudo/awf/template"
 )
@@ -60,6 +61,17 @@ var ErrNodeNotImplementedInPhase3 = errors.New("engine: node kind not implemente
 // IOChunk produced by each step. nil disables the tap entirely (per Phase 2
 // design — Phase 6 will replace this with the obs subsystem).
 //
+// broker is the signal broker for pause/cancel IPC (Phase 3 slice 3.5). nil is
+// valid — signal steps fail with a clear error when reached with a nil broker
+// (Task 7 wires runSignalStep). Task 6 adds the background pollControls goroutine.
+//
+// TODO(phase-5-or-6): when agent.Adapter (Phase 5) OR obs.Exporter (Phase 6)
+// adds the 10th parameter — whichever lands first — refactor to
+// engine.RunOptions struct. Slice 3.5 deliberately accepts the 9-param
+// signature (CLAUDE.md "simplest solution first") — an Options struct now
+// would be 1 caller's worth of speculative refactor; Phase 5 or 6 makes it
+// load-bearing.
+//
 // dispatcher's Handles map MUST be populated for every container the workflow
 // declares; engine.Run is NOT responsible for Backend.Create / Destroy (the
 // CLI owns lifecycle, slice 2.5 DQ3). An unknown-container reference inside
@@ -73,6 +85,7 @@ func Run(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker, // Phase 3 slice 3.5; may be nil — signal steps fail with a clear error if reached
 ) (Outcome, error) {
 	if def == nil || def.Workflow == nil {
 		return "", fmt.Errorf("engine.Run: nil workflow")
@@ -80,7 +93,7 @@ func Run(
 	if runstate == nil {
 		return "", fmt.Errorf("engine.Run: nil runstate")
 	}
-	oc, err := interpNodes(ctx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, tap)
+	oc, err := interpNodes(ctx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, tap, broker)
 	// SkipUnwind reaching Run = workflow-root unwind target (no enclosing
 	// loop/try/parallel/gate/map caught it). Per Phase 3 spec §5.6: "Cleanly
 	// terminates the nearest enclosing scope ... or (if none) the run, as ok."
@@ -111,9 +124,10 @@ func interpNodes(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (Outcome, error) {
 	for i, n := range nodes {
-		oc, err := interpNode(ctx, n, i, parent, wf, runstate, dispatcher, log, blobs, clk, tap)
+		oc, err := interpNode(ctx, n, i, parent, wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 		if oc != OutcomeOK || err != nil {
 			return oc, err
 		}
@@ -135,26 +149,27 @@ func interpNode(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (Outcome, error) {
 	switch v := n.(type) {
 	case *ir.CodeStep:
-		return runCodeStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runCodeStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.If:
-		return runIf(ctx, v, ir.PathFor(parent, "if", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runIf(ctx, v, ir.PathFor(parent, "if", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Loop:
-		return runLoop(ctx, v, ir.PathFor(parent, "loop", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runLoop(ctx, v, ir.PathFor(parent, "loop", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.AgentStep:
 		return notImpl("agent", ir.PathFor(parent, "", v.ID, idx), "Phase 5")
 	case *ir.SignalStep:
 		return notImpl("signal", ir.PathFor(parent, "", v.ID, idx), "Phase 3 slice 3.5")
 	case *ir.Try:
-		return runTry(ctx, v, ir.PathFor(parent, "try", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runTry(ctx, v, ir.PathFor(parent, "try", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Parallel:
-		return runParallel(ctx, v, ir.PathFor(parent, "parallel", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runParallel(ctx, v, ir.PathFor(parent, "parallel", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Gate:
-		return runGate(ctx, v, ir.PathFor(parent, "gate", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runGate(ctx, v, ir.PathFor(parent, "gate", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Map:
-		return runMap(ctx, v, ir.PathFor(parent, "map", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap)
+		return runMap(ctx, v, ir.PathFor(parent, "map", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Skip:
 		return runSkip(v)
 	default:
@@ -201,6 +216,7 @@ func runCodeStep(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	_ *signal.Broker, // carried for signature uniformity; runCodeStep does not recurse
 ) (Outcome, error) {
 	if _, done := runstate.LookupCompleted(path); done {
 		return OutcomeOK, nil
@@ -300,6 +316,7 @@ func runIf(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (Outcome, error) {
 	which, recorded := runstate.LookupBranch(path)
 	if !recorded {
@@ -334,13 +351,13 @@ func runIf(
 
 	switch which {
 	case "then":
-		return interpNodes(ctx, n.Then, path+".then", wf, runstate, dispatcher, log, blobs, clk, tap)
+		return interpNodes(ctx, n.Then, path+".then", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case "else":
 		// nil/empty Else is a no-op per spec §5.1.
 		if len(n.Else) == 0 {
 			return OutcomeOK, nil
 		}
-		return interpNodes(ctx, n.Else, path+".else", wf, runstate, dispatcher, log, blobs, clk, tap)
+		return interpNodes(ctx, n.Else, path+".else", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	default:
 		// Validator should reject; this is corruption / bug defense.
 		return "", fmt.Errorf("engine.Run: unknown branch %q at path %q", which, path)
@@ -369,6 +386,7 @@ func runLoop(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (Outcome, error) {
 	// Defense-in-depth FIRST: avoid entering the loop with a definition that
 	// validation should have rejected.
@@ -380,7 +398,7 @@ func runLoop(
 	for k := startK; ; k++ {
 		bodyParent := IterPath(path+".body", k)
 		// 1. Walk the body for iter K.
-		oc, err := interpNodes(ctx, n.Body, bodyParent, wf, runstate, dispatcher, log, blobs, clk, tap)
+		oc, err := interpNodes(ctx, n.Body, bodyParent, wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 		// SkipUnwind from body = iteration end target. Append node.skipped for
 		// trace, then continue to the loop.iter append below — the iter
 		// completed (via skip) and loop.iter records that for resume.

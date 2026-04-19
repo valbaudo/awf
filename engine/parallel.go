@@ -10,6 +10,7 @@ import (
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -126,6 +127,7 @@ func runParallel(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (Outcome, error) {
 	if len(n.Children) == 0 {
 		// Validator should reject; defense-in-depth.
@@ -149,7 +151,7 @@ func runParallel(
 	for i, child := range n.Children {
 		i, child := i, child
 		g.Go(func() error {
-			oc, err := interpNode(gctx, child, i, path, wf, runstate, dispatcher, wrappedLog, blobs, clk, wrappedTap)
+			oc, err := interpNode(gctx, child, i, path, wf, runstate, dispatcher, wrappedLog, blobs, clk, wrappedTap, broker)
 			// Skip-in-branch: ends THIS branch as ok, siblings unaffected.
 			var su *SkipUnwind
 			if errors.As(err, &su) {

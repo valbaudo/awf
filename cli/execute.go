@@ -47,7 +47,7 @@ func (r *Runner) runAndFinish(
 	runID, opName, successSuffix string,
 ) int {
 	dispatcher := &engine.LocalDispatcher{Backend: r.Backend, Handles: handles}
-	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout)
+	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout, nil)
 
 	if outcome != "" {
 		finishedData, mErr := json.Marshal(engine.RunFinishedData{Outcome: string(outcome)})

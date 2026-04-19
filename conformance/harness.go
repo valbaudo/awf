@@ -13,6 +13,7 @@ import (
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/loader"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -32,6 +33,7 @@ type harness struct {
 	factory BackendFactory
 	runID   string
 	input   map[string]any
+	broker  *signal.Broker // nil until Bucket 8 (Task 15) wires IPC
 }
 
 func newHarness(t *testing.T, factory BackendFactory, workflowYAML string) *harness {
@@ -161,7 +163,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 	}
 
 	dispatcher := &engine.LocalDispatcher{Backend: backend, Handles: handles}
-	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, nil)
+	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, nil, h.broker)
 	return outcome, runErr
 }
 

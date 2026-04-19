@@ -76,7 +76,7 @@ func TestRunParallelAllBranchesOK(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("all-ok: got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -101,7 +101,7 @@ func TestRunParallelOneBranchFailsCancelsSiblings(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeRetryableFailure {
 		t.Errorf("outcome = %q, want retryable_failure", oc)
 	}
@@ -127,7 +127,7 @@ func TestRunParallelDeterministicFirstError(t *testing.T) {
 		blobs := state.NewInMemoryBlobs()
 		wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
 		rs := NewRunState("run-x", "digest", nil)
-		_, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+		_, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "b0 err") {
 			t.Errorf("iter %d: err = %v, want contains 'b0 err'", i, err)
 		}
@@ -145,7 +145,7 @@ func TestRunParallelSkipInBranch(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("skip-in-branch: got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -185,7 +185,7 @@ func TestRunParallelCtxCancelRunsSiblingFinally(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
 	rs := NewRunState("run-x", "digest", nil)
-	_, _ = runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	_, _ = runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if _, done := rs.LookupCompleted("parallel[0].try[1].finally.b1-finally"); !done {
 		t.Errorf("b1-finally not in Completed; finally must run even on ctx-cancel")
 	}
@@ -212,7 +212,7 @@ func TestRunParallelCrossBranchRefIsRaceTolerant(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil)
+	oc, err := runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
 	if oc != OutcomeOK && oc != OutcomePermanentFailure {
 		t.Errorf("cross-branch-ref-race: outcome = %q, want ok or permanent_failure", oc)
 	}
@@ -246,7 +246,7 @@ func TestRunParallelSiblingCancelInterruptsRetrySleepUnderSynctest(t *testing.T)
 		})
 		wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{par}}
 		rs := NewRunState("run-x", "digest", nil)
-		_, _ = runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, clock.System{}, nil)
+		_, _ = runParallel(context.Background(), par, "parallel[0]", wf, rs, disp, lg, blobs, clock.System{}, nil, nil)
 
 		events, _ := lg.Fold()
 		b1Retries := 0
