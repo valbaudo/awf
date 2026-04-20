@@ -25,15 +25,20 @@ import (
 // it's passed to engine.NewRunState on the FIRST run. Resume reads input
 // back from the log's run.started entry via Fold; this field is only
 // consulted on the first-run branch. Use newHarnessWithInput to set it.
+//
+// broker is non-nil only for Bucket 8 (signal) sub-tests. newHarnessWithBroker
+// wires it; other buckets leave it nil. The baseDir field is the parent
+// t.TempDir() shared by wfPath and the broker's control directory (M13).
 type harness struct {
 	wfPath  string
+	baseDir string // M13: parent of wfPath; shared with broker controlDir
 	clk     *clock.Fake
 	log     *state.InMemoryLog
 	blobs   *state.InMemoryBlobs
 	factory BackendFactory
 	runID   string
 	input   map[string]any
-	broker  *signal.Broker // nil until Bucket 8 (Task 15) wires IPC
+	broker  *signal.Broker // slice 3.5 — nil for non-signal fixtures (most buckets)
 }
 
 func newHarness(t *testing.T, factory BackendFactory, workflowYAML string) *harness {
@@ -46,12 +51,24 @@ func newHarness(t *testing.T, factory BackendFactory, workflowYAML string) *harn
 	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	return &harness{
 		wfPath:  wfPath,
+		baseDir: dir,
 		clk:     clk,
 		log:     state.NewInMemoryLog(clk),
 		blobs:   state.NewInMemoryBlobs(),
 		factory: factory,
 		runID:   "conformance-run",
 	}
+}
+
+// newHarnessWithBroker derives controlDir from the harness's existing baseDir
+// (M13 fix — single t.TempDir() parent for workflow + broker; cleaner layout).
+// Bucket 8 (Task 15) uses this; other buckets pass nil broker.
+func newHarnessWithBroker(t *testing.T, factory BackendFactory, workflowYAML string) *harness {
+	t.Helper()
+	h := newHarness(t, factory, workflowYAML)
+	controlDir := filepath.Join(h.baseDir, "control")
+	h.broker = signal.NewBroker(controlDir, signal.WithPollInterval(time.Millisecond))
+	return h
 }
 
 // newHarnessWithInput is a variant of newHarness that pre-binds an input map

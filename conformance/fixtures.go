@@ -488,6 +488,49 @@ graph:
                 retry: { attempts: 1 }
 `
 
+// signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
+// A single `await: human_review` step followed by an echo step that references
+// the signal payload. No containers entry for the await itself; the after step
+// runs in container c.
+const signalAwaitWorkflow = `workflow: signal-await
+version: 1
+containers:
+  c:
+    image: oci://example.com/r@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: approve
+    await: human_review
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [approved]
+      properties:
+        approved: { type: boolean }
+  - id: after
+    container: c
+    run: echo "{{ step.approve.approved }}"
+`
+
+// signalPauseWorkflow — Bucket 8 signal_pause_halts + signal_cancel_terminal.
+// Three simple sequential echo steps; the signal subsystem halts the run
+// before all steps complete (pause) or terminally (cancel).
+const signalPauseWorkflow = `workflow: signal-pause
+version: 1
+containers:
+  c:
+    image: oci://example.com/r@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: a
+    container: c
+    run: echo a
+  - id: b
+    container: c
+    run: echo b
+  - id: c2
+    container: c
+    run: echo c
+`
+
 // parallelResumeWorkflow — Bucket 4b parallel_resume_consistency:
 // simple 3-branch parallel followed by a sequential after-step. The test
 // programs pb2.sh to fail deterministically on first run, then re-programs

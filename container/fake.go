@@ -35,6 +35,13 @@ type Fake struct {
 	failExecAt   *int
 	failCapAt    *int
 
+	// blockExecCh, when non-nil, is a gate channel that each Exec call blocks
+	// on (AFTER recording the call and BEFORE the fault/table checks). Closed
+	// by the test via ReleaseBlockedExec to allow Exec to proceed. Used by
+	// signal conformance tests to ensure the pollControls goroutine fires
+	// before any step completes (timing-sensitive pause/cancel assertions).
+	blockExecCh chan struct{}
+
 	// Calls is the defensive-copied history of every Cmd this fake's Exec
 	// received. Slice 2.4 (and later) tests inspect this to verify the
 	// dispatcher's env-injection contract (AWF_IDEMPOTENCY_KEY per AWF §10).
@@ -88,6 +95,27 @@ func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (ExecResult, <-chan 
 	// invoked us with this Cmd; the recording is what the env-injection test
 	// asserts on regardless of whether the lookup succeeds.
 	f.Calls = append(f.Calls, cloneCmd(cmd))
+
+	// Block gate: if the test armed a blockExecCh, release the mutex and wait
+	// until the channel is closed (or ctx is cancelled). This lets the caller
+	// write a pause/cancel control file and give the pollControls goroutine a
+	// full scheduler turn before any step completes. Conformance Bucket 8
+	// (signal pause/cancel) is the primary user.
+	blockCh := f.blockExecCh
+	if blockCh != nil {
+		f.mu.Unlock()
+		select {
+		case <-blockCh:
+		case <-ctx.Done():
+			f.mu.Lock()
+			return ExecResult{}, nil, ctx.Err()
+		}
+		f.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			return ExecResult{}, nil, err
+		}
+	}
+
 	if f.failExecAt != nil && f.execCalls == *f.failExecAt {
 		n := f.execCalls
 		f.execCalls++
@@ -271,4 +299,36 @@ func (f *Fake) ClearFault() {
 	defer f.mu.Unlock()
 	f.failExecAt = nil
 	f.failCapAt = nil
+}
+
+// BlockExec arms the block gate: the NEXT Exec call (and all subsequent calls
+// until ReleaseBlockedExec is called) will block inside Exec until released.
+// Returns the gate channel — callers may also select on it directly if needed.
+// Used by signal conformance tests (Bucket 8) to hold the engine at its first
+// step dispatch so the pollControls goroutine can detect a pre-written
+// pause/cancel file before any step completes.
+//
+// Call ReleaseBlockedExec to unblock all waiting Exec calls. If the engine's
+// ctx is cancelled while blocked (e.g. by the poller detecting pause/cancel),
+// Exec returns ctx.Err — the caller does NOT need to release the gate.
+func (f *Fake) BlockExec() chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch := make(chan struct{})
+	f.blockExecCh = ch
+	return ch
+}
+
+// ReleaseBlockedExec unblocks all Exec calls currently waiting on the gate
+// channel and disarms the block hook (future Exec calls proceed normally).
+// Idempotent — safe to call even if BlockExec was not called or was already
+// released.
+func (f *Fake) ReleaseBlockedExec() {
+	f.mu.Lock()
+	ch := f.blockExecCh
+	f.blockExecCh = nil
+	f.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
 }
