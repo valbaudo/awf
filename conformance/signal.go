@@ -139,49 +139,9 @@ func testSignalResumeReplays(t *testing.T, factory BackendFactory) {
 
 func testSignalPauseHalts(t *testing.T, factory BackendFactory) {
 	t.Helper()
-
-	// Build a concrete fake so we can call BlockExec.
-	fake := buildPauseFake(t, factory)
-	fake.BlockExec() // gate: Exec blocks until ctx-cancel or ReleaseBlockedExec
-	singleShot := func() container.Backend { return fake }
-
-	h := newHarnessWithBroker(t, singleShot, signalPauseWorkflow)
-	if err := h.broker.WritePause(signal.PauseRequest{Reason: "test"}); err != nil {
-		t.Fatalf("WritePause: %v", err)
-	}
-
-	type result struct {
-		oc  engine.Outcome
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		oc, err := h.runWorkflow(t)
-		ch <- result{oc, err}
-	}()
-
-	// The poller (1ms) fires while the engine goroutine is blocked at the
-	// gate. Once pause is detected ctx is cancelled; Exec returns ctx.Err;
-	// the engine unwinds. Close the gate so the fake doesn't stay armed.
-	res := <-ch
-	fake.ReleaseBlockedExec() // idempotent — ctx-cancel may have already drained
-
-	if res.oc != "" {
-		t.Errorf("outcome on pause = %q, want \"\"", res.oc)
-	}
-	if res.err == nil || !isErrPaused(res.err) {
-		t.Errorf("err = %v, want ErrPaused", res.err)
-	}
-	events := mustFoldEvents(t, h)
-	var sawPaused int
-	for _, e := range events {
-		if e.Type == engine.EventRunPaused {
-			sawPaused++
-		}
-	}
-	if sawPaused != 1 {
-		t.Errorf("run.paused events = %d, want 1", sawPaused)
-	}
+	h := runHaltedScenario(t, factory, func(h *harness) error {
+		return h.broker.WritePause(signal.PauseRequest{Reason: "test"})
+	}, isErrPaused, engine.EventRunPaused, "ErrPaused")
 
 	// Resume scenario: ClearPauseCancel + a fresh (fully programmed) factory.
 	_ = h.broker.ClearPauseCancel()
@@ -201,14 +161,54 @@ func testSignalPauseHalts(t *testing.T, factory BackendFactory) {
 
 func testSignalCancelTerminal(t *testing.T, factory BackendFactory) {
 	t.Helper()
+	h := runHaltedScenario(t, factory, func(h *harness) error {
+		return h.broker.WriteCancel(signal.CancelRequest{Reason: "test"})
+	}, isErrCancelled, engine.EventRunCancelled, "ErrCancelled")
 
+	// Verify the cancel reason round-trips through the log.
+	events := mustFoldEvents(t, h)
+	for _, e := range events {
+		if e.Type == engine.EventRunCancelled {
+			var d engine.RunCancelledData
+			_ = json.Unmarshal(e.Data, &d)
+			if d.Reason != "test" {
+				t.Errorf("Reason = %q, want test", d.Reason)
+			}
+		}
+	}
+}
+
+// runHaltedScenario is the shared scaffolding for signal_pause_halts and
+// signal_cancel_terminal. Both tests:
+//  1. Build a *Fake pre-programmed with the signalPauseWorkflow steps.
+//  2. Arm BlockExec so the engine goroutine blocks on the first Exec call.
+//  3. Write the control file (pause.json or cancel.json) — writeControl
+//     does this in a closure so each caller picks Pause vs Cancel.
+//  4. Launch runWorkflow in a goroutine; collect (outcome, err) via a chan.
+//  5. The 1ms poller fires while Exec is gated → detects the file →
+//     cancels ctx → Exec returns ctx.Err → engine unwinds + emits the
+//     terminal event.
+//  6. Assert outcome=="" + err matches the expected sentinel + exactly one
+//     event of haltedEventType appears in the log.
+//
+// Returns the harness so callers can run follow-up assertions (e.g. the
+// resume-after-pause path in testSignalPauseHalts).
+func runHaltedScenario(
+	t *testing.T,
+	factory BackendFactory,
+	writeControl func(*harness) error,
+	matchErr func(error) bool,
+	haltedEventType string,
+	wantSentinelName string,
+) *harness {
+	t.Helper()
 	fake := buildPauseFake(t, factory)
 	fake.BlockExec() // gate: Exec blocks until ctx-cancel or ReleaseBlockedExec
 	singleShot := func() container.Backend { return fake }
 
 	h := newHarnessWithBroker(t, singleShot, signalPauseWorkflow)
-	if err := h.broker.WriteCancel(signal.CancelRequest{Reason: "test"}); err != nil {
-		t.Fatalf("WriteCancel: %v", err)
+	if err := writeControl(h); err != nil {
+		t.Fatalf("write control file: %v", err)
 	}
 
 	type result struct {
@@ -220,31 +220,26 @@ func testSignalCancelTerminal(t *testing.T, factory BackendFactory) {
 		oc, err := h.runWorkflow(t)
 		ch <- result{oc, err}
 	}()
-
 	res := <-ch
-	fake.ReleaseBlockedExec()
+	fake.ReleaseBlockedExec() // idempotent — ctx-cancel may have already drained
 
 	if res.oc != "" {
-		t.Errorf("outcome on cancel = %q, want \"\"", res.oc)
+		t.Errorf("outcome = %q, want \"\"", res.oc)
 	}
-	if res.err == nil || !isErrCancelled(res.err) {
-		t.Errorf("err = %v, want ErrCancelled", res.err)
+	if res.err == nil || !matchErr(res.err) {
+		t.Errorf("err = %v, want %s", res.err, wantSentinelName)
 	}
 	events := mustFoldEvents(t, h)
-	var sawCancelled int
+	var sawEvent int
 	for _, e := range events {
-		if e.Type == engine.EventRunCancelled {
-			sawCancelled++
-			var d engine.RunCancelledData
-			_ = json.Unmarshal(e.Data, &d)
-			if d.Reason != "test" {
-				t.Errorf("Reason = %q, want test", d.Reason)
-			}
+		if e.Type == haltedEventType {
+			sawEvent++
 		}
 	}
-	if sawCancelled != 1 {
-		t.Errorf("run.cancelled events = %d, want 1", sawCancelled)
+	if sawEvent != 1 {
+		t.Errorf("%s events = %d, want 1", haltedEventType, sawEvent)
 	}
+	return h
 }
 
 // buildPauseFake constructs a *container.Fake pre-programmed with the three

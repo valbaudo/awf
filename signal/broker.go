@@ -307,30 +307,26 @@ type CancelRequest struct {
 
 // WritePause writes pause.json. Idempotent — overwrites any existing file.
 func (b *Broker) WritePause(req PauseRequest) error {
-	if err := os.MkdirAll(b.controlDir, 0o755); err != nil {
-		return fmt.Errorf("signal: mkdir %q: %w", b.controlDir, err)
-	}
-	data, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("signal: marshal pause: %w", err)
-	}
-	path := filepath.Join(b.controlDir, pauseFileName)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("signal: write %q: %w", path, err)
-	}
-	return nil
+	return b.writeControlJSON(pauseFileName, "pause", req)
 }
 
 // WriteCancel writes cancel.json. Idempotent.
 func (b *Broker) WriteCancel(req CancelRequest) error {
+	return b.writeControlJSON(cancelFileName, "cancel", req)
+}
+
+// writeControlJSON serializes req as JSON and writes it to controlDir/filename
+// after ensuring controlDir exists. The label appears in error messages to
+// distinguish the call site (pause vs cancel). Shared by WritePause/WriteCancel.
+func (b *Broker) writeControlJSON(filename, label string, req any) error {
 	if err := os.MkdirAll(b.controlDir, 0o755); err != nil {
 		return fmt.Errorf("signal: mkdir %q: %w", b.controlDir, err)
 	}
 	data, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("signal: marshal cancel: %w", err)
+		return fmt.Errorf("signal: marshal %s: %w", label, err)
 	}
-	path := filepath.Join(b.controlDir, cancelFileName)
+	path := filepath.Join(b.controlDir, filename)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("signal: write %q: %w", path, err)
 	}

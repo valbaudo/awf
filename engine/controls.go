@@ -101,38 +101,36 @@ func appendTerminalControlEvents(log state.Log, rs *RunState) error {
 	return nil
 }
 
-// appendRunPaused appends a run.paused event + fsyncs the log. Phase 3 slice
-// 3.5. fsync is required because the event is the breakpoint marker; losing
-// it to a torn tail would mean a paused run looks like an in-flight one
-// from the operator's perspective. Called by appendTerminalControlEvents.
+// appendRunPaused appends a run.paused event + fsyncs the log. fsync is
+// required because the event is the breakpoint marker; losing it to a torn
+// tail would mean a paused run looks like an in-flight one to the operator.
 func appendRunPaused(log state.Log, nodePath, reason string) error {
-	data, err := json.Marshal(RunPausedData{NodePath: nodePath, Reason: reason})
-	if err != nil {
-		return fmt.Errorf("engine.appendRunPaused: marshal: %w", err)
-	}
-	if err := log.Append(state.Event{Type: EventRunPaused, Data: data}); err != nil {
-		return fmt.Errorf("engine.appendRunPaused: append: %w", err)
-	}
-	if err := log.Sync(); err != nil {
-		return fmt.Errorf("engine.appendRunPaused: sync: %w", err)
-	}
-	return nil
+	return appendSyncedEvent(log, EventRunPaused, "run.paused",
+		RunPausedData{NodePath: nodePath, Reason: reason})
 }
 
 // appendRunCancelled appends a run.cancelled event + fsyncs. TERMINAL —
 // must be durable before engine.Run returns so `awf resume`'s refusal check
-// can see it. Called by engine.Run after the recursive walk returns and
-// runstate.IsCancelled() reports true.
+// can see it.
 func appendRunCancelled(log state.Log, reason string) error {
-	data, err := json.Marshal(RunCancelledData{Reason: reason})
+	return appendSyncedEvent(log, EventRunCancelled, "run.cancelled",
+		RunCancelledData{Reason: reason})
+}
+
+// appendSyncedEvent serializes data as JSON, appends a state.Event of the
+// given type, and fsyncs the log. Used by appendRunPaused/appendRunCancelled
+// (slice 3.5) for run-level terminal markers that must survive a torn-tail
+// crash. The label appears in error messages to identify the failing site.
+func appendSyncedEvent(log state.Log, eventType, label string, data any) error {
+	raw, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("engine.appendRunCancelled: marshal: %w", err)
+		return fmt.Errorf("engine: marshal %s: %w", label, err)
 	}
-	if err := log.Append(state.Event{Type: EventRunCancelled, Data: data}); err != nil {
-		return fmt.Errorf("engine.appendRunCancelled: append: %w", err)
+	if err := log.Append(state.Event{Type: eventType, Data: raw}); err != nil {
+		return fmt.Errorf("engine: append %s: %w", label, err)
 	}
 	if err := log.Sync(); err != nil {
-		return fmt.Errorf("engine.appendRunCancelled: sync: %w", err)
+		return fmt.Errorf("engine: sync after %s: %w", label, err)
 	}
 	return nil
 }
