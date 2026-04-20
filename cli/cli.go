@@ -75,6 +75,8 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return r.cliRun(args[1:], stdout, stderr)
 	case "resume":
 		return r.cliResume(args[1:], stdout, stderr)
+	case "signal":
+		return cliSignal(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return ExitOK
@@ -96,6 +98,9 @@ func printUsage(w io.Writer) {
 	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")
 	fprintln(w, "  resume <run-id> <path>    re-enter an interrupted run against the same workflow file")
 	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")
+	fprintln(w, "  signal <run-id> <name>    deliver a signal to an await step")
+	fprintln(w, "                              --payload <json>   typed payload JSON")
+	fprintln(w, "                              --state-dir <dir>  state directory")
 	fprintln(w, "  help                      print this usage")
 }
 
