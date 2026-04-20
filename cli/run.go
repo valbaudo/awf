@@ -18,6 +18,7 @@ import (
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/loader"
+	awfsignal "github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -117,7 +118,11 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// Latent Phase 4 hazard (Phase 2 fake's Create can't fail; Phase 4 Docker
 	// can): without this ordering, a 2-container workflow with the second
 	// Create failing would leak the first container.
+	skipTeardown := false
 	defer func() {
+		if skipTeardown {
+			return
+		}
 		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
 		defer cancel()
 		for _, h := range handles {
@@ -204,5 +209,10 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// map outcome → exit code. See cli/execute.go: the closing sequence is
 	// shared with `awf resume`.
 	rs := engine.NewRunState(id, digest, inputMap)
-	return r.runAndFinish(ctx, ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "")
+	// Slice 3.5: per-run broker. The control directory is created lazily on
+	// first WriteSignal / WritePause / WriteCancel from another process.
+	// r.BrokerOptions defaults to empty (100ms poll) in production; tests
+	// inject signal.WithPollInterval(time.Millisecond) for fast runs.
+	broker := awfsignal.NewBroker(awfsignal.ControlDir(*stateDir, id), r.BrokerOptions...)
+	return r.runAndFinish(ctx, ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", broker, &skipTeardown)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/loader"
+	awfsignal "github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -109,6 +110,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 			return ExitUsage
 		}
 	}
+	// Step 3b (slice 3.5): refusal — run.cancelled already in log (terminal).
+	// Checked BEFORE node.failed: cancel-during-step writes both events; the
+	// user wants to see "cancelled," not "failed step."
+	for _, e := range events {
+		if e.Type == engine.EventRunCancelled {
+			fprintf(stderr, "awf resume: run %q was cancelled (run.cancelled in log). Cannot resume a cancelled run; start a new run id.\n", runID)
+			return ExitUsage
+		}
+	}
 	// Step 4: refusal — node.failed already in the log (terminal-by-propagation).
 	// Phase 2 has no try/catch (Phase 3 lights it up); a failed step halts the
 	// run, and resuming would try to re-execute the failed step, which is not
@@ -153,6 +163,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Slice 3.5: per-run broker for the engine + clear stale pause.json /
+	// cancel.json so the first poll doesn't immediately re-pause/cancel.
+	controlDir := awfsignal.ControlDir(*stateDir, runID)
+	broker := awfsignal.NewBroker(controlDir, r.BrokerOptions...)
+	if err := broker.ClearPauseCancel(); err != nil {
+		fprintf(stderr, "awf resume: clear pause/cancel files: %v\n", err)
+		return ExitUsage
+	}
+
 	// Step 8: Create container handles. SAME pattern as cli/run.go — handles
 	// are CLI-owned (slice 2.5 Design question 3); resume rebuilds them from
 	// the workflow's containers map. Phase 2 fake: factory() per Create.
@@ -160,7 +179,11 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// "containers are reconstructed from their image/compose recipe on every
 	// (re)creation, including resume").
 	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
+	skipTeardown := false
 	defer func() {
+		if skipTeardown {
+			return
+		}
 		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
 		defer cancel()
 		for _, h := range handles {
@@ -201,5 +224,5 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// The interpreter's resume-checks (slice 2.5: runstate.Completed /
 	// Branches / LoopIters) skip already-committed nodes — same code path on
 	// first run and resume (CLAUDE.md invariant).
-	return r.runAndFinish(ctx, ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)")
+	return r.runAndFinish(ctx, ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", broker, &skipTeardown)
 }

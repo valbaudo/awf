@@ -23,6 +23,7 @@ import (
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/signal"
 )
 
 // Exit codes are part of the CLI contract — downstream tooling (CI, IDE
@@ -50,6 +51,11 @@ type Runner struct {
 	// IDGen mints run ids. Production: clock.CryptoIDGen{}. Tests: a
 	// seeded *clock.Fake so run dir paths are reproducible.
 	IDGen clock.IDGen
+	// BrokerOptions are passed to signal.NewBroker when the run/resume
+	// subcommands construct a broker. Slice 3.5 test-injection hook: tests
+	// pass signal.WithPollInterval(time.Millisecond) for fast polling; the
+	// production cli.Run constructor leaves this nil (defaults to 100ms).
+	BrokerOptions []signal.BrokerOption
 }
 
 // Run is the top-level CLI entry point — constructs the production Runner
