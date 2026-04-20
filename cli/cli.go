@@ -79,6 +79,8 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return cliSignal(args[1:], stdout, stderr)
 	case "pause":
 		return cliPause(args[1:], stdout, stderr)
+	case "cancel":
+		return cliCancel(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return ExitOK
@@ -104,6 +106,9 @@ func printUsage(w io.Writer) {
 	fprintln(w, "                              --payload <json>   typed payload JSON")
 	fprintln(w, "                              --state-dir <dir>  state directory")
 	fprintln(w, "  pause <run-id>            halt at next commit boundary (non-terminal)")
+	fprintln(w, "                              --reason <text>    operator-supplied reason")
+	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "  cancel <run-id>           TERMINAL cancel; `awf resume` refuses afterwards")
 	fprintln(w, "                              --reason <text>    operator-supplied reason")
 	fprintln(w, "                              --state-dir <dir>  state directory")
 	fprintln(w, "  help                      print this usage")
