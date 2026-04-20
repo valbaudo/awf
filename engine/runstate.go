@@ -168,8 +168,9 @@ type NodeResult struct {
 // Built by Fold (engine/fold.go). The same code path serves first-run (empty log →
 // empty RunState) and resume (folded log → populated RunState).
 //
-// Phase 2 + Phase 3 slice 3.3 fields — Phase 3 will further add signals
-// (await) and map items (per map[N].item-K).
+// Phase 2 + Phase 3 complete. All planned Phase 3 fields have landed: gate
+// attempts (slice 3.3), map items (slice 3.4), and signals/pause/cancel
+// (slice 3.5).
 // RunState.Epoch ≠ state.Event.Epoch — see comment on the Epoch field below.
 type RunState struct {
 	RunID          string

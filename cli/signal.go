@@ -5,9 +5,6 @@ import (
 	"errors"
 	"flag"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
 
 	"github.com/valbaudo/awf/signal"
 )
@@ -76,14 +73,8 @@ func cliSignal(args []string, stdout, stderr io.Writer) int {
 
 	// Refuse if run dir doesn't exist (defense against typo'd run-ids that
 	// would create an orphan control dir).
-	runDir := filepath.Join(*stateDir, "runs", runID)
-	if _, err := os.Stat(runDir); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			fprintf(stderr, "awf signal: no run with id %q at %q (did the run start? --state-dir mismatch?)\n", runID, runDir)
-		} else {
-			fprintf(stderr, "awf signal: stat run dir %q: %v\n", runDir, err)
-		}
-		return ExitUsage
+	if rc := requireRunDir(*stateDir, runID, stderr); rc != ExitOK {
+		return rc
 	}
 
 	controlDir := signal.ControlDir(*stateDir, runID)

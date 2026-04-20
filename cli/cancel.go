@@ -4,9 +4,6 @@ import (
 	"errors"
 	"flag"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
 
 	"github.com/valbaudo/awf/signal"
 )
@@ -56,14 +53,8 @@ func cliCancel(args []string, stdout, stderr io.Writer) int {
 			return ExitUsage
 		}
 	}
-	runDir := filepath.Join(*stateDir, "runs", runID)
-	if _, err := os.Stat(runDir); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			fprintf(stderr, "awf cancel: no run with id %q at %q\n", runID, runDir)
-		} else {
-			fprintf(stderr, "awf cancel: stat run dir %q: %v\n", runDir, err)
-		}
-		return ExitUsage
+	if rc := requireRunDir(*stateDir, runID, stderr); rc != ExitOK {
+		return rc
 	}
 	broker := signal.NewBroker(signal.ControlDir(*stateDir, runID))
 	if err := broker.WriteCancel(signal.CancelRequest{Reason: *reason}); err != nil {

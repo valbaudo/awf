@@ -455,6 +455,25 @@ func TestLookupMapItemsReturnsSliceCopy(t *testing.T) {
 	}
 }
 
+func TestLookupSignalsReturnsCopy(t *testing.T) {
+	// Slice-header copy pin (slice 3.5 analogous to TestLookupMapItemsReturnsSliceCopy).
+	// LookupSignals must NOT return the live backing slice — concurrent readers +
+	// writers would race on the slice elements. The returned slice header is fresh;
+	// mutating it does NOT affect subsequent lookups.
+	rs := NewRunState("run-x", "digest", nil)
+	rs.AppendSignal("human_review", SignalEntry{Seq: 1, PayloadRef: "sha256:abc"})
+
+	first := rs.LookupSignals("human_review")
+	// Mutate the returned slice element's PayloadRef.
+	first[0].PayloadRef = "MUTATED"
+	// Re-lookup; should NOT see the mutation (the live backing array was unchanged).
+	second := rs.LookupSignals("human_review")
+	if second[0].PayloadRef != "sha256:abc" {
+		t.Errorf("LookupSignals returned live backing array (mutation persisted); got PayloadRef=%q, want %q",
+			second[0].PayloadRef, "sha256:abc")
+	}
+}
+
 func TestRunStateSignalsRoundTrip(t *testing.T) {
 	rs := NewRunState("run-x", "digest", nil)
 	if got := rs.LookupSignals("human_review"); got != nil {

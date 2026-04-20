@@ -6,9 +6,10 @@ package engine
 // 2.4 added "retry.attempt"; 2.5 adds "node.failed" + "run.finished" (terminal events
 // the interpreter / CLI emit). node.started is intentionally deferred — no Phase 2
 // consumer (Phase 6's obs is the natural consumer; the Fold's default-switch-arm
-// means a later writer can land additively without breaking old logs). Future phases
-// add "signal.received" / "map.item" / "agent.event" / "io.chunk" / …;
-// 3.5 adds signal.received / run.paused / run.cancelled (slice 3.5).
+// means a later writer can land additively without breaking old logs). Phase 3 adds
+// "node.skipped" (3.1), "gate.attempt" (3.3), "map.item" (3.4), and
+// "signal.received" / "run.paused" / "run.cancelled" (3.5). Future phases add
+// "agent.event" / "io.chunk" / … (Phase 6 obs).
 const (
 	EventRunStarted    = "run.started"
 	EventRunResumed    = "run.resumed"

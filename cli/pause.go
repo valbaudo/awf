@@ -4,9 +4,6 @@ import (
 	"errors"
 	"flag"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
 
 	"github.com/valbaudo/awf/signal"
 )
@@ -72,14 +69,8 @@ func cliPause(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf pause: --before <node-path> is not yet supported in Phase 3 (lands with Phase 6 obs). Drop the flag to pause at the next commit boundary.\n")
 		return ExitUsage
 	}
-	runDir := filepath.Join(*stateDir, "runs", runID)
-	if _, err := os.Stat(runDir); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			fprintf(stderr, "awf pause: no run with id %q at %q\n", runID, runDir)
-		} else {
-			fprintf(stderr, "awf pause: stat run dir %q: %v\n", runDir, err)
-		}
-		return ExitUsage
+	if rc := requireRunDir(*stateDir, runID, stderr); rc != ExitOK {
+		return rc
 	}
 	broker := signal.NewBroker(signal.ControlDir(*stateDir, runID))
 	if err := broker.WritePause(signal.PauseRequest{Reason: *reason}); err != nil {
