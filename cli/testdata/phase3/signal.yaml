@@ -1,0 +1,22 @@
+workflow: phase3-signal
+version: 1
+
+containers:
+  workspace:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+graph:
+  - id: prep
+    container: workspace
+    run: echo prep
+  - id: approve
+    await: human_review
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [approved]
+      properties:
+        approved: { type: boolean }
+  - id: after
+    container: workspace
+    run: echo "after"
