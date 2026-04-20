@@ -333,7 +333,8 @@ func TestRunPhase2UnsupportedKindsAllErrorWithSentinel(t *testing.T) {
 		node ir.Node
 	}{
 		{"agent", &ir.AgentStep{ID: "ag", Container: "lab", Uses: "anthropic/claude-code"}},
-		{"signal", &ir.SignalStep{ID: "sig", Await: "human_review"}},
+		// "signal" was here pre-slice-3.5; runSignalStep now ships in
+		// engine/signal_step.go and its tests live in engine/signal_step_test.go.
 		// "parallel" was here pre-slice-3.2; runParallel now ships in
 		// engine/parallel.go and its tests live in engine/parallel_test.go.
 		// "gate" was here pre-slice-3.3; runGate now ships in

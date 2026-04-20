@@ -195,7 +195,7 @@ func interpNode(
 	case *ir.AgentStep:
 		return notImpl("agent", ir.PathFor(parent, "", v.ID, idx), "Phase 5")
 	case *ir.SignalStep:
-		return notImpl("signal", ir.PathFor(parent, "", v.ID, idx), "Phase 3 slice 3.5")
+		return runSignalStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Try:
 		return runTry(ctx, v, ir.PathFor(parent, "try", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Parallel:
