@@ -3,12 +3,14 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -45,9 +47,25 @@ func (r *Runner) runAndFinish(
 	blobs state.Blobs,
 	stdout, stderr io.Writer,
 	runID, opName, successSuffix string,
+	broker *signal.Broker,
+	skipTeardown *bool,
 ) int {
 	dispatcher := &engine.LocalDispatcher{Backend: r.Backend, Handles: handles}
-	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout)
+	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout, broker)
+
+	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished
+	// event is written; containers stay up; resume continues in a new epoch.
+	if errors.Is(runErr, signal.ErrPaused) {
+		*skipTeardown = true
+		fprintf(stdout, "run %s: paused — use `awf resume %s <workflow>` to continue\n", runID, runID)
+		return ExitOK
+	}
+	// ErrCancelled: the engine has ALREADY appended terminal run.cancelled.
+	// Containers DO tear down (the deferred Destroy fires normally).
+	if errors.Is(runErr, signal.ErrCancelled) {
+		fprintf(stdout, "run %s: cancelled\n", runID)
+		return ExitOK
+	}
 
 	if outcome != "" {
 		finishedData, mErr := json.Marshal(engine.RunFinishedData{Outcome: string(outcome)})

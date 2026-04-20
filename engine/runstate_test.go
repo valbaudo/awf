@@ -454,3 +454,119 @@ func TestLookupMapItemsReturnsSliceCopy(t *testing.T) {
 			second[0].Status, ItemPassed)
 	}
 }
+
+func TestLookupSignalsReturnsCopy(t *testing.T) {
+	// Slice-header copy pin (slice 3.5 analogous to TestLookupMapItemsReturnsSliceCopy).
+	// LookupSignals must NOT return the live backing slice — concurrent readers +
+	// writers would race on the slice elements. The returned slice header is fresh;
+	// mutating it does NOT affect subsequent lookups.
+	rs := NewRunState("run-x", "digest", nil)
+	rs.AppendSignal("human_review", SignalEntry{Seq: 1, PayloadRef: "sha256:abc"})
+
+	first := rs.LookupSignals("human_review")
+	// Mutate the returned slice element's PayloadRef.
+	first[0].PayloadRef = "MUTATED"
+	// Re-lookup; should NOT see the mutation (the live backing array was unchanged).
+	second := rs.LookupSignals("human_review")
+	if second[0].PayloadRef != "sha256:abc" {
+		t.Errorf("LookupSignals returned live backing array (mutation persisted); got PayloadRef=%q, want %q",
+			second[0].PayloadRef, "sha256:abc")
+	}
+}
+
+func TestRunStateSignalsRoundTrip(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	if got := rs.LookupSignals("human_review"); got != nil {
+		t.Errorf("empty LookupSignals: got %v, want nil", got)
+	}
+
+	rs.AppendSignal("human_review", SignalEntry{
+		Seq:        1,
+		PayloadRef: "sha256:abc",
+	})
+	got := rs.LookupSignals("human_review")
+	if len(got) != 1 {
+		t.Fatalf("after 1 append: len = %d, want 1", len(got))
+	}
+	if got[0].Seq != 1 || got[0].PayloadRef != "sha256:abc" {
+		t.Errorf("got[0] = %+v, want {Seq:1, PayloadRef:sha256:abc}", got[0])
+	}
+	rs.AppendSignal("tick", SignalEntry{Seq: 1})
+	if len(rs.LookupSignals("human_review")) != 1 {
+		t.Errorf("cross-name write affected human_review")
+	}
+}
+
+func TestRunStateSignalReceivedAtRoundTrip(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	if _, ok := rs.LookupSignalReceivedAt("step.approve"); ok {
+		t.Errorf("empty LookupSignalReceivedAt: ok=true, want false")
+	}
+	entry := SignalReceivedEntry{
+		Seq:        1,
+		PayloadRef: "sha256:abc",
+	}
+	rs.RecordSignalReceivedAt("step.approve", entry)
+	got, ok := rs.LookupSignalReceivedAt("step.approve")
+	if !ok {
+		t.Fatal("after record: ok=false, want true")
+	}
+	if got.Seq != 1 || got.PayloadRef != "sha256:abc" {
+		t.Errorf("got %+v", got)
+	}
+	if _, ok := rs.LookupSignalReceivedAt("step.other"); ok {
+		t.Errorf("LookupSignalReceivedAt(other): ok=true, want false")
+	}
+}
+
+func TestRunStatePausedRoundTrip(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	if rs.LookupPaused() != nil {
+		t.Errorf("initial Paused = %+v, want nil", rs.LookupPaused())
+	}
+	rs.SetPaused(&PauseMarker{NodePath: "step.x", Reason: "test"})
+	got := rs.LookupPaused()
+	if got == nil || got.NodePath != "step.x" || got.Reason != "test" {
+		t.Errorf("SetPaused/LookupPaused: got %+v", got)
+	}
+	rs.SetPaused(nil)
+	if rs.LookupPaused() != nil {
+		t.Errorf("after SetPaused(nil) LookupPaused = %+v, want nil", rs.LookupPaused())
+	}
+}
+
+func TestRunStateCancelledFlag(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	if rs.IsCancelled() {
+		t.Errorf("initial Cancelled = true, want false")
+	}
+	if r := rs.LookupCancelReason(); r != "" {
+		t.Errorf("initial CancelReason = %q, want \"\"", r)
+	}
+	rs.SetCancelled(true)
+	rs.SetCancelReason("operator stop")
+	if !rs.IsCancelled() {
+		t.Errorf("after SetCancelled(true) IsCancelled = false")
+	}
+	if r := rs.LookupCancelReason(); r != "operator stop" {
+		t.Errorf("CancelReason = %q, want \"operator stop\"", r)
+	}
+}
+
+func TestRunStateConcurrentSignals(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			rs.AppendSignal(fmt.Sprintf("name-%d", i), SignalEntry{Seq: 1, PayloadRef: "sha256:test"})
+			if got := rs.LookupSignals(fmt.Sprintf("name-%d", i)); len(got) != 1 {
+				t.Errorf("concurrent path: got %v", got)
+			}
+		}()
+	}
+	wg.Wait()
+}

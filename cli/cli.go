@@ -23,6 +23,7 @@ import (
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/signal"
 )
 
 // Exit codes are part of the CLI contract — downstream tooling (CI, IDE
@@ -50,6 +51,11 @@ type Runner struct {
 	// IDGen mints run ids. Production: clock.CryptoIDGen{}. Tests: a
 	// seeded *clock.Fake so run dir paths are reproducible.
 	IDGen clock.IDGen
+	// BrokerOptions are passed to signal.NewBroker when the run/resume
+	// subcommands construct a broker. Slice 3.5 test-injection hook: tests
+	// pass signal.WithPollInterval(time.Millisecond) for fast polling; the
+	// production cli.Run constructor leaves this nil (defaults to 100ms).
+	BrokerOptions []signal.BrokerOption
 }
 
 // Run is the top-level CLI entry point — constructs the production Runner
@@ -75,6 +81,12 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return r.cliRun(args[1:], stdout, stderr)
 	case "resume":
 		return r.cliResume(args[1:], stdout, stderr)
+	case "signal":
+		return cliSignal(args[1:], stdout, stderr)
+	case "pause":
+		return cliPause(args[1:], stdout, stderr)
+	case "cancel":
+		return cliCancel(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return ExitOK
@@ -96,6 +108,15 @@ func printUsage(w io.Writer) {
 	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")
 	fprintln(w, "  resume <run-id> <path>    re-enter an interrupted run against the same workflow file")
 	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")
+	fprintln(w, "  signal <run-id> <name>    deliver a signal to an await step")
+	fprintln(w, "                              --payload <json>   typed payload JSON")
+	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "  pause <run-id>            halt at next commit boundary (non-terminal)")
+	fprintln(w, "                              --reason <text>    operator-supplied reason")
+	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "  cancel <run-id>           TERMINAL cancel; `awf resume` refuses afterwards")
+	fprintln(w, "                              --reason <text>    operator-supplied reason")
+	fprintln(w, "                              --state-dir <dir>  state directory")
 	fprintln(w, "  help                      print this usage")
 }
 

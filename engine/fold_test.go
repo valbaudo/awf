@@ -727,6 +727,122 @@ func TestFold_MapItemNoBlobsAccess(t *testing.T) {
 	}
 }
 
+func TestFold_SignalReceivedPopulatesSignals(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	payloadRef, err := blobs.Put([]byte(`{"approved":true}`))
+	if err != nil {
+		t.Fatalf("Put payload: %v", err)
+	}
+	startedData, _ := json.Marshal(RunStartedData{RunID: "r", WorkflowDigest: "d"})
+	sigData, _ := json.Marshal(SignalReceivedData{
+		Name: "human_review", Seq: 1, PayloadRef: payloadRef,
+	})
+	events := []state.Event{
+		{Type: EventRunStarted, Data: startedData, Seq: 1},
+		{Type: EventSignalReceived, Path: "step.approve", Data: sigData, Seq: 2},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	// Signals queue gets {Seq, PayloadRef} (REFS ONLY — no Payload field per C6).
+	sigs := rs.LookupSignals("human_review")
+	if len(sigs) != 1 {
+		t.Fatalf("Signals[human_review] len = %d, want 1", len(sigs))
+	}
+	if sigs[0].Seq != 1 || sigs[0].PayloadRef != payloadRef {
+		t.Errorf("got %+v, want {Seq:1, PayloadRef:%s}", sigs[0], payloadRef)
+	}
+	// SignalReceivedAt[path] also populated.
+	entry, ok := rs.LookupSignalReceivedAt("step.approve")
+	if !ok {
+		t.Fatal("LookupSignalReceivedAt: ok=false")
+	}
+	if entry.Seq != 1 || entry.PayloadRef != payloadRef {
+		t.Errorf("entry = %+v", entry)
+	}
+}
+
+func TestFold_SignalReceivedNonObjectPayload(t *testing.T) {
+	// C6 regression test: payload is a JSON array (unschema'd signal). Fold
+	// must NOT attempt json.Unmarshal into map[string]any; it stores refs only.
+	blobs := state.NewInMemoryBlobs()
+	payloadRef, err := blobs.Put([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatalf("Put payload: %v", err)
+	}
+	startedData, _ := json.Marshal(RunStartedData{RunID: "r", WorkflowDigest: "d"})
+	sigData, _ := json.Marshal(SignalReceivedData{
+		Name: "ack", Seq: 1, PayloadRef: payloadRef,
+	})
+	events := []state.Event{
+		{Type: EventRunStarted, Data: startedData, Seq: 1},
+		{Type: EventSignalReceived, Path: "step.ack", Data: sigData, Seq: 2},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold errored on non-object payload (C6 regression): %v", err)
+	}
+	entry, ok := rs.LookupSignalReceivedAt("step.ack")
+	if !ok || entry.PayloadRef != payloadRef {
+		t.Errorf("non-object payload: SignalReceivedAt = %+v ok=%v", entry, ok)
+	}
+}
+
+func TestFold_SignalReceivedNoPayloadRef(t *testing.T) {
+	// signal with no payload (await step with no output_schema) → PayloadRef
+	// empty → SignalReceivedAt entry still populated (refs only; empty ref OK).
+	blobs := state.NewInMemoryBlobs()
+	startedData, _ := json.Marshal(RunStartedData{RunID: "r", WorkflowDigest: "d"})
+	sigData, _ := json.Marshal(SignalReceivedData{Name: "tick", Seq: 1})
+	events := []state.Event{
+		{Type: EventRunStarted, Data: startedData, Seq: 1},
+		{Type: EventSignalReceived, Path: "step.tick", Data: sigData, Seq: 2},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	sigs := rs.LookupSignals("tick")
+	if len(sigs) != 1 || sigs[0].PayloadRef != "" {
+		t.Errorf("empty-PayloadRef signal: got %+v", sigs)
+	}
+}
+
+func TestFold_RunPausedIsIgnored(t *testing.T) {
+	// C7 regression test: Fold IGNORES run.paused events (default arm).
+	// rs.Paused stays nil; runtime-only flag (set by live pollControls).
+	startedData, _ := json.Marshal(RunStartedData{RunID: "r", WorkflowDigest: "d"})
+	pausedData, _ := json.Marshal(RunPausedData{NodePath: "step.x", Reason: "test"})
+	events := []state.Event{
+		{Type: EventRunStarted, Data: startedData, Seq: 1},
+		{Type: EventRunPaused, Data: pausedData, Seq: 2},
+	}
+	rs, err := Fold(events, state.NewInMemoryBlobs())
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if pm := rs.LookupPaused(); pm != nil {
+		t.Errorf("Fold populated rs.Paused from run.paused (C7 regression): got %+v, want nil", pm)
+	}
+}
+
+func TestFold_RunCancelledIsTerminal(t *testing.T) {
+	startedData, _ := json.Marshal(RunStartedData{RunID: "r", WorkflowDigest: "d"})
+	cancelledData, _ := json.Marshal(RunCancelledData{Reason: "test"})
+	events := []state.Event{
+		{Type: EventRunStarted, Data: startedData, Seq: 1},
+		{Type: EventRunCancelled, Data: cancelledData, Seq: 2},
+	}
+	rs, err := Fold(events, state.NewInMemoryBlobs())
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if !rs.IsCancelled() {
+		t.Errorf("IsCancelled = false after run.cancelled, want true")
+	}
+}
+
 // TestFold_Golden_Sequential — a flat 3-step sequential workflow with no branches or
 // loops. Verifies the most common shape — a linear pipeline — folds correctly with
 // Completed entries keyed by step id.

@@ -362,3 +362,45 @@ func TestValidateStructuralStepIDReserved(t *testing.T) {
 		})
 	}
 }
+
+func TestStructuralSignalStepAwaitCharset(t *testing.T) {
+	// M16: Await name must match stepIDPattern (no whitespace, no path
+	// separators, no leading digits).
+	cases := []struct {
+		name    string
+		await   string
+		wantErr bool
+	}{
+		{"clean name", "human_review", false},
+		{"dashes ok", "tick-tock", false},
+		{"underscore ok", "_internal", false},
+		{"space rejected", "human review", true},
+		{"slash rejected", "../escape", true},
+		{"newline rejected", "human\nreview", true},
+		{"leading digit rejected", "0day", true},
+		// empty not handled here; AWF §4.3 has separate "await required" check
+		{"empty skipped", "", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ld := makeLD(&Workflow{
+				ID: "signal-charset", Version: 1,
+				Containers: map[string]Container{},
+				Graph: NodeList{
+					&SignalStep{ID: "approve", Await: tc.await},
+				},
+			})
+			diags := Validate(ld)
+			var got bool
+			for _, d := range diags {
+				if d.Code == "AWF1020" && strings.Contains(d.Message, "await=") {
+					got = true
+				}
+			}
+			if got != tc.wantErr {
+				t.Errorf("await=%q: got AWF1020=%v, want %v (diags=%v)", tc.await, got, tc.wantErr, diags)
+			}
+		})
+	}
+}

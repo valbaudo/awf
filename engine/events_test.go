@@ -10,15 +10,18 @@ func TestEventTypeConstants(t *testing.T) {
 	// Pin the exact string values — these are the wire format. Renaming any of
 	// these would invalidate every existing log.
 	cases := map[string]string{
-		EventRunStarted:    "run.started",
-		EventRunResumed:    "run.resumed",
-		EventNodeCompleted: "node.completed",
-		EventBranchTaken:   "branch.taken",
-		EventLoopIter:      "loop.iter",
-		EventRetryAttempt:  "retry.attempt",
-		EventNodeSkipped:   "node.skipped",
-		EventGateAttempt:   "gate.attempt",
-		EventMapItem:       "map.item",
+		EventRunStarted:     "run.started",
+		EventRunResumed:     "run.resumed",
+		EventNodeCompleted:  "node.completed",
+		EventBranchTaken:    "branch.taken",
+		EventLoopIter:       "loop.iter",
+		EventRetryAttempt:   "retry.attempt",
+		EventNodeSkipped:    "node.skipped",
+		EventGateAttempt:    "gate.attempt",
+		EventMapItem:        "map.item",
+		EventSignalReceived: "signal.received",
+		EventRunPaused:      "run.paused",
+		EventRunCancelled:   "run.cancelled",
 	}
 	for got, want := range cases {
 		if got != want {
@@ -357,5 +360,90 @@ func TestAttemptOutcomeConstantsAreStable(t *testing.T) {
 	}
 	if AttemptRejected != "attempt_rejected" {
 		t.Errorf("AttemptRejected = %q, want \"attempt_rejected\"", AttemptRejected)
+	}
+}
+
+func TestSignalReceivedDataRoundTrip(t *testing.T) {
+	d := SignalReceivedData{
+		Name:       "human_review",
+		Seq:        3,
+		PayloadRef: "sha256:abc...",
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got SignalReceivedData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got != d {
+		t.Errorf("round-trip: got %+v, want %+v", got, d)
+	}
+	// Wire field pin — renames break every existing log.
+	wantJSON := `{"name":"human_review","seq":3,"payload_ref":"sha256:abc..."}`
+	if string(b) != wantJSON {
+		t.Errorf("on-wire: got %s, want %s", b, wantJSON)
+	}
+	// payload_ref omitempty case (signal with empty payload).
+	d2 := SignalReceivedData{Name: "tick", Seq: 1}
+	b2, _ := json.Marshal(d2)
+	if string(b2) != `{"name":"tick","seq":1}` {
+		t.Errorf("empty payload_ref on-wire: got %s, want {\"name\":\"tick\",\"seq\":1}", b2)
+	}
+}
+
+func TestRunPausedDataRoundTrip(t *testing.T) {
+	d := RunPausedData{
+		NodePath: "step.triage",
+		Reason:   "operator inspection",
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got RunPausedData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got != d {
+		t.Errorf("round-trip: got %+v, want %+v", got, d)
+	}
+	wantJSON := `{"node_path":"step.triage","reason":"operator inspection"}`
+	if string(b) != wantJSON {
+		t.Errorf("on-wire: got %s, want %s", b, wantJSON)
+	}
+	// Both fields omitempty.
+	d2 := RunPausedData{}
+	b2, _ := json.Marshal(d2)
+	if string(b2) != `{}` {
+		t.Errorf("empty on-wire: got %s, want {}", b2)
+	}
+}
+
+func TestRunCancelledDataRoundTrip(t *testing.T) {
+	d := RunCancelledData{
+		Reason: "operator cancel",
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got RunCancelledData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got != d {
+		t.Errorf("round-trip: got %+v, want %+v", got, d)
+	}
+	wantJSON := `{"reason":"operator cancel"}`
+	if string(b) != wantJSON {
+		t.Errorf("on-wire: got %s, want %s", b, wantJSON)
+	}
+	// Reason omitempty.
+	d2 := RunCancelledData{}
+	b2, _ := json.Marshal(d2)
+	if string(b2) != `{}` {
+		t.Errorf("empty on-wire: got %s, want {}", b2)
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -46,9 +47,10 @@ func runTry(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (Outcome, error) {
 	// 1. Run Do.
-	doOC, doErr := interpNodes(ctx, n.Do, path+".do", wf, runstate, dispatcher, log, blobs, clk, tap)
+	doOC, doErr := interpNodes(ctx, n.Do, path+".do", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 
 	// 2a. SkipUnwind escaped Do → terminal-ok. Skip Catch.
 	var su *SkipUnwind
@@ -60,7 +62,7 @@ func runTry(
 	if doErr != nil && !skipped && len(n.Catch) > 0 {
 		// Catch absorbs the error (unconditional catch). Catch may itself fail,
 		// in which case Catch's error becomes the propagated error.
-		catchOC, catchErr := interpNodes(ctx, n.Catch, path+".catch", wf, runstate, dispatcher, log, blobs, clk, tap)
+		catchOC, catchErr := interpNodes(ctx, n.Catch, path+".catch", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 		propagatedOC = catchOC
 		propagatedErr = catchErr
 	}
@@ -94,7 +96,7 @@ func runTry(
 	// runs first, then the cancellation propagates.
 	if len(n.Finally) > 0 {
 		finallyCtx := context.WithoutCancel(ctx)
-		finallyOC, finallyErr := interpNodes(finallyCtx, n.Finally, path+".finally", wf, runstate, dispatcher, log, blobs, clk, tap)
+		finallyOC, finallyErr := interpNodes(finallyCtx, n.Finally, path+".finally", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 		if finallyErr != nil {
 			// 4. Finally errored — its error wins.
 			return finallyOC, finallyErr

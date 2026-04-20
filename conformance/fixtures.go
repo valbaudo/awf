@@ -488,6 +488,49 @@ graph:
                 retry: { attempts: 1 }
 `
 
+// signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
+// A single `await: human_review` step followed by an echo step that references
+// the signal payload. No containers entry for the await itself; the after step
+// runs in container c.
+var signalAwaitWorkflow = fmt.Sprintf(`workflow: signal-await
+version: 1
+containers:
+  c:
+    image: %s
+graph:
+  - id: approve
+    await: human_review
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [approved]
+      properties:
+        approved: { type: boolean }
+  - id: after
+    container: c
+    run: echo "{{ step.approve.approved }}"
+`, fakeImageDigest)
+
+// signalPauseWorkflow — Bucket 8 signal_pause_halts + signal_cancel_terminal.
+// Three simple sequential echo steps; the signal subsystem halts the run
+// before all steps complete (pause) or terminally (cancel).
+var signalPauseWorkflow = fmt.Sprintf(`workflow: signal-pause
+version: 1
+containers:
+  c:
+    image: %s
+graph:
+  - id: a
+    container: c
+    run: echo a
+  - id: b
+    container: c
+    run: echo b
+  - id: c2
+    container: c
+    run: echo c
+`, fakeImageDigest)
+
 // parallelResumeWorkflow — Bucket 4b parallel_resume_consistency:
 // simple 3-branch parallel followed by a sequential after-step. The test
 // programs pb2.sh to fail deterministically on first run, then re-programs

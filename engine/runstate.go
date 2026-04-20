@@ -86,6 +86,58 @@ type MapItemRecord struct {
 	Status    string
 }
 
+// SignalEntry is one element of RunState.Signals[name]. Records a delivered
+// signal — observational only. Slice 3.5 addition.
+//
+// Seq is the broker-assigned monotonic counter per signal name (1-based;
+// matches signal/broker.go's seq allocation). PayloadRef is the CAS pointer;
+// callers that need the materialized payload call blobs.Get(PayloadRef) +
+// json.Unmarshal at use (the deferred-materialization pattern from Temporal).
+//
+// REFS ONLY — no materialized Payload field. See SignalReceivedEntry's
+// doc-comment for the rationale (non-object payloads break json.Unmarshal
+// into map[string]any at Fold time).
+type SignalEntry struct {
+	Seq        int
+	PayloadRef string
+}
+
+// PauseMarker is the in-memory mirror of the latest run.paused event.
+// LookupPaused returns nil if no pause is active. NON-TERMINAL — the engine
+// does NOT halt on a stale LookupPaused; the controls polling helper is the
+// live decision-maker.
+//
+// NodePath is the runtime path the operator requested via `awf pause --before
+// <node-path>` (empty for unconditional pause). Reason is the operator's
+// free-text from `awf pause --reason <text>`.
+type PauseMarker struct {
+	NodePath string
+	Reason   string
+}
+
+// SignalReceivedEntry is the path-keyed record of a journaled signal.received
+// event (slice 3.5 design Q7 — half-commit resume mechanism). Fold populates
+// SignalReceivedAt[event.Path] from each signal.received event; the
+// runSignalStep handler checks for an existing entry BEFORE calling
+// broker.Receive — if present, it's the half-commit case (signal.received
+// landed but node.completed did not), so the handler skips the Receive +
+// signal.received-append and writes only the missing node.completed.
+//
+// Seq is the broker-assigned counter from the originating signal-<name>-<seq>.json.
+// PayloadRef is the CAS pointer (the same one node.completed will reference).
+//
+// REFS ONLY — no materialized Payload field. An earlier draft stored the
+// typed payload directly, but that assumed payloads are always JSON objects;
+// unschema'd signals can carry non-object payloads (spec §4.3 allows it),
+// which would have broken Fold's json.Unmarshal into map[string]any. The
+// refined design stores only refs; the half-commit handler re-derives the
+// typed payload via Blobs.Get + ValidateAgainstSchema(payload, schema) when
+// the SignalStep has an output_schema declared.
+type SignalReceivedEntry struct {
+	Seq        int
+	PayloadRef string
+}
+
 // NodeResult is the fold result for one completed node — stored in RunState.Completed
 // keyed by node.path. Phase 2 populates this from a `node.completed` event; Phase 3+
 // adds gate-attempt aggregation but the per-node shape stays the same.
@@ -116,8 +168,9 @@ type NodeResult struct {
 // Built by Fold (engine/fold.go). The same code path serves first-run (empty log →
 // empty RunState) and resume (folded log → populated RunState).
 //
-// Phase 2 + Phase 3 slice 3.3 fields — Phase 3 will further add signals
-// (await) and map items (per map[N].item-K).
+// Phase 2 + Phase 3 complete. All planned Phase 3 fields have landed: gate
+// attempts (slice 3.3), map items (slice 3.4), and signals/pause/cancel
+// (slice 3.5).
 // RunState.Epoch ≠ state.Event.Epoch — see comment on the Epoch field below.
 type RunState struct {
 	RunID          string
@@ -161,15 +214,52 @@ type RunState struct {
 	// reads MapItems to find the bound value for an enclosing map's item.
 	MapItems map[string][]MapItemRecord
 
+	// Signals records per-name signal deliveries observationally — slice 3.5
+	// addition. Signal name → ordered slice of SignalEntry{Seq, PayloadRef}.
+	// Fold rebuilds from signal.received events on resume; the await step
+	// (engine/signal_step.go) appends to it after each commit. PURELY
+	// OBSERVATIONAL: no handler reads it for control flow (the path-keyed
+	// SignalReceivedAt below is the half-commit-resume lookup). Phase 6 obs
+	// will project this as a per-signal delivery timeline.
+	//
+	// Each Append is single-writer (interpreter is the only writer); concurrent
+	// Lookups are safe under the mu.
+	Signals map[string][]SignalEntry
+
+	// Paused is the latest non-cleared pause marker. Nil if no pause is
+	// active. Slice 3.5 addition.
+	Paused *PauseMarker
+
+	// Cancelled is true iff a run.cancelled event has been folded in OR the
+	// background poller (engine/controls.go) detected cancel.json mid-run.
+	Cancelled bool
+
+	// CancelReason is the operator-supplied free-text from cancel.json's
+	// Reason field. Set by the poller alongside Cancelled. engine.Run reads
+	// it when appending the run.cancelled event.
+	CancelReason string
+
+	// SignalReceivedAt is the path-keyed half-commit-resume mechanism (slice
+	// 3.5 design Q7). Populated by Fold from signal.received events; read by
+	// runSignalStep before calling broker.Receive — if a SignalReceivedEntry
+	// exists for the await's path, the prior run committed signal.received
+	// but not node.completed; the handler skips the Receive call + the
+	// signal.received append and writes only node.completed.
+	SignalReceivedAt map[string]SignalReceivedEntry
+
 	// mu serializes access to Completed / Branches / LoopIters / GateAttempts
-	// / MapItems. Phase 2 callers were single-threaded; Phase 3 slice 3.2
+	// / MapItems / Signals / SignalReceivedAt / Paused / Cancelled / CancelReason.
+	// Phase 2 callers were single-threaded; Phase 3 slice 3.2
 	// (parallel) introduced concurrent branch goroutines, and slice 3.4 (map)
 	// adds concurrent item-body goroutines.
 	//
 	// Slice 3.2+ callers MUST use the accessor methods (LookupCompleted /
 	// RecordCompleted / LookupBranch / RecordBranch / LookupLoopIters /
 	// RecordLoopIter / LookupGateAttempts / RecordGateAttempt /
-	// LookupMapItems / RecordMapItem / UpdateMapItemValue). Direct field
+	// LookupMapItems / RecordMapItem / UpdateMapItemValue / AppendSignal /
+	// LookupSignals / LookupSignalReceivedAt / RecordSignalReceivedAt /
+	// SetPaused / LookupPaused / SetCancelled / IsCancelled /
+	// SetCancelReason / LookupCancelReason). Direct field
 	// access is reserved for engine.Fold —
 	// Fold runs at resume time BEFORE engine.Run, never concurrent with
 	// any goroutine, so its direct map writes are race-free by construction.
@@ -188,15 +278,18 @@ type RunState struct {
 // first-run, tests).
 func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 	return &RunState{
-		RunID:          runID,
-		WorkflowDigest: workflowDigest,
-		Input:          input,
-		Epoch:          1,
-		Completed:      map[string]NodeResult{},
-		Branches:       map[string]string{},
-		LoopIters:      map[string]int{},
-		GateAttempts:   map[string][]AttemptResult{},
-		MapItems:       map[string][]MapItemRecord{},
+		RunID:            runID,
+		WorkflowDigest:   workflowDigest,
+		Input:            input,
+		Epoch:            1,
+		Completed:        map[string]NodeResult{},
+		Branches:         map[string]string{},
+		LoopIters:        map[string]int{},
+		GateAttempts:     map[string][]AttemptResult{},
+		MapItems:         map[string][]MapItemRecord{},
+		Signals:          map[string][]SignalEntry{},
+		SignalReceivedAt: map[string]SignalReceivedEntry{},
+		// Paused, Cancelled, CancelReason — zero values are correct
 	}
 }
 
@@ -328,4 +421,102 @@ func (rs *RunState) UpdateMapItemValue(mapPath string, n int, value any) {
 			return
 		}
 	}
+}
+
+// AppendSignal enqueues e on the per-name queue. The interpreter calls this
+// AFTER a successful Log.Append + Log.Sync of the corresponding signal.received
+// event (in-memory mirrors durable log, not the other way around). Thread-safe.
+func (rs *RunState) AppendSignal(name string, e SignalEntry) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.Signals[name] = append(rs.Signals[name], e)
+}
+
+// LookupSignals returns the queue for name (nil if no signal has been
+// recorded). Thread-safe. READ-ONLY — callers MUST NOT mutate.
+func (rs *RunState) LookupSignals(name string) []SignalEntry {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	src := rs.Signals[name]
+	if src == nil {
+		return nil
+	}
+	cp := make([]SignalEntry, len(src))
+	copy(cp, src)
+	return cp
+}
+
+// LookupSignalReceivedAt returns the SignalReceivedEntry stored for path and
+// a present flag. The half-commit-resume mechanism (slice 3.5 design Q7):
+// runSignalStep checks this BEFORE calling broker.Receive. Thread-safe.
+func (rs *RunState) LookupSignalReceivedAt(path string) (SignalReceivedEntry, bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	e, ok := rs.SignalReceivedAt[path]
+	return e, ok
+}
+
+// RecordSignalReceivedAt stores e for path. Used by Fold (engine/fold.go's
+// signal.received arm) when reconstructing post-resume state. The runtime
+// path also goes through this when committing a fresh signal.received —
+// keeps the in-memory mirror current. Thread-safe.
+func (rs *RunState) RecordSignalReceivedAt(path string, e SignalReceivedEntry) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.SignalReceivedAt[path] = e
+}
+
+// SetPaused sets the in-memory pause marker. nil clears. Thread-safe.
+func (rs *RunState) SetPaused(pm *PauseMarker) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.Paused = pm
+}
+
+// LookupPaused returns the current marker (nil if not paused). Thread-safe.
+// Returns a SHALLOW COPY so concurrent readers can't mutate the live marker.
+func (rs *RunState) LookupPaused() *PauseMarker {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.Paused == nil {
+		return nil
+	}
+	cp := *rs.Paused
+	return &cp
+}
+
+// SetCancelled sets the cancelled flag. Thread-safe.
+func (rs *RunState) SetCancelled(v bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.Cancelled = v
+}
+
+// IsCancelled reports the cancelled flag. Thread-safe.
+func (rs *RunState) IsCancelled() bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.Cancelled
+}
+
+// SetCancelReason stores the operator-supplied reason from cancel.json. The
+// background poller (engine/controls.go) calls this alongside SetCancelled
+// when cancel.json is detected. engine.Run reads it when appending the
+// run.cancelled event. Thread-safe.
+//
+// (Field-vs-method naming: the field is `CancelReason`; the accessor is
+// `LookupCancelReason` to avoid the Go field/method name collision. Same
+// pattern as Paused / LookupPaused.)
+func (rs *RunState) SetCancelReason(reason string) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.CancelReason = reason
+}
+
+// LookupCancelReason returns the stored reason. Empty if no reason was
+// supplied or SetCancelReason has not been called. Thread-safe.
+func (rs *RunState) LookupCancelReason() string {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.CancelReason
 }

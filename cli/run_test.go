@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -811,6 +813,109 @@ func TestCLIRunOnMapFixture(t *testing.T) {
 	}
 }
 
+func TestCLIRunOnSignalFixture(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("echo prep", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("prep\n"),
+	}, nil)
+	fake.ProgramExec("echo \"after\"", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("after\n"),
+	}, nil)
+
+	stateDir := t.TempDir()
+	runID := "test-signal-run"
+	// H3 fix: inject WithPollInterval(time.Millisecond) so the broker polls
+	// fast in tests. Production default is 100ms; test wants ~1ms.
+	runner := &cli.Runner{
+		Backend:       fake,
+		IDGen:         &clock.Fake{IDs: []string{runID}},
+		BrokerOptions: []signal.BrokerOption{signal.WithPollInterval(time.Millisecond)},
+	}
+
+	runDone := make(chan struct {
+		rc     int
+		stderr string
+	}, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		rc := runner.Run(
+			[]string{"run", "--state-dir", stateDir, "--run-id", runID,
+				"testdata/phase3/signal.yaml"},
+			&stdout, &stderr,
+		)
+		runDone <- struct {
+			rc     int
+			stderr string
+		}{rc, stderr.String()}
+	}()
+
+	// Coordinate via the run dir's existence. Bounded wait (≤ 2s).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(stateDir, "runs", runID)); err == nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Write the signal.
+	var sigStdout, sigStderr bytes.Buffer
+	sigRC := runner.Run([]string{
+		"signal", "--state-dir", stateDir, runID, "human_review",
+		"--payload", `{"approved":true}`,
+	}, &sigStdout, &sigStderr)
+	if sigRC != cli.ExitOK {
+		t.Fatalf("awf signal: rc = %d, stderr: %s", sigRC, sigStderr.String())
+	}
+
+	// With WithPollInterval(time.Millisecond), the await unblocks within a
+	// few ms. 2s timeout is ample.
+	select {
+	case result := <-runDone:
+		if result.rc != cli.ExitOK {
+			t.Fatalf("awf run: rc = %d, stderr: %s", result.rc, result.stderr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("awf run did not complete within 2s of signal delivery")
+	}
+
+	// Verify the log has signal.received + 3 node.completed (prep, approve, after).
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var sawSignalReceived, completed int
+	var finishedOutcome string
+	for _, e := range events {
+		switch e.Type {
+		case engine.EventSignalReceived:
+			sawSignalReceived++
+		case engine.EventNodeCompleted:
+			completed++
+		case engine.EventRunFinished:
+			var d engine.RunFinishedData
+			_ = json.Unmarshal(e.Data, &d)
+			finishedOutcome = d.Outcome
+		}
+	}
+	if sawSignalReceived != 1 {
+		t.Errorf("signal.received events = %d, want 1", sawSignalReceived)
+	}
+	if completed != 3 {
+		t.Errorf("node.completed events = %d, want 3 (prep + approve + after)", completed)
+	}
+	if finishedOutcome != "ok" {
+		t.Errorf("run.finished outcome = %q, want %q", finishedOutcome, "ok")
+	}
+}
+
 func TestCLIRunOnGateFixture(t *testing.T) {
 	t.Parallel()
 	fake := container.NewFake()
@@ -898,5 +1003,43 @@ func TestCLIRunOnGateFixture(t *testing.T) {
 	}
 	if finished != 1 || finishedOutcome != "ok" {
 		t.Errorf("run.finished: count=%d outcome=%q; want 1/ok", finished, finishedOutcome)
+	}
+}
+
+func TestCLIValidateCVEPipelineFixture(t *testing.T) {
+	t.Parallel()
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"validate", "testdata/phase3/cve-pipeline.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want %d; stderr: %s", rc, cli.ExitOK, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cve-pipeline") {
+		t.Errorf("stdout missing workflow id: %q", stdout.String())
+	}
+}
+
+func TestCLIRunCVEPipelineErrorsAtFirstAgentStep(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	stateDir := t.TempDir()
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{"test-cve"}}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir,
+			"--input", `{"cve_id":"CVE-2024-0000"}`,
+			"testdata/phase3/cve-pipeline.yaml"},
+		&stdout, &stderr,
+	)
+	// Non-OK exit; output mentions agent / not implemented.
+	if rc == cli.ExitOK {
+		t.Errorf("rc = %d, want non-zero (agent step should error)", rc)
+	}
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(combined, "not implemented") {
+		t.Errorf("output missing 'not implemented': stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }

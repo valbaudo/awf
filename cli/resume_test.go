@@ -271,6 +271,50 @@ func TestCLIResumeHappyPathSkipsCommittedSteps(t *testing.T) {
 	}
 }
 
+func TestCLIResumeRefusesTerminalRunCancelled(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runID := "test-resume-cancelled"
+	// Hand-craft a log with run.started + run.cancelled.
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if _, err := state.OpenBlobs(filepath.Join(stateDir, "blobs")); err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	log, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	startedData, _ := json.Marshal(engine.RunStartedData{
+		RunID: runID, WorkflowDigest: "abc",
+	})
+	cancelledData, _ := json.Marshal(engine.RunCancelledData{Reason: "test"})
+	for _, e := range []state.Event{
+		{Type: engine.EventRunStarted, Data: startedData},
+		{Type: engine.EventRunCancelled, Data: cancelledData},
+	} {
+		if err := log.Append(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = log.Sync()
+	_ = log.Close()
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml",
+	}, &stdout, &stderr)
+	if rc == cli.ExitOK {
+		t.Errorf("rc = %d, want non-zero", rc)
+	}
+	if !strings.Contains(stderr.String(), "cancelled") {
+		t.Errorf("stderr missing 'cancelled': %q", stderr.String())
+	}
+}
+
 func TestCLIResumeDigestMismatchHardError(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()

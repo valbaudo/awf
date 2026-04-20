@@ -6,8 +6,10 @@ package engine
 // 2.4 added "retry.attempt"; 2.5 adds "node.failed" + "run.finished" (terminal events
 // the interpreter / CLI emit). node.started is intentionally deferred — no Phase 2
 // consumer (Phase 6's obs is the natural consumer; the Fold's default-switch-arm
-// means a later writer can land additively without breaking old logs). Future phases
-// add "signal.received" / "map.item" / "agent.event" / "io.chunk" / ….
+// means a later writer can land additively without breaking old logs). Phase 3 adds
+// "node.skipped" (3.1), "gate.attempt" (3.3), "map.item" (3.4), and
+// "signal.received" / "run.paused" / "run.cancelled" (3.5). Future phases add
+// "agent.event" / "io.chunk" / … (Phase 6 obs).
 const (
 	EventRunStarted    = "run.started"
 	EventRunResumed    = "run.resumed"
@@ -76,6 +78,64 @@ const (
 	AttemptPassed   = "attempt_passed"
 	AttemptRejected = "attempt_rejected"
 )
+
+const (
+	// Phase 3 slice 3.5. signal.received: the interpreter writes this AFTER
+	// signal.Broker hands off a delivery payload AND that payload validates
+	// against the SignalStep's output_schema. The payload is CAS'd into Blobs
+	// first (commit-atomicity invariant per spec §8); SignalReceivedData.PayloadRef
+	// holds the resulting blob ref. Multiple deliveries to the same await are
+	// impossible (the await consumes exactly one and commits via node.completed),
+	// but multiple signal.received events MAY appear in a log for distinct await
+	// steps consuming distinct signals.
+	EventSignalReceived = "signal.received"
+
+	// Phase 3 slice 3.5. run.paused: the interpreter writes this when control-
+	// file polling (engine/controls.go) detects a pause.json file in the run's
+	// control directory. NON-TERMINAL — `awf resume` does NOT refuse on
+	// run.paused (unlike run.finished / node.failed / run.cancelled).
+	EventRunPaused = "run.paused"
+
+	// Phase 3 slice 3.5. run.cancelled: the interpreter writes this when
+	// control-file polling detects a cancel.json file. TERMINAL — `awf resume`
+	// refuses (slice 2.6's 3-class refusal grows to 4). Cancel propagates ctx-
+	// cancel through running goroutines; finally blocks run on ctx-cancel
+	// (slice 3.1 invariant); the event is appended + fsync'd before engine.Run
+	// returns (Outcome(""), signal.ErrCancelled).
+	EventRunCancelled = "run.cancelled"
+)
+
+// SignalReceivedData is the payload of a signal.received event (Phase 3 slice
+// 3.5). Name is the signal-name the await step blocked on. Seq is the broker-
+// assigned monotonic counter (1-based per name; see signal/broker.go).
+// PayloadRef is the CAS pointer for the typed payload. Empty PayloadRef means
+// the signal carried no payload (signal step with no output_schema, valid per
+// spec §4.3).
+type SignalReceivedData struct {
+	Name       string `json:"name"`
+	Seq        int    `json:"seq"`
+	PayloadRef string `json:"payload_ref,omitempty"`
+}
+
+// RunPausedData is the payload of a run.paused event (Phase 3 slice 3.5).
+// NodePath is the runtime path the operator requested via `awf pause --before
+// <node-path>` (empty for unconditional pause). Reason is the operator's
+// free-text from `awf pause --reason <text>` ("" if not set).
+//
+// NodePath does NOT pin where execution resumes — `awf resume` always re-enters
+// at the uncommitted frontier per spec §8. NodePath is observational only.
+type RunPausedData struct {
+	NodePath string `json:"node_path,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// RunCancelledData is the payload of a run.cancelled event (Phase 3 slice 3.5).
+// Reason is the operator-supplied free-text from `awf cancel --reason <text>`
+// ("" if not set). TERMINAL event — `awf resume` refuses any log with this
+// event in it.
+type RunCancelledData struct {
+	Reason string `json:"reason,omitempty"`
+}
 
 // GateAttemptData is the payload of a gate.attempt event (Phase 3 slice 3.3).
 // N is 1-based. AttemptOutcome is one of AttemptPassed / AttemptRejected.

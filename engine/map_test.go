@@ -136,7 +136,7 @@ func TestRunMapEmptyOver(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs := NewRunState(testRunID, testDigest, runOverItems())
 
-	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("empty over: got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -155,7 +155,7 @@ func TestRunMapSingleItemPasses(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs := NewRunState(testRunID, testDigest, runOverItems("cve-1"))
 
-	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -171,7 +171,7 @@ func TestRunMapMultipleItemsAllPass(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -207,7 +207,7 @@ func TestRunMapConcurrencyCapEnforced(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = runMap(context.Background(), mapNode, testMapPath, wf, rs, ld, lg, blobs, clk, nil)
+		_, _ = runMap(context.Background(), mapNode, testMapPath, wf, rs, ld, lg, blobs, clk, nil, nil)
 		close(done)
 	}()
 	// Wait until in-flight reaches 2 (or timeout).
@@ -264,7 +264,7 @@ func TestRunMapMinSuccessTolerates(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("min_success met: got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -281,7 +281,7 @@ func TestRunMapMinSuccessFailsBelow(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
 	if oc == OutcomeOK {
 		t.Errorf("default min_success not met: got ok, want non-ok")
 	}
@@ -307,7 +307,7 @@ func TestRunMapSkipInItemEndsAsOK(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("skip-in-item: got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -416,7 +416,7 @@ func TestRunMapResumeReplaysCommittedItems(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs1 := NewRunState(testRunID, testDigest, input)
 
-	oc1, err1 := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil)
+	oc1, err1 := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
 	if oc1 != OutcomeOK || err1 != nil {
 		t.Fatalf("round-1: got (%q, %v), want (ok, nil)", oc1, err1)
 	}
@@ -431,7 +431,7 @@ func TestRunMapResumeReplaysCommittedItems(t *testing.T) {
 		t.Fatal("Fold did not reconstruct rs2.Input from InputRef")
 	}
 
-	oc2, err2 := runMap(context.Background(), mapNode, testMapPath, wf, rs2, rig2.ld, rig2.lg, rig2.blobs, rig2.clk, nil)
+	oc2, err2 := runMap(context.Background(), mapNode, testMapPath, wf, rs2, rig2.ld, rig2.lg, rig2.blobs, rig2.clk, nil, nil)
 	if oc2 != OutcomeOK || err2 != nil {
 		t.Fatalf("resume: got (%q, %v), want (ok, nil) — committed items must replay, not re-execute", oc2, err2)
 	}
@@ -473,7 +473,7 @@ func TestRunMapResumeFailedItemsStayFailed(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs1 := NewRunState(testRunID, testDigest, input)
 
-	oc1, err1 := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil)
+	oc1, err1 := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
 	if oc1 != OutcomeRetryableFailure {
 		t.Fatalf("round-1: outcome = %q, want OutcomeRetryableFailure", oc1)
 	}
@@ -489,7 +489,7 @@ func TestRunMapResumeFailedItemsStayFailed(t *testing.T) {
 	rig2 := bareRig(t, rig1, ok("echo a"), ok("echo b"), ok("echo c"))
 	rs2 := foldFromRig(t, rig2)
 
-	oc2, err2 := runMap(context.Background(), mapNode, testMapPath, wf, rs2, rig2.ld, rig2.lg, rig2.blobs, rig2.clk, nil)
+	oc2, err2 := runMap(context.Background(), mapNode, testMapPath, wf, rs2, rig2.ld, rig2.lg, rig2.blobs, rig2.clk, nil, nil)
 	if oc2 != OutcomeRetryableFailure {
 		t.Errorf("resume: outcome = %q, want OutcomeRetryableFailure (Q6: failed items final)", oc2)
 	}
@@ -513,7 +513,7 @@ func TestRunMapAsBindingThreaded(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs := NewRunState(testRunID, testDigest, runOverItems("apple", "banana"))
 
-	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -580,7 +580,7 @@ func TestRunMapNonLocalDispatcherErrors(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	rs := NewRunState(testRunID, testDigest, runOverItems("a"))
 
-	_, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, mockDispatcher, lg, blobs, clk, nil)
+	_, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, mockDispatcher, lg, blobs, clk, nil, nil)
 	if err == nil {
 		t.Fatal("non-local dispatcher: err = nil, want non-nil")
 	}

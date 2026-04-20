@@ -13,6 +13,7 @@ import (
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 	"github.com/valbaudo/awf/template"
 )
@@ -53,6 +54,7 @@ func runMap(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (Outcome, error) {
 	ld, ok := dispatcher.(*LocalDispatcher)
 	if !ok {
@@ -152,7 +154,7 @@ func runMap(
 			}
 			defer sem.Release(1)
 
-			status, dispatchErr := dispatchItem(ctx, n, mapPath, i, wf, runstate, ld, wrappedLog, blobs, clk, wrappedTap)
+			status, dispatchErr := dispatchItem(ctx, n, mapPath, i, wf, runstate, ld, wrappedLog, blobs, clk, wrappedTap, broker)
 			statuses[i] = status
 			if dispatchErr != nil {
 				statusErrMu.Lock()
@@ -201,6 +203,7 @@ func dispatchItem(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	broker *signal.Broker,
 ) (string, error) {
 	itemPath := ItemPath(mapPath, itemN) // "map[0].item-3"
 
@@ -237,7 +240,7 @@ func dispatchItem(
 	perItemDispatcher := ld.WithItemHandle(n.Container, itemHandle)
 
 	// Walk body.
-	bodyOC, bodyErr := interpNodes(ctx, n.Body, itemPath, wf, runstate, perItemDispatcher, log, blobs, clk, tap)
+	bodyOC, bodyErr := interpNodes(ctx, n.Body, itemPath, wf, runstate, perItemDispatcher, log, blobs, clk, tap, broker)
 
 	status := ItemPassed // default optimistic; revised below
 	var su *SkipUnwind

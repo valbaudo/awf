@@ -36,6 +36,13 @@
 //     REPLAYED, not re-executed (map_resume_skips_committed_items); skip
 //     inside an item commits item_passed (map_skip_in_item_records_passed —
 //     pins design §E step 5).
+//   - Signal (Bucket 8): a signal written before the run starts is
+//     consumed at the await on first poll (signal_await_delivers); a
+//     committed signal.received + node.completed pair replays cleanly
+//     on resume (signal_resume_replays); pause.json halts the run at the
+//     next commit boundary with run.paused appended (signal_pause_halts);
+//     cancel.json appends terminal run.cancelled + returns ErrCancelled
+//     (signal_cancel_terminal).
 //
 // Phase 2 calls RunSuite with container.NewFake (conformance_fake_test.go).
 // Phase 4 adds conformance_docker_test.go with docker.NewFactory.
@@ -70,4 +77,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("gate", func(t *testing.T) { testGate(t, factory) })
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
+	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })
 }
