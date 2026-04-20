@@ -93,17 +93,51 @@ func Run(
 	if runstate == nil {
 		return "", fmt.Errorf("engine.Run: nil runstate")
 	}
-	oc, err := interpNodes(ctx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, tap, broker)
+
+	// Wrap ctx so the background poller can cancel it on pause/cancel
+	// detection. The deferred cancel() ensures the poller exits when
+	// engine.Run returns normally (no pause/cancel detected).
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Background polling goroutine (slice 3.5). Skip if broker is nil
+	// (tests / no-signal workflows).
+	pollDone := make(chan struct{})
+	if broker != nil {
+		go pollControls(runCtx, broker, runstate, cancel, pollDone)
+	} else {
+		close(pollDone)
+	}
+
+	oc, err := interpNodes(runCtx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, tap, broker)
+
 	// SkipUnwind reaching Run = workflow-root unwind target (no enclosing
 	// loop/try/parallel/gate/map caught it). Per Phase 3 spec §5.6: "Cleanly
 	// terminates the nearest enclosing scope ... or (if none) the run, as ok."
+	// The skip might coincide with a pending pause/cancel; the pause/cancel
+	// checks below take precedence (terminal beats observational).
 	var su *SkipUnwind
 	if errors.As(err, &su) {
 		// Append node.skipped{path: "", reason} for trace (Phase 6 obs).
 		if appendErr := appendNodeSkipped(log, "", su.Reason); appendErr != nil {
 			return "", appendErr
 		}
-		return OutcomeOK, nil
+		oc, err = OutcomeOK, nil
+	}
+
+	// Ensure the poller has exited before we read the flags. cancel() is
+	// idempotent — calling it again here covers the case where interpNodes
+	// returned via something OTHER than the poller cancelling (normal
+	// completion or step failure).
+	cancel()
+	<-pollDone
+
+	// Post-walk event emission via the appendTerminalControlEvents helper
+	// (H1 fix — extracted from engine.Run for unit-testability). Cancel
+	// takes precedence over pause; both take precedence over the natural
+	// (oc, err) return.
+	if termErr := appendTerminalControlEvents(log, runstate); termErr != nil {
+		return "", termErr
 	}
 	return oc, err
 }
