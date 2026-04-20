@@ -347,8 +347,8 @@ func TestRunPhase2UnsupportedKindsAllErrorWithSentinel(t *testing.T) {
 			_, _, disp, log, blobs, clk, rs := newRunHarness(t)
 			def := &ir.LoadedDefinition{Workflow: &ir.Workflow{Graph: ir.NodeList{c.node}}}
 			_, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
-			if !errors.Is(err, engine.ErrNodeNotImplementedInPhase3) {
-				t.Errorf("err = %v, want errors.Is(_, ErrNodeNotImplementedInPhase3)", err)
+			if !errors.Is(err, engine.ErrNodeNotImplemented) {
+				t.Errorf("err = %v, want errors.Is(_, ErrNodeNotImplemented)", err)
 			}
 		})
 	}

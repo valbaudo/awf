@@ -17,21 +17,20 @@ import (
 	"github.com/valbaudo/awf/template"
 )
 
-// ErrNodeNotImplementedInPhase3 is the sentinel the interpreter returns for any
-// node kind Phase 3 doesn't execute. After slice 3.4: Try, Skip, Parallel,
-// Gate, Map ship; SignalStep remains unimplemented (slice 3.5). After slice
-// 3.5 ships, only AgentStep remains — the sentinel will be renamed to
-// ErrNodeNotImplemented (phase-agnostic) by slice 3.5 per Phase 3 design.
+// ErrNodeNotImplemented is the sentinel the interpreter returns for any node
+// kind not yet implemented in the current runtime. After Phase 3 slice 3.5,
+// only AgentStep (uses:) remains — Phase 5 closes that.
 //
-// The per-slice phase-string in notImpl identifies the landing slice per kind.
-// Distinct from engine.ErrUnsupportedKind (the dispatcher's per-step sentinel)
-// — the two answer different questions, and conflating them would let a future
-// Phase 4+ caller mis-route an AgentStep through dispatcher plumbing.
+// The per-kind phase tag in notImpl identifies which phase will implement each
+// remaining kind. Distinct from engine.ErrUnsupportedKind (the dispatcher's
+// per-step sentinel) — the two answer different questions, and conflating them
+// would let a future Phase 4+ caller mis-route an AgentStep through dispatcher
+// plumbing.
 //
 // Wrap with kind + path for diagnostic clarity:
 //
-//	fmt.Errorf("%w: %s at path %q", ErrNodeNotImplementedInPhase3, kindName, path)
-var ErrNodeNotImplementedInPhase3 = errors.New("engine: node kind not implemented in Phase 3")
+//	fmt.Errorf("%w: %s at path %q", ErrNodeNotImplemented, kindName, path)
+var ErrNodeNotImplemented = errors.New("engine: node kind not implemented")
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
 // recursively; for each node, computes its runtime path; consults runstate to
@@ -51,7 +50,7 @@ var ErrNodeNotImplementedInPhase3 = errors.New("engine: node kind not implemente
 //     the same outcome
 //   - ("", <internal-error>)                        — interpreter / CLI bug
 //     (unknown container,
-//     ErrNodeNotImplementedInPhase3,
+//     ErrNodeNotImplemented,
 //     log/blobs failure). The CLI
 //     distinguishes this from
 //     step failures via the empty
@@ -211,12 +210,12 @@ func interpNode(
 	}
 }
 
-// notImpl builds the standard ErrNodeNotImplementedInPhase3 wrap for a node
-// kind whose handler isn't implemented yet. Centralizes the error format
-// so the deferred cases in interpNode share one shape — adding/removing a
-// kind in a later slice is a one-line edit at the call site.
+// notImpl builds the standard ErrNodeNotImplemented wrap for a node kind whose
+// handler isn't implemented yet. Centralizes the error format so the deferred
+// cases in interpNode share one shape — adding/removing a kind in a later
+// slice is a one-line edit at the call site.
 func notImpl(kind, path, phase string) (Outcome, error) {
-	return "", fmt.Errorf("%w: %s at path %q (%s)", ErrNodeNotImplementedInPhase3, kind, path, phase)
+	return "", fmt.Errorf("%w: %s at path %q (%s)", ErrNodeNotImplemented, kind, path, phase)
 }
 
 // runCodeStep is the CodeStep handler — composes substitution, retry, dispatch,

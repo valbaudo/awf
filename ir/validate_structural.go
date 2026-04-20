@@ -76,6 +76,14 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 		case *SignalStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
+			// Slice 3.5 (M16): validate Await name charset to prevent path-traversal
+			// characters, whitespace, nullbytes etc. from reaching the broker /
+			// downstream consumers (OTel attributes, log scanners). Reuses
+			// stepIDPattern — same charset semantics as step IDs.
+			if v.Await != "" && !stepIDPattern.MatchString(v.Await) {
+				c.errf(path, "AWF1020", fmt.Sprintf("%s: await=%q (must match %s)",
+					catalog["AWF1020"], v.Await, stepIDPattern))
+			}
 			// SignalStep has no container — by design (AWF §4.3).
 		case *If:
 			path := PathFor(parent, "if", "", i)
