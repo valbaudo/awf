@@ -1005,3 +1005,41 @@ func TestCLIRunOnGateFixture(t *testing.T) {
 		t.Errorf("run.finished: count=%d outcome=%q; want 1/ok", finished, finishedOutcome)
 	}
 }
+
+func TestCLIValidateCVEPipelineFixture(t *testing.T) {
+	t.Parallel()
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"validate", "testdata/phase3/cve-pipeline.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want %d; stderr: %s", rc, cli.ExitOK, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cve-pipeline") {
+		t.Errorf("stdout missing workflow id: %q", stdout.String())
+	}
+}
+
+func TestCLIRunCVEPipelineErrorsAtFirstAgentStep(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	stateDir := t.TempDir()
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{"test-cve"}}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir,
+			"--input", `{"cve_id":"CVE-2024-0000"}`,
+			"testdata/phase3/cve-pipeline.yaml"},
+		&stdout, &stderr,
+	)
+	// Non-OK exit; output mentions agent / not implemented.
+	if rc == cli.ExitOK {
+		t.Errorf("rc = %d, want non-zero (agent step should error)", rc)
+	}
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(combined, "not implemented") {
+		t.Errorf("output missing 'not implemented': stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
