@@ -11,6 +11,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/goccy/go-yaml v1.19.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.20.0
 )
 
