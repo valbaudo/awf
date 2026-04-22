@@ -140,10 +140,15 @@ func copyIntPtr(v int) *int {
 	return &out
 }
 
-// ContainerSpecFor builds the DTO the Backend.Create consumes from the IR.
+// containerSpecFor builds the DTO the Backend.Create consumes from the IR.
 // Slice 4.1 (Phase 4): reads Image + Resources for the Docker backend; the
-// fake ignores both. Exported so engine/map.go and future callers can use it.
-func (d *LocalDispatcher) ContainerSpecFor(wf *ir.Workflow, name string) container.ContainerSpec {
+// fake ignores both.
+//
+// Package-level pure function (not a method on *LocalDispatcher) — its
+// output depends only on wf and name, never on dispatcher state, and the
+// pure form is trivially unit-testable without a *LocalDispatcher instance.
+// Unexported because the only caller is engine/map.go in the same package.
+func containerSpecFor(wf *ir.Workflow, name string) container.ContainerSpec {
 	c, ok := wf.Containers[name]
 	if !ok {
 		// Validator (Phase 1.4) should have caught this; defensive return.

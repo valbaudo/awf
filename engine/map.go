@@ -218,7 +218,7 @@ func dispatchItem(
 	// implementation can derive `<container>-item-<N>` internally or extend
 	// ContainerSpec with an `Instance` field — Phase 3 does NOT pre-empt that
 	// choice.
-	itemHandle, err := ld.Backend.Create(ctx, ld.ContainerSpecFor(wf, n.Container))
+	itemHandle, err := ld.Backend.Create(ctx, containerSpecFor(wf, n.Container))
 	if err != nil {
 		return "", fmt.Errorf("create item-%d container: %w", itemN, err)
 	}
