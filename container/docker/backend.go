@@ -50,7 +50,7 @@ func New(cli *client.Client, runID string) (*Backend, error) {
 // backendtest.testSnapshotRouting / testRestoreRouting both skip when the
 // backend advertises non-SnapshotNone, so the stub does NOT violate the
 // basic contract.
-func (b *Backend) Capabilities() container.Caps {
+func (*Backend) Capabilities() container.Caps {
 	return container.Caps{Snapshot: container.SnapshotFSCoW}
 }
 
