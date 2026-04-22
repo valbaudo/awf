@@ -46,3 +46,34 @@ func TestCapsZeroValue(t *testing.T) {
 		t.Errorf("zero-value Caps.Snapshot = %q, want empty string (forces explicit set)", c.Snapshot)
 	}
 }
+
+func TestContainerSpecImageField(t *testing.T) {
+	spec := ContainerSpec{
+		Name:  "lab",
+		Image: "alpine@sha256:abc123",
+	}
+	if spec.Image != "alpine@sha256:abc123" {
+		t.Errorf("spec.Image = %q, want \"alpine@sha256:abc123\"", spec.Image)
+	}
+}
+
+func TestContainerSpecResourcesField(t *testing.T) {
+	spec := ContainerSpec{
+		Name:      "lab",
+		Image:     "alpine@sha256:abc123",
+		Resources: &ContainerResources{CPU: 2, Mem: "4Gi"},
+	}
+	if spec.Resources == nil {
+		t.Fatal("spec.Resources is nil")
+	}
+	if spec.Resources.CPU != 2 || spec.Resources.Mem != "4Gi" {
+		t.Errorf("spec.Resources = %+v", spec.Resources)
+	}
+}
+
+func TestContainerSpecResourcesNilByDefault(t *testing.T) {
+	spec := ContainerSpec{Name: "lab"}
+	if spec.Resources != nil {
+		t.Errorf("default Resources = %+v, want nil", spec.Resources)
+	}
+}

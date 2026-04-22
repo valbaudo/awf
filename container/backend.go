@@ -106,13 +106,25 @@ const (
 	SnapshotFSCoW SnapshotMode = "fs-cow"
 )
 
-// ContainerSpec describes a container the engine wants Created. Phase 2 only
-// uses Name (the declared container name from AgentWorkflowFormat.md §3 — "lab",
-// "scratch", "workspace"); Phase 4 extends with Image (digest-pinned OCI ref)
-// or Compose (project + service). Keeping the field set minimal in Phase 2
-// avoids carrying a Docker-shaped struct through code that doesn't use it.
+// ContainerSpec describes a container the engine wants Created. Slice 4.1
+// (Phase 4) extends with Image (digest-pinned OCI ref) and Resources (CPU/Mem
+// limits) for the Docker backend. The Phase 2 fake ignores both — its
+// scripted Exec table is keyed on Cmd.Run alone.
+//
+// Compose-mode fields land in slice 4.3.
 type ContainerSpec struct {
-	Name string
+	Name      string
+	Image     string              // OCI ref, digest-pinned; empty in compose mode (slice 4.3)
+	Resources *ContainerResources // CPU/Mem limits; nil = unlimited
+}
+
+// ContainerResources mirrors the IR Container.Resources fields (spec §3) for
+// transport to the Backend. CPU is vCPU count; 0 means unlimited. Mem is a
+// docker-units string ("4Gi", "512Mi"); empty means unlimited. The Docker
+// Backend parses Mem via go-units.RAMInBytes; the fake ignores both fields.
+type ContainerResources struct {
+	CPU int
+	Mem string
 }
 
 // Handle identifies a Created container. Treated as opaque by the engine;
