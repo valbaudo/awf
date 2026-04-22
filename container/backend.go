@@ -119,11 +119,12 @@ type ContainerSpec struct {
 }
 
 // ContainerResources mirrors the IR Container.Resources fields (spec §3) for
-// transport to the Backend. CPU is vCPU count; 0 means unlimited. Mem is a
-// docker-units string ("4Gi", "512Mi"); empty means unlimited. The Docker
-// Backend parses Mem via go-units.RAMInBytes; the fake ignores both fields.
+// transport to the Backend. CPU is a vCPU count as a string (matches ir.Resources.CPU's
+// string type; "" means unlimited). Mem is a docker-units string ("4Gi", "512Mi";
+// "" means unlimited). The Docker Backend parses CPU via strconv.Atoi → NanoCPUs
+// and Mem via go-units.RAMInBytes; the fake ignores both fields.
 type ContainerResources struct {
-	CPU int
+	CPU string
 	Mem string
 }
 

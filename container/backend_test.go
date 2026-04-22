@@ -61,12 +61,12 @@ func TestContainerSpecResourcesField(t *testing.T) {
 	spec := ContainerSpec{
 		Name:      "lab",
 		Image:     "alpine@sha256:abc123",
-		Resources: &ContainerResources{CPU: 2, Mem: "4Gi"},
+		Resources: &ContainerResources{CPU: "2", Mem: "4Gi"},
 	}
 	if spec.Resources == nil {
 		t.Fatal("spec.Resources is nil")
 	}
-	if spec.Resources.CPU != 2 || spec.Resources.Mem != "4Gi" {
+	if spec.Resources.CPU != "2" || spec.Resources.Mem != "4Gi" {
 		t.Errorf("spec.Resources = %+v", spec.Resources)
 	}
 }
