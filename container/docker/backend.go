@@ -4,8 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"sync"
+	"time"
 
+	dockerContainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	units "github.com/docker/go-units"
 
 	"github.com/valbaudo/awf/container"
 )
@@ -13,14 +18,14 @@ import (
 // Backend is the Docker Engine SDK implementation of container.Backend.
 // Slice 4.1 (Phase 4) ships the skeleton; later slices fill the four stubs.
 //
-// Concurrency: mu (added in Task 7) will protect handles once Create and
-// Destroy have real implementations. Slice 4.1 omits it to avoid an
-// "unused field" vet error while the only mutators are panicking stubs.
+// Concurrency: the handles map is protected by mu. Create / Destroy are the
+// only mutators in slice 4.1.
 type Backend struct {
 	cli   *client.Client
 	runID string
 
-	handles map[string]string // handle.ID → docker container id; guarded by mu (Task 7)
+	mu      sync.Mutex
+	handles map[string]string // handle.ID → docker container id (in image mode they're the same)
 }
 
 // New constructs a Docker Backend bound to a specific run. Both arguments
@@ -54,18 +59,96 @@ func (*Backend) Capabilities() container.Caps {
 	return container.Caps{Snapshot: container.SnapshotFSCoW}
 }
 
-// Create is implemented in Task 7 (the integ-test task) — it requires the
-// real daemon. Slice 4.1's Capabilities + stubs are testable here, but
-// Create + Destroy are tested in backend_integ_test.go.
+// Create materialises a container from the digest-pinned image in spec.Image,
+// starts it, waits for readiness (image healthcheck or immediate if none), and
+// returns a Handle. spec.Image is required for image-mode; compose mode lands
+// in slice 4.3.
 func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (container.Handle, error) {
-	// Implementation in Task 7.
-	panic("Create: not yet implemented; landing in Task 7")
+	if err := ctx.Err(); err != nil {
+		return container.Handle{}, err
+	}
+	if spec.Image == "" {
+		return container.Handle{}, fmt.Errorf("container/docker: Create: spec.Image is required for image-mode (compose mode lands in slice 4.3)")
+	}
+
+	name := containerName(b.runID, spec.Name)
+	cfg := &dockerContainer.Config{
+		Image: spec.Image,
+	}
+	hostCfg := &dockerContainer.HostConfig{}
+	if spec.Resources != nil {
+		if spec.Resources.CPU != "" {
+			cpu, err := strconv.Atoi(spec.Resources.CPU)
+			if err != nil {
+				return container.Handle{}, fmt.Errorf("container/docker: Create: invalid Resources.CPU %q (want integer vCPU count): %w", spec.Resources.CPU, err)
+			}
+			if cpu > 0 {
+				// 1 vCPU = NanoCPUs of 1_000_000_000.
+				hostCfg.NanoCPUs = int64(cpu) * 1_000_000_000
+			}
+		}
+		if spec.Resources.Mem != "" {
+			bytes, err := units.RAMInBytes(spec.Resources.Mem)
+			if err != nil {
+				return container.Handle{}, fmt.Errorf("container/docker: Create: invalid Resources.Mem %q: %w", spec.Resources.Mem, err)
+			}
+			hostCfg.Memory = bytes
+		}
+	}
+
+	// v28.5.2 ContainerCreate signature: positional (ctx, config, hostConfig,
+	// networkingConfig, platform, containerName). Returns container.CreateResponse
+	// with the new container ID.
+	resp, err := b.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
+	if err != nil {
+		return container.Handle{}, fmt.Errorf("container/docker: Create: ContainerCreate: %w", err)
+	}
+
+	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
+		// Cleanup the created-but-not-started container.
+		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
+		return container.Handle{}, fmt.Errorf("container/docker: Create: ContainerStart: %w", err)
+	}
+
+	// If the image declares a healthcheck, wait until healthy. Otherwise the
+	// entrypoint exit-from-init IS the readiness (spec §3 / Phase 4 design §A).
+	if err := b.waitReady(ctx, resp.ID); err != nil {
+		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
+		return container.Handle{}, err
+	}
+
+	b.mu.Lock()
+	b.handles[resp.ID] = resp.ID
+	b.mu.Unlock()
+
+	return container.Handle{Name: spec.Name, ID: resp.ID}, nil
 }
 
-// Destroy is implemented in Task 7.
+// Destroy force-removes the container associated with h. Returns an error if h
+// was never Created or was already Destroyed (matches the fake / os.File.Close
+// double-close convention).
 func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
-	// Implementation in Task 7.
-	panic("Destroy: not yet implemented; landing in Task 7")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	dockerID, ok := b.handles[h.ID]
+	if !ok {
+		b.mu.Unlock()
+		return fmt.Errorf("container/docker: Destroy: unknown handle %q (already destroyed or never Created)", h.ID)
+	}
+	delete(b.handles, h.ID)
+	b.mu.Unlock()
+
+	if err := b.cli.ContainerRemove(ctx, dockerID, dockerContainer.RemoveOptions{Force: true}); err != nil {
+		// Re-record the handle so the caller can retry.
+		b.mu.Lock()
+		b.handles[h.ID] = dockerID
+		b.mu.Unlock()
+		return fmt.Errorf("container/docker: Destroy: ContainerRemove: %w", err)
+	}
+	return nil
 }
 
 // Exec is stubbed — slice 4.2.
@@ -98,6 +181,98 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef) (conta
 		return container.Handle{}, err
 	}
 	return container.Handle{}, &ErrNotImplementedInSlice41{Method: "Restore"}
+}
+
+// waitReady polls ContainerInspect until State.Health.Status == "healthy" IF
+// the container has a healthcheck. Containers without a healthcheck return
+// ready immediately (the entrypoint is responsible for readiness — spec §3).
+//
+// The deadline is derived from the image's HEALTHCHECK declaration:
+//
+//	deadline = StartPeriod + Interval × Retries × 1.5  (jitter buffer)
+//	clamped to [30s, 5min]
+//
+// Rationale: docker daemon runs the healthcheck at the configured Interval;
+// the worst-case time for a Status to flip to "healthy" or "unhealthy" is
+// StartPeriod (initial grace) + Interval × Retries (consecutive checks).
+// Adding 50% buffer covers daemon scheduling jitter. The 30s floor catches
+// images with absurdly small intervals (e.g., 100ms); the 5min ceiling
+// protects CI from hangs. (Authors who legitimately need >5min should raise
+// the image's HEALTHCHECK Retries; a Backend-level override knob is a
+// Phase 4 follow-up if a workload demands it.)
+func (b *Backend) waitReady(ctx context.Context, id string) error {
+	info, err := b.cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return fmt.Errorf("container/docker: waitReady: ContainerInspect: %w", err)
+	}
+	if info.State == nil || info.State.Health == nil {
+		// No healthcheck declared → ready immediately.
+		return nil
+	}
+
+	deadline := time.Now().Add(healthcheckDeadline(info))
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		info, err := b.cli.ContainerInspect(ctx, id)
+		if err != nil {
+			return fmt.Errorf("container/docker: waitReady: ContainerInspect: %w", err)
+		}
+		switch info.State.Health.Status {
+		case "healthy":
+			return nil
+		case "unhealthy":
+			return fmt.Errorf("container/docker: waitReady: container reported unhealthy")
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("container/docker: waitReady: timed out (status=%s)", info.State.Health.Status)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// healthcheckDeadline derives the maximum wait time from the inspected
+// container's HEALTHCHECK config. See waitReady's doc-comment for the
+// formula. Inputs from info.Config.Healthcheck — nil info.Config or nil
+// Healthcheck (e.g., daemon returned partial info, or a custom healthcheck
+// was dropped post-create) falls back to waitReadyDefault.
+//
+// Package-level pure function (not a method on *Backend) — its output
+// depends only on its inputs, which makes it trivially unit-testable
+// without a *Backend instance, and signals to readers that no Backend
+// state is consulted.
+const (
+	waitReadyFloor   = 30 * time.Second
+	waitReadyCeiling = 5 * time.Minute
+	waitReadyDefault = 60 * time.Second
+)
+
+func healthcheckDeadline(info dockerContainer.InspectResponse) time.Duration {
+	if info.Config == nil || info.Config.Healthcheck == nil {
+		return waitReadyDefault
+	}
+	hc := info.Config.Healthcheck
+	retries := hc.Retries
+	if retries < 1 {
+		retries = 1
+	}
+	raw := hc.StartPeriod + hc.Interval*time.Duration(retries)
+	buffered := raw + raw/2 // +50%
+	if buffered < waitReadyFloor {
+		return waitReadyFloor
+	}
+	if buffered > waitReadyCeiling {
+		return waitReadyCeiling
+	}
+	return buffered
 }
 
 // ErrNotImplementedInSlice41 is the sentinel returned by methods that exist
