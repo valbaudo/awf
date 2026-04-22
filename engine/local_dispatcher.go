@@ -140,6 +140,29 @@ func copyIntPtr(v int) *int {
 	return &out
 }
 
+// ContainerSpecFor builds the DTO the Backend.Create consumes from the IR.
+// Slice 4.1 (Phase 4): reads Image + Resources for the Docker backend; the
+// fake ignores both. Exported so engine/map.go and future callers can use it.
+func (d *LocalDispatcher) ContainerSpecFor(wf *ir.Workflow, name string) container.ContainerSpec {
+	c, ok := wf.Containers[name]
+	if !ok {
+		// Validator (Phase 1.4) should have caught this; defensive return.
+		return container.ContainerSpec{Name: name}
+	}
+	spec := container.ContainerSpec{
+		Name:  name,
+		Image: c.Image,
+	}
+	if c.Resources != nil {
+		spec.Resources = &container.ContainerResources{
+			CPU: c.Resources.CPU,
+			Mem: c.Resources.Mem,
+		}
+	}
+	// Compose fields land in slice 4.3.
+	return spec
+}
+
 // WithItemHandle returns a shallow clone of d with Handles cloned and the
 // (name → h) entry overridden (or inserted). Slice 3.4: the map executor
 // (engine/map.go) calls this per item to retarget body's container lookup

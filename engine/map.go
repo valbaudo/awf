@@ -11,7 +11,6 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/valbaudo/awf/clock"
-	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
@@ -219,7 +218,7 @@ func dispatchItem(
 	// implementation can derive `<container>-item-<N>` internally or extend
 	// ContainerSpec with an `Instance` field — Phase 3 does NOT pre-empt that
 	// choice.
-	itemHandle, err := ld.Backend.Create(ctx, container.ContainerSpec{Name: n.Container})
+	itemHandle, err := ld.Backend.Create(ctx, ld.ContainerSpecFor(wf, n.Container))
 	if err != nil {
 		return "", fmt.Errorf("create item-%d container: %w", itemN, err)
 	}
