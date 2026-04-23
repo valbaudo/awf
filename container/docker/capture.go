@@ -25,14 +25,9 @@ import (
 // nil/empty paths is a no-op returning ([], nil) — matches the fake's
 // "len-zero loop body" semantic.
 func (b *Backend) CaptureFiles(ctx context.Context, h container.Handle, paths []string) ([]container.CapturedFile, error) {
-	if err := ctx.Err(); err != nil {
+	dockerID, err := b.lookupHandle(ctx, "CaptureFiles", h)
+	if err != nil {
 		return nil, err
-	}
-	b.mu.Lock()
-	dockerID, ok := b.handles[h.ID]
-	b.mu.Unlock()
-	if !ok {
-		return nil, fmt.Errorf("container/docker: CaptureFiles: unknown handle %q (not Created or already Destroyed)", h.ID)
 	}
 	if len(paths) == 0 {
 		return nil, nil

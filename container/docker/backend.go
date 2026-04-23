@@ -16,7 +16,8 @@ import (
 )
 
 // Backend is the Docker Engine SDK implementation of container.Backend.
-// Slice 4.1 (Phase 4) ships the skeleton; later slices fill the four stubs.
+// Slice 4.1 (Phase 4) shipped the skeleton; slice 4.2 filled Exec +
+// CaptureFiles; slice 4.4 will fill Snapshot + Restore.
 //
 // Concurrency: the handles map is protected by mu. Create / Destroy are the
 // only mutators in slice 4.1.
@@ -171,6 +172,26 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef) (conta
 		return container.Handle{}, err
 	}
 	return container.Handle{}, &ErrNotImplementedInSlice41{Method: "Restore"}
+}
+
+// lookupHandle resolves a container.Handle to its docker container id under
+// the handles map mutex, after checking ctx.Err(). The caller string is
+// embedded in the error message so an "unknown handle" surfaces with the
+// method name a caller expects (Exec / CaptureFiles / etc.).
+//
+// Destroy uses a similar but distinct pattern (it deletes-and-may-reinsert,
+// which doesn't compose with this read-only helper).
+func (b *Backend) lookupHandle(ctx context.Context, caller string, h container.Handle) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	b.mu.Lock()
+	dockerID, ok := b.handles[h.ID]
+	b.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("container/docker: %s: unknown handle %q (not Created or already Destroyed)", caller, h.ID)
+	}
+	return dockerID, nil
 }
 
 // waitReady polls ContainerInspect until State.Health.Status == "healthy" IF

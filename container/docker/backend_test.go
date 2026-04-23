@@ -133,8 +133,8 @@ func TestRestoreReturnsNotImplemented(t *testing.T) {
 }
 
 func TestErrNotImplementedInSlice41Format(t *testing.T) {
-	e := &ErrNotImplementedInSlice41{Method: "Exec"}
-	if got := e.Error(); !strings.Contains(got, "Exec") || !strings.Contains(got, "slice 4.1") {
+	e := &ErrNotImplementedInSlice41{Method: "Snapshot"}
+	if got := e.Error(); !strings.Contains(got, "Snapshot") || !strings.Contains(got, "slice 4.1") {
 		t.Errorf("Error() = %q", got)
 	}
 }

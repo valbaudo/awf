@@ -473,6 +473,63 @@ func TestLocalDispatcherSkipsAWFOutputWhenNoOutputSchema(t *testing.T) {
 	}
 }
 
+// TestLocalDispatcherDockerPathCapturesAWFOutputTempfile exercises the
+// Design Q1 "Docker path" branch of runCode using the fake: Backend leaves
+// ExecResult.AWFOutput nil; output_schema is declared; exit==0. The
+// dispatcher must add the AWF_OUTPUT path to filesToCapture, capture it via
+// the Backend, and read the bytes back for ValidateAgainstSchema.
+//
+// The fake doesn't natively honor AWF_OUTPUT (it ignores Env), so we
+// pre-populate the in-mem fs at the expected tempfile path via WriteFile.
+// This proves the dispatcher's branch works without modifying the fake.
+func TestLocalDispatcherDockerPathCapturesAWFOutputTempfile(t *testing.T) {
+	d, fake, h := newDispatcher(t)
+	// Program Exec to return a successful exit but no AWFOutput — this is
+	// the Docker backend's contract per Design Q1.
+	fake.ProgramExec("./produce.sh", container.ExecResult{ExitCode: 0}, nil)
+	// Pre-populate the AWF_OUTPUT tempfile path the dispatcher will compute
+	// from intent.Path ("verify_dock") — see engine/awf_output.go format.
+	if err := fake.WriteFile(h, "/tmp/awf/verify_dock.json", []byte(`{"verified":true,"detections":5}`)); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	schema := ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"verified", "detections"},
+		"properties": map[string]any{
+			"verified":   map[string]any{"type": "boolean"},
+			"detections": map[string]any{"type": "integer"},
+		},
+	}
+	intent := engine.NodeIntent{
+		Path: "verify_dock",
+		Node: &ir.CodeStep{ID: "verify_dock", Container: "lab"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Command:      "./produce.sh",
+			OutputSchema: &schema,
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v (err = %v), want ok", dr.Outcome, dr.Err)
+	}
+	if dr.Outputs["verified"] != true {
+		t.Errorf("Outputs.verified = %v, want true (captured from tempfile)", dr.Outputs["verified"])
+	}
+	if dr.Outputs["detections"] != float64(5) {
+		t.Errorf("Outputs.detections = %v, want 5 (captured from tempfile)", dr.Outputs["detections"])
+	}
+	// The AWF_OUTPUT tempfile must be stripped from the user-visible Files
+	// slice. With no user output_files declared, dr.Files should be empty.
+	if len(dr.Files) != 0 {
+		t.Errorf("Files = %+v, want empty (AWF_OUTPUT must be stripped)", dr.Files)
+	}
+}
+
 func TestLocalDispatcherFakePathStillUsesExecAWFOutput(t *testing.T) {
 	// Regression test for Design Q1: when the Backend supplies AWFOutput
 	// (Phase 2 fake path), the dispatcher MUST use it directly, NOT capture
