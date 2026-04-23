@@ -2,9 +2,7 @@ package docker
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"sort"
 
 	dockerContainer "github.com/docker/docker/api/types/container"
@@ -129,8 +127,11 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 		return container.ExecResult{}, nil, err
 	}
 
-	// readerErr that isn't EOF / ErrClosed is a transport problem.
-	if readerErr != nil && !errors.Is(readerErr, io.EOF) && !errors.Is(readerErr, io.ErrClosedPipe) {
+	// On ctx-cancel, the watcher closes attachResp; StdCopy's src.Read returns
+	// a net.ErrClosed-wrapped error — but the ctx.Err() check above already
+	// handles that path. Any readerErr reaching here is a genuine transport
+	// problem.
+	if readerErr != nil {
 		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: stdcopy: %w", readerErr)
 	}
 
@@ -169,10 +170,10 @@ type chunkBuffer struct {
 	collected []byte
 }
 
-// Write defensive-copies p. The bytes stdcopy passes are backed by an
-// internal sync.Pool buffer (see github.com/docker/docker/pkg/stdcopy/stdcopy.go's
-// `bufPool`) that gets recycled on the next demux frame; without the copy,
-// later writes would overwrite our chunk's bytes.
+// Write defensive-copies p. stdcopy.StdCopy passes slices of a single
+// per-call read buffer that it shifts and reuses for the next frame
+// (see StdCopy's inner loop: copy(buf, buf[frameSize+stdWriterPrefixLen:])).
+// Without the copy, later frames would overwrite the bytes of earlier chunks.
 func (cb *chunkBuffer) Write(p []byte) (int, error) {
 	dup := make([]byte, len(p))
 	copy(dup, p)
