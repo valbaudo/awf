@@ -157,14 +157,6 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	return nil
 }
 
-// CaptureFiles is stubbed — slice 4.2.
-func (b *Backend) CaptureFiles(ctx context.Context, h container.Handle, paths []string) ([]container.CapturedFile, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return nil, &ErrNotImplementedInSlice41{Method: "CaptureFiles"}
-}
-
 // Snapshot is stubbed — slice 4.4.
 func (b *Backend) Snapshot(ctx context.Context, h container.Handle) (container.SnapshotRef, error) {
 	if err := ctx.Err(); err != nil {
