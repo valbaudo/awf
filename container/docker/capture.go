@@ -51,8 +51,8 @@ func (b *Backend) CaptureFiles(ctx context.Context, h container.Handle, paths []
 
 // captureOne reads one file from the container and returns its bytes. The
 // SDK's CopyFromContainer returns a tar stream; we walk the entries until
-// we find a regular file whose basename matches path.Base(p). Missing-path
-// is surfaced as a typed-able error so callers can errors.Is route on it.
+// we find a regular file whose basename matches path.Base(p).
+// Missing-path surfaces as an error wrapping the requested basename.
 //
 // Symlinks: if the requested path is a symlink (e.g., an author declares
 // `output_files: ["/var/log/app.log"]` and that's a symlink to a different
