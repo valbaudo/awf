@@ -7,6 +7,11 @@
 // See docs/superpowers/specs/2026-04-14-awf-phase4-design.md for the design.
 package docker
 
+// awfPrefix scopes Docker container names to AWF runs. Used by the orphan
+// sweep to filter our containers from others on the same daemon (per Phase 4
+// design decision 9).
+const awfPrefix = "awf-"
+
 // containerName formats the Docker container name per Phase 4 design
 // decision 9: "awf-<run.id>-<declared>".
 //
@@ -20,11 +25,11 @@ package docker
 // ambiguous. cleanupOrphans (backend_integ_test.go) uses strings.HasPrefix
 // against containerPrefix(runID), which doesn't need parsing.
 func containerName(runID, declared string) string {
-	return "awf-" + runID + "-" + declared
+	return awfPrefix + runID + "-" + declared
 }
 
 // containerPrefix returns the prefix used to filter containers belonging to
 // a specific run. Slice 4.1's test cleanup uses this.
 func containerPrefix(runID string) string {
-	return "awf-" + runID + "-"
+	return awfPrefix + runID + "-"
 }

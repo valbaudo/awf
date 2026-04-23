@@ -76,12 +76,27 @@ func TestCaptureFilesCtxCancelBeatsStub(t *testing.T) {
 	}
 }
 
+func TestCaptureFilesReturnsNotImplementedErrWhenCtxLive(t *testing.T) {
+	b, _ := New(&client.Client{}, "run-abc")
+	_, err := b.CaptureFiles(context.Background(), container.Handle{}, []string{"/x"})
+	var stubErr *ErrNotImplementedInSlice41
+	if !errors.As(err, &stubErr) {
+		t.Fatalf("CaptureFiles: err = %v, want *ErrNotImplementedInSlice41", err)
+	}
+	if stubErr.Method != "CaptureFiles" {
+		t.Errorf("stubErr.Method = %q, want \"CaptureFiles\"", stubErr.Method)
+	}
+}
+
 func TestSnapshotReturnsNotImplemented(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc")
 	_, err := b.Snapshot(context.Background(), container.Handle{})
 	var stubErr *ErrNotImplementedInSlice41
 	if !errors.As(err, &stubErr) {
-		t.Errorf("Snapshot: err = %v, want *ErrNotImplementedInSlice41", err)
+		t.Fatalf("Snapshot: err = %v, want *ErrNotImplementedInSlice41", err)
+	}
+	if stubErr.Method != "Snapshot" {
+		t.Errorf("stubErr.Method = %q, want \"Snapshot\"", stubErr.Method)
 	}
 }
 
@@ -90,7 +105,10 @@ func TestRestoreReturnsNotImplemented(t *testing.T) {
 	_, err := b.Restore(context.Background(), container.SnapshotRef("any"))
 	var stubErr *ErrNotImplementedInSlice41
 	if !errors.As(err, &stubErr) {
-		t.Errorf("Restore: err = %v, want *ErrNotImplementedInSlice41", err)
+		t.Fatalf("Restore: err = %v, want *ErrNotImplementedInSlice41", err)
+	}
+	if stubErr.Method != "Restore" {
+		t.Errorf("stubErr.Method = %q, want \"Restore\"", stubErr.Method)
 	}
 }
 

@@ -90,8 +90,7 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 				return container.Handle{}, fmt.Errorf("container/docker: Create: invalid Resources.CPU %q (want integer vCPU count): %w", spec.Resources.CPU, err)
 			}
 			if cpu > 0 {
-				// 1 vCPU = NanoCPUs of 1_000_000_000.
-				hostCfg.NanoCPUs = int64(cpu) * 1_000_000_000
+				hostCfg.NanoCPUs = int64(cpu) * nanoCPUsPerCPU
 			}
 		}
 		if spec.Resources.Mem != "" {
@@ -277,6 +276,11 @@ const (
 	waitReadyCeiling      = 5 * time.Minute
 	waitReadyDefault      = 60 * time.Second
 	waitReadyPollInterval = 200 * time.Millisecond
+
+	// nanoCPUsPerCPU is the Docker HostConfig.NanoCPUs unit per 1 vCPU.
+	// Used by Create to translate ContainerResources.CPU (int vCPU count
+	// as a string) into the NanoCPUs field the Docker daemon expects.
+	nanoCPUsPerCPU = 1_000_000_000
 )
 
 func healthcheckDeadline(info dockerContainer.InspectResponse) time.Duration {
