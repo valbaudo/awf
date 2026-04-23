@@ -200,6 +200,10 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef) (conta
 // protects CI from hangs. (Authors who legitimately need >5min should raise
 // the image's HEALTHCHECK Retries; a Backend-level override knob is a
 // Phase 4 follow-up if a workload demands it.)
+//
+// The loop polls every waitReadyPollInterval using a ticker. The deadline is
+// enforced atomically inside the select via time.NewTimer, so a slow Inspect
+// call cannot exhaust the deadline before a single wait cycle has occurred.
 func (b *Backend) waitReady(ctx context.Context, id string) error {
 	info, err := b.cli.ContainerInspect(ctx, id)
 	if err != nil {
@@ -215,25 +219,37 @@ func (b *Backend) waitReady(ctx context.Context, id string) error {
 		deadline = dl
 	}
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(waitReadyPollInterval)
 	defer ticker.Stop()
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+
 	for {
 		info, err := b.cli.ContainerInspect(ctx, id)
 		if err != nil {
 			return fmt.Errorf("container/docker: waitReady: ContainerInspect: %w", err)
 		}
-		switch info.State.Health.Status {
-		case "healthy":
-			return nil
-		case "unhealthy":
-			return fmt.Errorf("container/docker: waitReady: container reported unhealthy")
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("container/docker: waitReady: timed out (status=%s)", info.State.Health.Status)
+		if info.State == nil || info.State.Health == nil {
+			// Daemon returned partial data — treat as still-starting and
+			// continue polling. (The pre-loop nil-check already handled the
+			// legitimate "no healthcheck declared" case.)
+		} else {
+			switch info.State.Health.Status {
+			case "healthy":
+				return nil
+			case "unhealthy":
+				return fmt.Errorf("container/docker: waitReady: container reported unhealthy")
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-timer.C:
+			status := "<unknown>"
+			if info.State != nil && info.State.Health != nil {
+				status = info.State.Health.Status
+			}
+			return fmt.Errorf("container/docker: waitReady: timed out (status=%s)", status)
 		case <-ticker.C:
 		}
 	}
@@ -250,9 +266,10 @@ func (b *Backend) waitReady(ctx context.Context, id string) error {
 // without a *Backend instance, and signals to readers that no Backend
 // state is consulted.
 const (
-	waitReadyFloor   = 30 * time.Second
-	waitReadyCeiling = 5 * time.Minute
-	waitReadyDefault = 60 * time.Second
+	waitReadyFloor        = 30 * time.Second
+	waitReadyCeiling      = 5 * time.Minute
+	waitReadyDefault      = 60 * time.Second
+	waitReadyPollInterval = 200 * time.Millisecond
 )
 
 func healthcheckDeadline(info dockerContainer.InspectResponse) time.Duration {
