@@ -417,3 +417,96 @@ func TestLocalDispatcherWithItemHandleNewEntry(t *testing.T) {
 		t.Errorf("original.Handles got \"scratch\" entry; WithItemHandle should not mutate source")
 	}
 }
+
+func TestLocalDispatcherInjectsAWFOutputWhenOutputSchemaDeclared(t *testing.T) {
+	d, fake, _ := newDispatcher(t)
+	fake.ProgramExec("./produce.sh", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"verified":true}`),
+	}, nil)
+
+	schema := ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"verified"},
+		"properties":           map[string]any{"verified": map[string]any{"type": "boolean"}},
+	}
+	intent := engine.NodeIntent{
+		Path: "verify_exploit",
+		Node: &ir.CodeStep{ID: "verify_exploit", Container: "lab"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Command:      "./produce.sh",
+			OutputSchema: &schema,
+		},
+	}
+	_, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatalf("fake.Calls len = %d, want 1", len(fake.Calls))
+	}
+	got := fake.Calls[0].Env["AWF_OUTPUT"]
+	want := "/tmp/awf/verify_exploit.json"
+	if got != want {
+		t.Errorf("Backend.Exec received AWF_OUTPUT = %q, want %q", got, want)
+	}
+}
+
+func TestLocalDispatcherSkipsAWFOutputWhenNoOutputSchema(t *testing.T) {
+	d, fake, _ := newDispatcher(t)
+	fake.ProgramExec("./void.sh", container.ExecResult{ExitCode: 0}, nil)
+	intent := engine.NodeIntent{
+		Path: "void",
+		Node: &ir.CodeStep{ID: "void", Container: "lab"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Command: "./void.sh",
+			// OutputSchema deliberately absent.
+		},
+	}
+	_, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, present := fake.Calls[0].Env["AWF_OUTPUT"]; present {
+		t.Errorf("AWF_OUTPUT was injected without output_schema; want absent")
+	}
+}
+
+func TestLocalDispatcherFakePathStillUsesExecAWFOutput(t *testing.T) {
+	// Regression test for Design Q1: when the Backend supplies AWFOutput
+	// (Phase 2 fake path), the dispatcher MUST use it directly, NOT capture
+	// the tempfile. Verifies by inspecting the typed outputs.
+	d, fake, _ := newDispatcher(t)
+	fake.ProgramExec("./fake-source.sh", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"value":42}`),
+	}, nil)
+	schema := ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"value"},
+		"properties":           map[string]any{"value": map[string]any{"type": "integer"}},
+	}
+	intent := engine.NodeIntent{
+		Path: "fake_source",
+		Node: &ir.CodeStep{ID: "fake_source", Container: "lab"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Command:      "./fake-source.sh",
+			OutputSchema: &schema,
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outputs["value"] != float64(42) {
+		t.Errorf("Outputs.value = %v, want 42 (fake's ExecResult.AWFOutput is the source of truth on the fake path)", dr.Outputs["value"])
+	}
+	// The dispatcher MUST NOT have tried to CaptureFiles the AWF_OUTPUT
+	// tempfile — the fake's CaptureFiles would have errored "path not
+	// present" and the test would have classified retryable_failure.
+	if dr.Outcome != engine.OutcomeOK {
+		t.Errorf("Outcome = %v, want ok (dispatcher should NOT capture tempfile on the fake path)", dr.Outcome)
+	}
+}

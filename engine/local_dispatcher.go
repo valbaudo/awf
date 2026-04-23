@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/valbaudo/awf/container"
@@ -57,20 +56,24 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		defer cancel()
 	}
 
-	// Build the env: defensive-copy the caller's map so we don't mutate it;
-	// add AWF_IDEMPOTENCY_KEY iff IdempotencyKey is non-empty (per AWF §10).
+	// Build the env: defensive-copy the caller's map so we don't mutate it,
+	// then layer in AWF_IDEMPOTENCY_KEY (slice 2.4, AWF §10) and AWF_OUTPUT
+	// (slice 4.2, AWF §4.1 — only when output_schema is declared).
 	//
-	// We deliberately do NOT set AWF_OUTPUT here (Revision #4): the Phase 2
-	// fake doesn't read env, and the Docker Backend (Phase 4) owns the
-	// $AWF_OUTPUT tempfile path because it chooses where to mount/read it.
-	// Setting it here in Phase 2 would be dead code AND would pre-empt
-	// Phase 4's design decision.
-	env := make(map[string]string, len(intent.ResolvedInputs.Env)+1)
+	// Docker daemon merges Env additively (daemon/exec.go:143 via
+	// ReplaceOrAppendEnvValues): the container's PATH/HOME/etc. are
+	// preserved; our injected vars layer on top.
+	env := make(map[string]string, len(intent.ResolvedInputs.Env)+2)
 	for k, v := range intent.ResolvedInputs.Env {
 		env[k] = v
 	}
 	if intent.IdempotencyKey != "" {
 		env["AWF_IDEMPOTENCY_KEY"] = intent.IdempotencyKey
+	}
+	var awfOutputPath string
+	if intent.ResolvedInputs.OutputSchema != nil {
+		awfOutputPath = awfOutputTempPath(intent.Path)
+		env["AWF_OUTPUT"] = awfOutputPath
 	}
 
 	cmd := container.Cmd{
@@ -88,38 +91,59 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		}, nil, nil
 	}
 
-	// Parse $AWF_OUTPUT against the step's schema (if any). If no schema is
-	// declared, we do NOT decode AWFOutput — slice 1.4's validator rejects
-	// step.<id>.<field> refs without a producer schema (AWF3xxx), so any
-	// decoded value would be unreachable. Decoding it would be write
-	// amplification + silently swallowing decode errors (Revision #7).
-	var outputs map[string]any
-	var parseErr error
-	if intent.ResolvedInputs.OutputSchema != nil {
-		outputs, parseErr = ValidateAgainstSchema(exec.AWFOutput, intent.ResolvedInputs.OutputSchema)
+	// AWFOutput source selection (slice 4.2 / Design Q1):
+	//   * Backend supplied AWFOutput (Phase 2 fake's ProgramExec path) → use directly.
+	//   * Backend left AWFOutput nil AND output_schema declared AND exit==0 →
+	//     capture the AWF_OUTPUT tempfile (Phase 4 Docker path) and use those bytes.
+	// The dispatcher chooses based on what the Backend returned; it does NOT
+	// introspect the Backend type.
+	awfOutputBytes := exec.AWFOutput
+	captureAWFOutput := awfOutputBytes == nil && intent.ResolvedInputs.OutputSchema != nil && exec.ExitCode == 0
+
+	// Build the capture list. AWF_OUTPUT tempfile goes first so we can strip
+	// it from the user-visible Files slice after capture.
+	filesToCapture := intent.ResolvedInputs.OutputFiles
+	if captureAWFOutput {
+		filesToCapture = append([]string{awfOutputPath}, filesToCapture...)
 	}
 
-	// Capture output_files (only if the step exited 0; otherwise the files may
-	// not exist or may be in a torn state).
 	var files []container.CapturedFile
-	var captureErr error
-	if exec.ExitCode == 0 && len(intent.ResolvedInputs.OutputFiles) > 0 {
-		files, captureErr = d.Backend.CaptureFiles(ctx, h, intent.ResolvedInputs.OutputFiles)
+	if exec.ExitCode == 0 && len(filesToCapture) > 0 {
+		captured, captureErr := d.Backend.CaptureFiles(ctx, h, filesToCapture)
 		if captureErr != nil {
-			// A declared output file missing or unreadable is a retryable failure
-			// — same class as an unparseable AWFOutput (the step succeeded by
-			// exit code but didn't honor its declared contract). If parseErr is
-			// also non-nil (schema validation failed AND capture failed), join
-			// both so the operator sees the full failure picture rather than
-			// only the last symptom.
+			// A declared output file (or the AWF_OUTPUT tempfile) missing or
+			// unreadable is a retryable failure — the step succeeded by exit
+			// code but didn't honor its declared contract. We don't attempt
+			// schema validation in this branch: the capture failure dominates,
+			// and on the Docker path the AWF_OUTPUT bytes themselves may have
+			// been the missing file (parse would just be a duplicate "no
+			// bytes" error). The previous flow joined parseErr+captureErr;
+			// after slice 4.2's restructure parseErr is unset at this point,
+			// so the join would be a no-op — captureErr alone is the
+			// authoritative cause.
 			return DispatchResult{
 				Outcome:  OutcomeRetryableFailure,
 				ExitCode: copyIntPtr(exec.ExitCode),
-				Outputs:  outputs,
 				Stdout:   exec.Stdout,
-				Err:      errors.Join(parseErr, captureErr),
+				Err:      captureErr,
 			}, chunks, nil
 		}
+		if captureAWFOutput {
+			// First captured file is the AWF_OUTPUT tempfile.
+			awfOutputBytes = captured[0].Content
+			files = captured[1:]
+		} else {
+			files = captured
+		}
+	}
+
+	// Validate AWFOutput against the schema (if any). If no schema is declared,
+	// slice 1.4's validator rejects step.<id>.<field> refs (AWF3xxx), so any
+	// decoded value would be unreachable — don't decode.
+	var outputs map[string]any
+	var parseErr error
+	if intent.ResolvedInputs.OutputSchema != nil {
+		outputs, parseErr = ValidateAgainstSchema(awfOutputBytes, intent.ResolvedInputs.OutputSchema)
 	}
 
 	dr := DispatchResult{
