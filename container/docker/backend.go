@@ -81,6 +81,15 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	name := containerName(b.runID, spec.Name)
 	cfg := &dockerContainer.Config{
 		Image: spec.Image,
+		// Override the image's default Cmd with a no-op long-running process so
+		// the container stays alive for subsequent Exec calls (the AWF model is
+		// "long-lived container" — the interpreter Destroys at run-end). Without
+		// this override, images that have /bin/sh as their CMD (e.g., alpine)
+		// exit immediately at start and docker exec fails with "not running".
+		// `sleep infinity` is POSIX-portable; any image that ships /bin/sh also
+		// ships a sleep binary (BusyBox ash + alpine; distroless images can't run
+		// shell commands at all, so this guard is irrelevant there).
+		Cmd: []string{"sleep", "infinity"},
 	}
 	hostCfg := &dockerContainer.HostConfig{}
 	if spec.Resources != nil {

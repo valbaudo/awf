@@ -27,7 +27,7 @@ import (
 //
 //	docker pull alpine:3.20
 //	docker inspect alpine:3.20 --format '{{index .RepoDigests 0}}'
-const alpineDigest = "alpine@sha256:8a1f59ffb675680d47db6337b49d22281fcd6db88f2f5301f78ab3a08c1d3a12"
+const alpineDigest = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 
 // newDockerClient is inlined here (rather than in a non-integ file) because
 // slice 4.1's only consumer is integ-test code. A non-integ file with this
