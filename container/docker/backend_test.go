@@ -44,47 +44,67 @@ func TestCapabilitiesAdvertisesFSCoW(t *testing.T) {
 	}
 }
 
-func TestExecCtxCancelBeatsStubError(t *testing.T) {
+func TestExecHonorsCtxCancelWithoutDaemon(t *testing.T) {
+	// Construct a Backend with a real-shaped client.Client (zero value is
+	// fine — we never reach a daemon call because ctx is pre-cancelled).
 	b, _ := New(&client.Client{}, "run-abc")
+	// Register a fake handle so the implementation doesn't reject on
+	// unknown-handle before checking ctx.
+	b.mu.Lock()
+	b.handles["fake-handle"] = "fake-handle"
+	b.mu.Unlock()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := b.Exec(ctx, container.Handle{}, container.Cmd{Run: "/bin/true"})
+	_, _, err := b.Exec(ctx, container.Handle{Name: "lab", ID: "fake-handle"}, container.Cmd{Run: "/bin/true"})
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("Exec with cancelled ctx: err = %v, want context.Canceled", err)
+		t.Errorf("Exec with pre-cancelled ctx: err = %v, want context.Canceled", err)
 	}
 }
 
-func TestExecReturnsNotImplementedErrWhenCtxLive(t *testing.T) {
+func TestExecReturnsErrorOnUnknownHandle(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc")
-	_, _, err := b.Exec(context.Background(), container.Handle{}, container.Cmd{Run: "/bin/true"})
-	var stubErr *ErrNotImplementedInSlice41
-	if !errors.As(err, &stubErr) {
-		t.Fatalf("Exec: err = %v, want *ErrNotImplementedInSlice41", err)
+	_, _, err := b.Exec(context.Background(), container.Handle{Name: "lab", ID: "never-created"}, container.Cmd{Run: "/bin/true"})
+	if err == nil {
+		t.Fatal("Exec on unknown handle: err = nil, want non-nil")
 	}
-	if stubErr.Method != "Exec" {
-		t.Errorf("stubErr.Method = %q, want \"Exec\"", stubErr.Method)
-	}
+	// Don't assert specific wording; just confirm a non-nil error.
 }
 
-func TestCaptureFilesCtxCancelBeatsStub(t *testing.T) {
+func TestCaptureFilesHonorsCtxCancelWithoutDaemon(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc")
+	b.mu.Lock()
+	b.handles["fake-handle"] = "fake-handle"
+	b.mu.Unlock()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := b.CaptureFiles(ctx, container.Handle{}, []string{"/x"})
+	_, err := b.CaptureFiles(ctx, container.Handle{Name: "lab", ID: "fake-handle"}, []string{"/etc/hosts"})
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("CaptureFiles with cancelled ctx: err = %v", err)
+		t.Errorf("CaptureFiles with pre-cancelled ctx: err = %v, want context.Canceled", err)
 	}
 }
 
-func TestCaptureFilesReturnsNotImplementedErrWhenCtxLive(t *testing.T) {
+func TestCaptureFilesReturnsErrorOnUnknownHandle(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc")
-	_, err := b.CaptureFiles(context.Background(), container.Handle{}, []string{"/x"})
-	var stubErr *ErrNotImplementedInSlice41
-	if !errors.As(err, &stubErr) {
-		t.Fatalf("CaptureFiles: err = %v, want *ErrNotImplementedInSlice41", err)
+	_, err := b.CaptureFiles(context.Background(), container.Handle{Name: "lab", ID: "never-created"}, []string{"/etc/hosts"})
+	if err == nil {
+		t.Fatal("CaptureFiles on unknown handle: err = nil, want non-nil")
 	}
-	if stubErr.Method != "CaptureFiles" {
-		t.Errorf("stubErr.Method = %q, want \"CaptureFiles\"", stubErr.Method)
+}
+
+func TestCaptureFilesEmptyPathsReturnsEmpty(t *testing.T) {
+	b, _ := New(&client.Client{}, "run-abc")
+	b.mu.Lock()
+	b.handles["fake-handle"] = "fake-handle"
+	b.mu.Unlock()
+
+	out, err := b.CaptureFiles(context.Background(), container.Handle{Name: "lab", ID: "fake-handle"}, nil)
+	if err != nil {
+		t.Errorf("CaptureFiles with nil paths: err = %v, want nil", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("CaptureFiles with nil paths: out = %v, want []", out)
 	}
 }
 
