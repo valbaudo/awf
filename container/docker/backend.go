@@ -63,6 +63,13 @@ func (*Backend) Capabilities() container.Caps {
 // starts it, waits for readiness (image healthcheck or immediate if none), and
 // returns a Handle. spec.Image is required for image-mode; compose mode lands
 // in slice 4.3.
+//
+// Precondition: spec.Image must already be present in the local Docker
+// image cache. Create does NOT pull — it calls cli.ContainerCreate which
+// returns a "no such image" error if absent. Callers (slice 4.5's
+// cli/run.go onward) are responsible for pre-pulling via client.ImagePull
+// before invoking Create. The integ tests demonstrate the pattern via
+// the pullImage helper.
 func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (container.Handle, error) {
 	if err := ctx.Err(); err != nil {
 		return container.Handle{}, err
@@ -295,8 +302,12 @@ func healthcheckDeadline(info dockerContainer.InspectResponse) time.Duration {
 // ErrNotImplementedInSlice41 is the sentinel returned by methods that exist
 // on the Backend (for interface satisfaction) but have no implementation in
 // slice 4.1. Slice 4.2 (Exec, CaptureFiles) and 4.4 (Snapshot, Restore)
-// replace the stubs; routing via errors.As(err, &ErrNotImplementedInSlice41{})
-// lets those slices detect the replacement is complete.
+// replace the stubs; routing via
+//
+//	var stubErr *ErrNotImplementedInSlice41; errors.As(err, &stubErr)
+//
+// lets those slices detect the replacement is complete (see backend_test.go
+// for the working pattern).
 type ErrNotImplementedInSlice41 struct {
 	Method string
 }

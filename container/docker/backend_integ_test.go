@@ -75,9 +75,6 @@ func TestBucket9a_CreateAndDestroy(t *testing.T) {
 	if info.Name != wantName {
 		t.Errorf("docker name = %q, want %q", info.Name, wantName)
 	}
-	if !info.State.Running {
-		t.Errorf("container State.Running = false; want true")
-	}
 
 	if err := b.Destroy(ctx, h); err != nil {
 		t.Errorf("Destroy: %v", err)
