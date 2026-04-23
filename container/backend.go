@@ -137,20 +137,22 @@ type Handle struct {
 
 // Cmd describes a command to Exec. Run is the shell command (from CodeStep.Run
 // after template substitution). Env carries the dispatcher-injected env vars
-// (slice 2.4 fills AWF_IDEMPOTENCY_KEY (AWF_OUTPUT is deferred to Phase 4
-// Docker, which owns the tempfile path)); the Phase 2 fake accepts Env but
-// does not use it (its scripted result table is keyed on Run alone — slice
-// 2.4 verifies dispatcher env injection by inspecting what it passes to
-// Backend.Exec, not by what the fake does with the env it receives).
+// (slice 2.4: AWF_IDEMPOTENCY_KEY; slice 4.2: AWF_OUTPUT when output_schema is
+// declared); the Phase 2 fake accepts Env but does not use it (its scripted
+// result table is keyed on Run alone — slice 2.4 verifies dispatcher env
+// injection by inspecting what it passes to Backend.Exec, not by what the fake
+// does with the env it receives).
 //
-// Shell-quoting note: Run is interpreted as a single string passed to `bash -c`
-// at Phase 4 Docker time (the Phase 2 fake does literal-string lookups, so
-// the metacharacter concern only manifests with the real backend). An author
-// who templates an untrusted agent-controlled value into Run MUST quote the
-// substitution: `./scan.sh "{{ step.x.url }}"` — an unquoted `$(...)` /
-// backtick / `;` in the typed value becomes an unintended command. Phase 4
-// may add a parallel `Argv []string` field for shell-free exec if a workload
-// requires it; Phase 2 takes the simpler path and documents the contract.
+// Shell-quoting note: Run is interpreted as a single string passed to `sh -c`
+// (POSIX baseline) — slice 4.2 implementation in container/docker/exec.go.
+// Authors needing bash-specific features (`<(...)`, `[[ ]]`, double-bracket
+// regex) ship bash in their image and write `bash -c '...'` as the inner
+// script. An author who templates an untrusted agent-controlled value into Run
+// MUST quote the substitution: `./scan.sh "{{ step.x.url }}"` — an unquoted
+// `$(...)` / backtick / `;` in the typed value becomes an unintended command.
+// Phase 4 may add a parallel `Argv []string` field for shell-free exec if a
+// workload requires it; Phase 2 takes the simpler path and documents the
+// contract.
 type Cmd struct {
 	Run string
 	Env map[string]string

@@ -157,14 +157,6 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	return nil
 }
 
-// Exec is stubbed — slice 4.2.
-func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
-	if err := ctx.Err(); err != nil {
-		return container.ExecResult{}, nil, err
-	}
-	return container.ExecResult{}, nil, &ErrNotImplementedInSlice41{Method: "Exec"}
-}
-
 // CaptureFiles is stubbed — slice 4.2.
 func (b *Backend) CaptureFiles(ctx context.Context, h container.Handle, paths []string) ([]container.CapturedFile, error) {
 	if err := ctx.Err(); err != nil {

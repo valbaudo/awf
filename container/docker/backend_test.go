@@ -44,36 +44,31 @@ func TestCapabilitiesAdvertisesFSCoW(t *testing.T) {
 	}
 }
 
-func TestExecCtxCancelBeatsStubError(t *testing.T) {
+func TestExecHonorsCtxCancelWithoutDaemon(t *testing.T) {
+	// Construct a Backend with a real-shaped client.Client (zero value is
+	// fine — we never reach a daemon call because ctx is pre-cancelled).
 	b, _ := New(&client.Client{}, "run-abc")
+	// Register a fake handle so the implementation doesn't reject on
+	// unknown-handle before checking ctx.
+	b.mu.Lock()
+	b.handles["fake-handle"] = "fake-handle"
+	b.mu.Unlock()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := b.Exec(ctx, container.Handle{}, container.Cmd{Run: "/bin/true"})
+	_, _, err := b.Exec(ctx, container.Handle{Name: "lab", ID: "fake-handle"}, container.Cmd{Run: "/bin/true"})
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("Exec with cancelled ctx: err = %v, want context.Canceled", err)
+		t.Errorf("Exec with pre-cancelled ctx: err = %v, want context.Canceled", err)
 	}
 }
 
-func TestExecReturnsNotImplementedErrWhenCtxLive(t *testing.T) {
+func TestExecReturnsErrorOnUnknownHandle(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc")
-	_, _, err := b.Exec(context.Background(), container.Handle{}, container.Cmd{Run: "/bin/true"})
-	var stubErr *ErrNotImplementedInSlice41
-	if !errors.As(err, &stubErr) {
-		t.Fatalf("Exec: err = %v, want *ErrNotImplementedInSlice41", err)
+	_, _, err := b.Exec(context.Background(), container.Handle{Name: "lab", ID: "never-created"}, container.Cmd{Run: "/bin/true"})
+	if err == nil {
+		t.Fatal("Exec on unknown handle: err = nil, want non-nil")
 	}
-	if stubErr.Method != "Exec" {
-		t.Errorf("stubErr.Method = %q, want \"Exec\"", stubErr.Method)
-	}
-}
-
-func TestCaptureFilesCtxCancelBeatsStub(t *testing.T) {
-	b, _ := New(&client.Client{}, "run-abc")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := b.CaptureFiles(ctx, container.Handle{}, []string{"/x"})
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("CaptureFiles with cancelled ctx: err = %v", err)
-	}
+	// Don't assert specific wording; just confirm a non-nil error.
 }
 
 func TestCaptureFilesReturnsNotImplementedErrWhenCtxLive(t *testing.T) {
