@@ -1,0 +1,13 @@
+workflow: phase4-parallel-compose
+version: 1
+containers:
+  lab:
+    compose: compose-two-svc.yml
+    service: web
+graph:
+  - id: echo_web
+    container: lab
+    run: echo hello-web
+  - id: echo_db
+    container: lab:db
+    run: echo hello-db
