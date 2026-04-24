@@ -47,8 +47,19 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 	if err != nil {
 		return container.ExecResult{}, nil, err
 	}
-	dockerID := r.dockerID
+	switch r.kind {
+	case "image":
+		return b.execImage(ctx, r.dockerID, cmd)
+	case "compose":
+		return b.execCompose(ctx, h, r, cmd)
+	default:
+		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: unknown handle kind %q (engine bug)", r.kind)
+	}
+}
 
+// execImage is the core Exec implementation for image-mode containers.
+// It is also called by execCompose after container ID resolution.
+func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
 	execCreateResp, err := b.cli.ContainerExecCreate(ctx, dockerID, dockerContainer.ExecOptions{
 		Cmd:          []string{"sh", "-c", cmd.Run},
 		Env:          envMapToSlice(cmd.Env),
