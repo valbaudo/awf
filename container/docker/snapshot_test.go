@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"errors"
@@ -247,4 +248,114 @@ func readDiffTar(r io.Reader) (adds map[string][]byte, syms map[string]string, d
 		}
 	}
 	return
+}
+
+func TestShellQuotePath(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/work/a.txt", "'/work/a.txt'"},
+		{"-rf", "'-rf'"},
+		{"/tmp/with space.txt", "'/tmp/with space.txt'"},
+		{"with'quote", `'with'\''quote'`},
+		{"two''quotes", `'two'\'''\''quotes'`},
+		{"", "''"},
+	}
+	for _, c := range cases {
+		got := shellQuotePath(c.in)
+		if got != c.want {
+			t.Errorf("shellQuotePath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestStreamPlainTarFromDiff_RoundTrip(t *testing.T) {
+	// Build a diff-tar with: 1 regular file, 1 symlink, 1 dir, 2 deletes.
+	var diff bytes.Buffer
+	dw := newDiffTarWriter(&diff, 1<<20)
+	if err := dw.WriteRegular("/work/a.txt", bytes.NewReader([]byte("hello")), 5); err != nil {
+		t.Fatalf("WriteRegular: %v", err)
+	}
+	if err := dw.WriteSymlink("/work/link", "/work/target"); err != nil {
+		t.Fatalf("WriteSymlink: %v", err)
+	}
+	if err := dw.WriteDir("/work/dir", 0o755); err != nil {
+		t.Fatalf("WriteDir: %v", err)
+	}
+	if err := dw.WriteDeletes([]string{"/old/a", "/old/b"}); err != nil {
+		t.Fatalf("WriteDeletes: %v", err)
+	}
+	if err := dw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Stream into a plain tar; verify the deletes return value + the tar contents.
+	var plain bytes.Buffer
+	deletes, err := streamPlainTarFromDiff(&plain, diff.Bytes())
+	if err != nil {
+		t.Fatalf("streamPlainTarFromDiff: %v", err)
+	}
+	if len(deletes) != 2 || deletes[0] != "/old/a" || deletes[1] != "/old/b" {
+		t.Errorf("deletes = %v, want [/old/a /old/b]", deletes)
+	}
+
+	// Re-read the plain tar; verify entries.
+	tr := tar.NewReader(&plain)
+	seen := map[string]*tar.Header{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar.Next: %v", err)
+		}
+		if hdr.Name == deletesManifestPath {
+			t.Errorf("plain tar contains %q sidecar; expected it stripped", deletesManifestPath)
+		}
+		if strings.HasPrefix(hdr.Name, "/") {
+			t.Errorf("plain tar entry name %q has leading slash; expected stripped", hdr.Name)
+		}
+		seen[hdr.Name] = hdr
+		if hdr.Size > 0 {
+			if _, err := io.ReadAll(tr); err != nil {
+				t.Fatalf("read body of %q: %v", hdr.Name, err)
+			}
+		}
+	}
+	if seen["work/a.txt"] == nil {
+		t.Errorf("missing work/a.txt entry")
+	}
+	if h := seen["work/link"]; h == nil || h.Linkname != "/work/target" {
+		t.Errorf("symlink entry wrong: %+v", h)
+	}
+	if h := seen["work/dir"]; h == nil || h.Typeflag != tar.TypeDir {
+		t.Errorf("dir entry wrong: %+v", h)
+	}
+}
+
+func TestStreamPlainTarFromDiff_NoDeletes(t *testing.T) {
+	var diff bytes.Buffer
+	dw := newDiffTarWriter(&diff, 1<<20)
+	if err := dw.WriteRegular("/x", bytes.NewReader([]byte("y")), 1); err != nil {
+		t.Fatalf("WriteRegular: %v", err)
+	}
+	if err := dw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	var plain bytes.Buffer
+	deletes, err := streamPlainTarFromDiff(&plain, diff.Bytes())
+	if err != nil {
+		t.Fatalf("streamPlainTarFromDiff: %v", err)
+	}
+	if len(deletes) != 0 {
+		t.Errorf("deletes = %v, want []", deletes)
+	}
+}
+
+func TestStreamPlainTarFromDiff_RejectsCorruptedGzip(t *testing.T) {
+	_, err := streamPlainTarFromDiff(io.Discard, []byte("not gzipped"))
+	if err == nil {
+		t.Fatal("streamPlainTarFromDiff with corrupt input: err = nil, want non-nil")
+	}
 }

@@ -174,7 +174,7 @@ func (*Fake) Snapshot(_ context.Context, _ Handle) (SnapshotRef, error) {
 	return "", ErrUnsupported
 }
 
-func (*Fake) Restore(_ context.Context, _ SnapshotRef) (Handle, error) {
+func (*Fake) Restore(_ context.Context, _ SnapshotRef, _ string) (Handle, error) {
 	return Handle{}, ErrUnsupported
 }
 

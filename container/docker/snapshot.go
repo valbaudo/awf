@@ -2,12 +2,18 @@ package docker
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 	"strings"
+
+	dockerContainer "github.com/docker/docker/api/types/container"
 
 	"github.com/valbaudo/awf/container"
 )
@@ -208,4 +214,279 @@ func (t *tarReaderForTest) next() (hdr *tar.Header, body []byte, done bool, err 
 		}
 	}
 	return hdr, body, false, nil
+}
+
+// Snapshot captures the workspace state of an image-mode container as a
+// gzip-compressed CoW diff (Phase 4 design decision 4 + slice 4.4 Design
+// Q5/Q8):
+//
+//  1. ContainerInspect — read effective Config.Image, Config.Cmd,
+//     Config.Entrypoint.
+//  2. ContainerDiff — list changed paths.
+//  3. Sort changes by Path (deterministic blob refs).
+//  4. For each ChangeAdd/ChangeModify:
+//     CopyFromContainer → PathStat dispatch (dir/symlink/regular)
+//     → stream body through dw.WriteRegular/WriteSymlink/WriteDir.
+//  5. For each ChangeDelete: accumulate into deletes slice.
+//  6. dw.WriteDeletes(deletes); dw.Close.
+//  7. b.blobs.Put(blob bytes) → blobRef.
+//  8. formatSnapshotRef(blobRef, image, cmdSpec) → SnapshotRef.
+//
+// Compose-mode handles error explicitly.
+func (b *Backend) Snapshot(ctx context.Context, h container.Handle) (container.SnapshotRef, error) {
+	r, err := b.lookupRegistered(ctx, "Snapshot", h)
+	if err != nil {
+		return "", err
+	}
+	if r.kind != kindImage {
+		return "", fmt.Errorf("container/docker: Snapshot: handle kind %q not supported (image-mode only; compose snapshot is out-of-scope per Phase 4 design)", r.kind)
+	}
+
+	info, err := b.cli.ContainerInspect(ctx, r.dockerID)
+	if err != nil {
+		return "", fmt.Errorf("container/docker: Snapshot: ContainerInspect: %w", err)
+	}
+	if info.Config == nil {
+		return "", fmt.Errorf("container/docker: Snapshot: ContainerInspect returned nil Config (daemon bug)")
+	}
+	image := info.Config.Image
+	if image == "" {
+		return "", fmt.Errorf("container/docker: Snapshot: ContainerInspect returned empty Config.Image")
+	}
+	cmdSpec := snapshotCmdSpec{
+		Cmd:        []string(info.Config.Cmd),
+		Entrypoint: []string(info.Config.Entrypoint),
+	}
+
+	changes, err := b.cli.ContainerDiff(ctx, r.dockerID)
+	if err != nil {
+		return "", fmt.Errorf("container/docker: Snapshot: ContainerDiff: %w", err)
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
+
+	var blobBuf bytes.Buffer
+	dw := newDiffTarWriter(&blobBuf, b.snapshotMaxBlobBytes)
+
+	var deletes []string
+	for _, ch := range changes {
+		switch ch.Kind {
+		case dockerContainer.ChangeAdd, dockerContainer.ChangeModify:
+			if err := b.captureOneIntoDiffTar(ctx, r.dockerID, ch.Path, dw); err != nil {
+				return "", err
+			}
+		case dockerContainer.ChangeDelete:
+			deletes = append(deletes, ch.Path)
+		}
+	}
+	if err := dw.WriteDeletes(deletes); err != nil {
+		return "", err
+	}
+	if err := dw.Close(); err != nil {
+		return "", err
+	}
+
+	blobRef, err := b.blobs.Put(blobBuf.Bytes())
+	if err != nil {
+		return "", fmt.Errorf("container/docker: Snapshot: blobs.Put: %w", err)
+	}
+	return formatSnapshotRef(blobRef, image, cmdSpec)
+}
+
+// captureOneIntoDiffTar streams one container path into the diff-tar via
+// CopyFromContainer + PathStat-based dispatch. Block/char/fifo paths
+// (unusual in workspaces) are skipped with no error.
+func (b *Backend) captureOneIntoDiffTar(ctx context.Context, containerID, path string, dw *diffTarWriter) error {
+	rc, stat, err := b.cli.CopyFromContainer(ctx, containerID, path)
+	if err != nil {
+		return fmt.Errorf("container/docker: Snapshot: CopyFromContainer %q: %w", path, err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	if stat.Mode.IsDir() {
+		return dw.WriteDir(path, int64(stat.Mode.Perm()))
+	}
+	if stat.Mode&os.ModeSymlink != 0 {
+		return dw.WriteSymlink(path, stat.LinkTarget)
+	}
+	if !stat.Mode.IsRegular() {
+		return nil
+	}
+
+	tr := tar.NewReader(rc)
+	hdr, err := tr.Next()
+	if err != nil {
+		return fmt.Errorf("container/docker: Snapshot: read tar header for %q: %w", path, err)
+	}
+	if hdr.Typeflag != tar.TypeReg {
+		return fmt.Errorf("container/docker: Snapshot: %q: tar header Typeflag = %d, want TypeReg", path, hdr.Typeflag)
+	}
+	return dw.WriteRegular(path, tr, hdr.Size)
+}
+
+// Restore re-materializes a container from a SnapshotRef. Streams the
+// gzip-compressed diff through an io.Pipe writer goroutine into
+// CopyToContainer (no intermediate plain-tar buffer; peak memory at this
+// stage is the diff bytes already in RAM from Blobs.Get + ~74 KiB
+// streaming buffers).
+//
+// The embedded image is NOT auto-pulled; callers responsible for prior
+// ImagePull (matches Backend.Create's image-mode behavior — slice 4.1
+// precedent). If the image is absent from the local cache, ContainerCreate
+// errors with "no such image" and Restore propagates.
+//
+// Per-delete Exec is O(N) sequential. A workspace with N deletes does N
+// sequential rm -rf calls (~50-100ms each); a 1000-delete workspace takes
+// ~50-100 seconds. Acceptable for slice 4.4 (Restore is rare); a future
+// optimization could batch via xargs. If a delete-Exec fails, Restore
+// aborts cleanly (force-removes the partially-restored container) — the
+// engine resume re-calls Restore from scratch.
+func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name string) (container.Handle, error) {
+	if err := ctx.Err(); err != nil {
+		return container.Handle{}, err
+	}
+	if name == "" {
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: name is required (IR container name)")
+	}
+
+	blobRef, image, cmdSpec, err := parseSnapshotRef(ref)
+	if err != nil {
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: %w", err)
+	}
+
+	diffBytes, err := b.blobs.Get(blobRef)
+	if err != nil {
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: blobs.Get(%s): %w", blobRef, err)
+	}
+
+	containerNameStr := containerName(b.runID, name)
+	cfg := &dockerContainer.Config{
+		Image:      image,
+		Cmd:        cmdSpec.Cmd,
+		Entrypoint: cmdSpec.Entrypoint,
+	}
+	resp, err := b.cli.ContainerCreate(ctx, cfg, &dockerContainer.HostConfig{}, nil, nil, containerNameStr)
+	if err != nil {
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: ContainerCreate: %w", err)
+	}
+
+	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
+		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: ContainerStart: %w", err)
+	}
+	if err := b.waitReady(ctx, resp.ID); err != nil {
+		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: waitReady: %w", err)
+	}
+
+	// Stream the diff via io.Pipe: one goroutine writes plain tar to pw;
+	// CopyToContainer reads from pr in lockstep.
+	deletesCh := make(chan []string, 1)
+	pr, pw := io.Pipe()
+	go func() {
+		var deletes []string
+		// deletesCh send happens in defer so a panic in streamPlainTarFromDiff
+		// doesn't deadlock the main goroutine waiting on <-deletesCh.
+		defer func() {
+			_ = pw.Close()
+			deletesCh <- deletes
+		}()
+		out, err := streamPlainTarFromDiff(pw, diffBytes)
+		if err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		deletes = out
+	}()
+
+	copyErr := b.cli.CopyToContainer(ctx, resp.ID, "/", pr, dockerContainer.CopyToContainerOptions{})
+	// Close the reader so the writer goroutine unblocks even if CopyToContainer
+	// aborted mid-stream (ctx-cancel, daemon error). Without this, pw.Write
+	// inside streamPlainTarFromDiff would block forever and we'd deadlock on
+	// the <-deletesCh receive below.
+	_ = pr.CloseWithError(copyErr)
+	deletes := <-deletesCh
+	if copyErr != nil {
+		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: CopyToContainer: %w", copyErr)
+	}
+
+	for _, del := range deletes {
+		result, _, execErr := b.execImage(ctx, resp.ID, container.Cmd{Run: "rm -rf -- " + shellQuotePath(del)})
+		if execErr != nil {
+			_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
+			return container.Handle{}, fmt.Errorf("container/docker: Restore: delete %q: %w", del, execErr)
+		}
+		if result.ExitCode != 0 {
+			_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
+			return container.Handle{}, fmt.Errorf("container/docker: Restore: delete %q exited %d", del, result.ExitCode)
+		}
+	}
+
+	b.mu.Lock()
+	b.handles[resp.ID] = registeredContainer{kind: kindImage, dockerID: resp.ID}
+	b.mu.Unlock()
+
+	return container.Handle{Name: name, ID: resp.ID}, nil
+}
+
+// streamPlainTarFromDiff reads a gzipped diff-tar (in RAM) and writes a
+// plain-tar (no .awf-deletes sidecar, leading-slash stripped) to w. Returns
+// the parsed deletes list separately. Streaming: peak memory bounded to
+// the gzip+tar internal buffers (~64 KiB) + the diff-tar bytes already in
+// RAM (the input).
+func streamPlainTarFromDiff(w io.Writer, diffBytes []byte) ([]string, error) {
+	gr, err := gzip.NewReader(bytes.NewReader(diffBytes))
+	if err != nil {
+		return nil, fmt.Errorf("gzip.NewReader: %w", err)
+	}
+	defer func() { _ = gr.Close() }()
+	tr := tar.NewReader(gr)
+	tw := tar.NewWriter(w)
+	defer func() { _ = tw.Close() }()
+
+	var deletes []string
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("tar.Next: %w", err)
+		}
+		if hdr.Name == deletesManifestPath {
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, fmt.Errorf("read deletes: %w", err)
+			}
+			for _, line := range strings.Split(strings.TrimRight(string(body), "\n"), "\n") {
+				if line != "" {
+					deletes = append(deletes, line)
+				}
+			}
+			continue
+		}
+		outHdr := &tar.Header{
+			Name:     strings.TrimPrefix(hdr.Name, "/"),
+			Typeflag: hdr.Typeflag,
+			Mode:     hdr.Mode,
+			Linkname: hdr.Linkname,
+			Size:     hdr.Size,
+		}
+		if err := tw.WriteHeader(outHdr); err != nil {
+			return nil, fmt.Errorf("tw.WriteHeader: %w", err)
+		}
+		if hdr.Typeflag == tar.TypeReg && hdr.Size > 0 {
+			if _, err := io.Copy(tw, tr); err != nil {
+				return nil, fmt.Errorf("tw.Copy: %w", err)
+			}
+		}
+	}
+	return deletes, nil
+}
+
+// shellQuotePath wraps p in single quotes and escapes embedded single
+// quotes. Paired with the `--` argument terminator (`rm -rf -- '<path>'`)
+// so paths starting with `-` aren't parsed as flags.
+func shellQuotePath(p string) string {
+	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }

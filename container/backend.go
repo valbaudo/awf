@@ -70,12 +70,39 @@ type Backend interface {
 
 	// Snapshot captures the handle's filesystem as a CoW diff. Only meaningful
 	// for snapshot:workspace containers (spec §3). Phase 2 fake: returns
-	// ("", ErrUnsupported). Phase 4 adds the real impl.
+	// ("", ErrUnsupported). Phase 4 Docker (slice 4.4): streaming gzip-tar
+	// diff via ContainerDiff + per-path CopyFromContainer through
+	// state.Blobs.Put. Returns a 3-segment SnapshotRef:
+	//     <state-blobs-ref>@<image-ref>@<base64-json-of-cmd-entrypoint>
+	// so Restore can ContainerCreate against the source image AND faithfully
+	// re-apply the effective Cmd/Entrypoint (a Restore→Snapshot loop
+	// preserves runtime config across the round-trip).
+	//
+	// Peak memory: bounded by snapshotMaxBlobBytes at state.Blobs.Put time
+	// (the compressed blob lives in memory for the Put call; the streaming
+	// gzip+tar intermediate buffers stay at ~64 KiB throughout the build).
+	//
+	// If the gzip-compressed diff exceeds the configured cap (default 256
+	// MiB), returns *ErrSnapshotTooLarge — the engine routes this as
+	// permanent_failure.
 	Snapshot(ctx context.Context, h Handle) (SnapshotRef, error)
 
-	// Restore rebuilds a handle from a prior Snapshot. Same Phase-2-fake
-	// disposition as Snapshot.
-	Restore(ctx context.Context, ref SnapshotRef) (Handle, error)
+	// Restore rebuilds a handle from a prior Snapshot. The name argument is the
+	// IR-declared container name (spec §3); the returned Handle.Name is set to
+	// it so the dispatcher's d.Handles[name] keys consistently across
+	// pre-snapshot Create and post-resume Restore.
+	//
+	// Phase 2 fake: returns ErrUnsupported.
+	//
+	// Phase 4 Docker (slice 4.4): parses the 3-segment SnapshotRef, Blobs.Get
+	// the diff-tar, ContainerCreate against the embedded image + Cmd +
+	// Entrypoint, stream-CopyToContainer the data entries via io.Pipe (peak
+	// memory ~64 KiB + the diff blob bytes already in RAM from Get),
+	// Exec "rm -rf -- '<path>'" for each .awf-deletes entry. waitReady runs
+	// on the restored container so the spec §3 readiness contract holds.
+	// The embedded image is NOT auto-pulled; callers responsible for prior
+	// ImagePull (same as Backend.Create's image-mode path).
+	Restore(ctx context.Context, ref SnapshotRef, name string) (Handle, error)
 
 	// Destroy releases the handle's resources. The caller must call Destroy
 	// exactly once per Create; a second call returns an error (the handle is

@@ -132,33 +132,60 @@ func TestCaptureFilesEmptyPathsReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestSnapshotReturnsNotImplemented(t *testing.T) {
+func TestSnapshotHonorsCtxCancelWithoutDaemon(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
-	_, err := b.Snapshot(context.Background(), container.Handle{})
-	var stubErr *ErrNotImplementedInSlice41
-	if !errors.As(err, &stubErr) {
-		t.Fatalf("Snapshot: err = %v, want *ErrNotImplementedInSlice41", err)
-	}
-	if stubErr.Method != "Snapshot" {
-		t.Errorf("stubErr.Method = %q, want \"Snapshot\"", stubErr.Method)
+	b.mu.Lock()
+	b.handles["fake-handle"] = registeredContainer{kind: kindImage, dockerID: "fake-handle"}
+	b.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := b.Snapshot(ctx, container.Handle{Name: "lab", ID: "fake-handle"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Snapshot with pre-cancelled ctx: err = %v, want context.Canceled", err)
 	}
 }
 
-func TestRestoreReturnsNotImplemented(t *testing.T) {
+func TestSnapshotErrorsOnUnknownHandle(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
-	_, err := b.Restore(context.Background(), container.SnapshotRef("any"))
-	var stubErr *ErrNotImplementedInSlice41
-	if !errors.As(err, &stubErr) {
-		t.Fatalf("Restore: err = %v, want *ErrNotImplementedInSlice41", err)
-	}
-	if stubErr.Method != "Restore" {
-		t.Errorf("stubErr.Method = %q, want \"Restore\"", stubErr.Method)
+	_, err := b.Snapshot(context.Background(), container.Handle{Name: "lab", ID: "never-created"})
+	if err == nil {
+		t.Fatal("Snapshot on unknown handle: err = nil, want non-nil")
 	}
 }
 
-func TestErrNotImplementedInSlice41Format(t *testing.T) {
-	e := &ErrNotImplementedInSlice41{Method: "Snapshot"}
-	if got := e.Error(); !strings.Contains(got, "Snapshot") || !strings.Contains(got, "slice 4.1") {
-		t.Errorf("Error() = %q", got)
+func TestSnapshotErrorsOnComposeHandle(t *testing.T) {
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
+	b.mu.Lock()
+	b.handles["awf-run-abc"] = registeredContainer{kind: kindCompose, project: "awf-run-abc", defaultSvc: "web"}
+	b.mu.Unlock()
+	_, err := b.Snapshot(context.Background(), container.Handle{Name: "lab", ID: "awf-run-abc", Service: "web"})
+	if err == nil {
+		t.Fatal("Snapshot on compose handle: err = nil, want non-nil")
+	}
+}
+
+func TestRestoreHonorsCtxCancelWithoutDaemon(t *testing.T) {
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := b.Restore(ctx, container.SnapshotRef("awf-d1:sha256:abc@alpine@e30="), "lab")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Restore with pre-cancelled ctx: err = %v, want context.Canceled", err)
+	}
+}
+
+func TestRestoreErrorsOnMalformedRef(t *testing.T) {
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
+	_, err := b.Restore(context.Background(), container.SnapshotRef("not-a-valid-ref"), "lab")
+	if err == nil {
+		t.Fatal("Restore on malformed ref: err = nil, want non-nil")
+	}
+}
+
+func TestRestoreErrorsOnEmptyName(t *testing.T) {
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
+	_, err := b.Restore(context.Background(), container.SnapshotRef("awf-d1:sha256:abc@alpine@e30="), "")
+	if err == nil {
+		t.Fatal("Restore with empty name: err = nil, want non-nil")
 	}
 }

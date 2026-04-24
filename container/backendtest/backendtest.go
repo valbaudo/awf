@@ -100,7 +100,7 @@ func testRestoreRouting(t *testing.T, b container.Backend) {
 	if b.Capabilities().Snapshot != container.SnapshotNone {
 		t.Skip("backend advertises snapshot support; ErrUnsupported routing N/A")
 	}
-	_, err := b.Restore(context.Background(), container.SnapshotRef("any"))
+	_, err := b.Restore(context.Background(), container.SnapshotRef("any"), "test")
 	if !errors.Is(err, container.ErrUnsupported) {
 		t.Errorf("Restore: err = %v, want errors.Is(_, ErrUnsupported)", err)
 	}

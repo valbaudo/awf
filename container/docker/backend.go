@@ -144,11 +144,8 @@ func New(cli *client.Client, runID string, blobs state.Blobs, opts ...Option) (*
 	return b, nil
 }
 
-// Capabilities advertises SnapshotFSCoW. The actual Snapshot implementation
-// lands in slice 4.4; until then, Snapshot returns *ErrNotImplementedInSlice41.
-// backendtest.testSnapshotRouting / testRestoreRouting both skip when the
-// backend advertises non-SnapshotNone, so the stub does NOT violate the
-// basic contract.
+// Capabilities advertises SnapshotFSCoW per Phase 4 design decision 4. The
+// real Snapshot + Restore implementations live in snapshot.go (slice 4.4).
 func (*Backend) Capabilities() container.Caps {
 	return container.Caps{Snapshot: container.SnapshotFSCoW}
 }
@@ -267,22 +264,6 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	default:
 		return fmt.Errorf("container/docker: Destroy: unknown handle kind %q (engine bug)", r.kind)
 	}
-}
-
-// Snapshot is stubbed — slice 4.4.
-func (b *Backend) Snapshot(ctx context.Context, h container.Handle) (container.SnapshotRef, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	return "", &ErrNotImplementedInSlice41{Method: "Snapshot"}
-}
-
-// Restore is stubbed — slice 4.4.
-func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef) (container.Handle, error) {
-	if err := ctx.Err(); err != nil {
-		return container.Handle{}, err
-	}
-	return container.Handle{}, &ErrNotImplementedInSlice41{Method: "Restore"}
 }
 
 // lookupRegistered resolves a container.Handle to its registeredContainer
@@ -434,23 +415,6 @@ func healthcheckDeadline(info dockerContainer.InspectResponse) time.Duration {
 		return waitReadyCeiling
 	}
 	return buffered
-}
-
-// ErrNotImplementedInSlice41 is the sentinel returned by methods that exist
-// on the Backend (for interface satisfaction) but have no implementation in
-// slice 4.1. Slice 4.2 (Exec, CaptureFiles) and 4.4 (Snapshot, Restore)
-// replace the stubs; routing via
-//
-//	var stubErr *ErrNotImplementedInSlice41; errors.As(err, &stubErr)
-//
-// lets those slices detect the replacement is complete (see backend_test.go
-// for the working pattern).
-type ErrNotImplementedInSlice41 struct {
-	Method string
-}
-
-func (e *ErrNotImplementedInSlice41) Error() string {
-	return fmt.Sprintf("container/docker: %s is not implemented in slice 4.1 (see docs/superpowers/specs/2026-04-14-awf-phase4-design.md)", e.Method)
 }
 
 // Compile-time interface satisfaction.
