@@ -1,0 +1,12 @@
+# Bucket 10c fixture — healthcheck that succeeds only after ~2s (entrypoint
+# touches /tmp/ready after a sleep). up --wait must block until healthy.
+services:
+  slow:
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    command: ["sh", "-c", "sleep 2 && touch /tmp/ready && sleep 86400"]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /tmp/ready"]
+      interval: 500ms
+      retries: 10
+      start_period: 1s
+      start_interval: 200ms

@@ -1,0 +1,10 @@
+# Bucket 10b fixture — web + db, exercises cross-service exec via lab:db.
+# Each service writes a unique marker file at startup for deterministic
+# identification (not relying on Docker hostname defaults).
+services:
+  web:
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    command: ["sh", "-c", "echo web > /tmp/awf-svc-marker && sleep 86400"]
+  db:
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    command: ["sh", "-c", "echo db > /tmp/awf-svc-marker && sleep 86400"]
