@@ -1,0 +1,10 @@
+workflow: cli-compose-wiring
+version: 1
+containers:
+  lab:
+    compose: lab/compose.yml
+    service: runner
+graph:
+  - id: step1
+    container: lab
+    run: echo hello

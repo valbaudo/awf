@@ -2,10 +2,12 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1041,5 +1043,77 @@ func TestCLIRunCVEPipelineErrorsAtFirstAgentStep(t *testing.T) {
 	combined := stdout.String() + stderr.String()
 	if !strings.Contains(combined, "not implemented") {
 		t.Errorf("output missing 'not implemented': stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+// recordingBackend wraps container.Fake and captures ContainerSpec values
+// passed to Create. It delegates all other calls to the underlying Fake.
+type recordingBackend struct {
+	*container.Fake
+	mu      sync.Mutex
+	created []container.ContainerSpec
+}
+
+func (r *recordingBackend) Create(ctx context.Context, spec container.ContainerSpec) (container.Handle, error) {
+	r.mu.Lock()
+	r.created = append(r.created, spec)
+	r.mu.Unlock()
+	return r.Fake.Create(ctx, spec)
+}
+
+// TestCLIRunPropagatesComposeBytesToBackend verifies that when a workflow uses
+// a compose-mode container, the CLI passes compose bytes (and the compose path
+// + service name) to the Backend's Create call — i.e., the ContainerSpecFor
+// wiring flows end-to-end from loader → cli/run → engine.LocalDispatcher →
+// Backend.Create.
+func TestCLIRunPropagatesComposeBytesToBackend(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("echo hello", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("hello\n"),
+	}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("hello\n")},
+	})
+	rec := &recordingBackend{Fake: fake}
+
+	stateDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	runner := &cli.Runner{Backend: rec, IDGen: &clock.Fake{IDs: []string{"test-compose-wiring"}}}
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "testdata/phase4/cli-compose-wiring.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	if len(rec.created) == 0 {
+		t.Fatal("Backend.Create was never called")
+	}
+	var labSpec container.ContainerSpec
+	var found bool
+	for _, s := range rec.created {
+		if s.Name == "lab" {
+			labSpec = s
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no spec recorded for container \"lab\"; got %d specs: %+v", len(rec.created), rec.created)
+	}
+	if labSpec.Compose == nil {
+		t.Errorf("spec.Compose = nil; want compose bytes (compose-mode container)")
+	}
+	if !bytes.Contains(labSpec.Compose, []byte("services:")) {
+		t.Errorf("spec.Compose missing \"services:\" marker; got %q", labSpec.Compose)
+	}
+	if labSpec.ComposePath != "lab/compose.yml" {
+		t.Errorf("spec.ComposePath = %q, want \"lab/compose.yml\"", labSpec.ComposePath)
+	}
+	if labSpec.Service != "runner" {
+		t.Errorf("spec.Service = %q, want \"runner\"", labSpec.Service)
+	}
+	if labSpec.Image != "" {
+		t.Errorf("spec.Image = %q, want empty (compose-mode)", labSpec.Image)
 	}
 }
