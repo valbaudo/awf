@@ -43,10 +43,11 @@ import (
 // container/backend.go Exec doc-comment). Callers MUST check err before
 // ranging over the channel.
 func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
-	dockerID, err := b.lookupHandle(ctx, "Exec", h)
+	r, err := b.lookupRegistered(ctx, "Exec", h)
 	if err != nil {
 		return container.ExecResult{}, nil, err
 	}
+	dockerID := r.dockerID
 
 	execCreateResp, err := b.cli.ContainerExecCreate(ctx, dockerID, dockerContainer.ExecOptions{
 		Cmd:          []string{"sh", "-c", cmd.Run},

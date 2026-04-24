@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker/cli/cli/command"
+	"github.com/docker/compose/v2/pkg/api"
 	dockerContainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	units "github.com/docker/go-units"
@@ -15,18 +17,49 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
-// Backend is the Docker Engine SDK implementation of container.Backend.
-// Slice 4.1 (Phase 4) shipped the skeleton; slice 4.2 filled Exec +
-// CaptureFiles; slice 4.4 will fill Snapshot + Restore.
+// registeredContainer is the value type of Backend.handles. The discriminator
+// kind says how to resolve the Docker resource for Exec / Destroy / capture:
 //
-// Concurrency: the handles map is protected by mu. Create / Destroy are the
-// only mutators in slice 4.1.
+//   - kind == "image" — dockerID is the docker container ID; Exec passes it
+//     directly to ContainerExecCreate. project / defaultSvc / composeAPI are
+//     empty.
+//   - kind == "compose" — project is the compose project name (matches
+//     Handle.ID); defaultSvc is the IR-declared default service; composeAPI is
+//     the api.Compose instance the Create call used (cached for Down). Exec
+//     resolves the target container via ContainerList(filter: project+service)
+//     where service comes from Handle.Service if non-empty else defaultSvc.
+//
+// Slice 4.3 Task 3 introduces this type with kind="image" only; Task 4 adds
+// kind="compose" populated entries. Image-mode behavior is preserved bytewise
+// — only the lookup layer changed.
+type registeredContainer struct {
+	kind       string
+	dockerID   string      // image-mode
+	project    string      //nolint:unused // compose-mode (Task 4)
+	defaultSvc string      //nolint:unused // compose-mode (Task 4)
+	composeAPI api.Compose //nolint:unused // compose-mode (Task 4); nil for image-mode
+}
+
+// Backend is the Docker Engine SDK implementation of container.Backend.
+// Slice 4.1 ships the skeleton; 4.2 added real Exec + CaptureFiles; 4.3 adds
+// compose-mode Create + Exec + Destroy.
+//
+// composeOnce + composeCli + composeErr together implement thread-safe lazy
+// initialization of the docker/cli command.Cli (needed by compose.NewComposeService).
+// Phase 3's engine/parallel.go (errgroup) and engine/map.go (`go func()`)
+// can call Backend.Create concurrently — a bare `if cli == nil { init }`
+// would race. sync.Once gives us race-free init with the error cached so a
+// once-failed init doesn't retry.
 type Backend struct {
 	cli   *client.Client
 	runID string
 
 	mu      sync.Mutex
-	handles map[string]string // handle.ID → docker container id (in image mode they're the same)
+	handles map[string]registeredContainer
+
+	composeOnce sync.Once   //nolint:unused // Task 4: lazy compose.Cli init
+	composeCli  command.Cli //nolint:unused // Task 4
+	composeErr  error       //nolint:unused // Task 4
 }
 
 // New constructs a Docker Backend bound to a specific run. Both arguments
@@ -47,7 +80,7 @@ func New(cli *client.Client, runID string) (*Backend, error) {
 	return &Backend{
 		cli:     cli,
 		runID:   runID,
-		handles: map[string]string{},
+		handles: map[string]registeredContainer{},
 	}, nil
 }
 
@@ -125,7 +158,7 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	}
 
 	b.mu.Lock()
-	b.handles[resp.ID] = resp.ID
+	b.handles[resp.ID] = registeredContainer{kind: "image", dockerID: resp.ID}
 	b.mu.Unlock()
 
 	return container.Handle{Name: spec.Name, ID: resp.ID}, nil
@@ -140,7 +173,7 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	}
 
 	b.mu.Lock()
-	dockerID, ok := b.handles[h.ID]
+	r, ok := b.handles[h.ID]
 	if !ok {
 		b.mu.Unlock()
 		return fmt.Errorf("container/docker: Destroy: unknown handle %q (already destroyed or never Created)", h.ID)
@@ -148,10 +181,10 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	delete(b.handles, h.ID)
 	b.mu.Unlock()
 
-	if err := b.cli.ContainerRemove(ctx, dockerID, dockerContainer.RemoveOptions{Force: true}); err != nil {
+	if err := b.cli.ContainerRemove(ctx, r.dockerID, dockerContainer.RemoveOptions{Force: true}); err != nil {
 		// Re-record the handle so the caller can retry.
 		b.mu.Lock()
-		b.handles[h.ID] = dockerID
+		b.handles[h.ID] = r
 		b.mu.Unlock()
 		return fmt.Errorf("container/docker: Destroy: ContainerRemove: %w", err)
 	}
@@ -174,24 +207,49 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef) (conta
 	return container.Handle{}, &ErrNotImplementedInSlice41{Method: "Restore"}
 }
 
-// lookupHandle resolves a container.Handle to its docker container id under
-// the handles map mutex, after checking ctx.Err(). The caller string is
-// embedded in the error message so an "unknown handle" surfaces with the
+// lookupRegistered resolves a container.Handle to its registeredContainer
+// under the handles map mutex, after checking ctx.Err(). The caller string
+// is embedded in the error message so an "unknown handle" surfaces with the
 // method name a caller expects (Exec / CaptureFiles / etc.).
 //
 // Destroy uses a similar but distinct pattern (it deletes-and-may-reinsert,
 // which doesn't compose with this read-only helper).
-func (b *Backend) lookupHandle(ctx context.Context, caller string, h container.Handle) (string, error) {
+//
+// Slice 4.3 renamed/retyped from slice 4.2's lookupHandle (which returned a
+// string) so callers can dispatch on r.kind. Image-mode callers extract
+// r.dockerID inline; Task 4's compose-mode dispatch switches on r.kind.
+func (b *Backend) lookupRegistered(ctx context.Context, caller string, h container.Handle) (registeredContainer, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return registeredContainer{}, err
 	}
 	b.mu.Lock()
-	dockerID, ok := b.handles[h.ID]
+	r, ok := b.handles[h.ID]
 	b.mu.Unlock()
 	if !ok {
-		return "", fmt.Errorf("container/docker: %s: unknown handle %q (not Created or already Destroyed)", caller, h.ID)
+		return registeredContainer{}, fmt.Errorf("container/docker: %s: unknown handle %q (not Created or already Destroyed)", caller, h.ID)
 	}
-	return dockerID, nil
+	return r, nil
+}
+
+// ensureComposeCli lazy-initializes b.composeCli on first call, race-free via
+// sync.Once. Cached error means a once-failed init doesn't retry. Image-mode
+// Backend instances that never call createCompose pay zero cost.
+//
+// Task 3 ships the field + method but no caller yet — Task 4's createCompose
+// is the first consumer.
+func (b *Backend) ensureComposeCli() (command.Cli, error) { //nolint:unused // Task 4 calls this
+	b.composeOnce.Do(func() {
+		b.composeCli, b.composeErr = newComposeCli()
+	})
+	return b.composeCli, b.composeErr
+}
+
+// newComposeCli constructs a docker/cli command.Cli. Task 3 stub returns an
+// error; Task 4's compose.go ships the real implementation by moving this
+// function over there. At Task 3 there is no caller (ensureComposeCli is
+// unused until Task 4 wires createCompose), so the stub is unreachable.
+func newComposeCli() (command.Cli, error) { //nolint:unused // Task 4 calls this via ensureComposeCli
+	return nil, errors.New("container/docker: newComposeCli not implemented in slice 4.3 Task 3 (Task 4 ships compose.go)")
 }
 
 // waitReady polls ContainerInspect until State.Health.Status == "healthy" IF

@@ -25,10 +25,11 @@ import (
 // nil/empty paths is a no-op returning ([], nil) — matches the fake's
 // "len-zero loop body" semantic.
 func (b *Backend) CaptureFiles(ctx context.Context, h container.Handle, paths []string) ([]container.CapturedFile, error) {
-	dockerID, err := b.lookupHandle(ctx, "CaptureFiles", h)
+	r, err := b.lookupRegistered(ctx, "CaptureFiles", h)
 	if err != nil {
 		return nil, err
 	}
+	dockerID := r.dockerID
 	if len(paths) == 0 {
 		return nil, nil
 	}
