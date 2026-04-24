@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
@@ -25,6 +26,12 @@ import (
 type LocalDispatcher struct {
 	Backend container.Backend
 	Handles map[string]container.Handle
+	// ComposeFiles is the workflow's compose-file bytes by workflow-relative
+	// path — sourced from ir.LoadedDefinition.ComposeFiles at construction.
+	// engine/map.go reads this when Creating per-item containers for compose-
+	// mode `containers:` entries; image-mode entries ignore it. Nil-safe (an
+	// image-mode-only workflow may leave this unset).
+	ComposeFiles map[string][]byte
 }
 
 // Run executes one attempt of intent.Node. See the Dispatcher interface doc
@@ -42,9 +49,13 @@ func (d *LocalDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchR
 }
 
 func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir.CodeStep) (DispatchResult, <-chan container.IOChunk, error) {
-	h, ok := d.Handles[cs.Container]
+	bare, svcOverride := SplitContainerRef(cs.Container)
+	h, ok := d.Handles[bare]
 	if !ok {
-		return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher: no handle for container %q at path %q (interpreter must Create before dispatch)", cs.Container, intent.Path)
+		return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher: no handle for container %q (bare name %q) at path %q (interpreter must Create before dispatch)", cs.Container, bare, intent.Path)
+	}
+	if svcOverride != "" {
+		h.Service = svcOverride // shallow clone — h is a Handle value type; no aliasing of d.Handles
 	}
 
 	// Apply step timeout to ctx (if any). On expiry the Backend.Exec call
@@ -164,32 +175,68 @@ func copyIntPtr(v int) *int {
 	return &out
 }
 
-// containerSpecFor builds the DTO the Backend.Create consumes from the IR.
-// Slice 4.1 (Phase 4): reads Image + Resources for the Docker backend; the
-// fake ignores both.
+// ContainerSpecFor builds the DTO Backend.Create consumes from the IR + a
+// composeFiles lookup. Reads Image + Resources for image-mode (slice 4.1);
+// reads Compose bytes + ComposePath + Service for compose-mode (slice 4.3)
+// by looking up composeFiles by the container's declared compose path.
 //
-// Package-level pure function (not a method on *LocalDispatcher) — its
-// output depends only on wf and name, never on dispatcher state, and the
-// pure form is trivially unit-testable without a *LocalDispatcher instance.
-// Unexported because the only caller is engine/map.go in the same package.
-func containerSpecFor(wf *ir.Workflow, name string) container.ContainerSpec {
+// Exported (capitalized) so cli/run.go and cli/resume.go can call it during
+// container provisioning. The internal caller (engine/map.go) reads
+// composeFiles from ld.ComposeFiles directly — see dispatchItem's call site.
+// There is only one implementation of "build spec from IR" and it is a
+// pure function: output depends only on (wf, composeFiles, name).
+//
+// wf must be non-nil (caller invariant — the loader always produces a valid
+// Workflow before provisioning).
+//
+// Returns ContainerSpec{Name: name} for an undeclared name (validator
+// should have caught this; defensive return).
+func ContainerSpecFor(wf *ir.Workflow, composeFiles map[string][]byte, name string) container.ContainerSpec {
+	spec := container.ContainerSpec{Name: name}
 	c, ok := wf.Containers[name]
 	if !ok {
-		// Validator (Phase 1.4) should have caught this; defensive return.
-		return container.ContainerSpec{Name: name}
+		return spec
 	}
-	spec := container.ContainerSpec{
-		Name:  name,
-		Image: c.Image,
+	// Image-mode.
+	if c.Image != "" {
+		spec.Image = c.Image
+		if c.Resources != nil {
+			spec.Resources = &container.ContainerResources{
+				CPU: c.Resources.CPU,
+				Mem: c.Resources.Mem,
+			}
+		}
+		return spec
 	}
-	if c.Resources != nil {
-		spec.Resources = &container.ContainerResources{
-			CPU: c.Resources.CPU,
-			Mem: c.Resources.Mem,
+	// Compose-mode. Read bytes from composeFiles; if absent (defensive —
+	// loader.Load should have populated them), leave Compose nil so the
+	// Backend errors with a clear "compose bytes missing" message downstream.
+	if c.Compose != "" {
+		spec.ComposePath = c.Compose
+		spec.Service = c.Service
+		if composeFiles != nil {
+			if b, ok := composeFiles[c.Compose]; ok {
+				spec.Compose = b
+			}
 		}
 	}
-	// Compose fields land in slice 4.3.
 	return spec
+}
+
+// SplitContainerRef parses a step's container reference into a bare name and
+// optional service override. The spec §3 form `container: lab:db` addresses
+// the `db` service of the `lab` compose project; bare `container: lab` uses
+// the default service. Mirrors the validator's split in
+// ir/validate_structural.go checkContainerRef (kept parallel by docstring;
+// not shared code — see slice 4.3 plan Design Q4).
+//
+// Splits only the FIRST colon; "lab:db:replica" yields ("lab", "db:replica").
+// The Backend further splits or rejects as needed.
+func SplitContainerRef(ref string) (bare, service string) {
+	if i := strings.Index(ref, ":"); i >= 0 {
+		return ref[:i], ref[i+1:]
+	}
+	return ref, ""
 }
 
 // WithItemHandle returns a shallow clone of d with Handles cloned and the
@@ -197,8 +244,10 @@ func containerSpecFor(wf *ir.Workflow, name string) container.ContainerSpec {
 // (engine/map.go) calls this per item to retarget body's container lookup
 // to a per-item handle. Cheap — Handles is typically 1-3 entries.
 //
-// The returned LocalDispatcher shares Backend with d. Mutating the returned
-// dispatcher's Handles after construction is safe (it's a fresh map).
+// The returned LocalDispatcher shares Backend and ComposeFiles with d (both
+// are read-only from the dispatcher's perspective — no deep copy needed).
+// Mutating the returned dispatcher's Handles after construction is safe (it's
+// a fresh map).
 func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *LocalDispatcher {
 	cloned := make(map[string]container.Handle, len(d.Handles)+1)
 	for k, v := range d.Handles {
@@ -206,7 +255,8 @@ func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *Local
 	}
 	cloned[name] = h
 	return &LocalDispatcher{
-		Backend: d.Backend,
-		Handles: cloned,
+		Backend:      d.Backend,
+		Handles:      cloned,
+		ComposeFiles: d.ComposeFiles,
 	}
 }

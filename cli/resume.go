@@ -191,7 +191,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 	for name := range ld.Workflow.Containers {
-		h, err := r.Backend.Create(ctx, container.ContainerSpec{Name: name})
+		h, err := r.Backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
 		if err != nil {
 			fprintf(stderr, "awf resume: create container %q: %v\n", name, err)
 			return ExitUsage
