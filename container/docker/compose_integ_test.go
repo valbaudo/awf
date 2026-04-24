@@ -55,8 +55,8 @@ func TestBucket10a_ComposeBasicUpExecDown(t *testing.T) {
 	_, b := newTestBackend(t, "bucket10a-basic")
 	h := newComposeHandle(t, b, "cli/testdata/phase4/compose-basic.yml", "web")
 
-	if h.ID != composeProjectName(b.runID) {
-		t.Errorf("Handle.ID = %q, want %q", h.ID, composeProjectName(b.runID))
+	if h.ID != composeProjectName(b.runID, "lab") {
+		t.Errorf("Handle.ID = %q, want %q", h.ID, composeProjectName(b.runID, "lab"))
 	}
 	if h.Service != "web" {
 		t.Errorf("Handle.Service = %q, want \"web\"", h.Service)

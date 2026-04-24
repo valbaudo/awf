@@ -40,7 +40,7 @@ func (b *Backend) createCompose(ctx context.Context, spec cont.ContainerSpec) (c
 		return cont.Handle{}, fmt.Errorf("container/docker: createCompose: spec.Service is required (IR §3 `service:` field; validator AWF1008)")
 	}
 
-	projectName := composeProjectName(b.runID)
+	projectName := composeProjectName(b.runID, spec.Name)
 	project, err := loadComposeProject(ctx, spec.Compose, spec.ComposePath, projectName)
 	if err != nil {
 		return cont.Handle{}, fmt.Errorf("container/docker: createCompose: loadComposeProject: %w", err)
@@ -67,7 +67,7 @@ func (b *Backend) createCompose(ctx context.Context, spec cont.ContainerSpec) (c
 
 	b.mu.Lock()
 	b.handles[projectName] = registeredContainer{
-		kind:       "compose",
+		kind:       kindCompose,
 		project:    projectName,
 		defaultSvc: spec.Service,
 		composeAPI: composeAPI,
@@ -121,9 +121,9 @@ func (b *Backend) execCompose(ctx context.Context, h cont.Handle, r registeredCo
 // Used by CaptureFiles to resolve the container for tar-extract.
 func (b *Backend) resolveContainerID(ctx context.Context, h cont.Handle, r registeredContainer) (string, error) {
 	switch r.kind {
-	case "image":
+	case kindImage:
 		return r.dockerID, nil
-	case "compose":
+	case kindCompose:
 		svc := h.Service
 		if svc == "" {
 			svc = r.defaultSvc

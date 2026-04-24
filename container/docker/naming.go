@@ -35,9 +35,10 @@ func containerPrefix(runID string) string {
 }
 
 // composeProjectName formats the Docker compose project name per Phase 4
-// design decision 9: "awf-<run.id>" — the same scoping as image-mode
-// container names (awf-<run.id>-<declared>). Parallel runs on one host
-// don't collide; cleanupOrphans filters by the same awfPrefix.
-func composeProjectName(runID string) string {
-	return awfPrefix + runID
+// design decision 9: "awf-<run.id>-<declared>" — same scoping as image-mode
+// container names. Including the declared container name lets a workflow
+// declare multiple compose containers (AWF spec §3 permits this) without
+// project-name collisions on the daemon.
+func composeProjectName(runID, declared string) string {
+	return awfPrefix + runID + "-" + declared
 }

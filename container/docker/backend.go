@@ -17,23 +17,34 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
+// containerKind is the discriminator for registeredContainer. Defined as a
+// typed string so all kind comparisons and assignments are type-checked at
+// compile time; a typo like "Image" or "compose-mode" becomes a build error
+// rather than a runtime default-branch fallback.
+type containerKind string
+
+const (
+	kindImage   containerKind = "image"
+	kindCompose containerKind = "compose"
+)
+
 // registeredContainer is the value type of Backend.handles. The discriminator
 // kind says how to resolve the Docker resource for Exec / Destroy / capture:
 //
-//   - kind == "image" — dockerID is the docker container ID; Exec passes it
+//   - kind == kindImage — dockerID is the docker container ID; Exec passes it
 //     directly to ContainerExecCreate. project / defaultSvc / composeAPI are
 //     empty.
-//   - kind == "compose" — project is the compose project name (matches
+//   - kind == kindCompose — project is the compose project name (matches
 //     Handle.ID); defaultSvc is the IR-declared default service; composeAPI is
 //     the api.Compose instance the Create call used (cached for Down). Exec
 //     resolves the target container via ContainerList(filter: project+service)
 //     where service comes from Handle.Service if non-empty else defaultSvc.
 //
-// Slice 4.3 Task 3 introduces this type with kind="image" only; Task 4 adds
-// kind="compose" populated entries. Image-mode behavior is preserved bytewise
+// Slice 4.3 Task 3 introduces this type with kindImage only; Task 4 adds
+// kindCompose populated entries. Image-mode behavior is preserved bytewise
 // — only the lookup layer changed.
 type registeredContainer struct {
-	kind       string
+	kind       containerKind
 	dockerID   string      // image-mode
 	project    string      // compose-mode
 	defaultSvc string      // compose-mode
@@ -165,7 +176,7 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	}
 
 	b.mu.Lock()
-	b.handles[resp.ID] = registeredContainer{kind: "image", dockerID: resp.ID}
+	b.handles[resp.ID] = registeredContainer{kind: kindImage, dockerID: resp.ID}
 	b.mu.Unlock()
 
 	return container.Handle{Name: spec.Name, ID: resp.ID}, nil
@@ -189,7 +200,7 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	b.mu.Unlock()
 
 	switch r.kind {
-	case "image":
+	case kindImage:
 		if err := b.cli.ContainerRemove(ctx, r.dockerID, dockerContainer.RemoveOptions{Force: true}); err != nil {
 			// Re-record the handle so the caller can retry.
 			b.mu.Lock()
@@ -198,7 +209,10 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 			return fmt.Errorf("container/docker: Destroy: ContainerRemove: %w", err)
 		}
 		return nil
-	case "compose":
+	case kindCompose:
+		// NOTE: on error, the handle is NOT re-recorded (compose state may be
+		// partially-down; cleanupOrphans is the safety net). See destroyCompose
+		// doc-comment for the asymmetry vs image-mode above.
 		return b.destroyCompose(ctx, r)
 	default:
 		return fmt.Errorf("container/docker: Destroy: unknown handle kind %q (engine bug)", r.kind)

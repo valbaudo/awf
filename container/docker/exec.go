@@ -48,9 +48,9 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 		return container.ExecResult{}, nil, err
 	}
 	switch r.kind {
-	case "image":
+	case kindImage:
 		return b.execImage(ctx, r.dockerID, cmd)
-	case "compose":
+	case kindCompose:
 		return b.execCompose(ctx, h, r, cmd)
 	default:
 		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: unknown handle kind %q (engine bug)", r.kind)

@@ -6,10 +6,10 @@ import (
 )
 
 func TestComposeProjectName(t *testing.T) {
-	got := composeProjectName("run-abc")
-	want := "awf-run-abc"
+	got := composeProjectName("run-abc", "lab")
+	want := "awf-run-abc-lab"
 	if got != want {
-		t.Errorf("composeProjectName(\"run-abc\") = %q, want %q", got, want)
+		t.Errorf("composeProjectName(\"run-abc\", \"lab\") = %q, want %q", got, want)
 	}
 }
 

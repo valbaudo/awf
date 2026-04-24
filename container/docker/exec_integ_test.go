@@ -48,7 +48,7 @@ func newAlpineContainer(t *testing.T, cli *client.Client, b *Backend) cont.Handl
 		t.Fatalf("ContainerStart: %v", err)
 	}
 	b.mu.Lock()
-	b.handles[resp.ID] = registeredContainer{kind: "image", dockerID: resp.ID}
+	b.handles[resp.ID] = registeredContainer{kind: kindImage, dockerID: resp.ID}
 	b.mu.Unlock()
 	h := cont.Handle{Name: "lab", ID: resp.ID}
 	t.Cleanup(func() { _ = b.Destroy(ctx, h) })
