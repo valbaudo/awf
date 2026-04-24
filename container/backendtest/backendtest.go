@@ -100,7 +100,7 @@ func testRestoreRouting(t *testing.T, b container.Backend) {
 	if b.Capabilities().Snapshot != container.SnapshotNone {
 		t.Skip("backend advertises snapshot support; ErrUnsupported routing N/A")
 	}
-	_, err := b.Restore(context.Background(), container.SnapshotRef("any"))
+	_, err := b.Restore(context.Background(), container.SnapshotRef("any"), "test")
 	if !errors.Is(err, container.ErrUnsupported) {
 		t.Errorf("Restore: err = %v, want errors.Is(_, ErrUnsupported)", err)
 	}
@@ -138,5 +138,126 @@ func testCaptureFilesCtxCancel(t *testing.T, b container.Backend) {
 	_, err = b.CaptureFiles(cancelCtx, h, []string{"/nonexistent"})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("CaptureFiles with cancelled ctx: err = %v, want errors.Is(_, context.Canceled)", err)
+	}
+}
+
+// RunSnapshotContract verifies that b honors the Snapshot+Restore round-trip
+// contract for backends advertising SnapshotFSCoW. Skipped on SnapshotNone
+// backends — their behavior is covered by RunBasicContract's
+// testSnapshotRouting sub-test.
+//
+//   - image: the digest-pinned reference Create will use.
+//   - name:  the IR-declared container name (passed to Restore per slice
+//     4.4 Design Q9).
+//
+// Three sub-tests align with Phase 4 design decision 12 (Bucket 11):
+//   - WorkspaceMutationCapturedAndRestored (11a)
+//   - DeletedFileRestoredAsDeleted        (11b)
+//   - SmallWorkspaceDoesNotTripDefaultCap (smoke; the real cap-trip
+//     assertion is Docker integ TestBucket11c via WithSnapshotMaxBlobBytes).
+func RunSnapshotContract(t *testing.T, b container.Backend, image, name string) {
+	t.Helper()
+	if b.Capabilities().Snapshot != container.SnapshotFSCoW {
+		t.Skip("backend does not advertise SnapshotFSCoW; RunSnapshotContract N/A")
+	}
+	t.Run("WorkspaceMutationCapturedAndRestored", func(t *testing.T) { testSnapshotRoundTrip(t, b, image, name+"-a") })
+	t.Run("DeletedFileRestoredAsDeleted", func(t *testing.T) { testSnapshotDeleteRestore(t, b, image, name+"-b") })
+	t.Run("SmallWorkspaceDoesNotTripDefaultCap", func(t *testing.T) { testSnapshotSmallWorkspaceNoTrip(t, b, image, name+"-c") })
+}
+
+func testSnapshotRoundTrip(t *testing.T, b container.Backend, image, name string) {
+	ctx := context.Background()
+	h, err := b.Create(ctx, container.ContainerSpec{Name: name, Image: image})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(ctx, h) })
+
+	const wantPath = "/work/a.txt"
+	const wantBody = "hello captured\n"
+	if _, _, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && echo 'hello captured' > " + wantPath}); err != nil {
+		t.Fatalf("Exec write: %v", err)
+	}
+
+	ref, err := b.Snapshot(ctx, h)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if ref == "" {
+		t.Fatal("Snapshot returned empty ref")
+	}
+	if err := b.Destroy(ctx, h); err != nil {
+		t.Fatalf("Destroy (pre-Restore): %v", err)
+	}
+
+	h2, err := b.Restore(ctx, ref, name+"-restored")
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(ctx, h2) })
+	if h2.Name != name+"-restored" {
+		t.Errorf("Restore Handle.Name = %q, want %q", h2.Name, name+"-restored")
+	}
+
+	files, err := b.CaptureFiles(ctx, h2, []string{wantPath})
+	if err != nil {
+		t.Fatalf("CaptureFiles after Restore: %v", err)
+	}
+	if len(files) != 1 || string(files[0].Content) != wantBody {
+		t.Errorf("restored content = %q, want %q", files[0].Content, wantBody)
+	}
+}
+
+func testSnapshotDeleteRestore(t *testing.T, b container.Backend, image, name string) {
+	ctx := context.Background()
+	h, err := b.Create(ctx, container.ContainerSpec{Name: name, Image: image})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(ctx, h) })
+
+	// /etc/os-release is a real image-shipped file on alpine (NOT a daemon
+	// bind-mount like /etc/hostname which wouldn't show in ContainerDiff).
+	const addedPath = "/work/created.txt"
+	if _, _, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && echo new > " + addedPath + " && rm /etc/os-release"}); err != nil {
+		t.Fatalf("Exec setup: %v", err)
+	}
+	ref, err := b.Snapshot(ctx, h)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := b.Destroy(ctx, h); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	h2, err := b.Restore(ctx, ref, name+"-restored")
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(ctx, h2) })
+
+	files, err := b.CaptureFiles(ctx, h2, []string{addedPath})
+	if err != nil {
+		t.Errorf("CaptureFiles added: %v", err)
+	} else if len(files) != 1 || string(files[0].Content) != "new\n" {
+		t.Errorf("added file post-Restore: got %+v, want \"new\\n\"", files)
+	}
+	if _, err := b.CaptureFiles(ctx, h2, []string{"/etc/os-release"}); err == nil {
+		t.Errorf("CaptureFiles /etc/os-release post-Restore: err = nil, want missing-path error")
+	}
+}
+
+func testSnapshotSmallWorkspaceNoTrip(t *testing.T, b container.Backend, image, name string) {
+	ctx := context.Background()
+	h, err := b.Create(ctx, container.ContainerSpec{Name: name, Image: image})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(ctx, h) })
+
+	if _, _, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && head -c 10240 /dev/zero > /work/small.bin"}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if _, err := b.Snapshot(ctx, h); err != nil {
+		t.Errorf("Snapshot of ~10 KiB workspace: %v (default cap should be vastly larger)", err)
 	}
 }

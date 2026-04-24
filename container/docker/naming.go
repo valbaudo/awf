@@ -1,8 +1,11 @@
 // Package docker implements container.Backend against the Docker Engine SDK.
-// Slice 4.1 (Phase 4) ships the skeleton: image-mode Create + Destroy +
-// Capabilities; Exec, CaptureFiles, Snapshot, Restore are stubbed (return
-// *ErrNotImplementedInSlice41 after a ctx.Err() check). Slices 4.2 (Exec +
-// CaptureFiles), 4.3 (compose), 4.4 (Snapshot/Restore) fill the rest.
+// Phase 4 slices ship the implementation:
+//   - 4.1: image-mode Create + Destroy + Capabilities skeleton.
+//   - 4.2: real Exec + CaptureFiles (stdcopy demux + ctx-cancel watcher).
+//   - 4.3: compose-mode Create + Exec + Destroy (compose-go + compose/v2).
+//   - 4.4: Snapshot + Restore (streaming gzip-tar via ContainerDiff /
+//     CopyFromContainer through state.Blobs; 3-segment SnapshotRef
+//     embeds image + Cmd + Entrypoint; Restore streams via io.Pipe).
 //
 // See docs/superpowers/specs/2026-04-14-awf-phase4-design.md for the design.
 package docker
