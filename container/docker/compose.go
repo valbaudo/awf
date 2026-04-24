@@ -139,8 +139,8 @@ func (b *Backend) resolveContainerID(ctx context.Context, h cont.Handle, r regis
 // an error if 0 or >1 containers match.
 func (b *Backend) resolveComposeContainer(ctx context.Context, project, service string) (string, error) {
 	args := filters.NewArgs(
-		filters.Arg("label", "com.docker.compose.project="+project),
-		filters.Arg("label", "com.docker.compose.service="+service),
+		filters.Arg("label", api.ProjectLabel+"="+project),
+		filters.Arg("label", api.ServiceLabel+"="+service),
 	)
 	list, err := b.cli.ContainerList(ctx, dockerContainer.ListOptions{
 		All:     true,
