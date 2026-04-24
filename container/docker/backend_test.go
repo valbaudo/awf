@@ -51,7 +51,7 @@ func TestExecHonorsCtxCancelWithoutDaemon(t *testing.T) {
 	// Register a fake handle so the implementation doesn't reject on
 	// unknown-handle before checking ctx.
 	b.mu.Lock()
-	b.handles["fake-handle"] = "fake-handle"
+	b.handles["fake-handle"] = registeredContainer{kind: kindImage, dockerID: "fake-handle"}
 	b.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,7 +74,7 @@ func TestExecReturnsErrorOnUnknownHandle(t *testing.T) {
 func TestCaptureFilesHonorsCtxCancelWithoutDaemon(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc")
 	b.mu.Lock()
-	b.handles["fake-handle"] = "fake-handle"
+	b.handles["fake-handle"] = registeredContainer{kind: kindImage, dockerID: "fake-handle"}
 	b.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,7 +96,7 @@ func TestCaptureFilesReturnsErrorOnUnknownHandle(t *testing.T) {
 func TestCaptureFilesEmptyPathsReturnsEmpty(t *testing.T) {
 	b, _ := New(&client.Client{}, "run-abc")
 	b.mu.Lock()
-	b.handles["fake-handle"] = "fake-handle"
+	b.handles["fake-handle"] = registeredContainer{kind: kindImage, dockerID: "fake-handle"}
 	b.mu.Unlock()
 
 	out, err := b.CaptureFiles(context.Background(), container.Handle{Name: "lab", ID: "fake-handle"}, nil)

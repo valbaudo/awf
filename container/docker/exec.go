@@ -43,11 +43,23 @@ import (
 // container/backend.go Exec doc-comment). Callers MUST check err before
 // ranging over the channel.
 func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
-	dockerID, err := b.lookupHandle(ctx, "Exec", h)
+	r, err := b.lookupRegistered(ctx, "Exec", h)
 	if err != nil {
 		return container.ExecResult{}, nil, err
 	}
+	switch r.kind {
+	case kindImage:
+		return b.execImage(ctx, r.dockerID, cmd)
+	case kindCompose:
+		return b.execCompose(ctx, h, r, cmd)
+	default:
+		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: unknown handle kind %q (engine bug)", r.kind)
+	}
+}
 
+// execImage is the core Exec implementation for image-mode containers.
+// It is also called by execCompose after container ID resolution.
+func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
 	execCreateResp, err := b.cli.ContainerExecCreate(ctx, dockerID, dockerContainer.ExecOptions{
 		Cmd:          []string{"sh", "-c", cmd.Run},
 		Env:          envMapToSlice(cmd.Env),

@@ -15,6 +15,8 @@ import (
 	dockerContainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -195,29 +197,67 @@ func newTestBackend(t *testing.T, label string) (*client.Client, *Backend) {
 	return cli, b
 }
 
-// cleanupOrphans removes any container whose name starts with prefix.
-// Idempotent; safety net for tests that crash between Create and Destroy.
+// cleanupOrphans removes any container, network, or volume whose name starts
+// with prefix. Idempotent; safety net for tests that crash between Create
+// and Destroy. Slice 4.1 swept containers; slice 4.3 extends to networks
+// (compose project network) and volumes.
 func cleanupOrphans(t *testing.T, cli *client.Client, prefix string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	list, err := cli.ContainerList(ctx, dockerContainer.ListOptions{
+
+	// Containers.
+	cList, err := cli.ContainerList(ctx, dockerContainer.ListOptions{
 		All:     true,
 		Filters: filters.NewArgs(filters.Arg("name", prefix)),
 	})
 	if err != nil {
 		t.Logf("cleanupOrphans: ContainerList: %v", err)
-		return
+	} else {
+		for _, c := range cList {
+			for _, n := range c.Names {
+				if !strings.HasPrefix(strings.TrimPrefix(n, "/"), prefix) {
+					continue
+				}
+				if err := cli.ContainerRemove(ctx, c.ID, dockerContainer.RemoveOptions{Force: true}); err != nil {
+					t.Logf("cleanupOrphans: ContainerRemove(%s): %v", c.ID, err)
+				}
+				break
+			}
+		}
 	}
-	for _, c := range list {
-		for _, n := range c.Names {
-			if !strings.HasPrefix(strings.TrimPrefix(n, "/"), prefix) {
+
+	// Networks (compose creates `<project>_default` and named ones).
+	nList, err := cli.NetworkList(ctx, network.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("name", prefix)),
+	})
+	if err != nil {
+		t.Logf("cleanupOrphans: NetworkList: %v", err)
+	} else {
+		for _, n := range nList {
+			if !strings.HasPrefix(n.Name, prefix) {
 				continue
 			}
-			if err := cli.ContainerRemove(ctx, c.ID, dockerContainer.RemoveOptions{Force: true}); err != nil {
-				t.Logf("cleanupOrphans: ContainerRemove(%s): %v", c.ID, err)
+			if err := cli.NetworkRemove(ctx, n.ID); err != nil {
+				t.Logf("cleanupOrphans: NetworkRemove(%s): %v", n.Name, err)
 			}
-			break
+		}
+	}
+
+	// Volumes.
+	vList, err := cli.VolumeList(ctx, volume.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("name", prefix)),
+	})
+	if err != nil {
+		t.Logf("cleanupOrphans: VolumeList: %v", err)
+	} else {
+		for _, v := range vList.Volumes {
+			if v == nil || !strings.HasPrefix(v.Name, prefix) {
+				continue
+			}
+			if err := cli.VolumeRemove(ctx, v.Name, true); err != nil {
+				t.Logf("cleanupOrphans: VolumeRemove(%s): %v", v.Name, err)
+			}
 		}
 	}
 }

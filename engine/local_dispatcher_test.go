@@ -567,3 +567,26 @@ func TestLocalDispatcherFakePathStillUsesExecAWFOutput(t *testing.T) {
 		t.Errorf("Outcome = %v, want ok (dispatcher should NOT capture tempfile on the fake path)", dr.Outcome)
 	}
 }
+
+func TestSplitContainerRefNoColon(t *testing.T) {
+	bare, svc := engine.SplitContainerRef("lab")
+	if bare != "lab" || svc != "" {
+		t.Errorf("SplitContainerRef(\"lab\") = (%q, %q), want (\"lab\", \"\")", bare, svc)
+	}
+}
+
+func TestSplitContainerRefWithColon(t *testing.T) {
+	bare, svc := engine.SplitContainerRef("lab:db")
+	if bare != "lab" || svc != "db" {
+		t.Errorf("SplitContainerRef(\"lab:db\") = (%q, %q), want (\"lab\", \"db\")", bare, svc)
+	}
+}
+
+func TestSplitContainerRefMultipleColons(t *testing.T) {
+	// "lab:db:replica" → ("lab", "db:replica"). The Backend may further
+	// split or reject; the dispatcher only splits the first colon.
+	bare, svc := engine.SplitContainerRef("lab:db:replica")
+	if bare != "lab" || svc != "db:replica" {
+		t.Errorf("SplitContainerRef(\"lab:db:replica\") = (%q, %q), want (\"lab\", \"db:replica\")", bare, svc)
+	}
+}

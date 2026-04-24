@@ -106,23 +106,36 @@ const (
 	SnapshotFSCoW SnapshotMode = "fs-cow"
 )
 
-// ContainerSpec describes a container the engine wants Created. Slice 4.1
-// (Phase 4) extends with Image (digest-pinned OCI ref) and Resources (CPU/Mem
-// limits) for the Docker backend. The Phase 2 fake ignores both — its
-// scripted Exec table is keyed on Cmd.Run alone.
+// ContainerSpec describes a container the engine wants Created. The Backend
+// dispatches on which mode-specific fields are populated:
 //
-// Compose-mode fields land in slice 4.3.
+//   - Image-mode (slice 4.1): Image required, Resources optional, Compose nil.
+//   - Compose-mode (slice 4.3): Compose+ComposePath+Service required, Image
+//     empty, Resources nil (per-service resources live in the compose file).
+//
+// The Phase 2 fake ignores every field except Name — its scripted Exec table
+// is keyed on Cmd.Run alone, and Create returns a Handle{Service: ""} for any
+// spec shape (matches the image-mode equivalence for the fake's purposes).
 type ContainerSpec struct {
-	Name      string
-	Image     string              // OCI ref, digest-pinned; empty in compose mode (slice 4.3)
-	Resources *ContainerResources // CPU/Mem limits; nil = unlimited
+	Name string
+
+	// Image-mode fields (slice 4.1).
+	Image     string
+	Resources *ContainerResources
+
+	// Compose-mode fields (slice 4.3). Compose bytes flow from
+	// ir.LoadedDefinition.ComposeFiles (validator already digest-pinned them);
+	// ComposePath is the workflow-relative path (compose-go filename hint);
+	// Service is the default service from IR §3 `service:` (steps exec into it
+	// unless they override via `container: lab:db`).
+	Compose     []byte
+	ComposePath string
+	Service     string
 }
 
 // ContainerResources mirrors the IR Container.Resources fields (spec §3) for
-// transport to the Backend. CPU is a vCPU count as a string (matches ir.Resources.CPU's
-// string type; "" means unlimited). Mem is a docker-units string ("4Gi", "512Mi";
-// "" means unlimited). The Docker Backend parses CPU via strconv.Atoi → NanoCPUs
-// and Mem via go-units.RAMInBytes; the fake ignores both fields.
+// transport to the Backend. Image-mode only — for compose-mode, per-service
+// resources are declared in the compose file.
 type ContainerResources struct {
 	CPU string
 	Mem string
@@ -130,9 +143,15 @@ type ContainerResources struct {
 
 // Handle identifies a Created container. Treated as opaque by the engine;
 // only the Backend that produced it may consume it.
+//
+// Service is non-empty iff the handle is compose-shaped — it's the service
+// the next Exec call will route to. The engine dispatcher (engine/local_dispatcher.go
+// runCode) MAY override Service by cloning the Handle value before passing
+// to Exec — this is the spec §3 `container: lab:db` cross-service form.
 type Handle struct {
-	Name string // declared container name, copied from ContainerSpec.Name
-	ID   string // backend-internal identifier (Phase 2 fake: monotonic counter)
+	Name    string
+	ID      string
+	Service string
 }
 
 // Cmd describes a command to Exec. Run is the shell command (from CodeStep.Run

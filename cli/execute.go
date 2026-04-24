@@ -50,7 +50,7 @@ func (r *Runner) runAndFinish(
 	broker *signal.Broker,
 	skipTeardown *bool,
 ) int {
-	dispatcher := &engine.LocalDispatcher{Backend: r.Backend, Handles: handles}
+	dispatcher := &engine.LocalDispatcher{Backend: r.Backend, Handles: handles, ComposeFiles: ld.ComposeFiles}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout, broker)
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished
