@@ -21,12 +21,6 @@ import (
 // deletesManifestPath is the fixed in-tar path of the deletes sidecar file.
 const deletesManifestPath = ".awf-deletes"
 
-const (
-	typeflagReg     = tar.TypeReg
-	typeflagDir     = tar.TypeDir
-	typeflagSymlink = tar.TypeSymlink
-)
-
 // ErrSnapshotTooLarge is returned by Snapshot when the gzip-compressed
 // diff-tar exceeds the Backend's snapshotMaxBlobBytes cap (default 256 MiB;
 // override via WithSnapshotMaxBlobBytes). The engine (slice 4.5+ wiring)
@@ -190,32 +184,6 @@ func (dw *diffTarWriter) Close() error {
 	return dw.gw.Close()
 }
 
-// tarReaderForTest is a thin test-side wrapper around archive/tar.
-type tarReaderForTest struct {
-	tr *tar.Reader
-}
-
-func newTarReaderForTest(r io.Reader) *tarReaderForTest {
-	return &tarReaderForTest{tr: tar.NewReader(r)}
-}
-
-func (t *tarReaderForTest) next() (hdr *tar.Header, body []byte, done bool, err error) {
-	hdr, err = t.tr.Next()
-	if err == io.EOF {
-		return nil, nil, true, nil
-	}
-	if err != nil {
-		return nil, nil, false, err
-	}
-	if hdr.Size > 0 {
-		body, err = io.ReadAll(t.tr)
-		if err != nil {
-			return nil, nil, false, err
-		}
-	}
-	return hdr, body, false, nil
-}
-
 // Snapshot captures the workspace state of an image-mode container as a
 // gzip-compressed CoW diff (Phase 4 design decision 4 + slice 4.4 Design
 // Q5/Q8):
@@ -370,12 +338,10 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	}
 
 	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
-		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
-		return container.Handle{}, fmt.Errorf("container/docker: Restore: ContainerStart: %w", err)
+		return b.restoreFail(ctx, resp.ID, "ContainerStart", err)
 	}
 	if err := b.waitReady(ctx, resp.ID); err != nil {
-		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
-		return container.Handle{}, fmt.Errorf("container/docker: Restore: waitReady: %w", err)
+		return b.restoreFail(ctx, resp.ID, "waitReady", err)
 	}
 
 	// Stream the diff via io.Pipe: one goroutine writes plain tar to pw;
@@ -406,19 +372,16 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	_ = pr.CloseWithError(copyErr)
 	deletes := <-deletesCh
 	if copyErr != nil {
-		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
-		return container.Handle{}, fmt.Errorf("container/docker: Restore: CopyToContainer: %w", copyErr)
+		return b.restoreFail(ctx, resp.ID, "CopyToContainer", copyErr)
 	}
 
 	for _, del := range deletes {
 		result, _, execErr := b.execImage(ctx, resp.ID, container.Cmd{Run: "rm -rf -- " + shellQuotePath(del)})
 		if execErr != nil {
-			_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
-			return container.Handle{}, fmt.Errorf("container/docker: Restore: delete %q: %w", del, execErr)
+			return b.restoreFail(ctx, resp.ID, fmt.Sprintf("delete %q", del), execErr)
 		}
 		if result.ExitCode != 0 {
-			_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
-			return container.Handle{}, fmt.Errorf("container/docker: Restore: delete %q exited %d", del, result.ExitCode)
+			return b.restoreFail(ctx, resp.ID, fmt.Sprintf("delete %q exited %d", del, result.ExitCode), nil)
 		}
 	}
 
@@ -427,6 +390,18 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	b.mu.Unlock()
 
 	return container.Handle{Name: name, ID: resp.ID}, nil
+}
+
+// restoreFail force-removes the partially-created container and returns a
+// wrapped error for the caller. Used by Restore's mid-flight failure paths
+// (ContainerStart, waitReady, CopyToContainer, per-delete Exec). When cause
+// is nil, the message itself carries the diagnostic.
+func (b *Backend) restoreFail(ctx context.Context, containerID, stage string, cause error) (container.Handle, error) {
+	_ = b.cli.ContainerRemove(ctx, containerID, dockerContainer.RemoveOptions{Force: true})
+	if cause != nil {
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: %s: %w", stage, cause)
+	}
+	return container.Handle{}, fmt.Errorf("container/docker: Restore: %s", stage)
 }
 
 // streamPlainTarFromDiff reads a gzipped diff-tar (in RAM) and writes a

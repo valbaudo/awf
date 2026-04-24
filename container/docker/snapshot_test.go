@@ -215,7 +215,7 @@ func TestDiffTarWriter_CapExceededReturnsTypedError(t *testing.T) {
 
 // readDiffTar is a TEST-ONLY helper that materializes the diff into shape
 // maps for round-trip verification. Production Restore uses an io.Pipe
-// streaming pass (Task 4); this helper is for assertion convenience only.
+// streaming pass; this helper is for assertion convenience only.
 func readDiffTar(r io.Reader) (adds map[string][]byte, syms map[string]string, dirs map[string]bool, deletes []string, err error) {
 	adds, syms, dirs = map[string][]byte{}, map[string]string{}, map[string]bool{}
 	gr, err := gzip.NewReader(r)
@@ -223,14 +223,21 @@ func readDiffTar(r io.Reader) (adds map[string][]byte, syms map[string]string, d
 		return nil, nil, nil, nil, err
 	}
 	defer func() { _ = gr.Close() }()
-	tr := newTarReaderForTest(gr)
+	tr := tar.NewReader(gr)
 	for {
-		hdr, body, done, err := tr.next()
-		if done {
+		hdr, err := tr.Next()
+		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, nil, nil, nil, err
+		}
+		var body []byte
+		if hdr.Size > 0 {
+			body, err = io.ReadAll(tr)
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
 		}
 		switch {
 		case hdr.Name == deletesManifestPath:
@@ -239,11 +246,11 @@ func readDiffTar(r io.Reader) (adds map[string][]byte, syms map[string]string, d
 					deletes = append(deletes, line)
 				}
 			}
-		case hdr.Typeflag == typeflagSymlink:
+		case hdr.Typeflag == tar.TypeSymlink:
 			syms[hdr.Name] = hdr.Linkname
-		case hdr.Typeflag == typeflagDir:
+		case hdr.Typeflag == tar.TypeDir:
 			dirs[hdr.Name] = true
-		case hdr.Typeflag == typeflagReg:
+		case hdr.Typeflag == tar.TypeReg:
 			adds[hdr.Name] = body
 		}
 	}
