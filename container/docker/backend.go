@@ -15,6 +15,7 @@ import (
 	units "github.com/docker/go-units"
 
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/state"
 )
 
 // containerKind is the discriminator for registeredContainer. Defined as a
@@ -53,46 +54,94 @@ type registeredContainer struct {
 
 // Backend is the Docker Engine SDK implementation of container.Backend.
 // Slice 4.1 ships the skeleton; 4.2 added real Exec + CaptureFiles; 4.3 adds
-// compose-mode Create + Exec + Destroy.
+// compose-mode Create + Exec + Destroy; 4.4 adds Snapshot + Restore.
 //
-// composeOnce + composeCli + composeErr together implement thread-safe lazy
-// initialization of the docker/cli command.Cli (needed by compose.NewComposeService).
-// Phase 3's engine/parallel.go (errgroup) and engine/map.go (`go func()`)
-// can call Backend.Create concurrently — a bare `if cli == nil { init }`
-// would race. sync.Once gives us race-free init with the error cached so a
-// once-failed init doesn't retry.
+// blobs is the content-addressed artifact store used by Snapshot/Restore
+// (slice 4.4). Required at construction time.
+//
+// snapshotMaxBlobBytes caps the gzip-compressed diff-tar blob size used by
+// Snapshot (slice 4.4). Default snapshotDefaultMaxBlobBytes (256 MiB);
+// override via WithSnapshotMaxBlobBytes. The Snapshot impl lands in Task 4;
+// this commit ships the configurable cap.
 type Backend struct {
 	cli   *client.Client
 	runID string
+	blobs state.Blobs
+
+	snapshotMaxBlobBytes int64
 
 	mu      sync.Mutex
 	handles map[string]registeredContainer
 
+	// composeOnce + composeCli + composeErr together implement thread-safe
+	// lazy initialization of the docker/cli command.Cli (needed by
+	// compose.NewComposeService). Phase 3's engine/parallel.go (errgroup)
+	// and engine/map.go (`go func()`) can call Backend.Create concurrently —
+	// a bare `if cli == nil { init }` would race. sync.Once gives us
+	// race-free init with the error cached so a once-failed init doesn't
+	// retry.
 	composeOnce sync.Once   // lazy compose.Cli init (compose-mode)
 	composeCli  command.Cli // compose-mode
 	composeErr  error       // compose-mode
 }
 
-// New constructs a Docker Backend bound to a specific run. Both arguments
-// are required: cli for daemon talk, runID for the container-name prefix
-// per Phase 4 design decision 9 (parallel runs on one host MUST NOT
-// collide; the per-run prefix guarantees this).
+// Option is a functional option for New. Idiomatic fallible-option pattern
+// (gRPC, OTel, Cobra precedent).
+type Option func(*Backend) error
+
+// WithSnapshotMaxBlobBytes overrides the default Snapshot blob-size cap
+// (256 MiB). The cap is on the GZIP-COMPRESSED tar bytes (the blob that
+// goes through state.Blobs.Put), NOT on the underlying workspace mutation.
+// Text-heavy workspaces compress 3-10×, so 256 MiB of compressed blob
+// corresponds to roughly 1 GiB of typical text content.
 //
-// Slice 4.1 callers construct cli via
-// client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation());
-// slice 4.5 will introduce a shared helper at the CLI boundary.
-func New(cli *client.Client, runID string) (*Backend, error) {
+// Rejects n <= 0 (operator footgun: WithSnapshotMaxBlobBytes(0) would
+// make every Snapshot fail; explicit rejection at New time surfaces the
+// typo loudly rather than at the first Snapshot call).
+func WithSnapshotMaxBlobBytes(n int64) Option {
+	return func(b *Backend) error {
+		if n <= 0 {
+			return fmt.Errorf("container/docker: WithSnapshotMaxBlobBytes: n must be > 0, got %d", n)
+		}
+		b.snapshotMaxBlobBytes = n
+		return nil
+	}
+}
+
+const snapshotDefaultMaxBlobBytes int64 = 256 << 20 // 256 MiB (compressed)
+
+// New constructs a Docker Backend bound to a specific run.
+//
+//   - cli:   the Docker Engine client.
+//   - runID: per-run container-name prefix (Phase 4 design decision 9).
+//   - blobs: content-addressed artifact store for Snapshot/Restore.
+//   - opts:  optional behavior overrides (today: WithSnapshotMaxBlobBytes).
+//
+// All three required args are nil-checked. Slice 4.5's CLI run constructor
+// will pass the same Blobs the dispatcher uses at commit time.
+func New(cli *client.Client, runID string, blobs state.Blobs, opts ...Option) (*Backend, error) {
 	if cli == nil {
 		return nil, errors.New("container/docker: New: cli is required")
 	}
 	if runID == "" {
 		return nil, errors.New("container/docker: New: runID is required (used for container naming)")
 	}
-	return &Backend{
-		cli:     cli,
-		runID:   runID,
-		handles: map[string]registeredContainer{},
-	}, nil
+	if blobs == nil {
+		return nil, errors.New("container/docker: New: blobs is required (Snapshot/Restore Put/Get against it)")
+	}
+	b := &Backend{
+		cli:                  cli,
+		runID:                runID,
+		blobs:                blobs,
+		handles:              map[string]registeredContainer{},
+		snapshotMaxBlobBytes: snapshotDefaultMaxBlobBytes,
+	}
+	for _, opt := range opts {
+		if err := opt(b); err != nil {
+			return nil, err
+		}
+	}
+	return b, nil
 }
 
 // Capabilities advertises SnapshotFSCoW. The actual Snapshot implementation
@@ -133,6 +182,7 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	name := containerName(b.runID, spec.Name)
 	cfg := &dockerContainer.Config{
 		Image: spec.Image,
+		Cmd:   spec.Cmd, // nil/empty → image default applies (slice 4.4 Q9)
 	}
 	hostCfg := &dockerContainer.HostConfig{}
 	if spec.Resources != nil {

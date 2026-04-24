@@ -109,25 +109,29 @@ const (
 // ContainerSpec describes a container the engine wants Created. The Backend
 // dispatches on which mode-specific fields are populated:
 //
-//   - Image-mode (slice 4.1): Image required, Resources optional, Compose nil.
-//   - Compose-mode (slice 4.3): Compose+ComposePath+Service required, Image
-//     empty, Resources nil (per-service resources live in the compose file).
+//   - Image-mode (slice 4.1): Image required, Resources optional, Cmd
+//     optional, Compose nil.
+//   - Compose-mode (slice 4.3): Compose+ComposePath+Service required,
+//     Image empty, Resources/Cmd nil (per-service config lives in the
+//     compose file).
 //
-// The Phase 2 fake ignores every field except Name — its scripted Exec table
-// is keyed on Cmd.Run alone, and Create returns a Handle{Service: ""} for any
-// spec shape (matches the image-mode equivalence for the fake's purposes).
+// The Phase 2 fake ignores every field except Name.
 type ContainerSpec struct {
 	Name string
 
-	// Image-mode fields (slice 4.1).
+	// Image-mode fields.
 	Image     string
 	Resources *ContainerResources
+	// Cmd is an optional override for the image's CMD instruction. When
+	// nil or empty, the image's default Cmd applies. Slice 4.4 adds this
+	// field so test fixtures can inject a long-running entrypoint into
+	// short-CMD images (e.g., alpine's /bin/sh → sleep infinity) without
+	// bypassing Backend.Create. Today's engine.ContainerSpecFor never
+	// populates Cmd; a future IR slice adding `cmd: [...]` to Container
+	// declarations would.
+	Cmd []string
 
-	// Compose-mode fields (slice 4.3). Compose bytes flow from
-	// ir.LoadedDefinition.ComposeFiles (validator already digest-pinned them);
-	// ComposePath is the workflow-relative path (compose-go filename hint);
-	// Service is the default service from IR §3 `service:` (steps exec into it
-	// unless they override via `container: lab:db`).
+	// Compose-mode fields (slice 4.3).
 	Compose     []byte
 	ComposePath string
 	Service     string

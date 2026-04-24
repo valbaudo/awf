@@ -9,10 +9,11 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/state"
 )
 
 func TestNewRequiresClient(t *testing.T) {
-	_, err := New(nil, "run-abc")
+	_, err := New(nil, "run-abc", state.NewInMemoryBlobs())
 	if err == nil || !strings.Contains(err.Error(), "cli is required") {
 		t.Errorf("New(nil, ...): err = %v", err)
 	}
@@ -20,15 +21,38 @@ func TestNewRequiresClient(t *testing.T) {
 
 func TestNewRequiresRunID(t *testing.T) {
 	cli := &client.Client{} // zero-value is fine — we never call into it.
-	_, err := New(cli, "")
+	_, err := New(cli, "", state.NewInMemoryBlobs())
 	if err == nil || !strings.Contains(err.Error(), "runID is required") {
 		t.Errorf("New(_, \"\"): err = %v", err)
 	}
 }
 
+func TestNewRejectsNilBlobs(t *testing.T) {
+	_, err := New(&client.Client{}, "run-abc", nil)
+	if err == nil {
+		t.Fatal("New with nil blobs: err = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "blobs is required") {
+		t.Errorf("err = %q, want to contain \"blobs is required\"", err)
+	}
+}
+
+func TestWithSnapshotMaxBlobBytesRejectsZeroAndNegative(t *testing.T) {
+	for _, n := range []int64{0, -1, -1024} {
+		_, err := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs(), WithSnapshotMaxBlobBytes(n))
+		if err == nil {
+			t.Errorf("New with WithSnapshotMaxBlobBytes(%d): err = nil, want non-nil", n)
+			continue
+		}
+		if !strings.Contains(err.Error(), "WithSnapshotMaxBlobBytes") {
+			t.Errorf("WithSnapshotMaxBlobBytes(%d): err = %q, want to mention \"WithSnapshotMaxBlobBytes\"", n, err)
+		}
+	}
+}
+
 func TestNewSucceeds(t *testing.T) {
 	cli := &client.Client{}
-	b, err := New(cli, "run-abc")
+	b, err := New(cli, "run-abc", state.NewInMemoryBlobs())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -38,7 +62,7 @@ func TestNewSucceeds(t *testing.T) {
 }
 
 func TestCapabilitiesAdvertisesFSCoW(t *testing.T) {
-	b, _ := New(&client.Client{}, "run-abc")
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
 	if got := b.Capabilities().Snapshot; got != container.SnapshotFSCoW {
 		t.Errorf("Capabilities().Snapshot = %q, want %q", got, container.SnapshotFSCoW)
 	}
@@ -47,7 +71,7 @@ func TestCapabilitiesAdvertisesFSCoW(t *testing.T) {
 func TestExecHonorsCtxCancelWithoutDaemon(t *testing.T) {
 	// Construct a Backend with a real-shaped client.Client (zero value is
 	// fine — we never reach a daemon call because ctx is pre-cancelled).
-	b, _ := New(&client.Client{}, "run-abc")
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
 	// Register a fake handle so the implementation doesn't reject on
 	// unknown-handle before checking ctx.
 	b.mu.Lock()
@@ -63,7 +87,7 @@ func TestExecHonorsCtxCancelWithoutDaemon(t *testing.T) {
 }
 
 func TestExecReturnsErrorOnUnknownHandle(t *testing.T) {
-	b, _ := New(&client.Client{}, "run-abc")
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
 	_, _, err := b.Exec(context.Background(), container.Handle{Name: "lab", ID: "never-created"}, container.Cmd{Run: "/bin/true"})
 	if err == nil {
 		t.Fatal("Exec on unknown handle: err = nil, want non-nil")
@@ -72,7 +96,7 @@ func TestExecReturnsErrorOnUnknownHandle(t *testing.T) {
 }
 
 func TestCaptureFilesHonorsCtxCancelWithoutDaemon(t *testing.T) {
-	b, _ := New(&client.Client{}, "run-abc")
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
 	b.mu.Lock()
 	b.handles["fake-handle"] = registeredContainer{kind: kindImage, dockerID: "fake-handle"}
 	b.mu.Unlock()
@@ -86,7 +110,7 @@ func TestCaptureFilesHonorsCtxCancelWithoutDaemon(t *testing.T) {
 }
 
 func TestCaptureFilesReturnsErrorOnUnknownHandle(t *testing.T) {
-	b, _ := New(&client.Client{}, "run-abc")
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
 	_, err := b.CaptureFiles(context.Background(), container.Handle{Name: "lab", ID: "never-created"}, []string{"/etc/hosts"})
 	if err == nil {
 		t.Fatal("CaptureFiles on unknown handle: err = nil, want non-nil")
@@ -94,7 +118,7 @@ func TestCaptureFilesReturnsErrorOnUnknownHandle(t *testing.T) {
 }
 
 func TestCaptureFilesEmptyPathsReturnsEmpty(t *testing.T) {
-	b, _ := New(&client.Client{}, "run-abc")
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
 	b.mu.Lock()
 	b.handles["fake-handle"] = registeredContainer{kind: kindImage, dockerID: "fake-handle"}
 	b.mu.Unlock()
@@ -109,7 +133,7 @@ func TestCaptureFilesEmptyPathsReturnsEmpty(t *testing.T) {
 }
 
 func TestSnapshotReturnsNotImplemented(t *testing.T) {
-	b, _ := New(&client.Client{}, "run-abc")
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
 	_, err := b.Snapshot(context.Background(), container.Handle{})
 	var stubErr *ErrNotImplementedInSlice41
 	if !errors.As(err, &stubErr) {
@@ -121,7 +145,7 @@ func TestSnapshotReturnsNotImplemented(t *testing.T) {
 }
 
 func TestRestoreReturnsNotImplemented(t *testing.T) {
-	b, _ := New(&client.Client{}, "run-abc")
+	b, _ := New(&client.Client{}, "run-abc", state.NewInMemoryBlobs())
 	_, err := b.Restore(context.Background(), container.SnapshotRef("any"))
 	var stubErr *ErrNotImplementedInSlice41
 	if !errors.As(err, &stubErr) {

@@ -23,6 +23,7 @@ import (
 
 	cont "github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/container/backendtest"
+	"github.com/valbaudo/awf/state"
 )
 
 // alpineDigest pins the fixture image. Update via:
@@ -186,7 +187,8 @@ func newTestBackend(t *testing.T, label string) (*client.Client, *Backend) {
 		t.Fatalf("newDockerClient: %v", err)
 	}
 	runID := fmt.Sprintf("test-%s-%d", label, time.Now().UnixNano())
-	b, err := New(cli, runID)
+	blobs := state.NewInMemoryBlobs()
+	b, err := New(cli, runID, blobs)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
