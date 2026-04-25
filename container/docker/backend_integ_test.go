@@ -194,6 +194,10 @@ func newTestBackend(t *testing.T, label string) (*client.Client, *Backend) {
 	}
 	t.Cleanup(func() {
 		cleanupOrphans(t, cli, containerPrefix(runID))
+		// b.Close() releases the lazy composeCli's wrapped client (compose-
+		// mode tests only; image-mode tests no-op). Must happen BEFORE
+		// cli.Close() so cleanupOrphans (which uses cli) still works.
+		_ = b.Close()
 		_ = cli.Close()
 	})
 	return cli, b

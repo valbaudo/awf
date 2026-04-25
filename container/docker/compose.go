@@ -46,6 +46,34 @@ func (b *Backend) createCompose(ctx context.Context, spec cont.ContainerSpec) (c
 		return cont.Handle{}, fmt.Errorf("container/docker: createCompose: loadComposeProject: %w", err)
 	}
 
+	// Post-load label propagation. compose-go's loader does NOT populate
+	// service.CustomLabels — the official compose CLI sets them in its
+	// ToProject helper (cmd/compose/compose.go:340-353 in v2.40.3). Without
+	// this step, containers created by compose.Up DO NOT get the
+	// `com.docker.compose.project=<name>` label, and compose-go's internal
+	// ContainerList(projectFilter + oneOffFilter(false)) returns zero —
+	// failing with "no container found for project" (start.go reconstructing
+	// the project) or "service X has no container to start" (convergence.go
+	// scaling step). OneoffLabel="False" is load-bearing because the start
+	// query filters with oneOffFilter(false).
+	//
+	// We populate the minimum CLI label set: ProjectLabel, ServiceLabel,
+	// VersionLabel, OneoffLabel. WorkingDirLabel + ConfigFilesLabel are
+	// observability metadata used by `docker compose ls` output; not load-
+	// bearing for our Up→Exec→Down flow but cheap to include for parity.
+	for name, s := range project.Services {
+		if s.CustomLabels == nil {
+			s.CustomLabels = composetypes.Labels{}
+		}
+		s.CustomLabels[api.ProjectLabel] = project.Name
+		s.CustomLabels[api.ServiceLabel] = name
+		s.CustomLabels[api.VersionLabel] = api.ComposeVersion
+		s.CustomLabels[api.OneoffLabel] = "False"
+		s.CustomLabels[api.WorkingDirLabel] = project.WorkingDir
+		s.CustomLabels[api.ConfigFilesLabel] = spec.ComposePath
+		project.Services[name] = s
+	}
+
 	// Lazy-construct command.Cli + api.Compose on first compose-mode Create.
 	// ensureComposeCli is race-safe via sync.Once.
 	cli, err := b.ensureComposeCli()

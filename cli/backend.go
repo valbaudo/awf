@@ -43,7 +43,14 @@ func newBackend(ctx context.Context, kind, runID string, blobs state.Blobs) (con
 			_ = cli.Close()
 			return nil, nil, fmt.Errorf("cli: construct docker backend: %w", err)
 		}
-		return b, func() { _ = cli.Close() }, nil
+		// Cleanup closes BOTH the externally-owned dockerclient AND the
+		// internally-owned composeCli's wrapped client. Without b.Close(),
+		// compose-mode Backends leak HTTP transport goroutines (goleak
+		// detects them in CI).
+		return b, func() {
+			_ = b.Close()
+			_ = cli.Close()
+		}, nil
 	default:
 		// Catches "" (caller bug — readBackendKindFromLog defaults legacy
 		// empties to docker before calling here) AND unknown kinds.

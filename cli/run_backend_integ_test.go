@@ -215,34 +215,26 @@ func TestCLIRunCVEPipelineRealDockerToFirstAgentStep(t *testing.T) {
 		t.Fatalf("rc = %d, want non-zero (first agent step should error)\nstdout: %s\nstderr: %s", rc, stdout.String(), stderr.String())
 	}
 
-	logPath := filepath.Join(stateDir, "runs", runID, "log")
-	fl, err := state.OpenLog(logPath, clock.System{})
-	if err != nil {
-		t.Fatalf("OpenLog: %v", err)
+	// The engine returns ErrNodeNotImplemented for agent steps. cli/execute.go
+	// maps this to ("", err) → "internal error: ..." on stderr → ExitUsage,
+	// WITHOUT writing a node.failed event (it's a runtime kind-not-implemented
+	// error, not a step-outcome failure). The right assertion is the same
+	// pattern TestCLIRunCVEPipelineErrorsAtFirstAgentStep (fake-backed) uses
+	// at cli/run_test.go: substring-check stderr for "not implemented"
+	// + "triage" — proves we reached the first agent step.
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(combined, "not implemented") {
+		t.Fatalf("output missing 'not implemented' — graph didn't reach the first agent step.\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
 	}
-	defer func() { _ = fl.Close() }()
-	events, err := fl.Fold()
-	if err != nil {
-		t.Fatalf("Fold: %v", err)
+	if !strings.Contains(combined, "triage") {
+		t.Fatalf("output missing 'triage' path — failure was elsewhere in the graph.\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
 	}
-	var sawTriageFailed bool
-	for _, e := range events {
-		if e.Type == engine.EventNodeFailed && e.Path == "triage" {
-			var d engine.NodeFailedData
-			if err := json.Unmarshal(e.Data, &d); err != nil {
-				t.Fatalf("Unmarshal NodeFailedData: %v", err)
-			}
-			sawTriageFailed = true
-			// Sanity: failure should mention "not implemented" (Phase 5).
-			// Wording-only diagnostic; doesn't gate the test.
-			if !strings.Contains(d.Error, "not implemented") {
-				t.Logf("note: triage failed but error %q doesn't mention 'not implemented'", d.Error)
-			}
-			break
-		}
-	}
-	if !sawTriageFailed {
-		t.Fatalf("no node.failed event at path \"triage\" — graph didn't reach the first agent step, which means the lab compose project FAILED to boot.\nstdout: %s\nstderr: %s\nevents: %d", stdout.String(), stderr.String(), len(events))
+	// Structural proof the lab booted: if Create failed, the error has
+	// "create container" in it (per cli/run.go's create-handles loop). We
+	// reached the agent step, so by construction Create succeeded for every
+	// declared container — the lab compose project booted cleanly.
+	if strings.Contains(combined, "create container") {
+		t.Fatalf("Create failed — the lab compose project did NOT boot.\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
 	}
 }
 

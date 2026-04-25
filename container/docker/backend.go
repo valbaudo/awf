@@ -303,6 +303,35 @@ func (b *Backend) ensureComposeCli() (command.Cli, error) {
 	return b.composeCli, b.composeErr
 }
 
+// Close releases internal resources the Backend itself owns. Currently:
+// the lazy composeCli's wrapped Docker client (constructed by
+// command.NewDockerCli inside newComposeCli — separate from b.cli, which
+// is owned by the caller of New() and must be closed by them).
+//
+// Without this, image-mode Backends with NO compose use leak nothing
+// (composeCli never initialized), but compose-mode Backends leak the
+// composeCli's HTTP transport goroutines on test teardown — surfaced by
+// goleak.VerifyTestMain in main_test.go.
+//
+// Not part of the container.Backend interface (CLAUDE.md "seams as
+// designed — no more"): docker is the only Backend with internal
+// resources to release. Image-mode-only tests don't need to call Close;
+// integ tests that use compose-mode AND production cli/backend.go's
+// newBackend cleanup func both call it defensively.
+//
+// Idempotent; safe to call on a Backend that never created compose-mode
+// state.
+func (b *Backend) Close() error {
+	if b.composeCli == nil {
+		return nil
+	}
+	c := b.composeCli.Client()
+	if c == nil {
+		return nil
+	}
+	return c.Close()
+}
+
 // waitReady polls ContainerInspect until State.Health.Status == "healthy" IF
 // the container has a healthcheck. Containers without a healthcheck return
 // ready immediately (the entrypoint is responsible for readiness — spec §3).
