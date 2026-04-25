@@ -19,8 +19,6 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 
-	cerrdefs "github.com/containerd/errdefs"
-
 	cont "github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/container/backendtest"
 	"github.com/valbaudo/awf/state"
@@ -44,56 +42,6 @@ const alpineDigest = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35
 // hard-fails against older Docker installs on dev machines).
 func newDockerClient() (*client.Client, error) {
 	return client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-}
-
-func TestBucket9a_CreateAndDestroy(t *testing.T) {
-	cli, b := newTestBackend(t, "bucket9a-create")
-
-	ctx := context.Background()
-	if err := pullImage(ctx, cli, alpineDigest); err != nil {
-		t.Fatalf("pull: %v", err)
-	}
-
-	spec := cont.ContainerSpec{
-		Name:  "lab",
-		Image: alpineDigest,
-	}
-	h, err := b.Create(ctx, spec)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if h.Name != "lab" {
-		t.Errorf("Handle.Name = %q, want \"lab\"", h.Name)
-	}
-	if h.ID == "" {
-		t.Errorf("Handle.ID empty")
-	}
-
-	// Verify the container exists from Docker's perspective.
-	info, inspectErr := cli.ContainerInspect(ctx, h.ID)
-	if inspectErr != nil {
-		t.Fatalf("ContainerInspect: %v", inspectErr)
-	}
-	wantName := "/" + containerName(b.runID, "lab")
-	if info.Name != wantName {
-		t.Errorf("docker name = %q, want %q", info.Name, wantName)
-	}
-
-	if err := b.Destroy(ctx, h); err != nil {
-		t.Errorf("Destroy: %v", err)
-	}
-
-	// Second destroy: error (matches the fake / os.File.Close convention).
-	if err := b.Destroy(ctx, h); err == nil {
-		t.Errorf("second Destroy returned nil; want error")
-	}
-
-	// The container is actually gone. cerrdefs.IsNotFound is the canonical
-	// 404 detection in 2026 — both client.IsErrNotFound and the legacy
-	// errdefs.IsNotFound are deprecated aliases that delegate here.
-	if _, err := cli.ContainerInspect(ctx, h.ID); err == nil || !cerrdefs.IsNotFound(err) {
-		t.Errorf("ContainerInspect after Destroy: err = %v, want cerrdefs.IsNotFound", err)
-	}
 }
 
 // TestBucket9a_CreateAppliesResourceLimits verifies the Resources field on

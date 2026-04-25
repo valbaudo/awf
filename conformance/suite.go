@@ -45,7 +45,8 @@
 //     (signal_cancel_terminal).
 //
 // Phase 2 calls RunSuite with container.NewFake (conformance_fake_test.go).
-// Phase 4 adds conformance_docker_test.go with docker.NewFactory.
+// Slice 4.6 added RunDockerSuite + conformance_docker_test.go for Buckets
+// 9/10/11 against real Docker; see conformance/docker_suite_test.go.
 //
 // Slice 2.6 Design question 1: bucket impls live in non-_test.go files
 // so RunSuite can invoke them across the package boundary. Only
