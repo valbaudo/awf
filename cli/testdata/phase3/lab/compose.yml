@@ -1,9 +1,37 @@
+# Lab fixture for the Appendix A CVE-pipeline workflow.
+#
+# Pre-slice-4.5 this fixture pinned 4 services to placeholder digests
+# (sha256:0000…, sha256:1111…, sha256:2222…, sha256:3333…) that do not
+# exist on any registry — it was aspirational, not runnable. The fake
+# backend ignores image strings entirely, so the existing fake-backed
+# tests passed without ever pulling.
+#
+# Slice 4.5's exit bar requires the Appendix A lab to BOOT under real
+# Docker (compose-mode + up --wait → readiness). The cve-pipeline never
+# makes it past the first agent step (uses: anthropic/claude-code, which
+# Phase 4 still errors with ErrNodeNotImplemented), so per-service
+# semantics don't matter — 4 identical alpine services that stay alive
+# satisfy "lab boots cleanly." Phase 5+ that exercises the code steps
+# will re-introduce service-specific images.
+#
+# Image digest matches container/docker/backend_integ_test.go's
+# alpineDigest constant — same image, single pull on CI.
+#
+# `command: ["sh", "-c", "sleep 86400"]` matches slice 4.3's
+# compose-basic.yml convention (slice 4.3 Bucket 10a — exercises
+# compose up --wait without healthchecks). Slice 4.3 verified this
+# works; slice 4.5 doesn't reinvent the form.
+
 services:
   vulnerable:
-    image: nginx@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    command: ["sh", "-c", "sleep 86400"]
   patched:
-    image: nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    command: ["sh", "-c", "sleep 86400"]
   db:
-    image: postgres@sha256:2222222222222222222222222222222222222222222222222222222222222222
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    command: ["sh", "-c", "sleep 86400"]
   capture:
-    image: alpine@sha256:3333333333333333333333333333333333333333333333333333333333333333
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    command: ["sh", "-c", "sleep 86400"]

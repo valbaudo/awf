@@ -24,11 +24,12 @@ import (
 
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
-	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] <path>")
+	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] [--backend <fake|docker>] <path>")
 	fprintln(w, "")
 	fprintln(w, "  --input <json>     run-input as a JSON object (validated against workflow.input schema if declared)")
 	fprintln(w, "  --run-id <id>      override the minted run id (testing aid)")
 	fprintln(w, "  --state-dir <dir>  base directory for .awf/runs and .awf/blobs (default: ./.awf)")
+	fprintln(w, "  --backend <kind>   container backend: \"fake\" or \"docker\" (default: docker)")
 }
 
 // teardownGrace is how long Backend.Destroy gets after the run's ctx has been
@@ -48,6 +49,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	inputJSON := flags.String("input", "", "run-input JSON")
 	runID := flags.String("run-id", "", "override the run id")
 	stateDir := flags.String("state-dir", ".awf", "base directory for runs/ and blobs/")
+	backendKind := flags.String("backend", engine.BackendDocker, "container backend: fake or docker")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRunUsage(stdout)
@@ -59,6 +61,13 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if flags.NArg() != 1 {
 		printRunUsage(stderr)
+		return ExitUsage
+	}
+	switch *backendKind {
+	case engine.BackendFake, engine.BackendDocker:
+		// ok
+	default:
+		fprintf(stderr, "awf run: invalid --backend value %q; want %q or %q\n", *backendKind, engine.BackendFake, engine.BackendDocker)
 		return ExitUsage
 	}
 	path := flags.Arg(0)
@@ -105,19 +114,40 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		inputMap = m
 	}
 
-	// Step 4: wire signal handling. signal.NotifyContext (Go 1.16+) is canonical.
+	// Step 4: wire signal handling.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Step 5: Create container handles. Defer Destroy with a SEPARATE
+	// Step 5: open blobs (moved ahead of Backend construction + Create-handles
+	// in slice 4.5 because the Docker newBackend needs blobs to construct).
+	blobsDir := filepath.Join(*stateDir, "blobs")
+	blobs, err := state.OpenBlobs(blobsDir)
+	if err != nil {
+		fprintf(stderr, "awf run: open blobs %q: %v\n", blobsDir, err)
+		return ExitUsage
+	}
+
+	// Step 6 (slice 4.5): determine the Backend for this invocation via
+	// resolveBackend (cli/backend.go) — uses test-injected r.Backend when
+	// set, else constructs via newBackend using the --backend flag value.
+	// The result is held in a LOCAL variable (NEVER assigned to r.Backend)
+	// so sequential runner.Run(...) calls don't leak a constructed Backend.
+	backend, cleanup, err := r.resolveBackend(ctx, *backendKind, id, blobs)
+	if err != nil {
+		fprintf(stderr, "awf run: construct backend %q: %v\n", *backendKind, err)
+		return ExitUsage
+	}
+	defer cleanup()
+
+	// Step 7: Create container handles. Defer Destroy with a SEPARATE
 	// non-cancelled ctx so teardown survives signal-induced cancellation.
-	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
 	// Register the teardown defer BEFORE Create so a mid-Create failure still
 	// cleans up the handles that were already created. The closure reads
 	// `handles` at defer-time, so it sees whatever was successfully created.
 	// Latent Phase 4 hazard (Phase 2 fake's Create can't fail; Phase 4 Docker
 	// can): without this ordering, a 2-container workflow with the second
 	// Create failing would leak the first container.
+	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
 	skipTeardown := false
 	defer func() {
 		if skipTeardown {
@@ -126,11 +156,11 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
 		defer cancel()
 		for _, h := range handles {
-			_ = r.Backend.Destroy(teardownCtx, h)
+			_ = backend.Destroy(teardownCtx, h)
 		}
 	}()
 	for name := range ld.Workflow.Containers {
-		h, err := r.Backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
+		h, err := backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
 		if err != nil {
 			fprintf(stderr, "awf run: create container %q: %v\n", name, err)
 			return ExitUsage
@@ -138,15 +168,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		handles[name] = h
 	}
 
-	// Step 6: open blobs (shared CAS dir; idempotent across runs).
-	blobsDir := filepath.Join(*stateDir, "blobs")
-	blobs, err := state.OpenBlobs(blobsDir)
-	if err != nil {
-		fprintf(stderr, "awf run: open blobs %q: %v\n", blobsDir, err)
-		return ExitUsage
-	}
-
-	// Step 7: put input into Blobs (after validation, before log creation).
+	// Step 8: put input into Blobs (after validation, before log creation).
 	var inputRef string
 	if *inputJSON != "" {
 		ref, err := blobs.Put([]byte(*inputJSON))
@@ -157,8 +179,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		inputRef = ref
 	}
 
-	// Step 8: OpenLogExclusive atomically claims the run.id. Cleanup-on-error
-	// defer removes the empty log if run.started never lands.
+	// Step 9: OpenLogExclusive atomically claims the run.id.
 	runDir := filepath.Join(*stateDir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		fprintf(stderr, "awf run: create run dir %q: %v\n", runDir, err)
@@ -182,20 +203,19 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	// Step 9: append run.started + fsync.
+	// Step 10: append run.started + fsync. Backend field carries the slice-
+	// 4.5 --backend kind so resume can pick the same backend without a flag.
 	runStartedData, err := json.Marshal(engine.RunStartedData{
 		RunID:          id,
 		WorkflowDigest: digest,
 		InputRef:       inputRef,
+		Backend:        *backendKind,
 	})
 	if err != nil {
 		fprintf(stderr, "awf run: marshal run.started: %v\n", err)
 		return ExitUsage
 	}
-	if err := log.Append(state.Event{
-		Type: engine.EventRunStarted,
-		Data: runStartedData,
-	}); err != nil {
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
 		fprintf(stderr, "awf run: append run.started: %v\n", err)
 		return ExitUsage
 	}
@@ -205,14 +225,14 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	runStartedAppended = true
 
-	// Step 10: build RunState; dispatch engine.Run + write run.finished +
-	// map outcome → exit code. See cli/execute.go: the closing sequence is
-	// shared with `awf resume`.
+	// Step 11: build RunState; dispatch engine.Run + write run.finished +
+	// map outcome → exit code. backend (local) is passed in — runAndFinish
+	// does NOT read r.Backend.
 	rs := engine.NewRunState(id, digest, inputMap)
 	// Slice 3.5: per-run broker. The control directory is created lazily on
 	// first WriteSignal / WritePause / WriteCancel from another process.
 	// r.BrokerOptions defaults to empty (100ms poll) in production; tests
 	// inject signal.WithPollInterval(time.Millisecond) for fast runs.
 	broker := awfsignal.NewBroker(awfsignal.ControlDir(*stateDir, id), r.BrokerOptions...)
-	return r.runAndFinish(ctx, ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", broker, &skipTeardown)
+	return r.runAndFinish(ctx, backend, ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", broker, &skipTeardown)
 }

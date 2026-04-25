@@ -1117,3 +1117,97 @@ func TestCLIRunPropagatesComposeBytesToBackend(t *testing.T) {
 		t.Errorf("spec.Image = %q, want empty (compose-mode)", labSpec.Image)
 	}
 }
+
+func TestCLIRunWritesBackendDockerOnRunStartedByDefault(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("echo step2", container.ExecResult{
+		ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`),
+	}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, fake)
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "testdata/phase2/seq.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
+	if backendField != engine.BackendDocker {
+		t.Errorf("run.started.Backend = %q, want %q (default)", backendField, engine.BackendDocker)
+	}
+}
+
+func TestCLIRunBackendFakeFlagWritesBackendFake(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("echo step2", container.ExecResult{
+		ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`),
+	}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, fake)
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "--backend", "fake", "testdata/phase2/seq.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
+	if backendField != engine.BackendFake {
+		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendFake)
+	}
+}
+
+func TestCLIRunBackendInvalidValueIsExitUsage(t *testing.T) {
+	t.Parallel()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--backend", "containerd", "testdata/phase2/seq.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitUsage {
+		t.Errorf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "containerd") {
+		t.Errorf("stderr missing offending kind: %q", stderr.String())
+	}
+}
+
+// readRunStartedBackendField is a test helper that opens the log at
+// <stateDir>/runs/<runID>/log, folds it, finds the run.started event,
+// and returns its Backend field.
+func readRunStartedBackendField(t *testing.T, stateDir, runID string) string {
+	t.Helper()
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == engine.EventRunStarted {
+			var d engine.RunStartedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				t.Fatalf("Unmarshal run.started: %v", err)
+			}
+			return d.Backend
+		}
+	}
+	t.Fatalf("no run.started event in log %q", logPath)
+	return ""
+}

@@ -38,16 +38,17 @@ func printResumeUsage(w io.Writer) {
 //  1. Parse flags + positional args.
 //  2. Open the existing log (NOT exclusive — this is the resume primitive).
 //  3. Open blobs; fold the log into a populated RunState.
-//  4. Refuse if a terminal event is in the log: run.finished (run is
-//     complete) or node.failed (Phase 2 has no try/catch; resuming would
-//     re-execute the failed step).
-//  5. Load + validate + digest the workflow file.
-//  6. Refuse on digest mismatch (spec §8 hard error).
-//  7. Signal context + Create container handles per the workflow's
-//     containers map (CLI-owned lifecycle, slice 2.5 Design question 3).
-//  8. Append run.resumed{epoch: rs.Epoch+1} + Sync.
-//  9. runAndFinish: build dispatcher, engine.Run, append run.finished,
-//     map outcome → exit code (shared with `awf run` — cli/execute.go).
+//  4. Refuse on terminal events: run.finished / run.cancelled / node.failed.
+//  5. (slice 4.5) Wire signal handling EARLY so newBackend gets a real ctx.
+//  6. (slice 4.5) Read the Backend kind from the folded log's run.started;
+//     construct the Backend via newBackend if r.Backend is nil. Hold in a
+//     LOCAL variable; never assign to r.Backend.
+//  7. Load + validate + digest the workflow file.
+//  8. Refuse on digest mismatch (spec §8 hard error).
+//  9. Broker + ClearPauseCancel.
+//  10. Create container handles.
+//  11. Append run.resumed{epoch: rs.Epoch+1} + Sync.
+//  12. runAndFinish (shared with `awf run`).
 func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	fs0 := flag.NewFlagSet("resume", flag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
@@ -103,14 +104,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 3: refusal — run.finished already in the log (terminal).
+	// Step 3: terminal-event refusals (precedence: run.finished →
+	// run.cancelled → node.failed; each error message names the event).
 	for _, e := range events {
 		if e.Type == engine.EventRunFinished {
 			fprintf(stderr, "awf resume: run %q already finished (run.finished event in log). Cannot resume a completed run.\n", runID)
 			return ExitUsage
 		}
 	}
-	// Step 3b (slice 3.5): refusal — run.cancelled already in log (terminal).
+	// Slice 3.5: refusal — run.cancelled already in log (terminal).
 	// Checked BEFORE node.failed: cancel-during-step writes both events; the
 	// user wants to see "cancelled," not "failed step."
 	for _, e := range events {
@@ -119,7 +121,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 			return ExitUsage
 		}
 	}
-	// Step 4: refusal — node.failed already in the log (terminal-by-propagation).
+	// Refusal — node.failed already in the log (terminal-by-propagation).
 	// Phase 2 has no try/catch (Phase 3 lights it up); a failed step halts the
 	// run, and resuming would try to re-execute the failed step, which is not
 	// the Phase-2 retry semantic. Refuse explicitly.
@@ -130,7 +132,32 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Step 5: load + validate + digest the workflow at wfPath. Failures here
+	// Step 4 (slice 4.5): wire signal handling EARLY so newBackend gets a
+	// real ctx. Moved ahead of backend construction; semantically unchanged
+	// (ctx is still used by Create-handles + runAndFinish below).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Step 5 (slice 4.5): read the Backend kind from the log's run.started
+	// and resolve the Backend (r.Backend if test-injected, else newBackend
+	// via resolveBackend in cli/backend.go). Result is a LOCAL variable
+	// (NEVER assigned to r.Backend). No --backend flag on resume (per
+	// Phase 4 design § F): the originating `awf run` recorded the kind in
+	// run.started, and resume MUST use the same one — picking it from the
+	// log is the only way to satisfy that without a flag.
+	kind, err := readBackendKindFromLog(events)
+	if err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+	backend, cleanup, err := r.resolveBackend(ctx, kind, runID, blobs)
+	if err != nil {
+		fprintf(stderr, "awf resume: construct backend %q: %v\n", kind, err)
+		return ExitUsage
+	}
+	defer cleanup()
+
+	// Step 6: load + validate + digest the workflow at wfPath. Failures here
 	// are independent of the log — bad path / bad YAML / validator errors all
 	// exit with the usual codes.
 	ld, err := loader.Load(wfPath)
@@ -150,7 +177,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 6: refusal — digest mismatch (spec §8 hard error). The folded
+	// Step 7: refusal — digest mismatch (spec §8 hard error). The folded
 	// rs.WorkflowDigest came from the log's run.started event; a workflow file
 	// that hashes differently is a forbidden definition change.
 	if rs.WorkflowDigest != currentDigest {
@@ -159,12 +186,9 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 7: signal handling — same model as cli/run.go.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	// Slice 3.5: per-run broker for the engine + clear stale pause.json /
-	// cancel.json so the first poll doesn't immediately re-pause/cancel.
+	// Step 8 (slice 3.5): per-run broker for the engine + clear stale
+	// pause.json / cancel.json so the first poll doesn't immediately
+	// re-pause/cancel.
 	controlDir := awfsignal.ControlDir(*stateDir, runID)
 	broker := awfsignal.NewBroker(controlDir, r.BrokerOptions...)
 	if err := broker.ClearPauseCancel(); err != nil {
@@ -172,12 +196,12 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 8: Create container handles. SAME pattern as cli/run.go — handles
+	// Step 9: Create container handles. SAME pattern as cli/run.go — handles
 	// are CLI-owned (slice 2.5 Design question 3); resume rebuilds them from
 	// the workflow's containers map. Phase 2 fake: factory() per Create.
-	// Phase 4 Docker will honor the image / compose recipe (spec §8
-	// "containers are reconstructed from their image/compose recipe on every
-	// (re)creation, including resume").
+	// Phase 4 Docker honors the image / compose recipe (spec §8 "containers
+	// are reconstructed from their image/compose recipe on every (re)creation,
+	// including resume").
 	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
 	skipTeardown := false
 	defer func() {
@@ -187,11 +211,11 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
 		defer cancel()
 		for _, h := range handles {
-			_ = r.Backend.Destroy(teardownCtx, h)
+			_ = backend.Destroy(teardownCtx, h)
 		}
 	}()
 	for name := range ld.Workflow.Containers {
-		h, err := r.Backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
+		h, err := backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
 		if err != nil {
 			fprintf(stderr, "awf resume: create container %q: %v\n", name, err)
 			return ExitUsage
@@ -199,7 +223,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		handles[name] = h
 	}
 
-	// Step 9: append run.resumed{epoch: rs.Epoch+1}. Slice 2.6 Design
+	// Step 10: append run.resumed{epoch: rs.Epoch+1}. Slice 2.6 Design
 	// question 6: the new epoch lives in the EVENT PAYLOAD (the resume
 	// counter), distinct from FileLog's per-event Epoch field (which got
 	// bumped by OpenLog already).
@@ -219,10 +243,11 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	}
 	rs.Epoch = newEpoch
 
-	// Step 10: dispatch engine.Run + write run.finished + map outcome → exit
+	// Step 11: dispatch engine.Run + write run.finished + map outcome → exit
 	// code. See cli/execute.go: the closing sequence is shared with `awf run`.
 	// The interpreter's resume-checks (slice 2.5: runstate.Completed /
 	// Branches / LoopIters) skip already-committed nodes — same code path on
-	// first run and resume (CLAUDE.md invariant).
-	return r.runAndFinish(ctx, ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", broker, &skipTeardown)
+	// first run and resume (CLAUDE.md invariant). backend (local) is passed
+	// in — runAndFinish does NOT read r.Backend.
+	return r.runAndFinish(ctx, backend, ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", broker, &skipTeardown)
 }

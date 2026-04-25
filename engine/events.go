@@ -153,19 +153,44 @@ type GateAttemptData struct {
 	VerdictRef     string `json:"verdict_ref,omitempty"`
 }
 
-// RunStartedData is the payload of the first event in a run (and the only event the
-// run.id, workflow_digest, and input_ref live in — the fold reads them from here).
+// Backend kind constants — the wire vocabulary written into
+// RunStartedData.Backend (engine.RunStartedData) and the matching
+// --backend flag values consumed by cli/run.go. These three uses MUST
+// agree on spelling; centralizing the constants here triple-checks them
+// at compile time.
 //
-// Phase 2: Runtimes is always empty (no `uses:` execution). Phase 5 populates it
-// with {ref, resolved-version} per agent step, and resume verifies the resolved
-// versions against the live registry. `omitempty` on Runtimes means both nil and
-// empty-slice writers produce identical on-disk JSON (the key is absent) — avoids
-// the silent `"runtimes":null` vs `"runtimes":[]` wire drift a Phase 5 writer would
-// otherwise create by forgetting to initialize an empty slice.
+// BackendDocker is the production default. A pre-slice-4.5 log (no Backend
+// field in its run.started payload) decodes to "" — cli/resume.go maps "" →
+// BackendDocker so legacy logs resume against the production default. This
+// IS a behavior change for legacy logs (pre-slice-4.5 cli.Run hard-wired
+// fake); documented in the slice-4.5 PR body's Migration section.
+const (
+	BackendFake   = "fake"
+	BackendDocker = "docker"
+)
+
+// RunStartedData is the payload of the first event in a run (and the only
+// event the run.id, workflow_digest, input_ref, and backend kind live in —
+// the fold reads them from here).
+//
+// Backend is the kind string the cli/run.go writer set from the --backend
+// flag (slice 4.5; one of BackendFake / BackendDocker). cli/resume.go reads
+// it back to pick the same Backend on resume — no --backend flag mismatch
+// class. Empty in pre-slice-4.5 logs (omitempty); consumer maps "" →
+// BackendDocker.
+//
+// Phase 2: Runtimes is always empty (no `uses:` execution). Phase 5
+// populates it with {ref, resolved-version} per agent step, and resume
+// verifies the resolved versions against the live registry. `omitempty` on
+// Runtimes means both nil and empty-slice writers produce identical
+// on-disk JSON (the key is absent) — avoids the silent `"runtimes":null`
+// vs `"runtimes":[]` wire drift a Phase 5 writer would otherwise create
+// by forgetting to initialize an empty slice.
 type RunStartedData struct {
 	RunID          string            `json:"run_id"`
 	WorkflowDigest string            `json:"workflow_digest"`
 	InputRef       string            `json:"input_ref,omitempty"` // empty if Workflow.Input is nil
+	Backend        string            `json:"backend,omitempty"`   // slice 4.5; "" → BackendDocker on resume
 	Runtimes       []ResolvedRuntime `json:"runtimes,omitempty"`
 }
 

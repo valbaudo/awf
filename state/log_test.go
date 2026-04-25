@@ -391,6 +391,58 @@ func TestOpenLogExclusiveRefusesExistingFile(t *testing.T) {
 	}
 }
 
+func TestFoldFileDoesNotTruncate(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "log")
+
+	// Write a few events via the normal OpenLog path.
+	lg, err := OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lg.Append(Event{Type: "test.event", Data: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lg.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	sizeBefore := fileSize(t, logPath)
+
+	// Read via FoldFile while the writer handle is still open + capable of appending.
+	events, err := FoldFile(logPath)
+	if err != nil {
+		t.Fatalf("FoldFile: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("len(events) = %d, want 1", len(events))
+	}
+
+	// Verify the file was NOT truncated by FoldFile.
+	sizeAfter := fileSize(t, logPath)
+	if sizeAfter != sizeBefore {
+		t.Errorf("FoldFile truncated the log: size before = %d, after = %d", sizeBefore, sizeAfter)
+	}
+
+	// Verify the writer can still append (file offset wasn't disturbed).
+	if err := lg.Append(Event{Type: "test.event", Data: []byte(`{}`)}); err != nil {
+		t.Errorf("Append after FoldFile: %v", err)
+	}
+	if err := lg.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	return st.Size()
+}
+
 // appendBytesTo opens the file for append-only writes outside the Log's API. Used to
 // simulate the torn-tail / partial-write conditions a crash would produce.
 func appendBytesTo(path string, b []byte) error {

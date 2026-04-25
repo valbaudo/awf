@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -445,5 +446,56 @@ func TestRunCancelledDataRoundTrip(t *testing.T) {
 	b2, _ := json.Marshal(d2)
 	if string(b2) != `{}` {
 		t.Errorf("empty on-wire: got %s, want {}", b2)
+	}
+}
+
+func TestRunStartedDataLegacyLogDecodesBackendAsEmpty(t *testing.T) {
+	// A pre-slice-4.5 log's run.started payload has no "backend" key. The
+	// decoder must leave RunStartedData.Backend at "" so the consumer
+	// (cli/resume.go) can map "" → BackendDocker as the production default.
+	legacyJSON := []byte(`{"run_id":"legacy","workflow_digest":"sha256:abc","input_ref":""}`)
+	var d RunStartedData
+	if err := json.Unmarshal(legacyJSON, &d); err != nil {
+		t.Fatalf("Unmarshal legacy: %v", err)
+	}
+	if d.Backend != "" {
+		t.Errorf("Backend = %q, want \"\" (legacy log default)", d.Backend)
+	}
+	if d.RunID != "legacy" || d.WorkflowDigest != "sha256:abc" {
+		t.Errorf("RunID/WorkflowDigest decode lost; got %+v", d)
+	}
+}
+
+func TestRunStartedDataRoundTripBackendField(t *testing.T) {
+	cases := []struct {
+		name       string
+		backend    string
+		wantOnWire string
+	}{
+		{"empty-omitted", "", `"workflow_digest":"sha256:x"`},
+		{"fake", BackendFake, `"backend":"fake"`},
+		{"docker", BackendDocker, `"backend":"docker"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			payload := RunStartedData{RunID: "r1", WorkflowDigest: "sha256:x", Backend: c.backend}
+			got, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if !bytes.Contains(got, []byte(c.wantOnWire)) {
+				t.Errorf("on-wire JSON = %s, want substring %q", got, c.wantOnWire)
+			}
+			if c.backend == "" && bytes.Contains(got, []byte(`"backend"`)) {
+				t.Errorf("on-wire JSON contains backend key for empty value: %s", got)
+			}
+			var back RunStartedData
+			if err := json.Unmarshal(got, &back); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if back.Backend != c.backend {
+				t.Errorf("round-trip Backend = %q, want %q", back.Backend, c.backend)
+			}
+		})
 	}
 }

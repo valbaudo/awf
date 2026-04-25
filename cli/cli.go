@@ -1,20 +1,17 @@
 // Package cli assembles the command-line surface. Slice 1.6 shipped
-// `awf validate <path>`; slice 2.5 added `awf run <file> [--input <json>]
-// [--run-id <id>] [--state-dir <dir>]`; slice 2.6 added `awf resume
-// <run-id> <path> [--state-dir <dir>]`. Later phases add `signal`/
-// `cancel`/`pause` (Phase 3) and `inspect`/`trace`/`ls` (Phase 6).
-// The entry point is Runner.Run, not init() or a package-level
-// CLI framework, so tests drive the full surface with bytes.Buffer for IO
-// and an int return for the exit code — no real os.Exit ever called from
-// package code.
+// `awf validate <path>`; slice 2.5 added `awf run`; slice 2.6 added
+// `awf resume`; Phase 3 added `signal` / `pause` / `cancel`; slice 4.5
+// added `--backend {fake,docker}` on `awf run` (default docker) +
+// log-driven backend selection on `awf resume`. Later phases add
+// `inspect` / `trace` / `ls` (Phase 6). The entry point is Runner.Run,
+// not init() or a package-level CLI framework, so tests drive the full
+// surface with bytes.Buffer for IO and an int return for the exit code
+// — no real os.Exit ever called from package code.
 //
-// Runner holds the production-vs-test seams: Backend (Phase 2 wires
-// container.Fake by default — Phase 4 swaps in Docker, slice 2.5 Design
-// question 1) and IDGen. The Clock is inlined as clock.System{} at the
-// engine.Run call site — slice 2.5 has no test that needs CLI-level fake-
-// clock injection; the engine's own retry tests already cover deterministic-
-// time paths via the engine's clock parameter. If a future slice needs CLI-
-// level clock injection, add the Runner.Clock field then (3-line patch).
+// Runner holds the production-vs-test seams: Backend (test injection;
+// production leaves it nil and the run/resume subcommands construct via
+// the package-private newBackend helper when Backend is nil — see
+// cli/backend.go for the kind switch) and IDGen.
 package cli
 
 import (
@@ -60,10 +57,16 @@ type Runner struct {
 
 // Run is the top-level CLI entry point — constructs the production Runner
 // and delegates. cmd/awf wraps the returned int with os.Exit.
+//
+// Slice 4.5: Backend is intentionally left nil; the run / resume
+// subcommands construct it on-demand via newBackend (chosen by --backend
+// flag on run; read from the log's run.started.Backend on resume). This
+// defers docker-client construction to the moment we know the user
+// actually wants Docker — important because a docker.New failure (Docker
+// daemon not running) shouldn't crash `awf validate` or `awf help`.
 func Run(args []string, stdout, stderr io.Writer) int {
 	r := &Runner{
-		Backend: container.NewFake(),
-		IDGen:   clock.CryptoIDGen{},
+		IDGen: clock.CryptoIDGen{},
 	}
 	return r.Run(args, stdout, stderr)
 }

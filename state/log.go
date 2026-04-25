@@ -167,6 +167,25 @@ func (lg *FileLog) Fold() ([]Event, error) {
 	return events, err
 }
 
+// FoldFile reads + decodes every committed event from the log at path
+// WITHOUT taking a writable file handle. Use this when you need to
+// observe a log that another process or goroutine may be actively
+// writing to — unlike OpenLog, FoldFile never truncates a torn tail
+// (the file is opened read-only). Torn-tail records at the tail are
+// silently skipped per scanFile's semantics.
+//
+// Single-writer discipline is preserved: only OpenLog/OpenLogExclusive
+// take a write handle; FoldFile is observer-only.
+func FoldFile(path string) ([]Event, error) {
+	rf, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("state: open log %q for fold: %w", path, err)
+	}
+	defer func() { _ = rf.Close() }()
+	events, _, err := scanFile(rf)
+	return events, err
+}
+
 // Close fsyncs and closes. If Sync fails we still attempt Close (releasing the FD is more
 // important than the trailing close-error), but the Sync error is what we return.
 func (lg *FileLog) Close() error {

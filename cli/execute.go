@@ -33,6 +33,10 @@ import (
 // successSuffix is appended to the success line — "" for `awf run`,
 // " (resumed)" for `awf resume`.
 //
+// Slice 4.5: backend is passed in (was read from r.Backend). The caller
+// holds it as a local variable so sequential runner.Run(...) calls don't
+// leak a constructed Backend across invocations.
+//
 // Handles creation lives in the caller, not here — `awf run` Creates BEFORE
 // OpenLogExclusive (so a Create-fail leaves no orphan log), `awf resume`
 // Creates AFTER refusal checks. The ordering difference is load-bearing;
@@ -40,6 +44,7 @@ import (
 // behavior.
 func (r *Runner) runAndFinish(
 	ctx context.Context,
+	backend container.Backend,
 	ld *ir.LoadedDefinition,
 	rs *engine.RunState,
 	handles map[string]container.Handle,
@@ -50,7 +55,7 @@ func (r *Runner) runAndFinish(
 	broker *signal.Broker,
 	skipTeardown *bool,
 ) int {
-	dispatcher := &engine.LocalDispatcher{Backend: r.Backend, Handles: handles, ComposeFiles: ld.ComposeFiles}
+	dispatcher := &engine.LocalDispatcher{Backend: backend, Handles: handles, ComposeFiles: ld.ComposeFiles}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout, broker)
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished

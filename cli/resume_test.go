@@ -315,6 +315,36 @@ func TestCLIResumeRefusesTerminalRunCancelled(t *testing.T) {
 	}
 }
 
+func TestCLIResumeRejectsBackendFlag(t *testing.T) {
+	t.Parallel()
+	// Resume DOES NOT accept --backend (per Phase 4 design § F). The
+	// flag.NewFlagSet for resume doesn't declare it; flag.Parse rejects
+	// the unknown flag with "flag provided but not defined: -backend".
+	//
+	// Stronger pin than rc-only: also asserts the stderr wording. This
+	// matches slice 3.5's TestCLIPauseRejectsBeforeFlag pattern at
+	// cli/pause_test.go:58, which asserts a specific deferral message.
+	// Without the substring check, a future refactor that adds --backend
+	// to resume would pass the test (the run-not-found path also returns
+	// ExitUsage) — true regression undetected. "not defined" is Go's
+	// standard flag-package wording for unknown flags; if stdlib ever
+	// changes it, this test will need updating, which is the right cost
+	// to pay for catching the regression class this pin exists for.
+	stateDir := t.TempDir()
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"resume", "--state-dir", stateDir, "--backend", "fake", "some-run-id", "testdata/phase2/seq.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitUsage {
+		t.Errorf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not defined") {
+		t.Errorf("stderr missing Go flag-package rejection wording 'not defined'; got %q. If a future refactor added --backend to resume, the rc-only check above would still pass (run-not-found also exits ExitUsage) — this substring is the actual regression pin.", stderr.String())
+	}
+}
+
 func TestCLIResumeDigestMismatchHardError(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
