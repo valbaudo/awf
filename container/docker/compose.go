@@ -54,13 +54,29 @@ func (b *Backend) createCompose(ctx context.Context, spec cont.ContainerSpec) (c
 	}
 	composeAPI := compose.NewComposeService(cli)
 
-	// Up's positional `project` argument is authoritative — verified in
-	// docker/compose v2.40.3 pkg/compose/up.go: the implementation passes
-	// `project` to s.create and uses `project.Name` for Start, never reading
-	// options.Start.Project. Only Wait is load-bearing for our use case
-	// (healthcheck-gated readiness per spec §3 + Design Q7).
+	// Slice 4.5 follow-up fix (post-Phase-4 integ run discovered the bug):
+	// We MUST pass `Project: project` in api.StartOptions. compose-go
+	// v2.40.3's pkg/compose/up.go calls `s.start(ctx, project.Name,
+	// options.Start, nil)` AFTER s.create. Inside s.start (start.go:40),
+	// `options.Project` is checked: if nil, start falls back to
+	// `s.getContainers(...)` + `s.projectFromName(...)`, which errors
+	// with "no container found for project %q: not found" for fresh
+	// projects (the labeled-container query races against create OR
+	// returns empty because labels haven't propagated). The fix is to
+	// hand compose-go the already-built project so it skips the
+	// reconstruction path entirely.
+	//
+	// (The previous comment here claimed options.Start.Project was never
+	// read — that was either wrong or accurate for an older compose-go
+	// version. v2.40.3 reads it. CI's `make integ` surfaced the bug only
+	// after slice 4.5 broadened the integ target to include ./cli/...,
+	// at which point ALL compose-mode tests had been failing on every
+	// CI run going back to the slice 4.3 merge.)
 	if err := composeAPI.Up(ctx, project, api.UpOptions{
-		Start: api.StartOptions{Wait: true},
+		Start: api.StartOptions{
+			Project: project,
+			Wait:    true,
+		},
 	}); err != nil {
 		return cont.Handle{}, fmt.Errorf("container/docker: createCompose: Up: %w", err)
 	}
