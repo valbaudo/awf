@@ -16,7 +16,7 @@ import (
 
 func TestNewBackendFakeKindReturnsFake(t *testing.T) {
 	t.Parallel()
-	backend, cleanup, err := cli.NewBackendForTest(context.Background(), engine.BackendFake, "run-abc", state.NewInMemoryBlobs())
+	backend, cleanup, err := cli.NewBackendForTest(context.Background(), engine.BackendFake, "run-abc", "", state.NewInMemoryBlobs())
 	if err != nil {
 		t.Fatalf("newBackend(fake): %v", err)
 	}
@@ -31,7 +31,7 @@ func TestNewBackendFakeKindReturnsFake(t *testing.T) {
 
 func TestNewBackendUnknownKindIsError(t *testing.T) {
 	t.Parallel()
-	_, _, err := cli.NewBackendForTest(context.Background(), "containerd", "run-abc", state.NewInMemoryBlobs())
+	_, _, err := cli.NewBackendForTest(context.Background(), "containerd", "run-abc", "", state.NewInMemoryBlobs())
 	if err == nil {
 		t.Fatal("err = nil, want non-nil (unknown kind)")
 	}
@@ -44,6 +44,22 @@ func TestNewBackendUnknownKindIsError(t *testing.T) {
 // switch handles "" with the same "unknown backend kind" error path; an
 // explicit empty-case test would exercise dead code per slice-4.5 plan
 // §Major #8.)
+
+func TestNewBackendNativeKindReturnsNative(t *testing.T) {
+	t.Parallel()
+	workdirRoot := t.TempDir()
+	backend, cleanup, err := cli.NewBackendForTest(context.Background(), engine.BackendNative, "run-native", workdirRoot, state.NewInMemoryBlobs())
+	if err != nil {
+		t.Fatalf("newBackend(native): %v", err)
+	}
+	defer cleanup()
+	if backend == nil {
+		t.Fatal("backend = nil")
+	}
+	if got := backend.Capabilities().Snapshot; got != container.SnapshotNone {
+		t.Errorf("Capabilities().Snapshot = %v, want SnapshotNone (native)", got)
+	}
+}
 
 // ---- readBackendKindFromLog tests (pure function over event slice) ----
 
@@ -119,5 +135,28 @@ func TestReadBackendKindFromLogErrorsIfNoRunStarted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "run.started") {
 		t.Errorf("err = %q, want to mention 'run.started'", err)
+	}
+}
+
+func TestReadBackendKindFromLogRejectsNative(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(engine.RunStartedData{
+		RunID:          "r1",
+		WorkflowDigest: "sha256:x",
+		Backend:        engine.BackendNative,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []state.Event{{Type: engine.EventRunStarted, Data: payload}}
+	_, err = cli.ReadBackendKindFromLogForTest(events)
+	if err == nil {
+		t.Fatal("err = nil, want non-nil (native is not resumable)")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("err = %q, want substring 'not resumable'", err)
+	}
+	if !strings.Contains(err.Error(), "native") {
+		t.Errorf("err = %q, want to mention 'native'", err)
 	}
 }

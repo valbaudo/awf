@@ -24,12 +24,12 @@ import (
 
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
-	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] [--backend <fake|docker>] <path>")
+	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] [--backend <fake|docker|native>] <path>")
 	fprintln(w, "")
 	fprintln(w, "  --input <json>     run-input as a JSON object (validated against workflow.input schema if declared)")
 	fprintln(w, "  --run-id <id>      override the minted run id (testing aid)")
 	fprintln(w, "  --state-dir <dir>  base directory for .awf/runs and .awf/blobs (default: ./.awf)")
-	fprintln(w, "  --backend <kind>   container backend: \"fake\" or \"docker\" (default: docker)")
+	fprintln(w, "  --backend <kind>   container backend: \"fake\", \"docker\", or \"native\" (default: native)")
 }
 
 // teardownGrace is how long Backend.Destroy gets after the run's ctx has been
@@ -49,7 +49,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	inputJSON := flags.String("input", "", "run-input JSON")
 	runID := flags.String("run-id", "", "override the run id")
 	stateDir := flags.String("state-dir", ".awf", "base directory for runs/ and blobs/")
-	backendKind := flags.String("backend", engine.BackendDocker, "container backend: fake or docker")
+	backendKind := flags.String("backend", engine.BackendNative, "container backend: fake, docker, or native")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRunUsage(stdout)
@@ -64,10 +64,10 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	switch *backendKind {
-	case engine.BackendFake, engine.BackendDocker:
+	case engine.BackendFake, engine.BackendDocker, engine.BackendNative:
 		// ok
 	default:
-		fprintf(stderr, "awf run: invalid --backend value %q; want %q or %q\n", *backendKind, engine.BackendFake, engine.BackendDocker)
+		fprintf(stderr, "awf run: invalid --backend value %q; want %q, %q, or %q\n", *backendKind, engine.BackendFake, engine.BackendDocker, engine.BackendNative)
 		return ExitUsage
 	}
 	path := flags.Arg(0)
@@ -88,6 +88,19 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fprintf(stderr, "awf run: compute digest: %v\n", err)
 		return ExitUsage
+	}
+
+	// Slice 4.7 decision 1 + H8 fix: if --backend native is selected but
+	// any container declares compose: mode, fail-fast at the CLI layer
+	// (defense-in-depth: Backend.Create also rejects). Friendlier than
+	// a mid-run error after partial setup.
+	if *backendKind == engine.BackendNative {
+		for name, c := range ld.Workflow.Containers {
+			if c.Compose != "" {
+				fprintf(stderr, "awf run: --backend native cannot run workflows with compose-mode containers (container %q declares compose: %q). Use --backend docker.\n", name, c.Compose)
+				return ExitUsage
+			}
+		}
 	}
 
 	// Step 2: mint run.id.
@@ -132,7 +145,8 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// set, else constructs via newBackend using the --backend flag value.
 	// The result is held in a LOCAL variable (NEVER assigned to r.Backend)
 	// so sequential runner.Run(...) calls don't leak a constructed Backend.
-	backend, cleanup, err := r.resolveBackend(ctx, *backendKind, id, blobs)
+	workdirRoot := filepath.Join(*stateDir, "work")
+	backend, cleanup, err := r.resolveBackend(ctx, *backendKind, id, workdirRoot, blobs)
 	if err != nil {
 		fprintf(stderr, "awf run: construct backend %q: %v\n", *backendKind, err)
 		return ExitUsage

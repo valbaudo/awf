@@ -150,7 +150,8 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
-	backend, cleanup, err := r.resolveBackend(ctx, kind, runID, blobs)
+	workdirRoot := filepath.Join(*stateDir, "work")
+	backend, cleanup, err := r.resolveBackend(ctx, kind, runID, workdirRoot, blobs)
 	if err != nil {
 		fprintf(stderr, "awf resume: construct backend %q: %v\n", kind, err)
 		return ExitUsage
