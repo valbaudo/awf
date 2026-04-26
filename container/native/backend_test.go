@@ -115,3 +115,42 @@ func TestCreateBareSpecAccepted(t *testing.T) {
 		t.Errorf("Handle = %+v", h)
 	}
 }
+
+func TestDestroyRemovesWorkdir(t *testing.T) {
+	t.Parallel()
+	b, err := native.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := os.Stat(h.ID); err != nil {
+		t.Fatalf("workdir missing pre-Destroy: %v", err)
+	}
+	if err := b.Destroy(context.Background(), h); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if _, err := os.Stat(h.ID); !os.IsNotExist(err) {
+		t.Errorf("workdir still present after Destroy: err=%v", err)
+	}
+}
+
+func TestDoubleDestroyErrors(t *testing.T) {
+	t.Parallel()
+	b, err := native.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := b.Destroy(context.Background(), h); err != nil {
+		t.Fatalf("first Destroy: %v", err)
+	}
+	if err := b.Destroy(context.Background(), h); err == nil {
+		t.Error("second Destroy returned nil, want error (handle gone)")
+	}
+}

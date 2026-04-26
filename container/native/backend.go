@@ -101,8 +101,23 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	return container.Handle{Name: spec.Name, ID: workdir}, nil
 }
 
-func (b *Backend) Destroy(_ context.Context, _ container.Handle) error {
-	return errors.New("container/native: Destroy: not implemented (stub)")
+// Destroy removes the handle's workdir and unregisters the handle.
+// Returns an error on double-destroy (matches docker / os.File.Close
+// convention). os.RemoveAll is idempotent on ENOENT, so a workdir
+// that's already gone (e.g., a step deleted it) succeeds.
+func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	r, ok := b.handles[h.ID]
+	if !ok {
+		b.mu.Unlock()
+		return errors.New("container/native: Destroy: unknown handle (already destroyed or never Created)")
+	}
+	delete(b.handles, h.ID)
+	b.mu.Unlock()
+	return os.RemoveAll(r.workdir)
 }
 
 func (b *Backend) Exec(_ context.Context, _ container.Handle, _ container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
