@@ -21,6 +21,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"sync"
 
 	"github.com/valbaudo/awf/container"
 )
@@ -36,16 +38,15 @@ const awfOutputDir = "/tmp/awf"
 type Backend struct {
 	workdirRoot string
 
-	// mu guards handles. Add together with the first Create/Destroy
-	// write in Task 3 (currently elided to satisfy golangci-lint
-	// `unused` while the map has no writers).
-	// mu sync.Mutex
+	mu      sync.Mutex
 	handles map[string]nativeHandle
 }
 
 // nativeHandle is the per-Create internal state. Stored in
 // Backend.handles keyed by Handle.ID. Fields added in Tasks 3-5.
-type nativeHandle struct{}
+type nativeHandle struct {
+	workdir string
+}
 
 // New constructs a Backend with workdirRoot as the parent for per-
 // container workdirs. Also bootstraps host /tmp/awf (idempotent).
@@ -78,8 +79,26 @@ func (*Backend) Capabilities() container.Caps {
 // Stub implementations — Create/Destroy/Exec/CaptureFiles replaced in
 // Tasks 3-6. Snapshot/Restore keep ErrUnsupported (decision 4).
 
-func (b *Backend) Create(_ context.Context, _ container.ContainerSpec) (container.Handle, error) {
-	return container.Handle{}, errors.New("container/native: Create: not implemented (stub)")
+// Create rejects compose-mode (no service-routing on host), ignores
+// spec.Image (native is not digest-pinned per decision 1), and creates
+// <workdirRoot>/<spec.Name>/ as the per-container workdir. The Handle's
+// ID carries the workdir path so Exec/CaptureFiles/Destroy can resolve
+// it via the handles map.
+func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (container.Handle, error) {
+	if err := ctx.Err(); err != nil {
+		return container.Handle{}, err
+	}
+	if spec.Compose != nil {
+		return container.Handle{}, errors.New("container/native: Create: compose-mode not supported (use --backend docker for compose workflows)")
+	}
+	workdir := filepath.Join(b.workdirRoot, spec.Name)
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		return container.Handle{}, err
+	}
+	b.mu.Lock()
+	b.handles[workdir] = nativeHandle{workdir: workdir}
+	b.mu.Unlock()
+	return container.Handle{Name: spec.Name, ID: workdir}, nil
 }
 
 func (b *Backend) Destroy(_ context.Context, _ container.Handle) error {
