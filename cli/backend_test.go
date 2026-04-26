@@ -137,3 +137,26 @@ func TestReadBackendKindFromLogErrorsIfNoRunStarted(t *testing.T) {
 		t.Errorf("err = %q, want to mention 'run.started'", err)
 	}
 }
+
+func TestReadBackendKindFromLogRejectsNative(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(engine.RunStartedData{
+		RunID:          "r1",
+		WorkflowDigest: "sha256:x",
+		Backend:        engine.BackendNative,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []state.Event{{Type: engine.EventRunStarted, Data: payload}}
+	_, err = cli.ReadBackendKindFromLogForTest(events)
+	if err == nil {
+		t.Fatal("err = nil, want non-nil (native is not resumable)")
+	}
+	if !strings.Contains(err.Error(), "not resumable") {
+		t.Errorf("err = %q, want substring 'not resumable'", err)
+	}
+	if !strings.Contains(err.Error(), "native") {
+		t.Errorf("err = %q, want to mention 'native'", err)
+	}
+}
