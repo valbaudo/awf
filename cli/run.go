@@ -132,7 +132,8 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// set, else constructs via newBackend using the --backend flag value.
 	// The result is held in a LOCAL variable (NEVER assigned to r.Backend)
 	// so sequential runner.Run(...) calls don't leak a constructed Backend.
-	backend, cleanup, err := r.resolveBackend(ctx, *backendKind, id, blobs)
+	workdirRoot := filepath.Join(*stateDir, "work")
+	backend, cleanup, err := r.resolveBackend(ctx, *backendKind, id, workdirRoot, blobs)
 	if err != nil {
 		fprintf(stderr, "awf run: construct backend %q: %v\n", *backendKind, err)
 		return ExitUsage

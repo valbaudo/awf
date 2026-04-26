@@ -9,6 +9,7 @@ import (
 
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/container/docker"
+	"github.com/valbaudo/awf/container/native"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/state"
 )
@@ -19,20 +20,29 @@ import (
 // Destroy loop — closing the underlying Docker client before Destroy fires
 // would break teardown.
 //
-// kind is one of engine.BackendFake / engine.BackendDocker; any other
-// value (including "") is an error. The caller (cli/resume.go via
+// kind is one of engine.BackendFake / engine.BackendDocker / engine.BackendNative;
+// any other value (including "") is an error. The caller (cli/resume.go via
 // readBackendKindFromLog) is responsible for mapping legacy "" → docker
 // BEFORE invoking newBackend; an empty kind reaching newBackend would be
 // a programming error caught by the default-arm "unknown backend kind"
 // error path.
 //
+// workdirRoot is consumed only by the native arm (path under which
+// per-container workdirs are created). Other arms ignore it.
+//
 // Private — no exported type, no Runner field, no plugin layer (CLAUDE.md
 // "seams as designed — no more").
-func newBackend(ctx context.Context, kind, runID string, blobs state.Blobs) (container.Backend, func(), error) {
+func newBackend(ctx context.Context, kind, runID, workdirRoot string, blobs state.Blobs) (container.Backend, func(), error) {
 	_ = ctx // reserved for future hooks (e.g. client.Ping); structural for now per slice-4.5 plan.
 	switch kind {
 	case engine.BackendFake:
 		return container.NewFake(), func() {}, nil
+	case engine.BackendNative:
+		b, err := native.New(workdirRoot)
+		if err != nil {
+			return nil, nil, fmt.Errorf("cli: construct native backend: %w", err)
+		}
+		return b, func() {}, nil
 	case engine.BackendDocker:
 		cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 		if err != nil {
@@ -54,7 +64,7 @@ func newBackend(ctx context.Context, kind, runID string, blobs state.Blobs) (con
 	default:
 		// Catches "" (caller bug — readBackendKindFromLog defaults legacy
 		// empties to docker before calling here) AND unknown kinds.
-		return nil, nil, fmt.Errorf("cli: unknown backend kind %q (want %q or %q)", kind, engine.BackendFake, engine.BackendDocker)
+		return nil, nil, fmt.Errorf("cli: unknown backend kind %q (want %q, %q, or %q)", kind, engine.BackendFake, engine.BackendDocker, engine.BackendNative)
 	}
 }
 
@@ -66,11 +76,11 @@ func newBackend(ctx context.Context, kind, runID string, blobs state.Blobs) (con
 //
 // Centralized here so cli/run.go (kind from --backend flag) and
 // cli/resume.go (kind from run.started.Backend) share one dispatch.
-func (r *Runner) resolveBackend(ctx context.Context, kind, runID string, blobs state.Blobs) (container.Backend, func(), error) {
+func (r *Runner) resolveBackend(ctx context.Context, kind, runID, workdirRoot string, blobs state.Blobs) (container.Backend, func(), error) {
 	if r.Backend != nil {
 		return r.Backend, func() {}, nil
 	}
-	return newBackend(ctx, kind, runID, blobs)
+	return newBackend(ctx, kind, runID, workdirRoot, blobs)
 }
 
 // readBackendKindFromLog extracts the Backend kind from a folded log's

@@ -17,8 +17,8 @@ import (
 // `[]state.Event{...}` directly via the state import (per slice-4.5
 // plan §Major #3).
 
-func NewBackendForTest(ctx context.Context, kind, runID string, blobs state.Blobs) (container.Backend, func(), error) {
-	return newBackend(ctx, kind, runID, blobs)
+func NewBackendForTest(ctx context.Context, kind, runID, workdirRoot string, blobs state.Blobs) (container.Backend, func(), error) {
+	return newBackend(ctx, kind, runID, workdirRoot, blobs)
 }
 
 func ReadBackendKindFromLogForTest(events []state.Event) (string, error) {
