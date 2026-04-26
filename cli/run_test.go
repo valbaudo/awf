@@ -1032,6 +1032,7 @@ func TestCLIRunCVEPipelineErrorsAtFirstAgentStep(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	rc := runner.Run(
 		[]string{"run", "--state-dir", stateDir,
+			"--backend", "docker",
 			"--input", `{"cve_id":"CVE-2024-0000"}`,
 			"testdata/phase3/cve-pipeline.yaml"},
 		&stdout, &stderr,
@@ -1080,7 +1081,7 @@ func TestCLIRunPropagatesComposeBytesToBackend(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	runner := &cli.Runner{Backend: rec, IDGen: &clock.Fake{IDs: []string{"test-compose-wiring"}}}
 	rc := runner.Run(
-		[]string{"run", "--state-dir", stateDir, "testdata/phase4/cli-compose-wiring.yaml"},
+		[]string{"run", "--state-dir", stateDir, "--backend", "docker", "testdata/phase4/cli-compose-wiring.yaml"},
 		&stdout, &stderr,
 	)
 	if rc != cli.ExitOK {
@@ -1118,7 +1119,7 @@ func TestCLIRunPropagatesComposeBytesToBackend(t *testing.T) {
 	}
 }
 
-func TestCLIRunWritesBackendDockerOnRunStartedByDefault(t *testing.T) {
+func TestCLIRunWritesBackendNativeOnRunStartedByDefault(t *testing.T) {
 	t.Parallel()
 	fake := container.NewFake()
 	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
@@ -1138,8 +1139,82 @@ func TestCLIRunWritesBackendDockerOnRunStartedByDefault(t *testing.T) {
 		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
 	}
 	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
+	if backendField != engine.BackendNative {
+		t.Errorf("run.started.Backend = %q, want %q (default)", backendField, engine.BackendNative)
+	}
+}
+
+func TestCLIRunBackendDockerFlagWritesBackendDocker(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("echo step2", container.ExecResult{
+		ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`),
+	}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, fake)
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "--backend", "docker", "testdata/phase2/seq.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
 	if backendField != engine.BackendDocker {
-		t.Errorf("run.started.Backend = %q, want %q (default)", backendField, engine.BackendDocker)
+		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendDocker)
+	}
+}
+
+func TestCLIRunBackendNativeFlagWritesBackendNative(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("echo step2", container.ExecResult{
+		ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`),
+	}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, fake)
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "--backend", "native", "testdata/phase2/seq.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
+	if backendField != engine.BackendNative {
+		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
+	}
+}
+
+func TestCLIRunRejectsComposeWithNativeBackend(t *testing.T) {
+	t.Parallel()
+	// Decision 1 + H8 fix: --backend native with a compose-mode container
+	// must fail-fast at the CLI layer (post-loader.Load, pre-dispatch),
+	// not mid-run at Backend.Create.
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	// Use the CVE-pipeline fixture which declares a compose-mode container.
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "--backend", "native", "testdata/phase3/cve-pipeline.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitUsage {
+		t.Errorf("rc = %d, want ExitUsage (compose+native rejected)", rc)
+	}
+	if !strings.Contains(stderr.String(), "compose-mode") {
+		t.Errorf("stderr missing 'compose-mode': %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "native") {
+		t.Errorf("stderr missing 'native': %s", stderr.String())
 	}
 }
 
