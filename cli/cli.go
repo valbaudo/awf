@@ -1,7 +1,7 @@
 // Package cli assembles the command-line surface. Slice 1.6 shipped
 // `awf validate <path>`; slice 2.5 added `awf run`; slice 2.6 added
 // `awf resume`; Phase 3 added `signal` / `pause` / `cancel`; slice 4.5
-// added `--backend {fake,docker}` on `awf run` (default docker) +
+// added `--backend {fake,docker,native}` on `awf run` (default native; slice 4.7) +
 // log-driven backend selection on `awf resume`. Later phases add
 // `inspect` / `trace` / `ls` (Phase 6). The entry point is Runner.Run,
 // not init() or a package-level CLI framework, so tests drive the full
