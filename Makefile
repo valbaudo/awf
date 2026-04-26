@@ -28,16 +28,18 @@ lint:
 # ./cli/... integ tests (CVE-pipeline boots-under-Docker + pause-resume
 # round-trip via the CLI --backend flag). Slice 4.6 added
 # ./conformance/... integ tests (TestConformanceDockerBackend, which
-# replays Buckets 9/10/11 through the shared conformance suite).
+# replays Buckets 9/10/11 through the shared conformance suite). Slice 4.7
+# added ./container/native/... integ tests (TestNativeRunBasicContract,
+# conformance bar for the native process backend).
 #
-# Target is narrow on purpose: only container/docker/, cli/, and
-# conformance/ ship integ-tagged tests today. Using ./... here would
-# re-compile every other package with the integ tag for no benefit. If a
-# future slice adds integ tests elsewhere, append that package to this
+# Target is narrow on purpose: only container/docker/, container/native/,
+# cli/, and conformance/ ship integ-tagged tests today. Using ./... here
+# would re-compile every other package with the integ tag for no benefit.
+# If a future slice adds integ tests elsewhere, append that package to this
 # list then.
 #
 # -count=1 disables Go's test caching (integ tests have hidden inputs like
 # daemon state). -race stays on; if a real race surfaces in the Docker SDK,
 # document the specific symptom + SDK version then.
 integ:
-	go test -race -tags=integ -count=1 -p 1 ./container/docker/... ./cli/... ./conformance/...
+	go test -race -tags=integ -count=1 -p 1 ./container/docker/... ./container/native/... ./cli/... ./conformance/...

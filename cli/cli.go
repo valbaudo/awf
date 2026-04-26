@@ -42,8 +42,12 @@ const (
 // construction) populate every field.
 type Runner struct {
 	// Backend is the container.Backend the run subcommand passes to
-	// engine.LocalDispatcher. Production: container.NewFake() in Phase 2
-	// (Phase 4 swaps to Docker). Tests: a pre-programmed *container.Fake.
+	// engine.LocalDispatcher. Production: left nil — the run/resume
+	// subcommands construct on-demand via newBackend (cli/backend.go),
+	// choosing fake/docker/native based on the --backend flag (default
+	// native; slice 4.7). Tests: inject any container.Backend (typically
+	// a pre-programmed *container.Fake) to short-circuit construction
+	// via (*Runner).resolveBackend.
 	Backend container.Backend
 	// IDGen mints run ids. Production: clock.CryptoIDGen{}. Tests: a
 	// seeded *clock.Fake so run dir paths are reproducible.
