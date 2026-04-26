@@ -31,11 +31,16 @@ const awfOutputDir = "/tmp/awf"
 
 // Backend implements container.Backend by spawning host processes via
 // os/exec. Single concrete impl; not safe for concurrent runs of the
-// same workflow (see spec Appendix E for the /tmp/awf/<step>.json
-// clobber failure mode).
+// same workflow (see slice 4.7 design spec Appendix E for the
+// /tmp/awf/<step>.json clobber failure mode).
 type Backend struct {
 	workdirRoot string
-	handles     map[string]nativeHandle
+
+	// mu guards handles. Add together with the first Create/Destroy
+	// write in Task 3 (currently elided to satisfy golangci-lint
+	// `unused` while the map has no writers).
+	// mu sync.Mutex
+	handles map[string]nativeHandle
 }
 
 // nativeHandle is the per-Create internal state. Stored in
