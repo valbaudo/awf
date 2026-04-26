@@ -167,6 +167,7 @@ type GateAttemptData struct {
 const (
 	BackendFake   = "fake"
 	BackendDocker = "docker"
+	BackendNative = "native"
 )
 
 // RunStartedData is the payload of the first event in a run (and the only

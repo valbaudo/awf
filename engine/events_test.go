@@ -475,6 +475,7 @@ func TestRunStartedDataRoundTripBackendField(t *testing.T) {
 		{"empty-omitted", "", `"workflow_digest":"sha256:x"`},
 		{"fake", BackendFake, `"backend":"fake"`},
 		{"docker", BackendDocker, `"backend":"docker"`},
+		{"native", BackendNative, `"backend":"native"`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
