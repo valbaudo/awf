@@ -120,10 +120,6 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	return os.RemoveAll(r.workdir)
 }
 
-func (b *Backend) CaptureFiles(_ context.Context, _ container.Handle, _ []string) ([]container.CapturedFile, error) {
-	return nil, errors.New("container/native: CaptureFiles: not implemented (stub)")
-}
-
 func (b *Backend) Snapshot(_ context.Context, _ container.Handle) (container.SnapshotRef, error) {
 	return "", container.ErrUnsupported
 }

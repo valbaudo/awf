@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/container/backendtest"
 	"github.com/valbaudo/awf/container/native"
 )
 
@@ -110,11 +111,35 @@ func TestNativeExecEnvPassthrough(t *testing.T) {
 	}
 }
 
-// Note: TestNativeCaptureFilesRoundTrip and TestNativeRunBasicContract are
-// intentionally NOT added here — they require CaptureFiles which is
-// implemented in Task 6. Adding them here would leave Task 5's commit with
-// red tests in the suite. Task 6 adds them when their dependencies are ready
-// (TDD: each task leaves the suite green).
+func TestNativeCaptureFilesRoundTrip(t *testing.T) {
+	b, h := newBackendAndHandle(t)
+	// Exec writes a file relative to workdir (cmd.Dir = workdir).
+	if _, _, err := b.Exec(context.Background(), h, container.Cmd{Run: "echo content > out.txt"}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	files, err := b.CaptureFiles(context.Background(), h, []string{"out.txt"})
+	if err != nil {
+		t.Fatalf("CaptureFiles: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("len(files) = %d, want 1", len(files))
+	}
+	if got := string(files[0].Content); got != "content\n" {
+		t.Errorf("Content = %q, want %q", got, "content\n")
+	}
+	// Also verify workdir resolution: the file was actually written under <workdir>/out.txt.
+	if _, err := os.Stat(filepath.Join(h.ID, "out.txt")); err != nil {
+		t.Errorf("expected workdir-relative file: %v", err)
+	}
+}
+
+func TestNativeRunBasicContract(t *testing.T) {
+	b, err := native.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	backendtest.RunBasicContract(t, b)
+}
 
 // drain consumes all chunks from ch (expected to be closed before Exec returns).
 func drain(ch <-chan container.IOChunk) []container.IOChunk {
@@ -124,7 +149,3 @@ func drain(ch <-chan container.IOChunk) []container.IOChunk {
 	}
 	return out
 }
-
-// Suppress unused-import warnings for imports that Task 6 will use.
-var _ = os.Stat
-var _ = filepath.Join
