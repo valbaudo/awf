@@ -43,7 +43,7 @@ type Backend struct {
 }
 
 // nativeHandle is the per-Create internal state. Stored in
-// Backend.handles keyed by Handle.ID. Fields added in Tasks 3-5.
+// Backend.handles keyed by Handle.ID.
 type nativeHandle struct {
 	workdir string
 }
@@ -75,9 +75,6 @@ func New(workdirRoot string) (*Backend, error) {
 func (*Backend) Capabilities() container.Caps {
 	return container.Caps{Snapshot: container.SnapshotNone}
 }
-
-// Stub implementations — Create/Destroy/Exec/CaptureFiles replaced in
-// Tasks 3-6. Snapshot/Restore keep ErrUnsupported (decision 4).
 
 // Create rejects compose-mode (no service-routing on host), ignores
 // spec.Image (native is not digest-pinned per decision 1), and creates
@@ -120,11 +117,16 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	return os.RemoveAll(r.workdir)
 }
 
-func (b *Backend) Snapshot(_ context.Context, _ container.Handle) (container.SnapshotRef, error) {
+// Snapshot returns ErrUnsupported — native does not implement
+// filesystem snapshots (decision 4). Workflows with snapshot:workspace
+// containers must use --backend docker.
+func (*Backend) Snapshot(_ context.Context, _ container.Handle) (container.SnapshotRef, error) {
 	return "", container.ErrUnsupported
 }
 
-func (b *Backend) Restore(_ context.Context, _ container.SnapshotRef, _ string) (container.Handle, error) {
+// Restore returns ErrUnsupported — native does not implement
+// filesystem snapshots (decision 4).
+func (*Backend) Restore(_ context.Context, _ container.SnapshotRef, _ string) (container.Handle, error) {
 	return container.Handle{}, container.ErrUnsupported
 }
 
