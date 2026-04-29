@@ -1,9 +1,15 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/fake"
+	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 )
 
@@ -183,3 +189,61 @@ func TestWalkAgentRefs_TopLevelAndMapSibling(t *testing.T) {
 // cli/_test. The panic is defensive documentation only; if a future ir/
 // node type lands without updating this switch, integration tests
 // exercising the new node panic loudly. See walkAgentRefsNodes doc-comment.
+
+func TestResolveRuntimes_Empty(t *testing.T) {
+	got, err := resolveRuntimes(context.Background(), nil, &agent.Registry{}, nil)
+	if err != nil {
+		t.Fatalf("resolveRuntimes(nil refs): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("len = %d, want 0", len(got))
+	}
+}
+
+func TestResolveRuntimes_Found(t *testing.T) {
+	var r agent.Registry
+	f := fake.New("anthropic/claude-code").WithVersion("2.1.118")
+	if err := r.Register(f); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	refs := []agentRef{{Uses: "anthropic/claude-code", Container: "lab"}}
+	handles := map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}}
+	got, err := resolveRuntimes(context.Background(), refs, &r, handles)
+	if err != nil {
+		t.Fatalf("resolveRuntimes: %v", err)
+	}
+	want := []engine.ResolvedRuntime{
+		{Ref: "anthropic/claude-code", Version: "2.1.118", Container: "lab"},
+	}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveRuntimes_AdapterNotFound(t *testing.T) {
+	refs := []agentRef{{Uses: "anthropic/claude-code", Container: "lab"}}
+	_, err := resolveRuntimes(context.Background(), refs, &agent.Registry{}, nil)
+	var target *agent.ErrAdapterNotFound
+	if !errors.As(err, &target) {
+		t.Fatalf("err = %v, want *ErrAdapterNotFound", err)
+	}
+	if target.Ref != "anthropic/claude-code" {
+		t.Errorf("Ref = %q, want %q", target.Ref, "anthropic/claude-code")
+	}
+}
+
+func TestResolveRuntimes_HandleMissing(t *testing.T) {
+	// If the CLI somehow doesn't have a handle for a container the ref names,
+	// resolveRuntimes should error — but resolveRuntimes can't be the one that
+	// CREATES handles (that's slice 5.2 dispatch's job in this slice's wiring).
+	// The error here is a "programmer bug at the wiring level" class.
+	var r agent.Registry
+	if err := r.Register(fake.New("x")); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	refs := []agentRef{{Uses: "x", Container: "missing"}}
+	_, err := resolveRuntimes(context.Background(), refs, &r, map[string]container.Handle{})
+	if err == nil {
+		t.Fatalf("err = nil, want non-nil (missing handle)")
+	}
+}

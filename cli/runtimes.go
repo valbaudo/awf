@@ -2,9 +2,13 @@ package cli
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"slices"
 
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 )
 
@@ -117,4 +121,43 @@ func walkAgentRefsNodes(nodes ir.NodeList, seen map[agentRef]bool) {
 			panic(fmt.Sprintf("walkAgentRefs: unhandled ir.Node type %T (extend the switch; mirror engine/scope.go)", n))
 		}
 	}
+}
+
+// resolveRuntimes calls Adapter.Version once per (ref, container) pair and
+// returns the slice ready to write into RunStartedData.Runtimes.
+//
+// Called twice per run lifecycle: once at run start (cli/run.go writes the
+// result into the persistent run.started event), once at resume (cli/resume.go
+// compares the result to the persisted Runtimes and hard-errors on drift —
+// spec §8 pinning).
+//
+// Returns *agent.ErrAdapterNotFound (Lookup miss) or a wrapped error if
+// Adapter.Version fails for some reason (network, missing binary, etc.).
+// Missing handle is a wiring bug — the caller must Create handles for every
+// container before calling this.
+func resolveRuntimes(ctx context.Context, refs []agentRef, resolver agent.Resolver, handles map[string]container.Handle) ([]engine.ResolvedRuntime, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	out := make([]engine.ResolvedRuntime, 0, len(refs))
+	for _, ref := range refs {
+		adapter, ok := resolver.Lookup(ref.Uses)
+		if !ok {
+			return nil, &agent.ErrAdapterNotFound{Ref: ref.Uses}
+		}
+		handle, ok := handles[ref.Container]
+		if !ok {
+			return nil, fmt.Errorf("cli: no handle for container %q (resolveRuntimes wiring bug — Create the container before calling)", ref.Container)
+		}
+		ver, err := adapter.Version(ctx, handle)
+		if err != nil {
+			return nil, fmt.Errorf("cli: adapter %q version resolution in container %q: %w", ref.Uses, ref.Container, err)
+		}
+		out = append(out, engine.ResolvedRuntime{
+			Ref:       ref.Uses,
+			Version:   ver,
+			Container: ref.Container,
+		})
+	}
+	return out, nil
 }
