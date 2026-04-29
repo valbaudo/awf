@@ -337,6 +337,11 @@ func classifyAgentLaunchErr(err error) Outcome {
 	var badConfig *agent.ErrInvalidConfig
 	var unparseable *agent.ErrUnparseableOutput
 	switch {
+	// Defense-in-depth: *ErrAdapterNotFound is normally caught before Launch by
+	// the Resolver.Lookup miss path in runAgent. This branch handles the unlikely
+	// case of an adapter whose Launch surfaces a wrapped *ErrAdapterNotFound,
+	// violating the agent/adapter.go Launch contract. Classification still maps
+	// to permanent_failure — a broken adapter contract is not transient.
 	case errors.As(err, &notFound):
 		return OutcomePermanentFailure
 	case errors.As(err, &badConfig):
