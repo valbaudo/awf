@@ -290,6 +290,50 @@ type RunFinishedData struct {
 	Outcome string `json:"outcome"`
 }
 
+const (
+	// Phase 5 slice 5.2. agent.event: the interpreter writes one entry per
+	// agent.AgentEvent buffered in DispatchResult.AgentEvents, BEFORE the
+	// node.completed commit. OBSERVATIONAL — Fold ignores it (default arm).
+	// Phase 6 obs will project these as OTel span events. Mirrors how
+	// retry.attempt is treated: appended for trace/obs, invisible to resume.
+	EventAgentEvent = "agent.event"
+)
+
+// AgentEventData is the payload of an agent.event log entry. The dispatcher
+// (engine/local_dispatcher.go runAgent) drains <-chan agent.AgentEvent from
+// adapter.Launch and buffers them into DispatchResult.AgentEvents; the
+// interpreter-level engine/agent_step.go writes one AgentEventData per
+// buffered event via Log.Append BEFORE Commit (so the journal records the
+// stream alongside the node it belongs to).
+//
+// Payload offload policy: PayloadInline carries the raw event bytes when
+// `Size <= agentEventInlineThreshold` (4096 bytes, mirroring io.chunk per
+// the Phase 5 spec slice 5.2 row). Larger payloads land in Blobs and
+// PayloadRef carries the CAS pointer; PayloadInline is then nil. Always
+// exactly ONE of PayloadInline / PayloadRef is non-empty.
+//
+// agent.event is OBSERVATIONAL — Fold ignores it. Resume reconstructs
+// RunState from node.completed events; agent events are for trace/obs only
+// (Phase 6 will project them as OTel span events). This mirrors how
+// retry.attempt is treated.
+type AgentEventData struct {
+	Kind          string `json:"kind"`                     // adapter-specific (e.g. Claude Code: "system", "assistant", "user", "tool_use", "tool_result", "thinking", "result", "rate_limit")
+	Stream        string `json:"stream,omitempty"`         // "stdout" | "stderr"
+	Size          int    `json:"size"`                     // payload byte count (whether inline or offloaded)
+	PayloadInline []byte `json:"payload_inline,omitempty"` // raw event bytes when Size <= threshold
+	PayloadRef    string `json:"payload_ref,omitempty"`    // CAS pointer when Size > threshold
+}
+
+// agentEventInlineThreshold is the per-event inline/offload boundary, in
+// bytes. Mirrors io.chunk per the Phase 5 spec slice 5.2 row ("payload
+// offloaded to Blobs for > 4 KiB, mirrors io.chunk's threshold"). Private
+// because slice 5.2 is the only consumer (engine/agent_step.go in Task 8).
+const agentEventInlineThreshold = 4096
+
+// Compile-time reference so the unused linter doesn't fire before Task 8
+// wires agentEventInlineThreshold into engine/agent_step.go.
+var _ = agentEventInlineThreshold
+
 // NodeSkippedData is the observational marker emitted as a Skip unwinds
 // through a scope (Phase 3 design §B). Path is the path of the skipped scope
 // (e.g. "loop[0].body.iter-2" for a skipped loop iter, "" for a root skip).

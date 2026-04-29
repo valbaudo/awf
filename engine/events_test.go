@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/valbaudo/awf/clock"
+	"github.com/valbaudo/awf/state"
 )
 
 func TestEventTypeConstants(t *testing.T) {
@@ -585,4 +589,83 @@ func TestRunStartedData_PrePhase5Log_RuntimesAbsent(t *testing.T) {
 	if string(got) != legacy {
 		t.Errorf("re-marshal:\n  got:  %s\n  want: %s\n(byte-equal required so Phase-2-4 logs stay readable post-5.1)", got, legacy)
 	}
+}
+
+func TestAgentEventData_JSONRoundtrip(t *testing.T) {
+	in := AgentEventData{
+		Kind:          "assistant",
+		Stream:        "stdout",
+		Size:          1234,
+		PayloadInline: []byte(`{"text":"hello"}`),
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got AgentEventData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Kind != in.Kind || got.Stream != in.Stream || got.Size != in.Size {
+		t.Errorf("scalar fields drifted: got %+v want %+v", got, in)
+	}
+	if string(got.PayloadInline) != string(in.PayloadInline) {
+		t.Errorf("PayloadInline: got %q want %q", got.PayloadInline, in.PayloadInline)
+	}
+}
+
+func TestAgentEventData_OffloadedRefShape(t *testing.T) {
+	in := AgentEventData{
+		Kind:       "tool_result",
+		Stream:     "stdout",
+		Size:       12345,
+		PayloadRef: "sha256:abc",
+	}
+	b, _ := json.Marshal(in)
+	if !strings.Contains(string(b), `"payload_ref":"sha256:abc"`) {
+		t.Errorf("PayloadRef not serialized: %s", b)
+	}
+	if strings.Contains(string(b), `"payload_inline"`) {
+		t.Errorf("PayloadInline omitempty failed: %s", b)
+	}
+}
+
+func TestAgentEventData_FoldIgnores(t *testing.T) {
+	// agent.event events are observational, like retry.attempt. Fold must
+	// not mutate RunState in response to them. We assert this by Fold'ing a
+	// log containing only run.started + one node.completed + one agent.event,
+	// and checking RunState.Completed has only the node — not anything
+	// derived from the agent.event.
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	if err := log.Append(state.Event{Type: EventRunStarted, Data: mustJSON(RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	if err := log.Append(state.Event{
+		Type: EventAgentEvent,
+		Path: "graph[0]",
+		Data: mustJSON(AgentEventData{Kind: "assistant", Stream: "stdout", PayloadInline: []byte(`{"text":"hello"}`)}),
+	}); err != nil {
+		t.Fatalf("append agent.event: %v", err)
+	}
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	rs, err := Fold(events, state.NewInMemoryBlobs())
+	if err != nil {
+		t.Fatalf("engine.Fold: %v", err)
+	}
+	if len(rs.Completed) != 0 {
+		t.Errorf("Fold mutated RunState in response to agent.event: Completed=%+v", rs.Completed)
+	}
+}
+
+// mustJSON is a test helper — panics on marshal failure (only used with
+// types we control whose marshalling can't actually fail).
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }
