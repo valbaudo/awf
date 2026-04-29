@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -395,5 +396,30 @@ func TestCLIResumeDigestMismatchHardError(t *testing.T) {
 		if e.Type == engine.EventRunResumed {
 			t.Errorf("digest-mismatch refusal must NOT append run.resumed; events: %+v", events)
 		}
+	}
+}
+
+func TestErrRuntimeDrift_Format(t *testing.T) {
+	err := &cli.ErrRuntimeDrift{
+		Ref:       "anthropic/claude-code",
+		Container: "lab",
+		Recorded:  "2.1.118",
+		Current:   "2.1.150",
+	}
+	want := `cli: agent runtime drift for "anthropic/claude-code" in container "lab": recorded "2.1.118", now "2.1.150" — cannot resume (spec §8 pinning is a hard error)`
+	if err.Error() != want {
+		t.Errorf("Error() =\n  %q\nwant:\n  %q", err.Error(), want)
+	}
+}
+
+func TestErrRuntimeDrift_AsTarget(t *testing.T) {
+	inner := &cli.ErrRuntimeDrift{Ref: "x", Container: "y", Recorded: "1", Current: "2"}
+	wrapped := errors.Join(errors.New("ctx"), inner)
+	var target *cli.ErrRuntimeDrift
+	if !errors.As(wrapped, &target) {
+		t.Fatalf("errors.As did not unwrap to *cli.ErrRuntimeDrift")
+	}
+	if target.Ref != "x" {
+		t.Errorf("Ref = %q, want %q", target.Ref, "x")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -20,6 +21,27 @@ import (
 	awfsignal "github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
+
+// ErrRuntimeDrift is the hard-error returned when a resumed run's agent
+// runtime version no longer matches what was persisted in run.started.
+// Mirrors the spec §8 pinning invariant (the existing definition-digest
+// hard-error class); resume cannot adapt to a changed binary.
+//
+// Phase 5 slice 5.1: scoped per (Ref, Container) pair, since different
+// containers may have different `claude` binaries on PATH (decision 5).
+type ErrRuntimeDrift struct {
+	Ref       string
+	Container string
+	Recorded  string
+	Current   string
+}
+
+func (e *ErrRuntimeDrift) Error() string {
+	return fmt.Sprintf(
+		"cli: agent runtime drift for %q in container %q: recorded %q, now %q — cannot resume (spec §8 pinning is a hard error)",
+		e.Ref, e.Container, e.Recorded, e.Current,
+	)
+}
 
 // printResumeUsage writes the resume-subcommand usage line.
 func printResumeUsage(w io.Writer) {
