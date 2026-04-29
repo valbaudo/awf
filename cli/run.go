@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -30,6 +31,21 @@ func printRunUsage(w io.Writer) {
 	fprintln(w, "  --run-id <id>      override the minted run id (testing aid)")
 	fprintln(w, "  --state-dir <dir>  base directory for .awf/runs and .awf/blobs (default: ./.awf)")
 	fprintln(w, "  --backend <kind>   container backend: \"fake\", \"docker\", or \"native\" (default: native)")
+}
+
+// resolverOrEmpty returns r.Resolver if set, else a freshly-allocated empty
+// *agent.Registry. The empty fallback exists so workflows without any
+// `uses:` step (every Phase 2-4 fixture) work unchanged through this slice
+// — they trigger zero Lookup calls. Workflows WITH a `uses:` step, run
+// against an empty Resolver, fail at run-start with *ErrAdapterNotFound
+// (the resolveRuntimes helper wraps this). Production wiring lives in
+// slice 5.3's cli/agent_registry.go, which constructs a populated
+// *agent.Registry and assigns it to r.Resolver before dispatch.
+func (r *Runner) resolverOrEmpty() agent.Resolver {
+	if r.Resolver != nil {
+		return r.Resolver
+	}
+	return &agent.Registry{}
 }
 
 // teardownGrace is how long Backend.Destroy gets after the run's ctx has been
@@ -182,6 +198,18 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		handles[name] = h
 	}
 
+	// Phase 5 slice 5.1: walk for agent refs, resolve versions per (uses,
+	// container) pair, persist into RunStartedData.Runtimes below. Empty
+	// workflow (no `uses:` steps — every Phase 2-4 fixture) → resolvedRuntimes
+	// is nil; omitempty on the field means run.started JSON has no "runtimes"
+	// key, byte-equal to pre-Phase-5 logs.
+	agentRefs := walkAgentRefs(ld.Workflow)
+	resolvedRuntimes, err := resolveRuntimes(ctx, agentRefs, r.resolverOrEmpty(), handles)
+	if err != nil {
+		fprintf(stderr, "awf run: resolve agent runtimes: %v\n", err)
+		return ExitUsage
+	}
+
 	// Step 8: put input into Blobs (after validation, before log creation).
 	var inputRef string
 	if *inputJSON != "" {
@@ -224,6 +252,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		WorkflowDigest: digest,
 		InputRef:       inputRef,
 		Backend:        *backendKind,
+		Runtimes:       resolvedRuntimes, // Phase 5 slice 5.1
 	})
 	if err != nil {
 		fprintf(stderr, "awf run: marshal run.started: %v\n", err)

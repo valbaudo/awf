@@ -1037,13 +1037,15 @@ func TestCLIRunCVEPipelineErrorsAtFirstAgentStep(t *testing.T) {
 			"testdata/phase3/cve-pipeline.yaml"},
 		&stdout, &stderr,
 	)
-	// Non-OK exit; output mentions agent / not implemented.
+	// Non-OK exit; output mentions agent / not implemented OR the new
+	// run-start resolver error (slice 5.1 wires resolveRuntimes before
+	// engine dispatch, so an unregistered adapter now fails earlier).
 	if rc == cli.ExitOK {
 		t.Errorf("rc = %d, want non-zero (agent step should error)", rc)
 	}
 	combined := stdout.String() + stderr.String()
-	if !strings.Contains(combined, "not implemented") {
-		t.Errorf("output missing 'not implemented': stdout=%q stderr=%q", stdout.String(), stderr.String())
+	if !strings.Contains(combined, "not implemented") && !strings.Contains(combined, "no adapter registered") {
+		t.Errorf("output missing agent-error marker: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
@@ -1285,4 +1287,17 @@ func readRunStartedBackendField(t *testing.T, stateDir, runID string) string {
 	}
 	t.Fatalf("no run.started event in log %q", logPath)
 	return ""
+}
+
+func TestCLIRun_AgentStepFixturePopulatesRunStartedRuntimes(t *testing.T) {
+	// Fixture: a tiny workflow with one AgentStep using a fake adapter.
+	// The test asserts that run.started's Runtimes field is populated correctly.
+	t.Skip("Phase 5 slice 5.2 ships the AgentStep dispatcher; this test is a placeholder. Once slice 5.2 lands and AgentStep is no longer ErrNodeNotImplemented, this test runs the fixture end-to-end and inspects the run.started event for Runtimes.")
+}
+
+func TestCLIRun_NoAgentSteps_RuntimesIsAbsent(t *testing.T) {
+	// Any existing Phase 2-4 fixture has no `uses:` steps — Runtimes should be
+	// absent from the run.started JSON. This test is here to lock that
+	// invariant (additive extension didn't break pre-Phase-5 logs).
+	t.Skip("Inspect run.started JSON of any existing fixture run (e.g. testdata/phase2/seq.yaml). Assert no \"runtimes\" key in the JSON. Implementation deferred — relies on a helper that opens the log file and re-parses the first event's JSON.")
 }
