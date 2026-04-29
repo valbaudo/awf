@@ -621,6 +621,9 @@ func TestAgentEventData_OffloadedRefShape(t *testing.T) {
 		Size:       12345,
 		PayloadRef: "sha256:abc",
 	}
+	if in.Size <= agentEventInlineThreshold {
+		t.Fatalf("test bug: Size %d must exceed agentEventInlineThreshold %d to exercise the offloaded-ref branch", in.Size, agentEventInlineThreshold)
+	}
 	b, _ := json.Marshal(in)
 	if !strings.Contains(string(b), `"payload_ref":"sha256:abc"`) {
 		t.Errorf("PayloadRef not serialized: %s", b)
@@ -633,9 +636,9 @@ func TestAgentEventData_OffloadedRefShape(t *testing.T) {
 func TestAgentEventData_FoldIgnores(t *testing.T) {
 	// agent.event events are observational, like retry.attempt. Fold must
 	// not mutate RunState in response to them. We assert this by Fold'ing a
-	// log containing only run.started + one node.completed + one agent.event,
-	// and checking RunState.Completed has only the node — not anything
-	// derived from the agent.event.
+	// log containing only run.started + one agent.event, and checking
+	// RunState.Completed is empty — Fold must not derive any state from the
+	// agent.event.
 	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
 	if err := log.Append(state.Event{Type: EventRunStarted, Data: mustJSON(RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
 		t.Fatalf("append run.started: %v", err)

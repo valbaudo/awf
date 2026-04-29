@@ -273,6 +273,8 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			//     uses these but reads them outside Fold)
 			//   - node.skipped (3.1 — observational; the target scope's own
 			//     completion event drives RunState)
+			//   - agent.event (5.2 — observational; Phase 6 obs projects as OTel
+			//     span events; resume reconstructs RunState from node.completed only)
 			// obs (Phase 6) projects these via its own dispatch.
 		}
 	}

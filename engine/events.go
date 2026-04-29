@@ -8,8 +8,8 @@ package engine
 // consumer (Phase 6's obs is the natural consumer; the Fold's default-switch-arm
 // means a later writer can land additively without breaking old logs). Phase 3 adds
 // "node.skipped" (3.1), "gate.attempt" (3.3), "map.item" (3.4), and
-// "signal.received" / "run.paused" / "run.cancelled" (3.5). Future phases add
-// "agent.event" / "io.chunk" / … (Phase 6 obs).
+// "signal.received" / "run.paused" / "run.cancelled" (3.5). Phase 5 slice 5.2
+// added "agent.event". Still future: "io.chunk" and the Phase 6 obs projection.
 const (
 	EventRunStarted    = "run.started"
 	EventRunResumed    = "run.resumed"
@@ -329,10 +329,6 @@ type AgentEventData struct {
 // offloaded to Blobs for > 4 KiB, mirrors io.chunk's threshold"). Private
 // because slice 5.2 is the only consumer (engine/agent_step.go in Task 8).
 const agentEventInlineThreshold = 4096
-
-// Compile-time reference so the unused linter doesn't fire before Task 8
-// wires agentEventInlineThreshold into engine/agent_step.go.
-var _ = agentEventInlineThreshold
 
 // NodeSkippedData is the observational marker emitted as a Skip unwinds
 // through a scope (Phase 3 design §B). Path is the path of the skipped scope
