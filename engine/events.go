@@ -199,11 +199,15 @@ type RunStartedData struct {
 }
 
 // ResolvedRuntime is one element of RunStartedData.Runtimes — a `uses:` ref + the
-// concrete version it resolved to. Phase 2 doesn't populate this; the type exists
-// so the wire format is stable from Phase 5 (when agent adapters land).
+// concrete version it resolved to + the IR-declared container the version was
+// resolved IN (per Phase 5 slice 5.1, decision 5: different containers may have
+// different `claude` binaries on PATH, so drift detection is scoped per-(ref,
+// container) pair, not just per-ref). Phase 2-4 don't populate this; the type
+// exists so the wire format is stable from Phase 5.
 type ResolvedRuntime struct {
-	Ref     string `json:"ref"`
-	Version string `json:"version"`
+	Ref       string `json:"ref"`
+	Version   string `json:"version"`
+	Container string `json:"container,omitempty"` // slice 5.1 — IR-declared container name (spec §3); different containers may have different binary versions
 }
 
 // RunResumedData is the payload of the run.resumed event — emitted at the top of every

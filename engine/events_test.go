@@ -500,3 +500,89 @@ func TestRunStartedDataRoundTripBackendField(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvedRuntime_ContainerField_Roundtrip(t *testing.T) {
+	in := RunStartedData{
+		RunID:          "r1",
+		WorkflowDigest: "sha256:x",
+		Runtimes: []ResolvedRuntime{
+			{Ref: "anthropic/claude-code", Version: "2.1.118", Container: "lab"},
+			{Ref: "anthropic/claude-code", Version: "2.0.5", Container: "scratch"},
+		},
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got RunStartedData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Runtimes) != 2 {
+		t.Fatalf("len(Runtimes) = %d, want 2", len(got.Runtimes))
+	}
+	for i := range in.Runtimes {
+		if got.Runtimes[i] != in.Runtimes[i] {
+			t.Errorf("Runtimes[%d] = %+v, want %+v", i, got.Runtimes[i], in.Runtimes[i])
+		}
+	}
+}
+
+func TestResolvedRuntime_ContainerField_OmitemptyWhenEmpty(t *testing.T) {
+	// A pre-Phase-5-1 log might persist {Ref, Version} without Container.
+	// Verify that Container's omitempty means a struct with only Ref+Version
+	// marshals to the same JSON shape.
+	rr := ResolvedRuntime{Ref: "x", Version: "v1"}
+	b, err := json.Marshal(rr)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"ref":"x","version":"v1"}`
+	if string(b) != want {
+		t.Errorf("marshal = %q, want %q (Container omitempty when empty)", string(b), want)
+	}
+}
+
+// TestResolvedRuntime_LegacyJSON_DecodesContainerEmpty is the
+// backward-compatibility lock: a JSON document written by pre-Phase-5-1
+// code (no "container" key) MUST decode cleanly with Container == "".
+// This is the spec §8 pinning invariant for legacy logs — resume of a
+// pre-Phase-5 run under Phase-5 code must not spuriously fail.
+func TestResolvedRuntime_LegacyJSON_DecodesContainerEmpty(t *testing.T) {
+	var rr ResolvedRuntime
+	if err := json.Unmarshal([]byte(`{"ref":"anthropic/claude-code","version":"2.1.118"}`), &rr); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if rr.Ref != "anthropic/claude-code" {
+		t.Errorf("Ref = %q, want %q", rr.Ref, "anthropic/claude-code")
+	}
+	if rr.Version != "2.1.118" {
+		t.Errorf("Version = %q, want %q", rr.Version, "2.1.118")
+	}
+	if rr.Container != "" {
+		t.Errorf("Container = %q, want empty (legacy log)", rr.Container)
+	}
+}
+
+// TestRunStartedData_PrePhase5Log_RuntimesAbsent verifies the broader
+// backward-compat: a run.started JSON written before slice 5.1 (no
+// "runtimes" key at all) decodes with Runtimes == nil, and re-marshals
+// to the same byte-equal shape (no "runtimes":[] inserted).
+func TestRunStartedData_PrePhase5Log_RuntimesAbsent(t *testing.T) {
+	legacy := `{"run_id":"r1","workflow_digest":"sha256:abc","backend":"docker"}`
+	var rs RunStartedData
+	if err := json.Unmarshal([]byte(legacy), &rs); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if rs.Runtimes != nil {
+		t.Errorf("Runtimes = %v, want nil (legacy log has no runtimes key)", rs.Runtimes)
+	}
+	// Re-marshal — must byte-equal the input (omitempty on Runtimes).
+	got, err := json.Marshal(rs)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if string(got) != legacy {
+		t.Errorf("re-marshal:\n  got:  %s\n  want: %s\n(byte-equal required so Phase-2-4 logs stay readable post-5.1)", got, legacy)
+	}
+}
