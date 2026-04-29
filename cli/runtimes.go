@@ -3,6 +3,7 @@ package cli
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/state"
 )
 
 // agentRef is one distinct `(uses, container)` pair extracted from a
@@ -160,4 +162,65 @@ func resolveRuntimes(ctx context.Context, refs []agentRef, resolver agent.Resolv
 		})
 	}
 	return out, nil
+}
+
+// checkRuntimesDrift compares the recorded Runtimes (from run.started in the
+// log) against the freshly-resolved current Runtimes (this resume's
+// resolveRuntimes call). Returns *ErrRuntimeDrift on the first mismatch.
+//
+// Compares element-by-element after asserting equal length and matching
+// (Ref, Container) pairs in the same order. resolveRuntimes guarantees
+// sorted output (via walkAgentRefs's slices.SortFunc), so order comparison is
+// safe.
+//
+// Drift forms detected:
+//   - Different Version for the same (Ref, Container)
+//   - Different (Ref, Container) pair present
+//   - Different length (workflow added or removed a `uses:` ref)
+func checkRuntimesDrift(recorded, current []engine.ResolvedRuntime) error {
+	if len(recorded) != len(current) {
+		return fmt.Errorf(
+			"cli: agent runtime set drift: recorded %d runtime(s), now %d — cannot resume (spec §8 pinning hard error)",
+			len(recorded), len(current),
+		)
+	}
+	for i := range recorded {
+		r := recorded[i]
+		c := current[i]
+		if r.Ref != c.Ref || r.Container != c.Container {
+			return fmt.Errorf(
+				"cli: agent runtime set drift: recorded (ref=%q, container=%q), now (ref=%q, container=%q)",
+				r.Ref, r.Container, c.Ref, c.Container,
+			)
+		}
+		if r.Version != c.Version {
+			return &ErrRuntimeDrift{
+				Ref:       r.Ref,
+				Container: r.Container,
+				Recorded:  r.Version,
+				Current:   c.Version,
+			}
+		}
+	}
+	return nil
+}
+
+// readRuntimesFromLog extracts the Runtimes field from the run.started
+// event in a folded log. Returns nil + nil on:
+//   - empty events (zero-event log — pre-Step-1 corruption)
+//   - first event not run.started (corruption — caller can check separately)
+//
+// Returns (nil, error) on unmarshal failure (log corruption).
+// Returns the runtimes slice on success (possibly empty if no `uses:` refs
+// in the original run — Phase 2-4 logs decode to nil). Mirrors the
+// readBackendKindFromLog(cli/backend.go) pattern from slice 4.5.
+func readRuntimesFromLog(events []state.Event) ([]engine.ResolvedRuntime, error) {
+	if len(events) == 0 || events[0].Type != engine.EventRunStarted {
+		return nil, nil
+	}
+	var rs engine.RunStartedData
+	if err := json.Unmarshal(events[0].Data, &rs); err != nil {
+		return nil, fmt.Errorf("cli: unmarshal run.started for runtimes: %w", err)
+	}
+	return rs.Runtimes, nil
 }

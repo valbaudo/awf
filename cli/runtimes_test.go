@@ -247,3 +247,78 @@ func TestResolveRuntimes_HandleMissing(t *testing.T) {
 		t.Fatalf("err = nil, want non-nil (missing handle)")
 	}
 }
+
+// TestResolveRuntimes_DriftIfVersionChanges asserts that two consecutive
+// resolveRuntimes calls with different versions return different
+// ResolvedRuntimes (the *comparison* is done by cli/resume.go; this test
+// validates the building blocks).
+func TestResolveRuntimes_DriftIfVersionChanges(t *testing.T) {
+	var r agent.Registry
+	f := fake.New("x").WithVersion("v1")
+	if err := r.Register(f); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	refs := []agentRef{{Uses: "x", Container: "lab"}}
+	handles := map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}}
+	first, err := resolveRuntimes(context.Background(), refs, &r, handles)
+	if err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	// Mutate the fake's version (simulates a binary upgrade between run and resume).
+	f.WithVersion("v2")
+	second, err := resolveRuntimes(context.Background(), refs, &r, handles)
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if first[0].Version == second[0].Version {
+		t.Errorf("expected drift: first.Version = %q, second.Version = %q — should differ", first[0].Version, second[0].Version)
+	}
+	if first[0].Version != "v1" || second[0].Version != "v2" {
+		t.Errorf("versions = (%q, %q), want (v1, v2)", first[0].Version, second[0].Version)
+	}
+}
+
+func TestCheckRuntimesDrift_NoChange(t *testing.T) {
+	recorded := []engine.ResolvedRuntime{{Ref: "x", Version: "v1", Container: "lab"}}
+	current := []engine.ResolvedRuntime{{Ref: "x", Version: "v1", Container: "lab"}}
+	if err := checkRuntimesDrift(recorded, current); err != nil {
+		t.Errorf("no drift: err = %v, want nil", err)
+	}
+}
+
+func TestCheckRuntimesDrift_VersionChanged(t *testing.T) {
+	recorded := []engine.ResolvedRuntime{{Ref: "x", Version: "v1", Container: "lab"}}
+	current := []engine.ResolvedRuntime{{Ref: "x", Version: "v2", Container: "lab"}}
+	err := checkRuntimesDrift(recorded, current)
+	var target *ErrRuntimeDrift
+	if !errors.As(err, &target) {
+		t.Fatalf("err = %v, want *ErrRuntimeDrift", err)
+	}
+	if target.Recorded != "v1" || target.Current != "v2" {
+		t.Errorf("drift mismatch: %+v", target)
+	}
+}
+
+func TestCheckRuntimesDrift_RuntimeAdded(t *testing.T) {
+	recorded := []engine.ResolvedRuntime{{Ref: "x", Version: "v1", Container: "lab"}}
+	current := []engine.ResolvedRuntime{
+		{Ref: "x", Version: "v1", Container: "lab"},
+		{Ref: "y", Version: "v1", Container: "lab"},
+	}
+	err := checkRuntimesDrift(recorded, current)
+	if err == nil {
+		t.Fatalf("err = nil, want non-nil (runtime added)")
+	}
+}
+
+func TestCheckRuntimesDrift_RuntimeRemoved(t *testing.T) {
+	recorded := []engine.ResolvedRuntime{
+		{Ref: "x", Version: "v1", Container: "lab"},
+		{Ref: "y", Version: "v1", Container: "lab"},
+	}
+	current := []engine.ResolvedRuntime{{Ref: "x", Version: "v1", Container: "lab"}}
+	err := checkRuntimesDrift(recorded, current)
+	if err == nil {
+		t.Fatalf("err = nil, want non-nil (runtime removed)")
+	}
+}

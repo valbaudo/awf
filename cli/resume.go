@@ -246,6 +246,27 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		handles[name] = h
 	}
 
+	// Step 9.5 (slice 5.1): agent runtime version pinning check (parallels
+	// the definition-digest hard-error class from Step 7). Re-walk the
+	// workflow's `uses:` refs, re-resolve via the live registry + handles
+	// from Step 9, hard-error on any mismatch with the Runtimes recorded in
+	// run.started. Per spec §8: pinning is a hard error on drift.
+	recordedRuntimes, err := readRuntimesFromLog(events)
+	if err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+	agentRefs := walkAgentRefs(ld.Workflow)
+	currentRuntimes, err := resolveRuntimes(ctx, agentRefs, r.resolverOrEmpty(), handles)
+	if err != nil {
+		fprintf(stderr, "awf resume: resolve agent runtimes: %v\n", err)
+		return ExitUsage
+	}
+	if err := checkRuntimesDrift(recordedRuntimes, currentRuntimes); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+
 	// Step 10: append run.resumed{epoch: rs.Epoch+1}. Slice 2.6 Design
 	// question 6: the new epoch lives in the EVENT PAYLOAD (the resume
 	// counter), distinct from FileLog's per-event Epoch field (which got

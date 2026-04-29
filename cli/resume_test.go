@@ -423,3 +423,7 @@ func TestErrRuntimeDrift_AsTarget(t *testing.T) {
 		t.Errorf("Ref = %q, want %q", target.Ref, "x")
 	}
 }
+
+func TestCLIResume_RuntimeDriftHardError(t *testing.T) {
+	t.Skip("End-to-end CLI test deferred until slice 5.2 (AgentStep dispatcher). Slice 5.1's coverage is the unit-level drift check in cli/runtimes_test.go.")
+}
