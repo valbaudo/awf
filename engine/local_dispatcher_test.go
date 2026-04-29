@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
@@ -653,5 +654,70 @@ func TestResolvedInputs_AgentFields_Populated(t *testing.T) {
 	}
 	if ri.With["prompt"] != "do the thing" {
 		t.Errorf("With[prompt] = %v", ri.With["prompt"])
+	}
+}
+
+func TestLocalDispatcher_runAgent_HappyPath(t *testing.T) {
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"verdict": "pass", "confidence": 0.95},
+		Cost:   0.012,
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	// ir.JSONSchema is map[string]any (ir/types.go:94 — verified). Build via
+	// map literal, not struct literal — there are no typed fields.
+	schema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"verdict", "confidence"},
+		"properties": map[string]any{
+			"verdict":    map[string]any{"type": "string"},
+			"confidence": map[string]any{"type": "number"},
+		},
+	}
+	intent := engine.NodeIntent{
+		Path: "graph[0]",
+		Node: &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:         "anthropic/claude-code",
+			With:         ir.RawConfig{"prompt": "do the thing"},
+			OutputSchema: schema,
+		},
+	}
+	dr, chunks, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Err=%v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+	if dr.Outputs["verdict"] != "pass" {
+		t.Errorf("Outputs[verdict] = %v, want %q", dr.Outputs["verdict"], "pass")
+	}
+	// chunks channel must be non-nil and drained (the adapter contract — Launch
+	// returns synchronously AFTER its own channel closes; the dispatcher
+	// returns chunks closed too).
+	if chunks == nil {
+		t.Errorf("chunks = nil; want non-nil (callers must be able to range over it)")
+	} else {
+		for range chunks {
+			// drain
+		}
+	}
+	// fake.Calls() must record the invocation with the With map intact (so
+	// slice 5.2 wiring is provably end-to-end).
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("fake.Calls() len = %d, want 1", len(calls))
+	}
+	if got := calls[0].With["prompt"]; got != "do the thing" {
+		t.Errorf("With[prompt] = %v, want %q", got, "do the thing")
 	}
 }

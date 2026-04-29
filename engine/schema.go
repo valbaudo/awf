@@ -9,6 +9,37 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
+// ValidateOutputMap is the typed-output validator for agent steps. The agent
+// Adapter returns Output as map[string]any already (no JSON bytes to parse);
+// this helper marshals both the output and the schema to JSON so that
+// ValidateAgainstSchema receives native JSON-decoded types throughout.
+// This handles Go-constructed schemas (e.g. test fixtures using []string for
+// "required") that would otherwise confuse the JSON schema compiler —
+// round-tripping via json.Marshal/Unmarshal normalises them to []any.
+//
+// Returns nil on success. Returns a wrapped error on schema violation.
+func ValidateOutputMap(output map[string]any, schema *ir.JSONSchema) error {
+	if schema == nil {
+		return nil
+	}
+	// Round-trip schema through JSON to normalise Go-constructed types
+	// (e.g. []string → []any) before handing to the compiler.
+	sb, err := json.Marshal(map[string]any(*schema))
+	if err != nil {
+		return fmt.Errorf("engine.ValidateOutputMap: marshal schema: %w", err)
+	}
+	var normalised ir.JSONSchema
+	if err := json.Unmarshal(sb, &normalised); err != nil {
+		return fmt.Errorf("engine.ValidateOutputMap: unmarshal schema: %w", err)
+	}
+	b, err := json.Marshal(output)
+	if err != nil {
+		return fmt.Errorf("engine.ValidateOutputMap: marshal output map: %w", err)
+	}
+	_, err = ValidateAgainstSchema(b, &normalised)
+	return err
+}
+
 // ValidateAgainstSchema decodes raw as JSON and validates the decoded value
 // against schema using santhosh-tekuri/jsonschema/v6 — the same library
 // slice 1.4 uses for static schema-well-formedness checks. Returns the
