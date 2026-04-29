@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 )
@@ -60,6 +61,19 @@ type ResolvedInputs struct {
 	OutputSchema          *ir.JSONSchema
 	NonRetryableExitCodes []int
 	Timeout               time.Duration
+
+	// Slice 5.2 — agent-step fields. Zero values when the node is a CodeStep
+	// (runCode ignores them); populated by engine/agent_step.go runAgentStep
+	// before dispatch.
+	//
+	// Slice 5.3 will add `Feedback ir.RawConfig` (the prior evaluator verdict)
+	// when the Claude Code adapter needs to render a "previous verdict:"
+	// preamble per Phase 5 design decision 7. Slice 5.2 leaves it out —
+	// feedback flows exclusively via {{ evaluate.<field> }} template
+	// substitution into with.prompt (Phase 3.3 mechanism, unchanged; see
+	// Task 8's baseline note).
+	Uses string       // matches AgentStep.Uses; LocalDispatcher.runAgent looks up resolver.Lookup(Uses)
+	With ir.RawConfig // post-template-substitution opaque adapter config; adapter.ValidateConfig + adapter.Launch read it
 }
 
 // DispatchResult is the pre-commit shape returned by Dispatcher.Run. The
@@ -80,11 +94,19 @@ type DispatchResult struct {
 	Stdout   []byte                   // pre-commit raw stdout
 	Files    []container.CapturedFile // pre-commit captured file contents (path + bytes)
 	Err      error                    // set on non-ok outcomes; nil on Outcome == ok
+
+	// Slice 5.2 — agent-step events. The dispatcher's runAgent drains the
+	// adapter's <-chan AgentEvent and buffers each here for the
+	// interpreter-level engine/agent_step.go to write as agent.event log
+	// entries (Blobs-offload ≥ 4 KiB). Nil for code steps. Per CLAUDE.md
+	// "interpreter is the only writer to state" — the dispatcher does NOT
+	// call Log.Append; it buffers and returns.
+	AgentEvents []agent.AgentEvent
 }
 
-// ErrUnsupportedKind is returned by LocalDispatcher for Phase-2-unsupported
-// step kinds (AgentStep is Phase 5; SignalStep is Phase 3). Callers can
-// errors.Is to route this distinctly from a real dispatch failure — the
-// interpreter (slice 2.5) treats it as a hard error halting the run with a
-// clear "use this kind in a later phase" message, NOT a retryable failure.
-var ErrUnsupportedKind = errors.New("engine: step kind not supported in Phase 2 (agent → Phase 5, signal → Phase 3)")
+// ErrUnsupportedKind is returned by LocalDispatcher for kinds it doesn't
+// directly handle in this slice. Phase 5 slice 5.2 wires AgentStep through
+// LocalDispatcher.runAgent; SignalStep is handled by the interpreter
+// (engine/signal_step.go) and never reaches the dispatcher (its case in
+// LocalDispatcher.Run is defense-in-depth only).
+var ErrUnsupportedKind = errors.New("engine: step kind not supported by LocalDispatcher (signal steps go through engine/signal_step.go)")

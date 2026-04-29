@@ -590,3 +590,36 @@ func TestSplitContainerRefMultipleColons(t *testing.T) {
 		t.Errorf("SplitContainerRef(\"lab:db:replica\") = (%q, %q), want (\"lab\", \"db:replica\")", bare, svc)
 	}
 }
+
+func TestResolvedInputs_AgentFields_ZeroValueByDefault(t *testing.T) {
+	// Default-constructed ResolvedInputs has nil Uses/With —
+	// existing code-step paths must remain unaffected by slice 5.2's
+	// additive extension.
+	var ri engine.ResolvedInputs
+	if ri.Uses != "" {
+		t.Errorf("Uses default = %q, want empty", ri.Uses)
+	}
+	if ri.With != nil {
+		t.Errorf("With default = %v, want nil", ri.With)
+	}
+}
+
+func TestDispatchResult_AgentEventsField_ZeroValueByDefault(t *testing.T) {
+	var dr engine.DispatchResult
+	if dr.AgentEvents != nil {
+		t.Errorf("AgentEvents default = %v, want nil", dr.AgentEvents)
+	}
+}
+
+func TestResolvedInputs_AgentFields_Populated(t *testing.T) {
+	ri := engine.ResolvedInputs{
+		Uses: "anthropic/claude-code",
+		With: ir.RawConfig{"prompt": "do the thing"},
+	}
+	if ri.Uses != "anthropic/claude-code" {
+		t.Errorf("Uses = %q", ri.Uses)
+	}
+	if ri.With["prompt"] != "do the thing" {
+		t.Errorf("With[prompt] = %v", ri.With["prompt"])
+	}
+}
