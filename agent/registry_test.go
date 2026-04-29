@@ -15,10 +15,10 @@ import (
 // fake_test.go).
 type stubAdapter struct{ ref string }
 
-func (s *stubAdapter) Ref() string                                                { return s.ref }
-func (s *stubAdapter) Capabilities() agent.Caps                                   { return agent.Caps{} }
+func (s *stubAdapter) Ref() string                                               { return s.ref }
+func (s *stubAdapter) Capabilities() agent.Caps                                  { return agent.Caps{} }
 func (s *stubAdapter) Version(context.Context, container.Handle) (string, error) { return "v0", nil }
-func (s *stubAdapter) ValidateConfig(ir.RawConfig) error                          { return nil }
+func (s *stubAdapter) ValidateConfig(ir.RawConfig) error                         { return nil }
 func (s *stubAdapter) Launch(context.Context, container.Handle, agent.AgentInvocation) (agent.AgentResult, <-chan agent.AgentEvent, error) {
 	return agent.AgentResult{}, nil, nil
 }
