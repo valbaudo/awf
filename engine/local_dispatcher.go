@@ -3,8 +3,10 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 )
@@ -32,6 +34,28 @@ type LocalDispatcher struct {
 	// mode `containers:` entries; image-mode entries ignore it. Nil-safe (an
 	// image-mode-only workflow may leave this unset).
 	ComposeFiles map[string][]byte
+
+	// Slice 5.2 — agent-step seam.
+	//
+	// Resolver is the agent.Resolver the dispatcher consults to look up
+	// agent adapters by AgentStep.Uses. Nil means no agents registered —
+	// any AgentStep dispatch returns *agent.ErrAdapterNotFound (mapped to
+	// permanent_failure: the workflow references a `uses:` ref the
+	// operator didn't register). Production wiring lives in cli/execute.go
+	// (Task 11); tests inject *agent.Registry directly.
+	//
+	// Concurrency: Resolver.Lookup MUST be safe for concurrent use (Phase
+	// 3 parallel branches dispatch concurrently). agent.Registry from
+	// slice 5.1 satisfies this via sync.RWMutex.
+	Resolver agent.Resolver
+
+	// AgentEventTap is the io.Writer the dispatcher writes one-line-per-
+	// AgentEvent stderr output to. Nil disables the live tap entirely
+	// (tests). The CLI sets this to stderr (Task 11). Separate from the
+	// io.Writer threaded through engine.Run (which is for IOChunks) so
+	// agent events render with their own per-kind formatting without
+	// interleaving with code-step stdout.
+	AgentEventTap io.Writer
 }
 
 // Run executes one attempt of intent.Node. See the Dispatcher interface doc
@@ -255,8 +279,10 @@ func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *Local
 	}
 	cloned[name] = h
 	return &LocalDispatcher{
-		Backend:      d.Backend,
-		Handles:      cloned,
-		ComposeFiles: d.ComposeFiles,
+		Backend:       d.Backend,
+		Handles:       cloned,
+		ComposeFiles:  d.ComposeFiles,
+		Resolver:      d.Resolver,
+		AgentEventTap: d.AgentEventTap,
 	}
 }

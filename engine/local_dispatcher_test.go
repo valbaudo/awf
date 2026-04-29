@@ -611,6 +611,19 @@ func TestDispatchResult_AgentEventsField_ZeroValueByDefault(t *testing.T) {
 	}
 }
 
+func TestLocalDispatcher_AgentFields_ZeroValueOK(t *testing.T) {
+	// Phase 4 callers construct LocalDispatcher{Backend: ..., Handles: ..., ComposeFiles: ...}
+	// without setting Resolver / AgentEventTap. Those fields must default to
+	// nil/empty values and not break code-step dispatch.
+	d := &engine.LocalDispatcher{}
+	if d.Resolver != nil {
+		t.Errorf("Resolver default = %v, want nil", d.Resolver)
+	}
+	if d.AgentEventTap != nil {
+		t.Errorf("AgentEventTap default = %v, want nil", d.AgentEventTap)
+	}
+}
+
 func TestResolvedInputs_AgentFields_Populated(t *testing.T) {
 	ri := engine.ResolvedInputs{
 		Uses: "anthropic/claude-code",
