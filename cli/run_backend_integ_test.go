@@ -19,6 +19,8 @@ import (
 	"github.com/docker/docker/api/types/image"
 	dockerclient "github.com/docker/docker/client"
 
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/engine"
@@ -200,8 +202,21 @@ func TestCLIRunCVEPipelineRealDockerToFirstAgentStep(t *testing.T) {
 	runID := fmt.Sprintf("cve-real-docker-%d", time.Now().UnixNano())
 	registerComposeProjectCleanup(t, dockerCli, runID)
 
+	// Slice 5.1 wires runtime resolution before engine dispatch: an
+	// unregistered `uses:` ref now fails at run-start (resolveRuntimes →
+	// *ErrAdapterNotFound) earlier than engine dispatch's ErrNodeNotImplemented.
+	// To preserve this test's structure — proving the Docker lab boots AND
+	// the graph reaches the first agent step — inject a fake adapter so
+	// runtime resolution succeeds; the agent step still errors at engine
+	// dispatch with "not implemented", giving us the same observable signal
+	// the original assertion targeted.
+	var reg agent.Registry
+	if err := reg.Register(fake.New("anthropic/claude-code")); err != nil {
+		t.Fatalf("Register fake adapter: %v", err)
+	}
 	runner := &cli.Runner{
-		IDGen: &clock.Fake{IDs: []string{runID}},
+		IDGen:    &clock.Fake{IDs: []string{runID}},
+		Resolver: &reg,
 	}
 	var stdout, stderr bytes.Buffer
 	rc := runner.Run(
