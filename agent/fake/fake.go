@@ -167,7 +167,7 @@ func (f *Fake) Launch(_ context.Context, _ container.Handle, inv agent.AgentInvo
 		Output:   r.Output,
 		ExitCode: 0,
 		Metrics: agent.MetricSet{
-			Cost:   agent.MetricCost{USD: r.Cost, Source: "reported"},
+			Cost:   agent.MetricCost{USD: r.Cost, Source: agent.CostSourceReported},
 			Tokens: r.Tokens,
 		},
 		Files: r.Files,

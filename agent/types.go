@@ -22,25 +22,18 @@ type Caps struct {
 }
 
 // SecretEnv is the type used for env-passthrough values that contain secrets
-// (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN). Its
-// fmt.Stringer + fmt.GoStringer methods REDACT the values in `%v`, `%s`,
-// `%q`, and `%#v` formatting — preventing accidental leakage via error
-// wrapping and log lines.
+// (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN).
 //
-// SECURITY LIMITATION: Go's `%+v` formatter uses reflection to walk fields
-// directly and BYPASSES Stringer entirely. The redaction does NOT protect
-// against `fmt.Sprintf("%+v", inv)`. Callers MUST NOT use `%+v` on
-// AgentInvocation values in any code path that may reach logs, error
-// wrapping, or CI output. Use the named fields explicitly:
+// Formatter safety (locked by TestSecretEnv_RedactsInStandardFormatters):
+// SecretEnv's String + GoString methods redact values under every fmt verb
+// that consults them — `%v`, `%s`, `%q`, `%#v`, and `%+v`. (Even %+v calls
+// Stringer on a defined map type; the redaction holds whether SecretEnv is
+// printed directly or as a field of AgentInvocation.)
 //
-//	fmt.Errorf("launch failed for %s in container %s: %w", inv.Uses, inv.NodePath, err)
-//
-// NOT:
-//
-//	fmt.Errorf("launch failed for %+v: %w", inv, err)  // LEAKS the API key
-//
-// The repo's .golangci.yml may include a forbidigo rule banning `%+v` on
-// AgentInvocation; if not, add a follow-up PR.
+// JSON safety: AgentInvocation.Env is tagged `json:"-"` so json.Marshal
+// can never serialize the values. The engine's state log is JSON; this
+// guarantees env values never reach the journal even if a future caller
+// marshals an AgentInvocation.
 type SecretEnv map[string]string
 
 // String returns a redacted representation showing key names but not values.
@@ -66,16 +59,16 @@ func (e SecretEnv) GoString() string { return e.String() }
 // reads Env from the run-start env-passthrough, and threads Feedback from
 // the gate's prior verdict on repair attempts.
 //
-// SECURITY: Env is of type SecretEnv whose values are redacted in
-// `%v`/`%s`/`%q`/`%#v` formatting. However, `%+v` BYPASSES Stringer and
-// will leak the API key value. See SecretEnv doc-comment for the safe
-// formatting pattern.
+// SECURITY: Env is SecretEnv. Its values redact under all standard fmt
+// verbs (locked by TestSecretEnv_RedactsInStandardFormatters), and the
+// `json:"-"` tag prevents JSON serialization from ever exposing them.
+// See the SecretEnv doc-comment for the formatter + JSON guarantees.
 type AgentInvocation struct {
 	NodePath       string         `json:"node_path"`                 // engine/path output for the AgentStep (e.g. "graph[0]" or "gate[2].attempt-1.generate[0]")
 	Uses           string         `json:"uses"`                      // agent-runtime ref (must match Adapter.Ref())
 	With           ir.RawConfig   `json:"with,omitempty"`            // opaque per-runtime config; validated by Adapter.ValidateConfig
 	OutputSchema   *ir.JSONSchema `json:"output_schema,omitempty"`   // step's output_schema (the adapter passes to harness as --json-schema or layer-2 extractor schema)
-	Env            SecretEnv      `json:"env,omitempty"`             // env vars forwarded into the harness exec (Phase 5 slice 5.3 reads ANTHROPIC_API_KEY etc. from here) — redacted in standard formatters; see SecretEnv doc-comment for the %+v gap
+	Env            SecretEnv      `json:"-"`                         // env vars forwarded into the harness exec (slice 5.3 reads ANTHROPIC_API_KEY etc.); never JSON-marshaled so secrets cannot reach the state log
 	IdempotencyKey string         `json:"idempotency_key,omitempty"` // resolved-template; passed to harness env per spec §10
 	Feedback       ir.RawConfig   `json:"feedback,omitempty"`        // prior gate verdict on repair attempts > 1 (nil on attempt 1)
 }
@@ -110,18 +103,24 @@ type AgentEvent struct {
 }
 
 // MetricSet aggregates the per-step counters the obs package (Phase 6)
-// projects to OTel. Cost.Source values are "reported" (harness emitted a
-// dollar figure — Claude Code's total_cost_usd) or "derived" (Phase 6's
-// pricing-table computation; not used in Phase 5).
+// projects to OTel.
 type MetricSet struct {
 	Cost   MetricCost   `json:"cost"`
 	Tokens MetricTokens `json:"tokens"`
 	Turns  int          `json:"turns"`
 }
 
+// MetricCost.Source values: an adapter that wraps a harness reporting its
+// own dollar figure (Claude Code's total_cost_usd) stamps CostSourceReported;
+// Phase 6 obs's pricing-table computation stamps CostSourceDerived.
+const (
+	CostSourceReported = "reported"
+	CostSourceDerived  = "derived"
+)
+
 type MetricCost struct {
 	USD    float64 `json:"usd"`
-	Source string  `json:"source,omitempty"` // "reported" | "derived"
+	Source string  `json:"source,omitempty"` // CostSourceReported | CostSourceDerived
 }
 
 type MetricTokens struct {

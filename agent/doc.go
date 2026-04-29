@@ -24,17 +24,18 @@
 // structuring-call pattern — see Phase 5 design Appendix H); Bucket 15
 // (conformance.RunSuite) enforces the contract for such adapters.
 //
-// SECURITY: AgentInvocation.Env is type SecretEnv whose Stringer +
-// GoStringer methods redact values in `%v` / `%s` / `%q` / `%#v`
-// formatting. **`%+v` BYPASSES Stringer via reflection** and will leak
-// the API key. Callers MUST NOT use `%+v` on AgentInvocation in any
-// code path that may reach logs, error wrapping, or CI output. Use named
-// fields explicitly:
+// SECURITY: AgentInvocation.Env is type SecretEnv. Two guarantees lock
+// secret values out of the standard leak vectors:
 //
-//	fmt.Errorf("launch %s in %s failed: %w", inv.Uses, inv.NodePath, err)  // safe
-//	fmt.Errorf("launch failed: %+v: %w", inv, err)                          // LEAKS env value
+//   - All standard fmt verbs (`%v`, `%s`, `%q`, `%#v`, `%+v`) call
+//     SecretEnv's Stringer/GoStringer and emit a redacted string showing
+//     only key names. Locked by TestSecretEnv_RedactsInStandardFormatters
+//     and TestSecretEnv_RedactsInsideStruct.
+//   - The `Env` field is tagged `json:"-"`, so json.Marshal cannot
+//     serialize values. The engine's state log is JSON; secrets therefore
+//     cannot reach the journal. Locked by TestAgentInvocation_RetainsRawConfig.
 //
-// Phase 6 obs's OTel projection MUST NOT attach AgentInvocation.Env to
-// any span attribute. The state log (Phase 1.5) is already env-free by
-// design.
+// Phase 6 obs's OTel projection MUST still avoid attaching
+// AgentInvocation.Env to any span attribute (OTel attributes bypass the
+// fmt and JSON guards entirely).
 package agent

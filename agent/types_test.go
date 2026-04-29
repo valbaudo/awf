@@ -26,22 +26,27 @@ func TestCaps_JSONRoundtrip(t *testing.T) {
 }
 
 func TestAgentInvocation_RetainsRawConfig(t *testing.T) {
+	const secret = "sk-MUST-NOT-LEAK"
 	inv := agent.AgentInvocation{
 		NodePath: "graph[0]",
 		Uses:     "anthropic/claude-code",
 		With:     map[string]any{"prompt": "hello"},
-		Env:      agent.SecretEnv{"ANTHROPIC_API_KEY": "sk-redacted"},
+		Env:      agent.SecretEnv{"ANTHROPIC_API_KEY": secret},
 	}
 	b, err := json.Marshal(inv)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
+	// Locks the json:"-" guarantee on Env: secret values must NEVER appear in
+	// the marshaled bytes. The engine's state log is JSON; this is what
+	// keeps secrets out of the journal.
+	if strings.Contains(string(b), secret) {
+		t.Fatalf("JSON marshal leaked secret value: %s", b)
+	}
 	var got agent.AgentInvocation
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	// NOTE: testing with NodePath/Uses literals — NOT %+v (security: %+v bypasses
-	// Stringer and would leak Env values in test output on failure).
 	if got.NodePath != inv.NodePath {
 		t.Errorf("NodePath = %q, want %q", got.NodePath, inv.NodePath)
 	}
@@ -51,8 +56,8 @@ func TestAgentInvocation_RetainsRawConfig(t *testing.T) {
 	if !reflect.DeepEqual(got.With, inv.With) {
 		t.Errorf("With not preserved (got len=%d, want len=%d)", len(got.With), len(inv.With))
 	}
-	if !reflect.DeepEqual(got.Env, inv.Env) {
-		t.Errorf("Env not preserved (got %d entries, want %d entries)", len(got.Env), len(inv.Env))
+	if len(got.Env) != 0 {
+		t.Errorf("Env survived JSON roundtrip — expected empty (json:\"-\") but got %d entries", len(got.Env))
 	}
 }
 
@@ -60,7 +65,10 @@ func TestSecretEnv_RedactsInStandardFormatters(t *testing.T) {
 	const secret = "sk-NEVER-LEAK-THIS"
 	e := agent.SecretEnv{"ANTHROPIC_API_KEY": secret, "OTHER": "also-secret"}
 
-	for _, verb := range []string{"%v", "%s", "%q", "%#v"} {
+	// %+v is included: Go's printer consults Stringer on a defined map type
+	// even with the +flag, so redaction must hold there too. Verified by
+	// TestSecretEnv_RedactsInsideStruct against an AgentInvocation field.
+	for _, verb := range []string{"%v", "%s", "%q", "%#v", "%+v"} {
 		got := fmt.Sprintf(verb, e)
 		if strings.Contains(got, secret) {
 			t.Errorf("verb %q leaked secret value: %s", verb, got)
@@ -71,18 +79,21 @@ func TestSecretEnv_RedactsInStandardFormatters(t *testing.T) {
 	}
 }
 
-func TestSecretEnv_KnownGap_PlusVStillLeaks(t *testing.T) {
-	// This test LOCKS THE KNOWN LIMITATION: Go's %+v reflection-based field
-	// walker bypasses Stringer/GoStringer entirely. The doc-comment on
-	// SecretEnv warns about this; this test ensures the warning stays accurate
-	// (if Go ever changes %+v to consult Stringer, this test fails and we update
-	// the doc-comment to reflect the new safer behavior).
-	const secret = "sk-VISIBLE-IN-PLUSV"
-	e := agent.SecretEnv{"ANTHROPIC_API_KEY": secret}
-	got := fmt.Sprintf("%+v", e)
-	if !strings.Contains(got, secret) {
-		t.Logf("Heads-up: %%+v no longer leaks SecretEnv values. Go behavior may have changed; update SecretEnv doc-comment to reflect the stronger guarantee.")
-		t.Logf("got: %s", got)
+func TestSecretEnv_RedactsInsideStruct(t *testing.T) {
+	// %+v on a struct containing a SecretEnv field MUST also redact — this is
+	// the scenario the SecretEnv doc-comment's "even %+v is safe" claim rests
+	// on. If a future Go release changes Stringer dispatch on defined map types
+	// inside struct fields, this test fails and the doc-comment must be revised.
+	const secret = "sk-IN-STRUCT"
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]",
+		Env:      agent.SecretEnv{"ANTHROPIC_API_KEY": secret},
+	}
+	for _, verb := range []string{"%v", "%+v", "%#v"} {
+		got := fmt.Sprintf(verb, inv)
+		if strings.Contains(got, secret) {
+			t.Errorf("verb %q on AgentInvocation leaked Env value: %s", verb, got)
+		}
 	}
 }
 
@@ -91,7 +102,7 @@ func TestAgentResult_OutputIsMap(t *testing.T) {
 		Output:   map[string]any{"verdict": "pass", "score": 5.0},
 		ExitCode: 0,
 		Metrics: agent.MetricSet{
-			Cost:   agent.MetricCost{USD: 0.0125, Source: "reported"},
+			Cost:   agent.MetricCost{USD: 0.0125, Source: agent.CostSourceReported},
 			Tokens: agent.MetricTokens{Input: 100, Output: 50},
 			Turns:  2,
 		},

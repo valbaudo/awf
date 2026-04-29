@@ -27,6 +27,22 @@ type agentRef struct {
 	Container string
 }
 
+// resolverOrEmpty returns r.Resolver if set, else a freshly-allocated empty
+// *agent.Registry. The empty fallback exists so workflows without any
+// `uses:` step (every Phase 2-4 fixture) work unchanged — they trigger zero
+// Lookup calls. Workflows WITH a `uses:` step, run against an empty Resolver,
+// fail at run-start with *ErrAdapterNotFound (resolveRuntimes wraps this).
+// Production wiring lives in slice 5.3 (cli/agent_registry.go), which
+// constructs a populated *agent.Registry and assigns it to r.Resolver
+// before dispatch. Called by both cli/run.go (run-start resolution) and
+// cli/resume.go (resume-side re-resolution for the drift check).
+func (r *Runner) resolverOrEmpty() agent.Resolver {
+	if r.Resolver != nil {
+		return r.Resolver
+	}
+	return &agent.Registry{}
+}
+
 // walkAgentRefs returns the distinct (uses, container) pairs declared by
 // any AgentStep in the workflow's Graph (recursively, through If/Loop/
 // Try/Parallel/Gate/Map structural nodes). Sorted by (Uses, Container) for
@@ -115,7 +131,6 @@ func walkAgentRefsNodes(nodes ir.NodeList, seen map[agentRef]bool) {
 			// Map body intentionally NOT traversed — per-item containers are
 			// dispatch-time, version-pinned via image digest (Phase 1.4).
 			// See doc-comment above for the safety argument.
-			_ = v
 		default:
 			// Unreachable from outside ir/ (ir.Node is closed sum type with
 			// unexported isNode() marker). Defensive documentation only.
