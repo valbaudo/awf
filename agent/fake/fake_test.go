@@ -151,3 +151,36 @@ var _ error = (*agent.ErrAdapterNotFound)(nil)
 
 // Compile-time silence for goimports — keep the errors import alive.
 var _ = errors.New
+
+func TestFake_NewBenignOracle_TwoAttempts(t *testing.T) {
+	o := fake.NewBenignOracle()
+	// Attempt 0 — fake exploit, oracle catches it.
+	r0, _, err := o.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "test/oracle"})
+	if err != nil {
+		t.Fatalf("Launch[0]: %v", err)
+	}
+	if r0.Output["verified"] != false {
+		t.Errorf("attempt 0: verified = %v, want false", r0.Output["verified"])
+	}
+	if r0.Output["fooled_by_benign"] != true {
+		t.Errorf("attempt 0: fooled_by_benign = %v, want true", r0.Output["fooled_by_benign"])
+	}
+	// Attempt 1 — real exploit, oracle passes.
+	r1, _, err := o.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "test/oracle"})
+	if err != nil {
+		t.Fatalf("Launch[1]: %v", err)
+	}
+	if r1.Output["verified"] != true {
+		t.Errorf("attempt 1: verified = %v, want true", r1.Output["verified"])
+	}
+	if r1.Output["fooled_by_benign"] != false {
+		t.Errorf("attempt 1: fooled_by_benign = %v, want false", r1.Output["fooled_by_benign"])
+	}
+}
+
+func TestFake_NewBenignOracle_RefIsTestOracle(t *testing.T) {
+	o := fake.NewBenignOracle()
+	if o.Ref() != "test/oracle" {
+		t.Errorf("Ref = %q, want %q", o.Ref(), "test/oracle")
+	}
+}
