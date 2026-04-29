@@ -13,8 +13,8 @@ import (
 
 // LocalDispatcher is the Phase 2 Dispatcher impl — runs code steps in-process
 // via container.Backend, returns DispatchResult with mechanical Outcome.
-// Agent / Signal steps return ErrUnsupportedKind so the interpreter halts
-// cleanly with a "this kind lands in a later phase" message.
+// AgentStep is dispatched via runAgent (slice 5.2+); SignalStep returns
+// ErrUnsupportedKind so the interpreter halts cleanly.
 //
 // The dispatcher OWNS NO state: it doesn't Create / Destroy containers
 // (the interpreter does, slice 2.5), it doesn't write to Log / Blobs
@@ -65,7 +65,9 @@ func (d *LocalDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchR
 	switch n := intent.Node.(type) {
 	case *ir.CodeStep:
 		return d.runCode(ctx, intent, n)
-	case *ir.AgentStep, *ir.SignalStep:
+	case *ir.AgentStep:
+		return d.runAgent(ctx, intent, n)
+	case *ir.SignalStep:
 		return DispatchResult{}, nil, fmt.Errorf("%w (path=%s)", ErrUnsupportedKind, intent.Path)
 	default:
 		return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher: non-step node at path %q (control nodes don't reach the dispatcher — interpreter bug)", intent.Path)
@@ -197,6 +199,54 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 func copyIntPtr(v int) *int {
 	out := v
 	return &out
+}
+
+// runAgent dispatches one AgentStep attempt. Symmetric to runCode (above):
+//
+//  1. Look up the adapter in d.Resolver — miss returns *agent.ErrAdapterNotFound.
+//  2. ValidateConfig — rejection returns *agent.ErrInvalidConfig.
+//  3. Launch — synchronous return after the adapter drains its own event
+//     stream. The dispatcher consumes the returned <-chan AgentEvent while
+//     Launch is in-flight, writing one tap line per event to d.AgentEventTap
+//     and buffering each event for the engine-level engine/agent_step.go
+//     to write as agent.event log entries (CLAUDE.md "interpreter is the
+//     only writer to state" — the dispatcher buffers, the interpreter
+//     writes the log).
+//  4. Validate the typed Output against intent.ResolvedInputs.OutputSchema
+//     (if declared) — mismatch returns *agent.ErrUnparseableOutput.
+//  5. Pack into DispatchResult{Outcome, Outputs, AgentEvents, Files, ...}.
+//
+// Outcome mapping (spec §6 mechanical only):
+//   - clean Launch + valid Output → ok
+//   - *agent.ErrAdapterNotFound      → permanent_failure (workflow bug)
+//   - *agent.ErrInvalidConfig         → permanent_failure (workflow bug)
+//   - *agent.ErrUnparseableOutput     → retryable_failure (parse miss)
+//   - *agent.ErrAgentLaunch / other  → retryable_failure (transport class)
+//   - adapter.Refused (slice 5.3+)   → permanent_failure (policy block)
+//
+// Slice 5.2 ships the skeleton; Tasks 5-7 fill in the body.
+func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *ir.AgentStep) (DispatchResult, <-chan container.IOChunk, error) {
+	// Defense-in-depth nil check. The conformance harness (Task 12) and the
+	// CLI (Task 11) always initialize Resolver to a non-nil empty Registry,
+	// so this branch normally cannot fire. It exists for callers that
+	// construct LocalDispatcher{} directly without setting Resolver — most
+	// code-step-only unit tests in engine/local_dispatcher_test.go do — and
+	// for the typed-nil interface gotcha (https://go.dev/doc/faq#nil_error):
+	// `d.Resolver == nil` catches only an UNTYPED nil. If a caller assigns
+	// a typed `(*agent.Registry)(nil)` to the interface, the check passes
+	// false and Lookup panics. Harness/CLI initialization defuses that,
+	// but the explicit untyped-nil branch here keeps the code-step path
+	// safe regardless of caller hygiene.
+	if d.Resolver == nil {
+		return DispatchResult{}, nil, &agent.ErrAdapterNotFound{Ref: intent.ResolvedInputs.Uses}
+	}
+	adapter, ok := d.Resolver.Lookup(intent.ResolvedInputs.Uses)
+	if !ok {
+		return DispatchResult{}, nil, &agent.ErrAdapterNotFound{Ref: intent.ResolvedInputs.Uses}
+	}
+	_ = adapter // Task 5 wires the rest
+	_ = as
+	return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher.runAgent: not yet implemented (slice 5.2 Tasks 5-7 wire this) — path=%s", intent.Path)
 }
 
 // ContainerSpecFor builds the DTO Backend.Create consumes from the IR + a

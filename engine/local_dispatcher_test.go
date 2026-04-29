@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
@@ -314,15 +315,33 @@ func TestLocalDispatcherUnknownContainerIsError(t *testing.T) {
 	}
 }
 
-func TestLocalDispatcherAgentStepReturnsUnsupportedKind(t *testing.T) {
-	d, _, _ := newDispatcher(t)
+func TestLocalDispatcher_AgentStep_NoLongerUnsupportedKind(t *testing.T) {
+	// Pre-slice-5.2: AgentStep dispatch returned engine.ErrUnsupportedKind.
+	// Slice 5.2 routes AgentStep through runAgent. With no Resolver set,
+	// runAgent returns *agent.ErrAdapterNotFound (which is NOT
+	// ErrUnsupportedKind). This test pins the routing change.
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &agent.Registry{}, // empty — no adapter registered
+	}
 	intent := engine.NodeIntent{
-		Path: "ag",
-		Node: &ir.AgentStep{ID: "ag", Container: "lab", Uses: "anthropic/claude-code"},
+		Path: "graph[0]",
+		Node: &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses: "anthropic/claude-code",
+		},
 	}
 	_, _, err := d.Run(context.Background(), intent)
-	if !errors.Is(err, engine.ErrUnsupportedKind) {
-		t.Errorf("err = %v, want ErrUnsupportedKind", err)
+	if errors.Is(err, engine.ErrUnsupportedKind) {
+		t.Fatalf("err = ErrUnsupportedKind; want not (Task 4 should have removed AgentStep from that arm)")
+	}
+	var notFound *agent.ErrAdapterNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v (%T); want *agent.ErrAdapterNotFound", err, err)
+	}
+	if notFound.Ref != "anthropic/claude-code" {
+		t.Errorf("ErrAdapterNotFound.Ref = %q, want %q", notFound.Ref, "anthropic/claude-code")
 	}
 }
 
