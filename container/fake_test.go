@@ -41,10 +41,11 @@ func TestFakeExecScriptedResult(t *testing.T) {
 	cmd := container.Cmd{Run: "./triage.sh"}
 	f.ProgramExec(cmd.Run, want, nil)
 
-	got, _, err := f.Exec(ctx, h, cmd)
+	_, resultCh, err := f.Exec(ctx, h, cmd)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	got := <-resultCh
 	if got.ExitCode != want.ExitCode {
 		t.Errorf("ExitCode = %d, want %d", got.ExitCode, want.ExitCode)
 	}
@@ -73,7 +74,7 @@ func TestFakeExecStreamsChunks(t *testing.T) {
 	cmd := container.Cmd{Run: "./noisy.sh"}
 	f.ProgramExec(cmd.Run, container.ExecResult{ExitCode: 0}, wantChunks)
 
-	_, ch, err := f.Exec(ctx, h, cmd)
+	ch, _, err := f.Exec(ctx, h, cmd)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestFakeExecChannelClosedWithNoChunks(t *testing.T) {
 	h, _ := f.Create(ctx, container.ContainerSpec{Name: "lab"})
 	defer func() { _ = f.Destroy(ctx, h) }()
 	f.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
-	_, ch, _ := f.Exec(ctx, h, container.Cmd{Run: "true"})
+	ch, _, _ := f.Exec(ctx, h, container.Cmd{Run: "true"})
 	if _, ok := <-ch; ok {
 		t.Errorf("channel returned a value; want closed-empty")
 	}
@@ -352,21 +353,76 @@ func TestFakeConcurrentExec(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			cmd := container.Cmd{Run: fmt.Sprintf("./run-%d.sh", i)}
-			res, ch, err := f.Exec(ctx, handles[i], cmd)
+			ch, resultCh, err := f.Exec(ctx, handles[i], cmd)
 			if err != nil {
 				t.Errorf("concurrent Exec %d: %v", i, err)
 				return
 			}
+			for range ch {
+			}
+			res := <-resultCh
 			if res.ExitCode != 0 {
 				t.Errorf("Exec %d: ExitCode=%d, want 0", i, res.ExitCode)
-			}
-			for range ch {
 			}
 		}()
 	}
 	wg.Wait()
 	if len(f.Calls) != N {
 		t.Errorf("Calls len = %d, want %d", len(f.Calls), N)
+	}
+}
+
+func TestFake_Exec_StreamingContract(t *testing.T) {
+	f := container.NewFake()
+	h, err := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	f.ProgramExec("echo hi", container.ExecResult{ExitCode: 0, Stdout: []byte("hi\n")}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("hi\n")},
+	})
+	chunks, result, err := f.Exec(context.Background(), h, container.Cmd{Run: "echo hi"})
+	if err != nil {
+		t.Fatalf("Exec err: %v", err)
+	}
+	if chunks == nil {
+		t.Fatal("chunks channel is nil; expected non-nil on success")
+	}
+	if result == nil {
+		t.Fatal("result channel is nil; expected non-nil on success")
+	}
+	var gotChunks []container.IOChunk
+	for c := range chunks {
+		gotChunks = append(gotChunks, c)
+	}
+	if len(gotChunks) != 1 || string(gotChunks[0].Data) != "hi\n" {
+		t.Errorf("chunks = %+v; want one stdout chunk with hi\\n", gotChunks)
+	}
+	r, ok := <-result
+	if !ok {
+		t.Fatal("result channel closed without emitting")
+	}
+	if r.ExitCode != 0 || string(r.Stdout) != "hi\n" {
+		t.Errorf("ExecResult = %+v; want ExitCode 0 + Stdout hi\\n", r)
+	}
+	// Receiving again should observe close.
+	if _, ok := <-result; ok {
+		t.Error("result channel did not close after delivering value")
+	}
+}
+
+func TestFake_Exec_ErrorReturnsNilChannels(t *testing.T) {
+	f := container.NewFake()
+	// Unknown handle: triggers the err path.
+	chunks, result, err := f.Exec(context.Background(), container.Handle{ID: "missing"}, container.Cmd{Run: "x"})
+	if err == nil {
+		t.Fatal("err nil; want non-nil for unknown handle")
+	}
+	if chunks != nil {
+		t.Errorf("chunks not nil on err: %v", chunks)
+	}
+	if result != nil {
+		t.Errorf("result not nil on err: %v", result)
 	}
 }
 
@@ -401,10 +457,11 @@ func TestFakeProgramExecDefensiveCopy(t *testing.T) {
 	chunkData[0] = 'X'
 	chunks[0].Stream = "stderr" // also mutate the chunks slice header
 
-	got, ch, err := f.Exec(ctx, h, container.Cmd{Run: "noop"})
+	ch, resultCh, err := f.Exec(ctx, h, container.Cmd{Run: "noop"})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	got := <-resultCh
 	if string(got.AWFOutput) != `{"ok":true}` {
 		t.Errorf("AWFOutput leaked caller mutation: got %q", got.AWFOutput)
 	}
