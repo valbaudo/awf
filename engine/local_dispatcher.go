@@ -118,7 +118,7 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		Env: env,
 	}
 
-	exec, chunks, callErr := d.Backend.Exec(ctx, h, cmd)
+	rawChunks, resultCh, callErr := d.Backend.Exec(ctx, h, cmd)
 	// Transport error path — return early with retryable_failure. No artifacts
 	// to capture (we don't know what state the container is in).
 	if callErr != nil {
@@ -127,6 +127,41 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 			Err:     callErr,
 		}, nil, nil
 	}
+
+	// Drain rawChunks into a slice BEFORE waiting on resultCh. The
+	// forwarder-goroutine pattern (bounded buffer + range-and-forward) deadlocks
+	// on long streams: rawChunks fills → Backend's pipe-reader blocks → process
+	// can't exit → resultCh never fires → dispatcher hangs forever; the
+	// interpreter's drainTap can't help because it doesn't start until
+	// dispatcher returns.
+	//
+	// Drain-to-slice trades streaming UX for correctness: live-tap for
+	// CodeSteps is now post-hoc (chunks render after Exec completes). Realtime
+	// UX lives on the agent path (Task 7c, Adapter γ contract). CodeStep stdout
+	// is typically small; memory cost is bounded.
+	var collected []container.IOChunk
+	for c := range rawChunks {
+		collected = append(collected, c)
+	}
+	exec := <-resultCh
+
+	// ExecResult.Err surfaces transport-class errors (stdcopy mid-stream failure
+	// on docker; ctx.Canceled on native). Pre-slice-5.3 these came back via
+	// Backend.Exec's err return; the streaming refactor moved them to the
+	// result channel.
+	if exec.Err != nil {
+		return DispatchResult{
+			Outcome: ClassifyOutcome(0, nil, exec.Err, intent.ResolvedInputs.NonRetryableExitCodes),
+			Err:     exec.Err,
+		}, nil, nil
+	}
+
+	// Build pre-closed channel for the interpreter's drainTap.
+	chunks := make(chan container.IOChunk, len(collected))
+	for _, c := range collected {
+		chunks <- c
+	}
+	close(chunks)
 
 	// AWFOutput source selection (slice 4.2 / Design Q1):
 	//   * Backend supplied AWFOutput (Phase 2 fake's ProgramExec path) → use directly.

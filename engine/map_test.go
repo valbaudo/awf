@@ -241,7 +241,7 @@ type countingBackend struct {
 	maxInflight *int64
 }
 
-func (b *countingBackend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
+func (b *countingBackend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (<-chan container.IOChunk, <-chan container.ExecResult, error) {
 	cur := atomic.AddInt64(b.inflight, 1)
 	for {
 		m := atomic.LoadInt64(b.maxInflight)
@@ -251,9 +251,12 @@ func (b *countingBackend) Exec(ctx context.Context, h container.Handle, cmd cont
 	}
 	<-b.release
 	atomic.AddInt64(b.inflight, -1)
-	closed := make(chan container.IOChunk)
-	close(closed)
-	return container.ExecResult{ExitCode: 0}, closed, nil
+	chunks := make(chan container.IOChunk)
+	close(chunks)
+	result := make(chan container.ExecResult, 1)
+	result <- container.ExecResult{ExitCode: 0}
+	close(result)
+	return chunks, result, nil
 }
 
 func TestRunMapMinSuccessTolerates(t *testing.T) {

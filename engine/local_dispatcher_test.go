@@ -960,3 +960,47 @@ func TestLocalDispatcher_runAgent_HappyPath(t *testing.T) {
 		t.Errorf("With[prompt] = %v, want %q", got, "do the thing")
 	}
 }
+
+// TestLocalDispatcher_runCode_StreamingDrain pins the slice 5.3 drain-to-slice
+// shape of LocalDispatcher.runCode: Backend.Exec now returns
+// (chunks, result, error); runCode drains chunks before reading result, then
+// re-emits collected chunks on a pre-closed channel for the interpreter's
+// drainTap. Live-tap for CodeSteps is post-hoc by design (forwarder-goroutine
+// pattern deadlocks on long streams — see runCode's inline rationale).
+func TestLocalDispatcher_runCode_StreamingDrain(t *testing.T) {
+	f := container.NewFake()
+	h, err := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	f.ProgramExec("echo hi", container.ExecResult{ExitCode: 0, Stdout: []byte("hi\n")}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("hi\n")},
+	})
+	d := &engine.LocalDispatcher{
+		Backend: f,
+		Handles: map[string]container.Handle{"lab": h},
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.CodeStep{ID: "x", Container: "lab", Run: "echo hi"},
+		ResolvedInputs: engine.ResolvedInputs{Command: "echo hi"},
+	}
+	dr, chunks, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", dr.Outcome, engine.OutcomeOK)
+	}
+	// Drain the dispatcher's returned chunks channel — interpreter does this via drainTap.
+	var seen []container.IOChunk
+	for c := range chunks {
+		seen = append(seen, c)
+	}
+	if len(seen) != 1 || string(seen[0].Data) != "hi\n" {
+		t.Errorf("chunks = %+v", seen)
+	}
+	if string(dr.Stdout) != "hi\n" {
+		t.Errorf("Stdout = %q, want hi\\n", dr.Stdout)
+	}
+}
