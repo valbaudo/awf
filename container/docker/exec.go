@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	dockerContainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -11,18 +12,20 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
-// Exec runs cmd inside the container the handle references. Returns the full
-// ExecResult (ExitCode, Stdout, AWFOutput=nil), a CLOSED channel pre-filled
-// with the IOChunks the command produced, and a nil err on the happy path.
+// Exec runs cmd inside the container the handle references. Slice 5.3
+// streaming contract:
+//
+//   - chunks: emits each stdout/stderr frame live as stdcopy.StdCopy
+//     demuxes them; closes when both pipes drain.
+//   - result: receives one ExecResult AFTER chunks closes (ExitCode,
+//     accumulated Stdout, Err). ExecResult.Err carries transport-class
+//     errors (ctx-cancel, stdcopy mid-stream failure, ContainerExecInspect
+//     failure) so callers learn about them without the err return swallowing
+//     them before the chunks drain.
 //
 // ExecResult.AWFOutput is left nil — the dispatcher reads the AWF_OUTPUT
 // tempfile via CaptureFiles per the Phase 4 design §B contract (slice 4.2
 // Design Q1). A future Backend may populate it; the dispatcher handles both.
-//
-// Contract preserved from Phase 2 (channel closed before Exec returns) per
-// slice 4.2 Design Q3. True-live tap (channel open while caller consumes
-// live) requires interpreter changes that are out of scope for this slice;
-// it is tracked as a Phase 4 follow-up.
 //
 // Shell: cmd.Run is passed as a single string to `sh -c` (POSIX baseline per
 // Design Q5). Authors needing bash-specific features ship bash in their image
@@ -34,18 +37,16 @@ import (
 // 4.2 wants.
 //
 // On ctx cancellation: a watcher goroutine closes the attach response, the
-// reader goroutine exits, Exec returns (ExecResult{}, nil, ctx.Err()) with
-// no leaked goroutines. Verified by Bucket 9b's ctx-cancel test (Phase 4
-// design §G targets <500ms; the test asserts <5s to avoid CI flake while
-// still verifying the property exists).
+// reader goroutine exits, chunks closes, and the result carries
+// ExecResult{Err: ctx.Err()}.
 //
-// On non-nil error: the returned channel is nil (Phase 2 invariant — see
-// container/backend.go Exec doc-comment). Callers MUST check err before
-// ranging over the channel.
-func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
+// On non-nil error return: the "launch / transport" error class — the
+// command couldn't be started at all. BOTH channels are nil; callers must
+// check err before ranging or receiving.
+func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (<-chan container.IOChunk, <-chan container.ExecResult, error) {
 	r, err := b.lookupRegistered(ctx, "Exec", h)
 	if err != nil {
-		return container.ExecResult{}, nil, err
+		return nil, nil, err
 	}
 	switch r.kind {
 	case kindImage:
@@ -53,13 +54,13 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 	case kindCompose:
 		return b.execCompose(ctx, h, r, cmd)
 	default:
-		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: unknown handle kind %q (engine bug)", r.kind)
+		return nil, nil, fmt.Errorf("container/docker: Exec: unknown handle kind %q (engine bug)", r.kind)
 	}
 }
 
 // execImage is the core Exec implementation for image-mode containers.
 // It is also called by execCompose after container ID resolution.
-func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
+func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.Cmd) (<-chan container.IOChunk, <-chan container.ExecResult, error) {
 	execCreateResp, err := b.cli.ContainerExecCreate(ctx, dockerID, dockerContainer.ExecOptions{
 		Cmd:          []string{"sh", "-c", cmd.Run},
 		Env:          envMapToSlice(cmd.Env),
@@ -67,7 +68,7 @@ func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.
 		AttachStderr: true,
 	})
 	if err != nil {
-		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: ContainerExecCreate: %w", err)
+		return nil, nil, fmt.Errorf("container/docker: Exec: ContainerExecCreate: %w", err)
 	}
 
 	// ContainerExecAttach takes container.ExecAttachOptions (an alias for
@@ -81,11 +82,14 @@ func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.
 		// is auto-cleaned when the parent container is Destroyed
 		// (ContainerRemove(force) — slice 4.1) — bounded by container
 		// lifetime, ~few hundred bytes per orphan. Acceptable.
-		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: ContainerExecAttach: %w", err)
+		return nil, nil, fmt.Errorf("container/docker: Exec: ContainerExecAttach: %w", err)
 	}
 	// HijackedResponse wraps a net.Conn + *bufio.Reader. Close() calls
 	// Conn.Close() — idempotent per net.Conn convention, so the double-close
 	// path (watcher on ctx-cancel + reader's defer) is safe.
+
+	chunks := make(chan container.IOChunk, 64)
+	result := make(chan container.ExecResult, 1)
 
 	// Watcher goroutine: on ctx-cancel, close the attach response → the
 	// stdcopy reader on attachResp.Reader gets EOF/ErrClosed → the reader
@@ -103,89 +107,93 @@ func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.
 		}
 	}()
 
-	// Reader goroutine: demux stdout/stderr via stdcopy, emit one IOChunk per
-	// stdcopy frame, accumulate stdout into ExecResult.Stdout. stderr is NOT
-	// accumulated (spec §4.1 + Phase 2 container.ExecResult shape) — it
-	// surfaces only via IOChunk{Stream:"stderr"} for the live tap.
-	//
-	// No mutex needed: stdcopy.StdCopy is single-threaded; chunkBuffer.Write
-	// is called serially from this one goroutine. The main routine reads
-	// `chunks`/`stdoutBuf.collected` AFTER `<-readerDone` (happens-before
-	// via channel close), so there's no data race either.
-	chunks := make([]container.IOChunk, 0, 8)
-	stdoutBuf := chunkBuffer{stream: "stdout", chunks: &chunks}
-	stderrBuf := chunkBuffer{stream: "stderr", chunks: &chunks}
+	// Reader goroutine: demux stdout/stderr via stdcopy. Each stdcopy frame
+	// becomes one IOChunk sent live on `chunks`. stdout writes also append
+	// to stdoutAccum for ExecResult.Stdout — stderr is NOT accumulated
+	// (spec §4.1 + Phase 2 container.ExecResult shape; it surfaces only via
+	// IOChunk{Stream:"stderr"}). The accum mutex is required only because
+	// the main goroutine reads stdoutAccum after the reader goroutine
+	// finishes; stdcopy itself is single-threaded.
+	var stdoutMu sync.Mutex
+	var stdoutAccum []byte
+	stdoutWriter := streamingWriter{stream: "stdout", out: chunks, accum: &stdoutAccum, mu: &stdoutMu}
+	stderrWriter := streamingWriter{stream: "stderr", out: chunks, accum: nil}
 
-	var readerErr error
 	go func() {
 		defer close(readerDone)
-		defer attachResp.Close()
-		_, readerErr = stdcopy.StdCopy(&stdoutBuf, &stderrBuf, attachResp.Reader)
+		// Capture readerErr from stdcopy.StdCopy. Phase 4 surfaced transport
+		// errors (daemon disconnect, malformed multiplex frames) via this
+		// error; slice 5.3 preserves it via ExecResult.Err.
+		_, readerErr := stdcopy.StdCopy(stdoutWriter, stderrWriter, attachResp.Reader)
+		<-watcherDone
+		attachResp.Close()
+
+		// Exit code via ContainerExecInspect. (No Running-check guard: when
+		// the response stream closed, the exec terminated; Docker daemon
+		// updates ExecInspect synchronously. If a future SDK bug surfaces a
+		// Running=true here, surface the resulting ExitCode=0 plainly rather
+		// than masking via a custom error — the daemon bug deserves the
+		// loud failure.)
+		exitCode := 0
+		var inspectErr error
+		if inspect, err := b.cli.ContainerExecInspect(ctx, execCreateResp.ID); err == nil {
+			exitCode = inspect.ExitCode
+		} else {
+			inspectErr = fmt.Errorf("container/docker: Exec: ContainerExecInspect: %w", err)
+		}
+		close(chunks)
+		stdoutMu.Lock()
+		out := append([]byte(nil), stdoutAccum...)
+		stdoutMu.Unlock()
+
+		// Error precedence (preserved from pre-slice-5.3): ctx.Err()
+		// dominates any readerErr (on ctx-cancel the watcher closes
+		// attachResp and stdcopy returns a net.ErrClosed-wrapped error
+		// that is uninteresting), then a genuine readerErr (transport
+		// failure), then inspectErr.
+		var resErr error
+		switch {
+		case ctx.Err() != nil:
+			resErr = ctx.Err()
+		case readerErr != nil:
+			resErr = fmt.Errorf("container/docker: Exec: stdcopy: %w", readerErr)
+		case inspectErr != nil:
+			resErr = inspectErr
+		}
+		result <- container.ExecResult{
+			ExitCode:  exitCode,
+			Stdout:    out,
+			AWFOutput: nil, // dispatcher reads AWF_OUTPUT tempfile via CaptureFiles (Design Q1).
+			Err:       resErr,
+		}
+		close(result)
 	}()
 
-	// Wait for the reader to finish (either the command exited, or ctx-cancel
-	// closed the response and the reader errored out). Then drain the watcher.
-	<-readerDone
-	<-watcherDone
-
-	// ctx-dead dominates any readerErr.
-	if err := ctx.Err(); err != nil {
-		return container.ExecResult{}, nil, err
-	}
-
-	// On ctx-cancel, the watcher closes attachResp; StdCopy's src.Read returns
-	// a net.ErrClosed-wrapped error — but the ctx.Err() check above already
-	// handles that path. Any readerErr reaching here is a genuine transport
-	// problem.
-	if readerErr != nil {
-		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: stdcopy: %w", readerErr)
-	}
-
-	// Exit code via ContainerExecInspect. (No Running-check guard: when the
-	// response stream closed, the exec terminated; Docker daemon updates
-	// ExecInspect synchronously. If a future SDK bug surfaces a Running=true
-	// here, surface the resulting ExitCode=0 plainly rather than masking via
-	// a custom error — the daemon bug deserves the loud failure.)
-	inspect, err := b.cli.ContainerExecInspect(ctx, execCreateResp.ID)
-	if err != nil {
-		return container.ExecResult{}, nil, fmt.Errorf("container/docker: Exec: ContainerExecInspect: %w", err)
-	}
-
-	out := make(chan container.IOChunk, len(chunks))
-	for _, c := range chunks {
-		out <- c
-	}
-	close(out)
-
-	return container.ExecResult{
-		ExitCode:  inspect.ExitCode,
-		Stdout:    stdoutBuf.collected,
-		AWFOutput: nil, // dispatcher reads AWF_OUTPUT tempfile via CaptureFiles (Design Q1).
-	}, out, nil
+	return chunks, result, nil
 }
 
-// chunkBuffer is an io.Writer that stdcopy.StdCopy writes into. Each Write
-// emits one IOChunk (stream-tagged) into *chunks and (for stdout) accumulates
-// into `collected` for ExecResult.Stdout.
+// streamingWriter is an io.Writer that emits one IOChunk per Write to the
+// shared chunks channel. (Replaces slice 4.2's accumulate-then-burst
+// chunkBuffer.) stdout writes also append to accum for ExecResult.Stdout.
 //
-// No mutex: stdcopy is single-threaded; both chunkBuffers receive Writes from
-// the same goroutine.
-type chunkBuffer struct {
-	stream    string
-	chunks    *[]container.IOChunk
-	collected []byte
+// stdcopy.StdCopy passes slices of a single per-call read buffer that it
+// shifts and reuses for the next frame; we defensive-copy p before sending
+// so later frames don't overwrite the bytes of earlier chunks.
+type streamingWriter struct {
+	stream string
+	out    chan<- container.IOChunk
+	accum  *[]byte
+	mu     *sync.Mutex
 }
 
-// Write defensive-copies p. stdcopy.StdCopy passes slices of a single
-// per-call read buffer that it shifts and reuses for the next frame
-// (see StdCopy's inner loop: copy(buf, buf[frameSize+stdWriterPrefixLen:])).
-// Without the copy, later frames would overwrite the bytes of earlier chunks.
-func (cb *chunkBuffer) Write(p []byte) (int, error) {
-	dup := make([]byte, len(p))
-	copy(dup, p)
-	*cb.chunks = append(*cb.chunks, container.IOChunk{Stream: cb.stream, Data: dup})
-	if cb.stream == "stdout" {
-		cb.collected = append(cb.collected, dup...)
+func (w streamingWriter) Write(p []byte) (int, error) {
+	data := make([]byte, len(p))
+	copy(data, p)
+	w.out <- container.IOChunk{Stream: w.stream, Data: data}
+	if w.accum != nil {
+		w.mu.Lock()
+		*w.accum = append(*w.accum, data...)
+		w.mu.Unlock()
 	}
 	return len(p), nil
 }
