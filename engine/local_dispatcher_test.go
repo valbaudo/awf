@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -654,6 +655,156 @@ func TestResolvedInputs_AgentFields_Populated(t *testing.T) {
 	}
 	if ri.With["prompt"] != "do the thing" {
 		t.Errorf("With[prompt] = %v", ri.With["prompt"])
+	}
+}
+
+// rejectingAdapter overrides fake.Fake's ValidateConfig + injects a custom
+// Launch error for the ErrInvalidConfig + ErrAgentLaunch branches.
+type rejectingAdapter struct {
+	*fake.Fake
+	validateErr error
+	launchErr   error
+}
+
+func (r *rejectingAdapter) ValidateConfig(_ ir.RawConfig) error { return r.validateErr }
+
+func (r *rejectingAdapter) Launch(_ context.Context, _ container.Handle, _ agent.AgentInvocation) (agent.AgentResult, <-chan agent.AgentEvent, error) {
+	if r.launchErr != nil {
+		return agent.AgentResult{}, nil, r.launchErr
+	}
+	return agent.AgentResult{}, nil, fmt.Errorf("test stub: missing happy-path script")
+}
+
+func TestLocalDispatcher_runAgent_AdapterNotFound(t *testing.T) {
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &agent.Registry{}, // empty
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.AgentStep{ID: "x", Container: "lab", Uses: "missing/adapter"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "missing/adapter"},
+	}
+	_, _, err := d.Run(context.Background(), intent)
+	var notFound *agent.ErrAdapterNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v, want *agent.ErrAdapterNotFound", err)
+	}
+	if notFound.Ref != "missing/adapter" {
+		t.Errorf("Ref = %q, want %q", notFound.Ref, "missing/adapter")
+	}
+}
+
+func TestLocalDispatcher_runAgent_ValidateConfigRejectsUnknownKey(t *testing.T) {
+	var reg agent.Registry
+	adapter := &rejectingAdapter{
+		Fake:        fake.New("anthropic/claude-code"),
+		validateErr: &agent.ErrInvalidConfig{Ref: "anthropic/claude-code", Key: "session_id", Reason: "session reuse is forbidden"},
+	}
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	intent := engine.NodeIntent{
+		Path: "graph[0]",
+		Node: &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses: "anthropic/claude-code",
+			With: ir.RawConfig{"prompt": "p", "session_id": "should-be-rejected"},
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Errorf("Outcome = %q, want %q", dr.Outcome, engine.OutcomePermanentFailure)
+	}
+	var badConfig *agent.ErrInvalidConfig
+	if !errors.As(dr.Err, &badConfig) {
+		t.Errorf("dr.Err = %v, want *agent.ErrInvalidConfig", dr.Err)
+	}
+}
+
+func TestLocalDispatcher_runAgent_AgentLaunchError(t *testing.T) {
+	var reg agent.Registry
+	transport := &agent.ErrAgentLaunch{Cause: errors.New("docker exec: i/o timeout")}
+	adapter := &rejectingAdapter{
+		Fake:      fake.New("anthropic/claude-code"),
+		launchErr: transport,
+	}
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "anthropic/claude-code", With: ir.RawConfig{"prompt": "p"}},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeRetryableFailure {
+		t.Errorf("Outcome = %q, want %q (transport class)", dr.Outcome, engine.OutcomeRetryableFailure)
+	}
+	if !errors.Is(dr.Err, transport.Cause) {
+		t.Errorf("dr.Err does not wrap transport cause: %v", dr.Err)
+	}
+}
+
+func TestLocalDispatcher_runAgent_OutputSchemaMismatch(t *testing.T) {
+	var reg agent.Registry
+	// Schema requires {verdict: bool}; the fake returns {verdict: "string"} which violates.
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"verdict": "not-a-bool"},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	// ir.JSONSchema is map[string]any — build via map literal.
+	schema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"verdict"},
+		"properties": map[string]any{
+			"verdict": map[string]any{"type": "boolean"},
+		},
+	}
+	intent := engine.NodeIntent{
+		Path: "graph[0]",
+		Node: &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:         "anthropic/claude-code",
+			With:         ir.RawConfig{"prompt": "p"},
+			OutputSchema: schema,
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeRetryableFailure {
+		t.Errorf("Outcome = %q, want %q (unparseable output)", dr.Outcome, engine.OutcomeRetryableFailure)
+	}
+	var unparseable *agent.ErrUnparseableOutput
+	if !errors.As(dr.Err, &unparseable) {
+		t.Errorf("dr.Err = %v, want *agent.ErrUnparseableOutput", dr.Err)
 	}
 }
 
