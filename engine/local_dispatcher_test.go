@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/fake"
@@ -669,11 +671,11 @@ type rejectingAdapter struct {
 
 func (r *rejectingAdapter) ValidateConfig(_ ir.RawConfig) error { return r.validateErr }
 
-func (r *rejectingAdapter) Launch(_ context.Context, _ container.Handle, _ agent.AgentInvocation) (agent.AgentResult, <-chan agent.AgentEvent, error) {
+func (r *rejectingAdapter) Launch(_ context.Context, _ container.Handle, _ agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
 	if r.launchErr != nil {
-		return agent.AgentResult{}, nil, r.launchErr
+		return nil, nil, r.launchErr
 	}
-	return agent.AgentResult{}, nil, fmt.Errorf("test stub: missing happy-path script")
+	return nil, nil, fmt.Errorf("test stub: missing happy-path script")
 }
 
 func TestLocalDispatcher_runAgent_AdapterNotFound(t *testing.T) {
@@ -1003,4 +1005,95 @@ func TestLocalDispatcher_runCode_StreamingDrain(t *testing.T) {
 	if string(dr.Stdout) != "hi\n" {
 		t.Errorf("Stdout = %q, want hi\\n", dr.Stdout)
 	}
+}
+
+func TestLocalDispatcher_runAgent_StreamsEventsProgressively(t *testing.T) {
+	// Asserts the tap renders events as they arrive (NOT all at once after
+	// outcome). Uses agent/fake.WithEmitDelay so emissions are paced.
+	const delay = 50 * time.Millisecond
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").
+		WithEmitDelay(delay).
+		Script(0, fake.Result{
+			Output: map[string]any{"ok": true},
+			Events: []agent.AgentEvent{
+				{Kind: "a"}, {Kind: "b"}, {Kind: "c"},
+			},
+		})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	tap := newTimestampTap()
+	d := &engine.LocalDispatcher{
+		Backend:       container.NewFake(),
+		Handles:       map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver:      &reg,
+		AgentEventTap: tap,
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "anthropic/claude-code", With: ir.RawConfig{"prompt": "p"}},
+	}
+
+	start := time.Now()
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_ = start // for clarity; the tap captures wall-clock per write
+
+	writes := tap.Writes()
+	if len(writes) != 3 {
+		t.Fatalf("tap writes = %d, want 3", len(writes))
+	}
+	span := writes[2].At.Sub(writes[0].At)
+	if span < delay {
+		t.Errorf("first→last tap-write span = %v, want ≥ %v (proves tap renders progressively, not buffer-then-burst)", span, delay)
+	}
+
+	// Assert dr.AgentEvents was populated for downstream log writes.
+	// A regression that dropped events into the buffer would fan-out break
+	// silently — the kinds-in-order check pins it.
+	if len(dr.AgentEvents) != 3 {
+		t.Errorf("dr.AgentEvents len = %d, want 3 (events buffered for interpreter agent.event log writes)", len(dr.AgentEvents))
+	}
+	wantKinds := []string{"a", "b", "c"}
+	for i, want := range wantKinds {
+		if i >= len(dr.AgentEvents) {
+			break
+		}
+		if dr.AgentEvents[i].Kind != want {
+			t.Errorf("dr.AgentEvents[%d].Kind = %q, want %q", i, dr.AgentEvents[i].Kind, want)
+		}
+	}
+}
+
+// timestampTap records the wall-clock time of each Write.
+type timestampTap struct {
+	mu sync.Mutex
+	w  []timestampedWrite
+}
+type timestampedWrite struct {
+	Data []byte
+	At   time.Time
+}
+
+func newTimestampTap() *timestampTap { return &timestampTap{} }
+func (t *timestampTap) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dup := make([]byte, len(p))
+	copy(dup, p)
+	t.w = append(t.w, timestampedWrite{Data: dup, At: time.Now()})
+	return len(p), nil
+}
+func (t *timestampTap) Writes() []timestampedWrite {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]timestampedWrite, len(t.w))
+	copy(out, t.w)
+	return out
 }

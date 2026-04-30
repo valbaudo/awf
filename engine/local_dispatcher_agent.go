@@ -87,46 +87,63 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		IdempotencyKey: intent.IdempotencyKey,
 	}
 
-	// Launch and drain.
-	result, eventCh, launchErr := adapter.Launch(ctx, h, inv)
+	// γ contract: Launch returns immediately with events + outcome channels
+	// open. Spawn a goroutine that drains events (writing tap lines per event
+	// as they arrive — THE REALTIME UX). Main path awaits launchOutcome.
+	//
+	// Naming: dispatchOutcome (engine's mechanical Outcome enum) vs
+	// launchOutcome (γ's AgentOutcome envelope). Two different types — keep
+	// names disambiguated.
+	events, outcomeCh, launchErr := adapter.Launch(ctx, h, inv)
 	if launchErr != nil {
-		outcome := classifyAgentLaunchErr(launchErr)
-		return DispatchResult{
-			Outcome: outcome,
-			Err:     launchErr,
-		}, nil, nil
+		dispatchOutcome := classifyAgentLaunchErr(launchErr)
+		return DispatchResult{Outcome: dispatchOutcome, Err: launchErr}, nil, nil
 	}
 
-	// Drain the event channel: live-tap each, buffer all.
-	var bufferedEvents []agent.AgentEvent
-	if eventCh != nil {
-		for ev := range eventCh {
-			bufferedEvents = append(bufferedEvents, ev)
+	drainDone := make(chan []agent.AgentEvent, 1)
+	go func() {
+		var buf []agent.AgentEvent
+		for ev := range events {
+			buf = append(buf, ev)
 			if d.AgentEventTap != nil {
 				writeAgentEventTap(d.AgentEventTap, ev)
 			}
 		}
+		drainDone <- buf
+	}()
+
+	launchOutcome := <-outcomeCh
+	bufferedEvents := <-drainDone
+
+	// In-flight failure surfaced via launchOutcome.Err.
+	if launchOutcome.Err != nil {
+		dispatchOutcome := classifyAgentLaunchErr(launchOutcome.Err)
+		return DispatchResult{
+			Outcome:     dispatchOutcome,
+			Err:         launchOutcome.Err,
+			AgentEvents: bufferedEvents,
+		}, closedChunks(), nil
 	}
 
 	// Validate Output against OutputSchema (if declared).
 	if intent.ResolvedInputs.OutputSchema != nil {
-		if err := ValidateOutputMap(result.Output, intent.ResolvedInputs.OutputSchema); err != nil {
+		if err := ValidateOutputMap(launchOutcome.Result.Output, intent.ResolvedInputs.OutputSchema); err != nil {
 			return DispatchResult{
 				Outcome:     OutcomeRetryableFailure,
-				Outputs:     result.Output,
+				Outputs:     launchOutcome.Result.Output,
 				AgentEvents: bufferedEvents,
 				Err:         &agent.ErrUnparseableOutput{NodePath: intent.Path},
 			}, closedChunks(), nil
 		}
 	}
 
-	exitCodePtr := copyIntPtr(result.ExitCode)
+	exitCodePtr := copyIntPtr(launchOutcome.Result.ExitCode)
 	return DispatchResult{
 		Outcome:     OutcomeOK,
 		ExitCode:    exitCodePtr,
-		Outputs:     result.Output,
+		Outputs:     launchOutcome.Result.Output,
 		AgentEvents: bufferedEvents,
-		Files:       packFiles(result.Files),
+		Files:       packFiles(launchOutcome.Result.Files),
 	}, closedChunks(), nil
 }
 
