@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -39,6 +40,15 @@ type harness struct {
 	runID   string
 	input   map[string]any
 	broker  *signal.Broker // slice 3.5 — nil for non-signal fixtures (most buckets)
+
+	// agentRegistry is ALWAYS non-nil. newHarness initializes it to an empty
+	// *agent.Registry{} so the dispatcher's Resolver field never receives a
+	// typed-nil interface (the Go nil-interface gotcha:
+	// https://go.dev/doc/faq#nil_error — a *Registry(nil) assigned to
+	// agent.Resolver compares != nil, then panics on Lookup). For non-agent
+	// buckets the registry is empty and runAgent.Lookup misses cleanly;
+	// agent buckets overwrite it via newHarnessWithAgentRegistry.
+	agentRegistry *agent.Registry
 }
 
 func newHarness(t *testing.T, factory BackendFactory, workflowYAML string) *harness {
@@ -50,13 +60,14 @@ func newHarness(t *testing.T, factory BackendFactory, workflowYAML string) *harn
 	}
 	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	return &harness{
-		wfPath:  wfPath,
-		baseDir: dir,
-		clk:     clk,
-		log:     state.NewInMemoryLog(clk),
-		blobs:   state.NewInMemoryBlobs(),
-		factory: factory,
-		runID:   "conformance-run",
+		wfPath:        wfPath,
+		baseDir:       dir,
+		clk:           clk,
+		log:           state.NewInMemoryLog(clk),
+		blobs:         state.NewInMemoryBlobs(),
+		factory:       factory,
+		runID:         "conformance-run",
+		agentRegistry: &agent.Registry{},
 	}
 }
 
@@ -79,6 +90,22 @@ func newHarnessWithInput(t *testing.T, factory BackendFactory, workflowYAML stri
 	t.Helper()
 	h := newHarness(t, factory, workflowYAML)
 	h.input = input
+	return h
+}
+
+// newHarnessWithAgentRegistry is the Bucket 12/13/15 constructor — base
+// newHarness plus a pre-populated *agent.Registry the dispatcher consults
+// at AgentStep dispatch. register is a setup callback that adds adapters
+// to the registry (typically calling fake.New(ref).Script(...) chains and
+// reg.Register on the result).
+//
+// Bucket 14 (slice 5.4) uses conformance.RunAgentSuite — a separate path
+// from RunSuite — and constructs its registry with a real *agent/claude
+// adapter; that's not this constructor.
+func newHarnessWithAgentRegistry(t *testing.T, factory BackendFactory, workflowYAML string, register func(*agent.Registry)) *harness {
+	t.Helper()
+	h := newHarness(t, factory, workflowYAML) // h.agentRegistry is already a non-nil empty Registry
+	register(h.agentRegistry)                 // populate in place
 	return h
 }
 
@@ -179,7 +206,12 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 		handles[name] = hndl
 	}
 
-	dispatcher := &engine.LocalDispatcher{Backend: backend, Handles: handles}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  backend,
+		Handles:  handles,
+		Resolver: h.agentRegistry, // empty Registry by default (newHarness init); newHarnessWithAgentRegistry populates it
+		// AgentEventTap: nil — conformance is silent; bucket tests assert log entries, not tap output
+	}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, nil, h.broker)
 	return outcome, runErr
 }
