@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/fake"
@@ -45,15 +46,20 @@ func TestFake_ScriptAndLaunch(t *testing.T) {
 		Script(1, fake.Result{Output: map[string]any{"verdict": "fail"}, Cost: 0.02})
 
 	// First Launch consumes index 0.
-	r, ch, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	events, outcomeCh, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
 	if err != nil {
 		t.Fatalf("Launch[0]: %v", err)
 	}
-	// Channel must be closed (the contract: emit all events, then close).
+	// Drain events (γ contract: caller must drain before reading outcome).
 	count := 0
-	for range ch {
+	for range events {
 		count++
 	}
+	outcome := <-outcomeCh
+	if outcome.Err != nil {
+		t.Fatalf("Launch[0] outcome.Err = %v", outcome.Err)
+	}
+	r := outcome.Result
 	if r.Output["verdict"] != "pass" {
 		t.Errorf("Launch[0].Output[verdict] = %v, want %q", r.Output["verdict"], "pass")
 	}
@@ -63,12 +69,18 @@ func TestFake_ScriptAndLaunch(t *testing.T) {
 	_ = count // events not asserted in this test (next test covers it)
 
 	// Second Launch consumes index 1.
-	r2, _, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	events2, outcomeCh2, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
 	if err != nil {
 		t.Fatalf("Launch[1]: %v", err)
 	}
-	if r2.Output["verdict"] != "fail" {
-		t.Errorf("Launch[1].Output[verdict] = %v, want %q", r2.Output["verdict"], "fail")
+	for range events2 {
+	}
+	outcome2 := <-outcomeCh2
+	if outcome2.Err != nil {
+		t.Fatalf("Launch[1] outcome.Err = %v", outcome2.Err)
+	}
+	if outcome2.Result.Output["verdict"] != "fail" {
+		t.Errorf("Launch[1].Output[verdict] = %v, want %q", outcome2.Result.Output["verdict"], "fail")
 	}
 }
 
@@ -82,13 +94,16 @@ func TestFake_LaunchEmitsScriptedEvents(t *testing.T) {
 				{Kind: "result", Payload: []byte(`{"subtype":"success"}`)},
 			},
 		})
-	_, ch, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	events, outcomeCh, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
 	var got []string
-	for ev := range ch {
+	for ev := range events {
 		got = append(got, ev.Kind)
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
 	}
 	want := []string{"system", "assistant", "result"}
 	if len(got) != len(want) {
@@ -104,13 +119,24 @@ func TestFake_LaunchEmitsScriptedEvents(t *testing.T) {
 func TestFake_LaunchOutOfBounds(t *testing.T) {
 	f := fake.New("anthropic/claude-code").Script(0, fake.Result{Output: map[string]any{"x": 1}})
 	// First Launch consumes index 0; second has nothing scripted.
-	_, _, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	events, outcomeCh, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
 	if err != nil {
 		t.Fatalf("Launch[0]: %v", err)
 	}
-	_, _, err = f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
-	if err == nil {
-		t.Fatalf("Launch[1] with no script: err = nil, want non-nil")
+	for range events {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("Launch[0] outcome.Err = %v", outcome.Err)
+	}
+	// γ contract: missing script surfaces via outcome.Err, NOT the pre-launch error.
+	events2, outcomeCh2, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	if err != nil {
+		t.Fatalf("Launch[1] pre-launch err = %v; want nil (failure surfaces via outcome.Err)", err)
+	}
+	for range events2 {
+	}
+	if outcome := <-outcomeCh2; outcome.Err == nil {
+		t.Fatalf("Launch[1] outcome.Err = nil, want non-nil for missing script")
 	}
 }
 
@@ -130,10 +156,13 @@ func TestFake_RecordsLaunches(t *testing.T) {
 	// The fake records every invocation for test inspection.
 	f := fake.New("anthropic/claude-code").Script(0, fake.Result{Output: map[string]any{"ok": 1}})
 	inv := agent.AgentInvocation{Uses: "anthropic/claude-code", With: map[string]any{"prompt": "first"}}
-	_, _, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, inv)
+	events, outcomeCh, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, inv)
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
+	for range events {
+	}
+	<-outcomeCh
 	calls := f.Calls()
 	if len(calls) != 1 {
 		t.Fatalf("len(Calls) = %d, want 1", len(calls))
@@ -155,10 +184,17 @@ var _ = errors.New
 func TestFake_NewBenignOracle_TwoAttempts(t *testing.T) {
 	o := fake.NewBenignOracle()
 	// Attempt 0 — fake exploit, oracle catches it.
-	r0, _, err := o.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "test/oracle"})
+	events0, outcomeCh0, err := o.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "test/oracle"})
 	if err != nil {
 		t.Fatalf("Launch[0]: %v", err)
 	}
+	for range events0 {
+	}
+	outcome0 := <-outcomeCh0
+	if outcome0.Err != nil {
+		t.Fatalf("Launch[0] outcome.Err = %v", outcome0.Err)
+	}
+	r0 := outcome0.Result
 	if r0.Output["verified"] != false {
 		t.Errorf("attempt 0: verified = %v, want false", r0.Output["verified"])
 	}
@@ -166,10 +202,17 @@ func TestFake_NewBenignOracle_TwoAttempts(t *testing.T) {
 		t.Errorf("attempt 0: fooled_by_benign = %v, want true", r0.Output["fooled_by_benign"])
 	}
 	// Attempt 1 — real exploit, oracle passes.
-	r1, _, err := o.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "test/oracle"})
+	events1, outcomeCh1, err := o.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "test/oracle"})
 	if err != nil {
 		t.Fatalf("Launch[1]: %v", err)
 	}
+	for range events1 {
+	}
+	outcome1 := <-outcomeCh1
+	if outcome1.Err != nil {
+		t.Fatalf("Launch[1] outcome.Err = %v", outcome1.Err)
+	}
+	r1 := outcome1.Result
 	if r1.Output["verified"] != true {
 		t.Errorf("attempt 1: verified = %v, want true", r1.Output["verified"])
 	}
@@ -182,5 +225,91 @@ func TestFake_NewBenignOracle_RefIsTestOracle(t *testing.T) {
 	o := fake.NewBenignOracle()
 	if o.Ref() != "test/oracle" {
 		t.Errorf("Ref = %q, want %q", o.Ref(), "test/oracle")
+	}
+}
+
+func TestFake_Launch_GammaContract_HappyPath(t *testing.T) {
+	f := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"answer": 42},
+		Events: []agent.AgentEvent{
+			{Kind: "system", Payload: []byte(`{"sub":"init"}`)},
+			{Kind: "text", Payload: []byte(`hello`)},
+			{Kind: "result", Payload: []byte(`{"sub":"success"}`)},
+		},
+	})
+
+	events, outcomeCh, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	var got []agent.AgentEvent
+	for ev := range events {
+		got = append(got, ev)
+	}
+	if len(got) != 3 {
+		t.Errorf("events len = %d, want 3", len(got))
+	}
+
+	outcome := <-outcomeCh
+	if outcome.Err != nil {
+		t.Errorf("outcome.Err = %v", outcome.Err)
+	}
+	// Output[answer] is whatever the test put in — int 42. The outcome envelope
+	// doesn't JSON-roundtrip in Go memory, so it stays as int.
+	if outcome.Result.Output["answer"] != 42 {
+		t.Errorf("Output[answer] = %v", outcome.Result.Output["answer"])
+	}
+
+	// Second receive from outcomeCh must observe close.
+	if _, ok := <-outcomeCh; ok {
+		t.Errorf("outcomeCh not closed after delivering value")
+	}
+}
+
+func TestFake_Launch_EmitDelay_RealtimeProgression(t *testing.T) {
+	// Asserts emit-delay actually pauses between events — the realtime test
+	// for the Claude adapter relies on this facility working in the fake too.
+	const delay = 50 * time.Millisecond
+	f := fake.New("anthropic/claude-code").WithEmitDelay(delay).Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+		Events: []agent.AgentEvent{
+			{Kind: "a"}, {Kind: "b"}, {Kind: "c"},
+		},
+	})
+
+	start := time.Now()
+	events, outcomeCh, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	var arrivals []time.Duration
+	for range events {
+		arrivals = append(arrivals, time.Since(start))
+	}
+	<-outcomeCh
+
+	if len(arrivals) != 3 {
+		t.Fatalf("got %d events", len(arrivals))
+	}
+	span := arrivals[2] - arrivals[0]
+	// Two delays between three events; allow some slack for scheduler.
+	if span < delay {
+		t.Errorf("first→last span = %v, want ≥ %v (proves progressive emission)", span, delay)
+	}
+}
+
+func TestFake_Launch_FailureBranch_OutcomeCarriesErr(t *testing.T) {
+	// When the script entry isn't found, the fake delivers AgentOutcome{Err: ...}.
+	f := fake.New("anthropic/claude-code") // no scripts registered
+	events, outcomeCh, err := f.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	if err != nil {
+		t.Fatalf("Launch returned pre-launch err = %v; want nil (fake's failure surfaces as outcome.Err)", err)
+	}
+	for range events { // empty stream
+	}
+	outcome := <-outcomeCh
+	if outcome.Err == nil {
+		t.Error("outcome.Err = nil; want non-nil for missing script")
 	}
 }

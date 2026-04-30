@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
@@ -49,6 +50,7 @@ type Fake struct {
 	extractor func(transcript string) (map[string]any, error)
 	calls     []agent.AgentInvocation
 	idx       int
+	emitDelay time.Duration
 }
 
 // New mints a Fake for the given ref. Default Capabilities() returns
@@ -105,6 +107,15 @@ func (f *Fake) WithVersion(v string) *Fake {
 	return f
 }
 
+// WithEmitDelay sets the inter-event delay used by Launch's emitter
+// goroutine. Realtime tests (TestClaudeAdapterRealtimeStreaming and the
+// fake's own TestFake_Launch_EmitDelay_RealtimeProgression) use this to
+// produce verifiable wall-clock progression. Default 0 (no delay).
+func (f *Fake) WithEmitDelay(d time.Duration) *Fake {
+	f.emitDelay = d
+	return f
+}
+
 // WithTranscriptExtractor sets the layer-2 extractor closure. The fake
 // itself doesn't use it in Launch (Launch just consults the script table);
 // the closure is exposed to test callers via Extractor() so Bucket 15
@@ -136,40 +147,69 @@ func (f *Fake) Calls() []agent.AgentInvocation {
 	return out
 }
 
-// Launch returns the scripted result for the current invocation index.
-// Increments the index after the call. Emits each scripted Event on the
-// returned channel, then closes the channel, then returns AgentResult
-// synchronously — matching the agent.Adapter contract.
-func (f *Fake) Launch(_ context.Context, _ container.Handle, inv agent.AgentInvocation) (agent.AgentResult, <-chan agent.AgentEvent, error) {
+// Launch honors the slice 5.3 γ contract: returns IMMEDIATELY with events
+// and outcome channels OPEN. An emitter goroutine writes each scripted
+// event to the events channel (with optional inter-event delay), closes
+// events, then sends AgentOutcome and closes outcomeCh. Caller MUST drain
+// events before reading outcome (the standard `for range events; outcome
+// := <-outcomeCh` pattern).
+func (f *Fake) Launch(ctx context.Context, _ container.Handle, inv agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	// Record the invocation BEFORE the script check so out-of-bounds tests
-	// can still observe what was attempted.
 	f.calls = append(f.calls, inv)
-
 	i := f.idx
 	f.idx++
 	r, ok := f.scripts[i]
-	if !ok {
-		return agent.AgentResult{}, nil, fmt.Errorf("agent/fake: no scripted result for invocation index %d (ref %q)", i, f.ref)
-	}
+	delay := f.emitDelay
+	f.mu.Unlock()
 
-	// Buffered channel sized for all scripted events so the synchronous
-	// path doesn't deadlock if the caller doesn't drain immediately.
-	ch := make(chan agent.AgentEvent, len(r.Events))
-	for _, ev := range r.Events {
-		ch <- ev
-	}
-	close(ch)
+	events := make(chan agent.AgentEvent, len(r.Events)+1)
+	outcomeCh := make(chan agent.AgentOutcome, 1)
 
-	return agent.AgentResult{
-		Output:   r.Output,
-		ExitCode: 0,
-		Metrics: agent.MetricSet{
-			Cost:   agent.MetricCost{USD: r.Cost, Source: agent.CostSourceReported},
-			Tokens: r.Tokens,
-		},
-		Files: r.Files,
-	}, ch, nil
+	go func() {
+		// defer LIFO means declared-last runs first. We want events to
+		// close BEFORE outcomeCh so receivers (and the Adapter contract
+		// doc) see the documented order. Declare outcomeCh FIRST (runs
+		// last) and events SECOND (runs first). Matches the Claude
+		// adapter's defer order in launch.go.
+		defer close(outcomeCh)
+		defer close(events)
+
+		if !ok {
+			outcomeCh <- agent.AgentOutcome{
+				Err: fmt.Errorf("agent/fake: no scripted result for invocation index %d (ref %q)", i, f.ref),
+			}
+			return
+		}
+
+		for _, ev := range r.Events {
+			select {
+			case <-ctx.Done():
+				outcomeCh <- agent.AgentOutcome{Err: ctx.Err()}
+				return
+			case events <- ev:
+			}
+			if delay > 0 {
+				select {
+				case <-ctx.Done():
+					outcomeCh <- agent.AgentOutcome{Err: ctx.Err()}
+					return
+				case <-time.After(delay):
+				}
+			}
+		}
+
+		outcomeCh <- agent.AgentOutcome{
+			Result: agent.AgentResult{
+				Output:   r.Output,
+				ExitCode: 0,
+				Metrics: agent.MetricSet{
+					Cost:   agent.MetricCost{USD: r.Cost, Source: agent.CostSourceReported},
+					Tokens: r.Tokens,
+				},
+				Files: r.Files,
+			},
+		}
+	}()
+
+	return events, outcomeCh, nil
 }
