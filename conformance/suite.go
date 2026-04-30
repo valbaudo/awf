@@ -77,6 +77,7 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("propagation", func(t *testing.T) { testPropagation(t, factory) })
 	t.Run("gate", func(t *testing.T) { testGate(t, factory) })
 	t.Run("agent_step", func(t *testing.T) { testAgentStep(t, factory) })
+	t.Run("gate_agent", func(t *testing.T) { testGateAgent(t, factory) })
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
 	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })

@@ -512,6 +512,128 @@ graph:
         confidence: { type: number }
 `, fakeImageDigest)
 
+// gateAgentPassOnAttempt1Workflow — Bucket 13a. Generator: agent ref
+// "test/gen" returns {exploit: "real"} on attempt 0. Evaluator: agent ref
+// "test/oracle" returns {verified: true} on attempt 0. Gate passes.
+var gateAgentPassOnAttempt1Workflow = fmt.Sprintf(`workflow: conformance-gate-agent-pass
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: lab
+          uses: test/gen
+          with:
+            prompt: "build the exploit"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [exploit]
+            properties:
+              exploit: { type: string }
+      evaluate:
+        - id: eval1
+          container: lab
+          uses: test/oracle
+          with:
+            prompt: "verify exploit"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, fooled_by_benign, feedback]
+            properties:
+              verified:         { type: boolean }
+              fooled_by_benign: { type: boolean }
+              feedback:         { type: string }
+      until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
+      max_attempts: 2
+`, fakeImageDigest)
+
+// gateAgentRepairOnAttempt2Workflow — Bucket 13b. Same shape but generator's
+// prompt includes a feedback template: "{{ evaluate.feedback }}". Attempt 1:
+// fake oracle returns {verified: false, fooled_by_benign: true, feedback: "..."}.
+// Attempt 2: oracle returns {verified: true, ...}. Gate passes on attempt 2.
+// The test asserts BOTH the gate's pass outcome AND that the generator's
+// AgentInvocation.With on attempt 2 contains the substituted feedback.
+var gateAgentRepairOnAttempt2Workflow = fmt.Sprintf(`workflow: conformance-gate-agent-repair
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: lab
+          uses: test/gen
+          with:
+            prompt: "build the exploit. previous feedback: {{ evaluate.feedback }}"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [exploit]
+            properties:
+              exploit: { type: string }
+      evaluate:
+        - id: eval1
+          container: lab
+          uses: test/oracle
+          with:
+            prompt: "verify exploit"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, fooled_by_benign, feedback]
+            properties:
+              verified:         { type: boolean }
+              fooled_by_benign: { type: boolean }
+              feedback:         { type: string }
+      until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
+      max_attempts: 3
+`, fakeImageDigest)
+
+// gateAgentMaxAttemptsRejectedWorkflow — Bucket 13c. Oracle ALWAYS returns
+// verified:false. Gate exhausts max_attempts:2 → rejected.
+var gateAgentMaxAttemptsRejectedWorkflow = fmt.Sprintf(`workflow: conformance-gate-agent-rejected
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - gate:
+      generate:
+        - id: gen1
+          container: lab
+          uses: test/gen
+          with:
+            prompt: "build the exploit"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [exploit]
+            properties:
+              exploit: { type: string }
+      evaluate:
+        - id: eval1
+          container: lab
+          uses: test/oracle
+          with:
+            prompt: "verify exploit"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, fooled_by_benign, feedback]
+            properties:
+              verified:         { type: boolean }
+              fooled_by_benign: { type: boolean }
+              feedback:         { type: string }
+      until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
+      max_attempts: 2
+`, fakeImageDigest)
+
 // signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
 // A single `await: human_review` step followed by an echo step that references
 // the signal payload. No containers entry for the await itself; the after step
