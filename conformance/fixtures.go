@@ -677,6 +677,29 @@ graph:
     run: echo c
 `, fakeImageDigest)
 
+// layer2ContractWorkflow — Bucket 15. Same shape as Bucket 12 but the
+// adapter declares Caps{NativeSchema: false}. The fixture is identical;
+// the bucket distinguishes by adapter capability, not workflow shape.
+var layer2ContractWorkflow = fmt.Sprintf(`workflow: conformance-layer2-contract
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - id: extract
+    container: lab
+    uses: test/non-native-schema
+    with:
+      prompt: "extract structured data from prose"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [topic, sentiment]
+      properties:
+        topic:     { type: string }
+        sentiment: { type: string }
+`, fakeImageDigest)
+
 // parallelResumeWorkflow — Bucket 4b parallel_resume_consistency:
 // simple 3-branch parallel followed by a sequential after-step. The test
 // programs pb2.sh to fail deterministically on first run, then re-programs
