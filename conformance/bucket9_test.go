@@ -64,20 +64,11 @@ func testBucket9ExecStdoutStderrDemux(t *testing.T, factory DockerBackendFactory
 	env := factory(t, "bucket9b-demux")
 	h := env.NewAlpineHandle(t, "lab")
 	ctx := context.Background()
-	result, ch, callErr := env.Backend.Exec(ctx, h, container.Cmd{
+	ch, resultCh, callErr := env.Backend.Exec(ctx, h, container.Cmd{
 		Run: "echo OUT; echo ERR >&2; exit 7",
 	})
 	if callErr != nil {
 		t.Fatalf("Exec: %v", callErr)
-	}
-	if result.ExitCode != 7 {
-		t.Errorf("ExitCode = %d, want 7", result.ExitCode)
-	}
-	if !bytes.Contains(result.Stdout, []byte("OUT")) {
-		t.Errorf("Stdout = %q, want to contain OUT", result.Stdout)
-	}
-	if bytes.Contains(result.Stdout, []byte("ERR")) {
-		t.Errorf("Stdout = %q, must NOT contain stderr content ERR", result.Stdout)
 	}
 	var sawStdout, sawStderr bool
 	for c := range ch {
@@ -93,6 +84,16 @@ func testBucket9ExecStdoutStderrDemux(t *testing.T, factory DockerBackendFactory
 		default:
 			t.Errorf("IOChunk.Stream = %q, want stdout or stderr", c.Stream)
 		}
+	}
+	result := <-resultCh
+	if result.ExitCode != 7 {
+		t.Errorf("ExitCode = %d, want 7", result.ExitCode)
+	}
+	if !bytes.Contains(result.Stdout, []byte("OUT")) {
+		t.Errorf("Stdout = %q, want to contain OUT", result.Stdout)
+	}
+	if bytes.Contains(result.Stdout, []byte("ERR")) {
+		t.Errorf("Stdout = %q, must NOT contain stderr content ERR", result.Stdout)
 	}
 	if !sawStdout {
 		t.Error("no stdout chunk containing OUT")
@@ -113,13 +114,19 @@ func testBucket9ExecCtxCancelMidRun(t *testing.T, factory DockerBackendFactory) 
 		cancel()
 	}()
 	start := time.Now()
-	_, _, err := env.Backend.Exec(execCtx, h, container.Cmd{Run: "sleep 10"})
-	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("Exec: err = nil, want context.Canceled")
+	ch, resultCh, err := env.Backend.Exec(execCtx, h, container.Cmd{Run: "sleep 10"})
+	if err != nil {
+		t.Fatalf("Exec launch: err = %v, want nil (cancellation surfaces via ExecResult.Err)", err)
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("Exec: err = %v, want errors.Is(_, context.Canceled)", err)
+	for range ch {
+	}
+	result := <-resultCh
+	elapsed := time.Since(start)
+	if result.Err == nil {
+		t.Fatal("ExecResult.Err = nil, want context.Canceled")
+	}
+	if !errors.Is(result.Err, context.Canceled) {
+		t.Errorf("ExecResult.Err = %v, want errors.Is(_, context.Canceled)", result.Err)
 	}
 	// Phase 4 design §G targets ctx-cancel mid-Exec to return within
 	// 500ms. The test asserts <5s (verifies the property exists
@@ -136,20 +143,21 @@ func testBucket9ExecPassesEnv(t *testing.T, factory DockerBackendFactory) {
 	env := factory(t, "bucket9b-env")
 	h := env.NewAlpineHandle(t, "lab")
 	ctx := context.Background()
-	result, ch, callErr := env.Backend.Exec(ctx, h, container.Cmd{
+	ch, resultCh, callErr := env.Backend.Exec(ctx, h, container.Cmd{
 		Run: `echo "key=$MY_KEY"`,
 		Env: map[string]string{"MY_KEY": "value-42"},
 	})
 	if callErr != nil {
 		t.Fatalf("Exec: %v", callErr)
 	}
+	for range ch {
+	}
+	result := <-resultCh
 	if result.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
 	}
 	if !bytes.Contains(result.Stdout, []byte("key=value-42")) {
 		t.Errorf("Stdout = %q, want to contain key=value-42", result.Stdout)
-	}
-	for range ch {
 	}
 }
 
@@ -166,11 +174,15 @@ func testBucket9CaptureFilesRoundTrip(t *testing.T, factory DockerBackendFactory
 	// (Path reflecting the requested path is contract behavior, not impl
 	// detail — so it stays under conformance).
 	want := []byte("hello captured world\n")
-	if _, _, err := env.Backend.Exec(ctx, h, container.Cmd{
+	ch, resultCh, err := env.Backend.Exec(ctx, h, container.Cmd{
 		Run: `echo "hello captured world" > /tmp/awf-test.txt`,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	for range ch {
+	}
+	<-resultCh
 	files, err := env.Backend.CaptureFiles(ctx, h, []string{"/tmp/awf-test.txt"})
 	if err != nil {
 		t.Fatalf("CaptureFiles: %v", err)
@@ -205,9 +217,13 @@ func testBucket9CaptureFilesOrdering(t *testing.T, factory DockerBackendFactory)
 	// check + the original's fixture filenames (/tmp/a.txt, /tmp/b.txt,
 	// /tmp/c.txt — NOT /tmp/a etc.).
 	for _, name := range []string{"a", "b", "c"} {
-		if _, _, err := env.Backend.Exec(ctx, h, container.Cmd{Run: "echo " + name + " > /tmp/" + name + ".txt"}); err != nil {
+		ch, resultCh, err := env.Backend.Exec(ctx, h, container.Cmd{Run: "echo " + name + " > /tmp/" + name + ".txt"})
+		if err != nil {
 			t.Fatalf("Exec write %s: %v", name, err)
 		}
+		for range ch {
+		}
+		<-resultCh
 	}
 	want := []string{"/tmp/c.txt", "/tmp/a.txt", "/tmp/b.txt"}
 	files, err := env.Backend.CaptureFiles(ctx, h, want)
@@ -232,9 +248,13 @@ func testBucket9CaptureFilesPartialMissing(t *testing.T, factory DockerBackendFa
 	// files != nil "no partial returns" assertion — documented contract
 	// intent per the test's name + rationale: if even one path is
 	// missing, the whole call errors with no partial returns.
-	if _, _, err := env.Backend.Exec(ctx, h, container.Cmd{Run: "echo present > /tmp/present.txt"}); err != nil {
+	ch, resultCh, err := env.Backend.Exec(ctx, h, container.Cmd{Run: "echo present > /tmp/present.txt"})
+	if err != nil {
 		t.Fatalf("Exec write present: %v", err)
 	}
+	for range ch {
+	}
+	<-resultCh
 	files, err := env.Backend.CaptureFiles(ctx, h, []string{"/tmp/present.txt", "/tmp/missing.txt"})
 	if err == nil {
 		t.Errorf("CaptureFiles partial-missing: err = nil, files = %+v, want non-nil err", files)

@@ -175,9 +175,13 @@ func testSnapshotRoundTrip(t *testing.T, b container.Backend, image, name string
 
 	const wantPath = "/work/a.txt"
 	const wantBody = "hello captured\n"
-	if _, _, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && echo 'hello captured' > " + wantPath}); err != nil {
+	chunks, resultCh, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && echo 'hello captured' > " + wantPath})
+	if err != nil {
 		t.Fatalf("Exec write: %v", err)
 	}
+	for range chunks {
+	}
+	<-resultCh
 
 	ref, err := b.Snapshot(ctx, h)
 	if err != nil {
@@ -219,9 +223,13 @@ func testSnapshotDeleteRestore(t *testing.T, b container.Backend, image, name st
 	// /etc/os-release is a real image-shipped file on alpine (NOT a daemon
 	// bind-mount like /etc/hostname which wouldn't show in ContainerDiff).
 	const addedPath = "/work/created.txt"
-	if _, _, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && echo new > " + addedPath + " && rm /etc/os-release"}); err != nil {
+	chunks, resultCh, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && echo new > " + addedPath + " && rm /etc/os-release"})
+	if err != nil {
 		t.Fatalf("Exec setup: %v", err)
 	}
+	for range chunks {
+	}
+	<-resultCh
 	ref, err := b.Snapshot(ctx, h)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
@@ -254,9 +262,13 @@ func testSnapshotSmallWorkspaceNoTrip(t *testing.T, b container.Backend, image, 
 	}
 	t.Cleanup(func() { _ = b.Destroy(ctx, h) })
 
-	if _, _, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && head -c 10240 /dev/zero > /work/small.bin"}); err != nil {
+	chunks, resultCh, err := b.Exec(ctx, h, container.Cmd{Run: "mkdir -p /work && head -c 10240 /dev/zero > /work/small.bin"})
+	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	for range chunks {
+	}
+	<-resultCh
 	if _, err := b.Snapshot(ctx, h); err != nil {
 		t.Errorf("Snapshot of ~10 KiB workspace: %v (default cap should be vastly larger)", err)
 	}

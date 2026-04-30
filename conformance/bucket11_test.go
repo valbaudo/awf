@@ -28,11 +28,15 @@ func testBucket11WorkspaceRoundTrip(t *testing.T, factory DockerBackendFactory) 
 	h := env.NewAlpineHandle(t, "lab")
 	ctx := context.Background()
 
-	if _, _, err := env.Backend.Exec(ctx, h, container.Cmd{
+	ch, resultCh, err := env.Backend.Exec(ctx, h, container.Cmd{
 		Run: "mkdir -p /work && printf 'hello\\n' > /work/a.txt",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Exec setup: %v", err)
 	}
+	for range ch {
+	}
+	<-resultCh
 	ref, err := env.Backend.Snapshot(ctx, h)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
@@ -70,11 +74,15 @@ func testBucket11DeletedFileRestoredAsDeleted(t *testing.T, factory DockerBacken
 	// /etc/os-release ships in the alpine image (not a daemon bind-mount
 	// like /etc/hostname). Deleting it produces a "delete" entry in
 	// ContainerDiff that the snapshot tar must carry forward.
-	if _, _, err := env.Backend.Exec(ctx, h, container.Cmd{
+	ch, resultCh, err := env.Backend.Exec(ctx, h, container.Cmd{
 		Run: "rm /etc/os-release && mkdir -p /work && echo new > /work/x.txt",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Exec setup: %v", err)
 	}
+	for range ch {
+	}
+	<-resultCh
 	ref, err := env.Backend.Snapshot(ctx, h)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
@@ -108,12 +116,16 @@ func testBucket11OversizeDiffTypedError(t *testing.T, factory DockerBackendFacto
 	h := env.NewAlpineHandle(t, "lab")
 	ctx := context.Background()
 
-	if _, _, err := env.Backend.Exec(ctx, h, container.Cmd{
+	ch, resultCh, err := env.Backend.Exec(ctx, h, container.Cmd{
 		Run: "mkdir -p /work && head -c 65536 /dev/urandom > /work/big.bin",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Exec setup: %v", err)
 	}
-	_, err := env.Backend.Snapshot(ctx, h)
+	for range ch {
+	}
+	<-resultCh
+	_, err = env.Backend.Snapshot(ctx, h)
 	if err == nil {
 		t.Fatal("Snapshot with 64 KiB random workspace + 1 KiB cap: err = nil, want *docker.ErrSnapshotTooLarge")
 	}
