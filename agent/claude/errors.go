@@ -108,8 +108,6 @@ var _ = []error{
 // agent.ErrInvalidConfig wrapping: ValidateConfig converts
 // *ErrSessionReuseAttempted / *ErrBareRequiresAPIKey to the engine-side
 // typed error via errors.As-friendly wrappers below.
-//
-//nolint:unused // wired in Task 15 (ValidateConfig); shipped here so Task 11 owns the error-shape contract.
 func wrapInvalidConfig(reason string, key string) error {
 	return &agent.ErrInvalidConfig{
 		Ref:    AdapterRef,
