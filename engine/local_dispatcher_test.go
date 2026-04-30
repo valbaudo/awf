@@ -1097,3 +1097,22 @@ func (t *timestampTap) Writes() []timestampedWrite {
 	copy(out, t.w)
 	return out
 }
+
+func TestResolvedInputs_FeedbackField_ZeroValueByDefault(t *testing.T) {
+	var ri engine.ResolvedInputs
+	if ri.Feedback != nil {
+		t.Errorf("Feedback default = %v, want nil", ri.Feedback)
+	}
+}
+
+func TestResolvedInputs_FeedbackField_Populated(t *testing.T) {
+	ri := engine.ResolvedInputs{
+		Feedback: ir.RawConfig{"verified": false, "feedback": "missing detection"},
+	}
+	if ri.Feedback["verified"] != false {
+		t.Errorf("Feedback[verified] = %v, want false", ri.Feedback["verified"])
+	}
+	if ri.Feedback["feedback"] != "missing detection" {
+		t.Errorf("Feedback[feedback] = %v, want %q", ri.Feedback["feedback"], "missing detection")
+	}
+}

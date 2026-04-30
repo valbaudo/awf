@@ -65,15 +65,22 @@ type ResolvedInputs struct {
 	// Slice 5.2 — agent-step fields. Zero values when the node is a CodeStep
 	// (runCode ignores them); populated by engine/agent_step.go runAgentStep
 	// before dispatch.
-	//
-	// Slice 5.3 will add `Feedback ir.RawConfig` (the prior evaluator verdict)
-	// when the Claude Code adapter needs to render a "previous verdict:"
-	// preamble per Phase 5 design decision 7. Slice 5.2 leaves it out —
-	// feedback flows exclusively via {{ evaluate.<field> }} template
-	// substitution into with.prompt (Phase 3.3 mechanism, unchanged; see
-	// Task 8's baseline note).
 	Uses string       // matches AgentStep.Uses; LocalDispatcher.runAgent looks up resolver.Lookup(Uses)
 	With ir.RawConfig // post-template-substitution opaque adapter config; adapter.ValidateConfig + adapter.Launch read it
+
+	// Slice 5.3 — agent-step gate feedback (the prior evaluator verdict on
+	// repair attempts N>1). Populated by engine/agent_step.go runAgentStep
+	// from the enclosing gate's runstate.LookupGateAttempts(gatePath) when
+	// the step's path is inside a `.generate.` subtree. Nil on attempt 1 of
+	// a gate, on non-gate paths, and for non-agent steps.
+	//
+	// The dispatcher's runAgent threads this into AgentInvocation.Feedback,
+	// where adapters that consume an implicit "previous verdict:" preamble
+	// (the Claude Code adapter, slice 5.3) read it. This is the SECONDARY
+	// channel for gate feedback; the PRIMARY channel is the author-controlled
+	// template substitution `{{ evaluate.<field> }}` that lands in With.prompt
+	// before the dispatcher runs (Phase 3.3 wiring, unchanged).
+	Feedback ir.RawConfig
 }
 
 // DispatchResult is the pre-commit shape returned by Dispatcher.Run. The
