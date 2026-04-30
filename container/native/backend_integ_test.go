@@ -30,18 +30,18 @@ func newBackendAndHandle(t *testing.T) (*native.Backend, container.Handle) {
 
 func TestNativeExecStdoutCaptured(t *testing.T) {
 	b, h := newBackendAndHandle(t)
-	res, ch, err := b.Exec(context.Background(), h, container.Cmd{Run: "echo HELLO"})
+	ch, resultCh, err := b.Exec(context.Background(), h, container.Cmd{Run: "echo HELLO"})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	chunks := drain(ch)
+	res := <-resultCh
 	if res.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", res.ExitCode)
 	}
 	if got := string(res.Stdout); got != "HELLO\n" {
 		t.Errorf("Stdout = %q, want %q", got, "HELLO\n")
 	}
-	// Channel must be closed and pre-filled (Phase 2 contract).
-	chunks := drain(ch)
 	if len(chunks) == 0 {
 		t.Error("no IOChunks emitted")
 	}
@@ -49,11 +49,12 @@ func TestNativeExecStdoutCaptured(t *testing.T) {
 
 func TestNativeExecStderrCaptured(t *testing.T) {
 	b, h := newBackendAndHandle(t)
-	_, ch, err := b.Exec(context.Background(), h, container.Cmd{Run: "echo OOPS >&2"})
+	ch, resultCh, err := b.Exec(context.Background(), h, container.Cmd{Run: "echo OOPS >&2"})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	chunks := drain(ch)
+	<-resultCh
 	var stderrSeen bool
 	for _, c := range chunks {
 		if c.Stream == "stderr" && strings.Contains(string(c.Data), "OOPS") {
@@ -78,10 +79,13 @@ func TestNativeExecExitCode(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			b, h := newBackendAndHandle(t)
-			res, _, err := b.Exec(context.Background(), h, container.Cmd{Run: c.run})
+			ch, resultCh, err := b.Exec(context.Background(), h, container.Cmd{Run: c.run})
 			if err != nil {
 				t.Fatalf("Exec: %v", err)
 			}
+			for range ch {
+			}
+			res := <-resultCh
 			if res.ExitCode != c.want {
 				t.Errorf("ExitCode = %d, want %d", res.ExitCode, c.want)
 			}
@@ -91,21 +95,27 @@ func TestNativeExecExitCode(t *testing.T) {
 
 func TestNativeExecEnvPassthrough(t *testing.T) {
 	b, h := newBackendAndHandle(t)
-	res, _, err := b.Exec(context.Background(), h, container.Cmd{
+	ch, resultCh, err := b.Exec(context.Background(), h, container.Cmd{
 		Run: "echo $FOO",
 		Env: map[string]string{"FOO": "bar"},
 	})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	for range ch {
+	}
+	res := <-resultCh
 	if got := strings.TrimSpace(string(res.Stdout)); got != "bar" {
 		t.Errorf("Stdout = %q, want %q", got, "bar")
 	}
 	// Host env inherited — PATH must be present in child.
-	res, _, err = b.Exec(context.Background(), h, container.Cmd{Run: "echo $PATH"})
+	ch, resultCh, err = b.Exec(context.Background(), h, container.Cmd{Run: "echo $PATH"})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	for range ch {
+	}
+	res = <-resultCh
 	if strings.TrimSpace(string(res.Stdout)) == "" {
 		t.Error("PATH empty in child env; host env should be inherited")
 	}
@@ -114,9 +124,13 @@ func TestNativeExecEnvPassthrough(t *testing.T) {
 func TestNativeCaptureFilesRoundTrip(t *testing.T) {
 	b, h := newBackendAndHandle(t)
 	// Exec writes a file relative to workdir (cmd.Dir = workdir).
-	if _, _, err := b.Exec(context.Background(), h, container.Cmd{Run: "echo content > out.txt"}); err != nil {
+	ch, resultCh, err := b.Exec(context.Background(), h, container.Cmd{Run: "echo content > out.txt"})
+	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	for range ch {
+	}
+	<-resultCh
 	files, err := b.CaptureFiles(context.Background(), h, []string{"out.txt"})
 	if err != nil {
 		t.Fatalf("CaptureFiles: %v", err)

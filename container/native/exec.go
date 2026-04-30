@@ -17,29 +17,33 @@ import (
 // via the IOChunk channel (per AWF spec §4.1 — implicit outputs are
 // exit_code and stdout only).
 //
-// Streaming pattern (Appendix C in the design spec): StdoutPipe +
-// StderrPipe + sync.WaitGroup. io.Copy errors are intentionally
-// discarded (pipe-close on process exit is normal, not propagable).
-// c.Wait() error discarded; ProcessState.ExitCode() is the meaningful
-// signal (matches docker's ContainerExecInspect pattern).
+// Streaming contract (slice 5.3): returns (chunks, result, error).
+// Per-pipe reader goroutines emit IOChunks live as bytes arrive; a
+// waiter goroutine wg.Waits both readers, then c.Wait()s the process,
+// closes chunks, computes the ExitCode and emits ONE ExecResult on the
+// 1-buffered result channel. chunks closes BEFORE result emits — every
+// chunk is materialized before the result is observable.
 //
 // ctx-cancel: Go 1.20+ exec.CommandContext sets Cmd.Cancel =
-// cmd.Process.Kill by default. ctx.Done() → SIGKILL → pipes close →
-// reader goroutines exit → wg.Wait returns. We check ctx.Err() AFTER
-// Wait so it dominates *exec.ExitError.
+// cmd.Process.Kill by default. ctx.Done() -> SIGKILL -> pipes close ->
+// reader goroutines exit -> wg.Wait returns. Pre-slice-5.3 the ctx.Err
+// came back via Backend.Exec's err return; the streaming refactor
+// surfaces it via ExecResult.Err instead so the result channel can
+// carry it without short-circuiting the chunk drain. c.Wait's error is
+// discarded; ProcessState.ExitCode() is the meaningful signal (matches
+// docker's ContainerExecInspect pattern and pre-5.3 native behavior).
 //
-// Phase 2 contract: returned channel is buffered, pre-filled with
-// every IOChunk emitted, and closed before Exec returns. On non-nil
-// error, the channel is nil (callers MUST check err before ranging).
-func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (container.ExecResult, <-chan container.IOChunk, error) {
+// Phase 2 + slice 5.3 contract: on non-nil err return, BOTH channels
+// are nil (callers MUST check err before receiving on either).
+func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cmd) (<-chan container.IOChunk, <-chan container.ExecResult, error) {
 	if err := ctx.Err(); err != nil {
-		return container.ExecResult{}, nil, err
+		return nil, nil, err
 	}
 	b.mu.Lock()
 	r, ok := b.handles[h.ID]
 	b.mu.Unlock()
 	if !ok {
-		return container.ExecResult{}, nil, errors.New("container/native: Exec: unknown handle (not Created or already Destroyed)")
+		return nil, nil, errors.New("container/native: Exec: unknown handle (not Created or already Destroyed)")
 	}
 
 	c := exec.CommandContext(ctx, "sh", "-c", cmd.Run)
@@ -48,71 +52,73 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 
 	stdoutPipe, err := c.StdoutPipe()
 	if err != nil {
-		return container.ExecResult{}, nil, err
+		return nil, nil, err
 	}
 	stderrPipe, err := c.StderrPipe()
 	if err != nil {
-		return container.ExecResult{}, nil, err
+		return nil, nil, err
 	}
 	if err := c.Start(); err != nil {
-		return container.ExecResult{}, nil, err
+		return nil, nil, err
 	}
 
-	var chunksMu sync.Mutex
-	var chunks []container.IOChunk
-	stdoutBuf := newChunkBuffer("stdout", &chunks, &chunksMu)
-	stderrBuf := newChunkBuffer("stderr", &chunks, &chunksMu)
+	// Modest buffer keeps the writer goroutines from blocking on a slow
+	// reader for a few chunks; deeper backpressure naturally throttles the
+	// process if the reader is genuinely slow. 64 matches stdcopy's default
+	// buffer count for docker.
+	chunks := make(chan container.IOChunk, 64)
+	result := make(chan container.ExecResult, 1)
 
+	var stdoutMu sync.Mutex
+	var stdoutAccum []byte
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = io.Copy(stdoutBuf, stdoutPipe) }()
-	go func() { defer wg.Done(); _, _ = io.Copy(stderrBuf, stderrPipe) }()
-	wg.Wait()
-	_ = c.Wait()
-
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return container.ExecResult{}, nil, ctxErr
+	emit := func(stream string, pipe io.Reader, accum *[]byte) {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, rerr := pipe.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				chunks <- container.IOChunk{Stream: stream, Data: data}
+				if accum != nil {
+					stdoutMu.Lock()
+					*accum = append(*accum, data...)
+					stdoutMu.Unlock()
+				}
+			}
+			if rerr != nil {
+				return
+			}
+		}
 	}
+	go emit("stdout", stdoutPipe, &stdoutAccum)
+	go emit("stderr", stderrPipe, nil)
 
-	exitCode := c.ProcessState.ExitCode()
-	out := make(chan container.IOChunk, len(chunks))
-	for _, ch := range chunks {
-		out <- ch
-	}
-	close(out)
+	go func() {
+		wg.Wait()
+		_ = c.Wait()
+		close(chunks)
+		exitCode := c.ProcessState.ExitCode()
+		stdoutMu.Lock()
+		out := append([]byte(nil), stdoutAccum...)
+		stdoutMu.Unlock()
+		// Surface ctx-cancel via ExecResult.Err (pre-slice-5.3 used err return).
+		var resErr error
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			resErr = ctxErr
+		}
+		result <- container.ExecResult{
+			ExitCode:  exitCode,
+			Stdout:    out,
+			AWFOutput: nil, // dispatcher reads AWF_OUTPUT tempfile via CaptureFiles (Phase 4 design §B)
+			Err:       resErr,
+		}
+		close(result)
+	}()
 
-	return container.ExecResult{
-		ExitCode:  exitCode,
-		Stdout:    stdoutBuf.collected,
-		AWFOutput: nil, // dispatcher reads AWF_OUTPUT tempfile via CaptureFiles (Phase 4 design §B)
-	}, out, nil
-}
-
-// chunkBuffer is an io.Writer wrapping IOChunk emission + (for stdout)
-// stdout accumulation. Mutex-protected because two reader goroutines
-// share the chunks slice. Defensive byte-copy in Write because
-// io.Copy reuses its read buffer.
-type chunkBuffer struct {
-	stream    string
-	chunks    *[]container.IOChunk
-	mu        *sync.Mutex
-	collected []byte
-}
-
-func newChunkBuffer(stream string, chunks *[]container.IOChunk, mu *sync.Mutex) *chunkBuffer {
-	return &chunkBuffer{stream: stream, chunks: chunks, mu: mu}
-}
-
-func (cb *chunkBuffer) Write(p []byte) (int, error) {
-	dup := make([]byte, len(p))
-	copy(dup, p)
-	cb.mu.Lock()
-	*cb.chunks = append(*cb.chunks, container.IOChunk{Stream: cb.stream, Data: dup})
-	cb.mu.Unlock()
-	if cb.stream == "stdout" {
-		cb.collected = append(cb.collected, dup...)
-	}
-	return len(p), nil
+	return chunks, result, nil
 }
 
 // envMapToSlice converts cmd.Env map into the "KEY=value" []string
