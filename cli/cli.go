@@ -68,6 +68,15 @@ type Runner struct {
 	// fixture) run unaffected — they hit zero Lookup calls regardless of
 	// what Resolver is.
 	Resolver agent.Resolver
+	// AgentEventTap is the io.Writer agent.AgentEvent live-tap lines are written
+	// to during dispatch. Test-injection point: tests assign a bytes.Buffer to
+	// capture the rendered lines, or io.Discard to silence. Production wiring
+	// in cli/execute.go (Task 11) defaults to stderr.
+	//
+	// nil disables the live tap entirely (the dispatcher's writeAgentEventTap
+	// becomes a no-op). Workflows without any `uses:` step (Phase 2-4
+	// fixtures) are unaffected — the tap never fires.
+	AgentEventTap io.Writer
 	// IDGen mints run ids. Production: clock.CryptoIDGen{}. Tests: a
 	// seeded *clock.Fake so run dir paths are reproducible.
 	IDGen clock.IDGen

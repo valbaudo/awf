@@ -203,13 +203,12 @@ func TestCLIRunCVEPipelineRealDockerToFirstAgentStep(t *testing.T) {
 	registerComposeProjectCleanup(t, dockerCli, runID)
 
 	// Slice 5.1 wires runtime resolution before engine dispatch: an
-	// unregistered `uses:` ref now fails at run-start (resolveRuntimes →
-	// *ErrAdapterNotFound) earlier than engine dispatch's ErrNodeNotImplemented.
-	// To preserve this test's structure — proving the Docker lab boots AND
-	// the graph reaches the first agent step — inject a fake adapter so
-	// runtime resolution succeeds; the agent step still errors at engine
-	// dispatch with "not implemented", giving us the same observable signal
-	// the original assertion targeted.
+	// unregistered `uses:` ref fails at run-start with *ErrAdapterNotFound.
+	// Slice 5.2 wires LocalDispatcher.Resolver in cli/execute.go so the fake
+	// adapter is also consulted at dispatch time. Inject a fake adapter so
+	// both resolution stages succeed and the engine actually reaches the
+	// agent step. The fake's Launch fails ("no scripted result") → the graph
+	// demonstrably reached triage, which proves the Docker lab booted.
 	var reg agent.Registry
 	if err := reg.Register(fake.New("anthropic/claude-code")); err != nil {
 		t.Fatalf("Register fake adapter: %v", err)
@@ -230,19 +229,16 @@ func TestCLIRunCVEPipelineRealDockerToFirstAgentStep(t *testing.T) {
 		t.Fatalf("rc = %d, want non-zero (first agent step should error)\nstdout: %s\nstderr: %s", rc, stdout.String(), stderr.String())
 	}
 
-	// The engine returns ErrNodeNotImplemented for agent steps. cli/execute.go
-	// maps this to ("", err) → "internal error: ..." on stderr → ExitUsage,
-	// WITHOUT writing a node.failed event (it's a runtime kind-not-implemented
-	// error, not a step-outcome failure). The right assertion is the same
-	// pattern TestCLIRunCVEPipelineErrorsAtFirstAgentStep (fake-backed) uses
-	// at cli/run_test.go: substring-check stderr for "not implemented"
-	// + "triage" — proves we reached the first agent step.
+	// Slice 5.2 wires LocalDispatcher.Resolver in cli/execute.go. The fake
+	// adapter registered above is now found at dispatch time; its Launch is
+	// called but has no scripted result for index 0, so it returns
+	// "agent/fake: no scripted result…" which classifies as retryable_failure.
+	// The run ends with OutcomeRetryableFailure and the CLI writes that error
+	// to stderr. "agent/fake" in the output proves the adapter was looked up
+	// and Launch was attempted — i.e. the graph reached the first agent step.
 	combined := stdout.String() + stderr.String()
-	if !strings.Contains(combined, "not implemented") {
-		t.Fatalf("output missing 'not implemented' — graph didn't reach the first agent step.\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
-	}
-	if !strings.Contains(combined, "triage") {
-		t.Fatalf("output missing 'triage' path — failure was elsewhere in the graph.\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
+	if !strings.Contains(combined, "agent/fake") {
+		t.Fatalf("output missing 'agent/fake' — graph didn't reach the first agent step (adapter Launch not called).\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
 	}
 	// Structural proof the lab booted: if Create failed, the error has
 	// "create container" in it (per cli/run.go's create-handles loop). We

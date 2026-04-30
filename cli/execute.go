@@ -14,6 +14,18 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
+// agentEventTap returns the io.Writer the dispatcher writes agent-event
+// lines to. If r.AgentEventTap is explicitly set (test injection), that
+// wins; otherwise defaults to stderr — the production path. Returning
+// io.Discard would suppress the live tap entirely; we don't default to
+// that because operators need to see what their agents are doing.
+func (r *Runner) agentEventTap(stderr io.Writer) io.Writer {
+	if r.AgentEventTap != nil {
+		return r.AgentEventTap
+	}
+	return stderr
+}
+
 // runAndFinish is the shared tail of `awf run` and `awf resume`. Both
 // subcommands diverge in their setup — run.started vs run.resumed framing,
 // log-create vs log-open, fresh RunState vs folded RunState, Create-handles
@@ -55,7 +67,13 @@ func (r *Runner) runAndFinish(
 	broker *signal.Broker,
 	skipTeardown *bool,
 ) int {
-	dispatcher := &engine.LocalDispatcher{Backend: backend, Handles: handles, ComposeFiles: ld.ComposeFiles}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:       backend,
+		Handles:       handles,
+		ComposeFiles:  ld.ComposeFiles,
+		Resolver:      r.resolverOrEmpty(),
+		AgentEventTap: r.agentEventTap(stderr),
+	}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout, broker)
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished
