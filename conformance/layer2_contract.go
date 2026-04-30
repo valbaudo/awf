@@ -104,6 +104,6 @@ type layer2ErrorAdapter struct {
 	launchErr error
 }
 
-func (a *layer2ErrorAdapter) Launch(_ context.Context, _ container.Handle, _ agent.AgentInvocation) (agent.AgentResult, <-chan agent.AgentEvent, error) {
-	return agent.AgentResult{}, nil, a.launchErr
+func (a *layer2ErrorAdapter) Launch(_ context.Context, _ container.Handle, _ agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+	return nil, nil, a.launchErr
 }
