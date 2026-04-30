@@ -727,7 +727,7 @@ func TestLocalDispatcher_runAgent_ValidateConfigRejectsUnknownKey(t *testing.T) 
 	}
 	var badConfig *agent.ErrInvalidConfig
 	if !errors.As(dr.Err, &badConfig) {
-		t.Errorf("dr.Err = %v, want *agent.ErrInvalidConfig", dr.Err)
+		t.Fatalf("dr.Err = %v, want *agent.ErrInvalidConfig", dr.Err)
 	}
 }
 
@@ -759,7 +759,7 @@ func TestLocalDispatcher_runAgent_AgentLaunchError(t *testing.T) {
 		t.Errorf("Outcome = %q, want %q (transport class)", dr.Outcome, engine.OutcomeRetryableFailure)
 	}
 	if !errors.Is(dr.Err, transport.Cause) {
-		t.Errorf("dr.Err does not wrap transport cause: %v", dr.Err)
+		t.Fatalf("dr.Err does not wrap transport cause: %v", dr.Err)
 	}
 }
 
@@ -804,7 +804,7 @@ func TestLocalDispatcher_runAgent_OutputSchemaMismatch(t *testing.T) {
 	}
 	var unparseable *agent.ErrUnparseableOutput
 	if !errors.As(dr.Err, &unparseable) {
-		t.Errorf("dr.Err = %v, want *agent.ErrUnparseableOutput", dr.Err)
+		t.Fatalf("dr.Err = %v, want *agent.ErrUnparseableOutput", dr.Err)
 	}
 }
 
