@@ -22,6 +22,18 @@ const verdictSchemaYAML = `output_schema:
               verified: { type: boolean }
               feedback: { type: string }`
 
+// phase5VerdictSchemaYAML is the {verified, fooled_by_benign, feedback}
+// schema used by Bucket 13's gate-agent evaluator. Distinct from
+// verdictSchemaYAML which only has {verified, feedback} (used by Phase 3).
+const phase5VerdictSchemaYAML = `output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, fooled_by_benign, feedback]
+            properties:
+              verified:         { type: boolean }
+              fooled_by_benign: { type: boolean }
+              feedback:         { type: string }`
+
 var tinySeqWorkflow = fmt.Sprintf(`workflow: conformance-tiny-seq
 version: 1
 containers:
@@ -540,17 +552,10 @@ graph:
           uses: test/oracle
           with:
             prompt: "verify exploit"
-          output_schema:
-            type: object
-            additionalProperties: false
-            required: [verified, fooled_by_benign, feedback]
-            properties:
-              verified:         { type: boolean }
-              fooled_by_benign: { type: boolean }
-              feedback:         { type: string }
+          %s
       until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
       max_attempts: 2
-`, fakeImageDigest)
+`, fakeImageDigest, phase5VerdictSchemaYAML)
 
 // gateAgentRepairOnAttempt2Workflow — Bucket 13b. Same shape but generator's
 // prompt includes a feedback template: "{{ evaluate.feedback }}". Attempt 1:
@@ -583,17 +588,10 @@ graph:
           uses: test/oracle
           with:
             prompt: "verify exploit"
-          output_schema:
-            type: object
-            additionalProperties: false
-            required: [verified, fooled_by_benign, feedback]
-            properties:
-              verified:         { type: boolean }
-              fooled_by_benign: { type: boolean }
-              feedback:         { type: string }
+          %s
       until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
       max_attempts: 3
-`, fakeImageDigest)
+`, fakeImageDigest, phase5VerdictSchemaYAML)
 
 // gateAgentMaxAttemptsRejectedWorkflow — Bucket 13c. Oracle ALWAYS returns
 // verified:false. Gate exhausts max_attempts:2 → rejected.
@@ -622,17 +620,10 @@ graph:
           uses: test/oracle
           with:
             prompt: "verify exploit"
-          output_schema:
-            type: object
-            additionalProperties: false
-            required: [verified, fooled_by_benign, feedback]
-            properties:
-              verified:         { type: boolean }
-              fooled_by_benign: { type: boolean }
-              feedback:         { type: string }
+          %s
       until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
       max_attempts: 2
-`, fakeImageDigest)
+`, fakeImageDigest, phase5VerdictSchemaYAML)
 
 // signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
 // A single `await: human_review` step followed by an echo step that references

@@ -1,0 +1,191 @@
+// engine/local_dispatcher_agent.go — the AgentStep dispatch path. Symmetric
+// to runCode (in local_dispatcher.go); separated because the agent path is
+// self-contained (~150 LOC) and the two paths don't share helpers. See the
+// LocalDispatcher.Run kind-switch in local_dispatcher.go for the entry point.
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/ir"
+)
+
+// runAgent is the agent-step counterpart to runCode. Symmetric in shape;
+// returns DispatchResult with one of the outcomes listed above.
+//
+// Outcome mapping (spec §6 mechanical only):
+//   - clean Launch + valid Output → ok
+//   - *agent.ErrAdapterNotFound      → internal halt (returned as Run's err
+//     with dr.Outcome=""; runAgentStep's dr.Outcome=="" branch returns
+//     ("", err) — NO node.failed event; preserves fold integrity)
+//   - *agent.ErrInvalidConfig         → permanent_failure (workflow bug)
+//   - *agent.ErrUnparseableOutput     → retryable_failure (parse miss)
+//   - *agent.ErrAgentLaunch / other  → retryable_failure (transport class)
+//   - adapter.Refused (slice 5.3+)   → permanent_failure (policy block)
+func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *ir.AgentStep) (DispatchResult, <-chan container.IOChunk, error) {
+	// Defense-in-depth nil check. The conformance harness (Task 12) and the
+	// CLI (Task 11) always initialize Resolver to a non-nil empty Registry,
+	// so this branch normally cannot fire. It exists for callers that
+	// construct LocalDispatcher{} directly without setting Resolver — most
+	// code-step-only unit tests in engine/local_dispatcher_test.go do — and
+	// for the typed-nil interface gotcha (https://go.dev/doc/faq#nil_error):
+	// `d.Resolver == nil` catches only an UNTYPED nil. If a caller assigns
+	// a typed `(*agent.Registry)(nil)` to the interface, the check passes
+	// false and Lookup panics. Harness/CLI initialization defuses that,
+	// but the explicit untyped-nil branch here keeps the code-step path
+	// safe regardless of caller hygiene.
+	if d.Resolver == nil {
+		return DispatchResult{}, nil, &agent.ErrAdapterNotFound{Ref: intent.ResolvedInputs.Uses}
+	}
+	adapter, ok := d.Resolver.Lookup(intent.ResolvedInputs.Uses)
+	if !ok {
+		return DispatchResult{}, nil, &agent.ErrAdapterNotFound{Ref: intent.ResolvedInputs.Uses}
+	}
+
+	// Resolve container handle (same lookup runCode does).
+	bare, svcOverride := SplitContainerRef(as.Container)
+	h, ok := d.Handles[bare]
+	if !ok {
+		return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher.runAgent: no handle for container %q (bare %q) at path %q", as.Container, bare, intent.Path)
+	}
+	if svcOverride != "" {
+		h.Service = svcOverride
+	}
+
+	// Apply step timeout to ctx (mirrors runCode).
+	if intent.ResolvedInputs.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, intent.ResolvedInputs.Timeout)
+		defer cancel()
+	}
+
+	// Validate config defensively (the interpreter-level engine/agent_step.go
+	// also validates at run start — this is double-checked at dispatch time per
+	// the Phase 5 design slice 5.2 row "Calls Adapter.ValidateConfig (defensively)").
+	if err := adapter.ValidateConfig(intent.ResolvedInputs.With); err != nil {
+		// Permanent failure: bad config won't fix itself on retry.
+		return DispatchResult{
+			Outcome: OutcomePermanentFailure,
+			Err:     err,
+		}, nil, nil
+	}
+
+	// Build AgentInvocation. (AgentInvocation.Feedback is left at zero —
+	// slice 5.3 wires it when the Claude Code adapter consumes the previous
+	// verdict preamble. Slice 5.2's gate-repair feedback flows through
+	// template substitution into With.prompt instead.)
+	inv := agent.AgentInvocation{
+		NodePath:       intent.Path,
+		Uses:           intent.ResolvedInputs.Uses,
+		With:           intent.ResolvedInputs.With,
+		OutputSchema:   intent.ResolvedInputs.OutputSchema,
+		IdempotencyKey: intent.IdempotencyKey,
+	}
+
+	// Launch and drain.
+	result, eventCh, launchErr := adapter.Launch(ctx, h, inv)
+	if launchErr != nil {
+		outcome := classifyAgentLaunchErr(launchErr)
+		return DispatchResult{
+			Outcome: outcome,
+			Err:     launchErr,
+		}, nil, nil
+	}
+
+	// Drain the event channel: live-tap each, buffer all.
+	var bufferedEvents []agent.AgentEvent
+	if eventCh != nil {
+		for ev := range eventCh {
+			bufferedEvents = append(bufferedEvents, ev)
+			if d.AgentEventTap != nil {
+				writeAgentEventTap(d.AgentEventTap, ev)
+			}
+		}
+	}
+
+	// Validate Output against OutputSchema (if declared).
+	if intent.ResolvedInputs.OutputSchema != nil {
+		if err := ValidateOutputMap(result.Output, intent.ResolvedInputs.OutputSchema); err != nil {
+			return DispatchResult{
+				Outcome:     OutcomeRetryableFailure,
+				Outputs:     result.Output,
+				AgentEvents: bufferedEvents,
+				Err:         &agent.ErrUnparseableOutput{NodePath: intent.Path},
+			}, closedChunks(), nil
+		}
+	}
+
+	exitCodePtr := copyIntPtr(result.ExitCode)
+	return DispatchResult{
+		Outcome:     OutcomeOK,
+		ExitCode:    exitCodePtr,
+		Outputs:     result.Output,
+		AgentEvents: bufferedEvents,
+		Files:       packFiles(result.Files),
+	}, closedChunks(), nil
+}
+
+// classifyAgentLaunchErr maps an Adapter.Launch error to an Outcome per the
+// Adapter contract (agent/adapter.go doc on Launch). Defaults to
+// retryable_failure for transport-class faults.
+func classifyAgentLaunchErr(err error) Outcome {
+	var notFound *agent.ErrAdapterNotFound
+	var badConfig *agent.ErrInvalidConfig
+	var unparseable *agent.ErrUnparseableOutput
+	switch {
+	// Defense-in-depth: *ErrAdapterNotFound is normally caught before Launch by
+	// the Resolver.Lookup miss path in runAgent. This branch handles the unlikely
+	// case of an adapter whose Launch surfaces a wrapped *ErrAdapterNotFound,
+	// violating the agent/adapter.go Launch contract. Classification still maps
+	// to permanent_failure — a broken adapter contract is not transient.
+	case errors.As(err, &notFound):
+		return OutcomePermanentFailure
+	case errors.As(err, &badConfig):
+		return OutcomePermanentFailure
+	case errors.As(err, &unparseable):
+		return OutcomeRetryableFailure
+	default:
+		// *agent.ErrAgentLaunch and any other error class → transport.
+		return OutcomeRetryableFailure
+	}
+}
+
+// closedChunks returns a pre-closed IOChunk channel — runAgent doesn't emit
+// IOChunks (agent events are a separate stream), but the Dispatcher.Run
+// contract guarantees a non-nil channel on a successful return so callers
+// can `for range` safely without nil-checking.
+func closedChunks() <-chan container.IOChunk {
+	ch := make(chan container.IOChunk)
+	close(ch)
+	return ch
+}
+
+// packFiles converts agent.AgentResult.Files (map[path][]byte) into the
+// container.CapturedFile shape DispatchResult.Files expects.
+func packFiles(files map[string][]byte) []container.CapturedFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]container.CapturedFile, 0, len(files))
+	for path, content := range files {
+		out = append(out, container.CapturedFile{Path: path, Content: content})
+	}
+	return out
+}
+
+// writeAgentEventTap emits one line per AgentEvent to the tap writer.
+// Write errors are intentionally ignored — the tap is best-effort stderr
+// output; a write failure must not abort the dispatch attempt.
+func writeAgentEventTap(w io.Writer, ev agent.AgentEvent) {
+	const maxPayloadPreview = 80
+	preview := ev.Payload
+	if len(preview) > maxPayloadPreview {
+		preview = preview[:maxPayloadPreview]
+	}
+	_, _ = fmt.Fprintf(w, "[%s] %s\n", ev.Kind, preview)
+}

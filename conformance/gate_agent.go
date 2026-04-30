@@ -83,7 +83,6 @@ func testGateAgentRepairOnAttempt2(t *testing.T, factory BackendFactory) {
 	// verdict ("exploit was fake — only matched a version string", per
 	// fake.NewBenignOracle's script).
 	prompt2, _ := calls[1].With["prompt"].(string)
-	t.Logf("attempt 2 prompt: %q", prompt2)
 	if !strings.Contains(prompt2, "exploit was fake") {
 		t.Errorf("attempt 2 prompt did not include attempt 1 feedback: %q", prompt2)
 	}
@@ -106,8 +105,11 @@ func testGateAgentMaxAttemptsRejected(t *testing.T, factory BackendFactory) {
 		}
 	}
 	h := newHarnessWithAgentRegistry(t, factory, gateAgentMaxAttemptsRejectedWorkflow, register)
-	oc, _ := h.runWorkflow(t)
+	oc, err := h.runWorkflow(t)
 	if oc != engine.OutcomeRejected {
 		t.Fatalf("Outcome = %q, want %q (max_attempts:2 exhausted)", oc, engine.OutcomeRejected)
+	}
+	if err == nil {
+		t.Errorf("err = nil; want non-nil on OutcomeRejected")
 	}
 }
