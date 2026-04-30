@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -805,6 +806,93 @@ func TestLocalDispatcher_runAgent_OutputSchemaMismatch(t *testing.T) {
 	var unparseable *agent.ErrUnparseableOutput
 	if !errors.As(dr.Err, &unparseable) {
 		t.Fatalf("dr.Err = %v, want *agent.ErrUnparseableOutput", dr.Err)
+	}
+}
+
+func TestLocalDispatcher_runAgent_AgentEventsBufferedAndTapped(t *testing.T) {
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+		Events: []agent.AgentEvent{
+			{Kind: "system", Payload: []byte(`{"subtype":"init","session_id":"abc"}`)},
+			{Kind: "assistant", Payload: []byte(`{"text":"thinking..."}`)},
+			{Kind: "result", Payload: []byte(`{"subtype":"success","total_cost_usd":0.012}`)},
+		},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	var tapBuf strings.Builder
+	d := &engine.LocalDispatcher{
+		Backend:       container.NewFake(),
+		Handles:       map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver:      &reg,
+		AgentEventTap: &tapBuf,
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "anthropic/claude-code", With: ir.RawConfig{"prompt": "p"}},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Buffered events: all 3.
+	if len(dr.AgentEvents) != 3 {
+		t.Fatalf("len(AgentEvents) = %d, want 3", len(dr.AgentEvents))
+	}
+	wantKinds := []string{"system", "assistant", "result"}
+	for i, want := range wantKinds {
+		if dr.AgentEvents[i].Kind != want {
+			t.Errorf("AgentEvents[%d].Kind = %q, want %q", i, dr.AgentEvents[i].Kind, want)
+		}
+	}
+
+	// Live tap: one line per event, [<kind>] prefix.
+	tap := tapBuf.String()
+	for _, kind := range wantKinds {
+		needle := "[" + kind + "]"
+		if !strings.Contains(tap, needle) {
+			t.Errorf("tap output missing %q\nfull tap:\n%s", needle, tap)
+		}
+	}
+	// Newline-terminated lines (test the printer's basic shape).
+	if !strings.HasSuffix(tap, "\n") {
+		t.Errorf("tap output not newline-terminated: %q", tap)
+	}
+}
+
+func TestLocalDispatcher_runAgent_NilAgentEventTap_NoBuffering(t *testing.T) {
+	// Production CLI may not always wire a tap (--quiet, batch mode). The
+	// dispatcher must still buffer AgentEvents for the interpreter's
+	// log-writing pass, but skip the tap writes.
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+		Events: []agent.AgentEvent{{Kind: "result", Payload: []byte(`{}`)}},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+		// AgentEventTap: nil
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "anthropic/claude-code"},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(dr.AgentEvents) != 1 {
+		t.Errorf("len(AgentEvents) = %d, want 1 (buffer preserved even with nil tap)", len(dr.AgentEvents))
 	}
 }
 
