@@ -35,7 +35,7 @@ import (
 // are made HERE (and via the canonical Commit), not in the dispatcher. Per
 // "simplest solution first": the commit logic is NOT duplicated — slice 5.2
 // reuses engine.Commit verbatim.
-func runAgentStep( //nolint:unused // wired in Task 9 (interpNodes switch case *ir.AgentStep)
+func runAgentStep(
 	ctx context.Context,
 	as *ir.AgentStep,
 	path string,
@@ -150,7 +150,7 @@ func runAgentStep( //nolint:unused // wired in Task 9 (interpNodes switch case *
 // adapter demands it.
 //
 // Returns a freshly-allocated map; never mutates the input.
-func substituteRawConfig(in ir.RawConfig, scope template.Scope) (ir.RawConfig, error) { //nolint:unused // called by runAgentStep, wired in Task 9
+func substituteRawConfig(in ir.RawConfig, scope template.Scope) (ir.RawConfig, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
@@ -173,7 +173,7 @@ func substituteRawConfig(in ir.RawConfig, scope template.Scope) (ir.RawConfig, e
 // appendAgentEvents writes one agent.event log entry per buffered AgentEvent.
 // Payloads ≥ agentEventInlineThreshold are offloaded to Blobs and the entry
 // carries the CAS pointer; smaller payloads are inline.
-func appendAgentEvents(log state.Log, blobs state.Blobs, path string, events []agent.AgentEvent) error { //nolint:unused // called by runAgentStep, wired in Task 9
+func appendAgentEvents(log state.Log, blobs state.Blobs, path string, events []agent.AgentEvent) error {
 	for _, ev := range events {
 		data := AgentEventData{
 			Kind:   ev.Kind,

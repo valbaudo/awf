@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -326,33 +325,9 @@ func TestRunSkipsAlreadyCompletedNodes(t *testing.T) {
 	}
 }
 
-func TestRunPhase2UnsupportedKindsAllErrorWithSentinel(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		node ir.Node
-	}{
-		{"agent", &ir.AgentStep{ID: "ag", Container: "lab", Uses: "anthropic/claude-code"}},
-		// "signal" was here pre-slice-3.5; runSignalStep now ships in
-		// engine/signal_step.go and its tests live in engine/signal_step_test.go.
-		// "parallel" was here pre-slice-3.2; runParallel now ships in
-		// engine/parallel.go and its tests live in engine/parallel_test.go.
-		// "gate" was here pre-slice-3.3; runGate now ships in
-		// engine/gate.go and its tests live in engine/gate_test.go.
-		// "map" was here pre-slice-3.4; runMap now ships in
-		// engine/map.go and its tests live in engine/map_test.go.
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			_, _, disp, log, blobs, clk, rs := newRunHarness(t)
-			def := &ir.LoadedDefinition{Workflow: &ir.Workflow{Graph: ir.NodeList{c.node}}}
-			_, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
-			if !errors.Is(err, engine.ErrNodeNotImplemented) {
-				t.Errorf("err = %v, want errors.Is(_, ErrNodeNotImplemented)", err)
-			}
-		})
-	}
-}
+// TestRunPhase2UnsupportedKindsAllErrorWithSentinel was here until slice 5.2 task 9:
+// agent was the last remaining case; it now routes to runAgentStep (no longer notImpl).
+// Signal/parallel/gate/map were each removed from this table in their respective slices.
 
 func TestRunCodeStepRetryableExhaustionAppendsNodeFailed(t *testing.T) {
 	// After retry exhaustion, the interpreter's runCodeStep MUST route through

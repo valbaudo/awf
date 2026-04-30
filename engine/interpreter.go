@@ -18,14 +18,14 @@ import (
 )
 
 // ErrNodeNotImplemented is the sentinel the interpreter returns for any node
-// kind not yet implemented in the current runtime. After Phase 3 slice 3.5,
-// only AgentStep (uses:) remains — Phase 5 closes that.
+// kind not yet implemented in the current runtime. Phase 5 slice 5.2 closes
+// the last remaining case (AgentStep / uses:) — all graph node kinds are now
+// implemented. The sentinel is retained as a public export because the CLI
+// layer (cli/execute.go) maps it to an exit code, and removing it would be a
+// breaking API change.
 //
-// The per-kind phase tag in notImpl identifies which phase will implement each
-// remaining kind. Distinct from engine.ErrUnsupportedKind (the dispatcher's
-// per-step sentinel) — the two answer different questions, and conflating them
-// would let a future Phase 4+ caller mis-route an AgentStep through dispatcher
-// plumbing.
+// Distinct from engine.ErrUnsupportedKind (the dispatcher's per-step
+// sentinel) — the two answer different questions.
 //
 // Wrap with kind + path for diagnostic clarity:
 //
@@ -192,7 +192,7 @@ func interpNode(
 	case *ir.Loop:
 		return runLoop(ctx, v, ir.PathFor(parent, "loop", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.AgentStep:
-		return notImpl("agent", ir.PathFor(parent, "", v.ID, idx), "Phase 5")
+		return runAgentStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.SignalStep:
 		return runSignalStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Try:
@@ -208,14 +208,6 @@ func interpNode(
 	default:
 		return "", fmt.Errorf("engine: unknown node type %T at parent %q index %d (validator should have caught)", n, parent, idx)
 	}
-}
-
-// notImpl builds the standard ErrNodeNotImplemented wrap for a node kind whose
-// handler isn't implemented yet. Centralizes the error format so the deferred
-// cases in interpNode share one shape — adding/removing a kind in a later
-// slice is a one-line edit at the call site.
-func notImpl(kind, path, phase string) (Outcome, error) {
-	return "", fmt.Errorf("%w: %s at path %q (%s)", ErrNodeNotImplemented, kind, path, phase)
 }
 
 // runCodeStep is the CodeStep handler — composes substitution, retry, dispatch,
