@@ -93,8 +93,10 @@ func testAgentUnresolvedUsesHalts(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	// Register an adapter under a DIFFERENT ref than the workflow names.
 	// Resolver.Lookup("anthropic/claude-code") misses → dispatcher returns
-	// *agent.ErrAdapterNotFound → runAgentStep maps to permanent_failure →
-	// run halts. This is the engine-surface peer of slice 5.1's cli/resume
+	// *agent.ErrAdapterNotFound → dispatcher returns it as a plain error with
+	// Outcome==""; runAgentStep's dr.Outcome=="" branch returns ("", err) — an
+	// internal halt, NOT permanent_failure. Run halts with non-nil error.
+	// This is the engine-surface peer of slice 5.1's cli/resume
 	// drift check (which is fully covered by TestErrRuntimeDrift_* in
 	// cli/resume_test.go); slice 5.2 does NOT duplicate that coverage.
 	register := func(reg *agent.Registry) {

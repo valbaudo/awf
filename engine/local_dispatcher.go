@@ -219,13 +219,15 @@ func copyIntPtr(v int) *int {
 //
 // Outcome mapping (spec §6 mechanical only):
 //   - clean Launch + valid Output → ok
-//   - *agent.ErrAdapterNotFound      → permanent_failure (workflow bug)
+//   - *agent.ErrAdapterNotFound      → internal halt (returned as Run's err
+//     with dr.Outcome=""; runAgentStep's dr.Outcome=="" branch returns
+//     ("", err) — NO node.failed event; preserves fold integrity)
 //   - *agent.ErrInvalidConfig         → permanent_failure (workflow bug)
 //   - *agent.ErrUnparseableOutput     → retryable_failure (parse miss)
 //   - *agent.ErrAgentLaunch / other  → retryable_failure (transport class)
 //   - adapter.Refused (slice 5.3+)   → permanent_failure (policy block)
 //
-// Slice 5.2 ships the skeleton; Tasks 5-7 fill in the body.
+// Slice 5.2: fully implemented (skeleton landed in Task 4; happy path in Task 5; failure branches in Task 6; AgentEvent buffer + live-tap in Task 7).
 func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *ir.AgentStep) (DispatchResult, <-chan container.IOChunk, error) {
 	// Defense-in-depth nil check. The conformance harness (Task 12) and the
 	// CLI (Task 11) always initialize Resolver to a non-nil empty Registry,
