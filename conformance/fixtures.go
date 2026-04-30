@@ -488,6 +488,30 @@ graph:
                 retry: { attempts: 1 }
 `
 
+// agentStepBasicWorkflow — Bucket 12. One AgentStep with templated `with` +
+// output_schema. Bucket sub-test programs the fake adapter to return a
+// specific typed verdict; asserts the typed output round-trips through
+// node.completed.
+var agentStepBasicWorkflow = fmt.Sprintf(`workflow: conformance-agent-step
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - id: triage
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: "do the thing"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [verdict, confidence]
+      properties:
+        verdict: { type: string }
+        confidence: { type: number }
+`, fakeImageDigest)
+
 // signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
 // A single `await: human_review` step followed by an echo step that references
 // the signal payload. No containers entry for the await itself; the after step
