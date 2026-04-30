@@ -33,6 +33,7 @@ package claude
 
 import (
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/container"
 )
 
 // Adapter is the agent.Adapter implementation for Claude Code. Constructed
@@ -43,7 +44,8 @@ import (
 // retry). All state held in Adapter is read-only after construction —
 // Phase 5 design decision 7 (no session state crosses Launch boundaries).
 type Adapter struct {
-	env agent.SecretEnv // env-var allowlist (NAME → VALUE) forwarded into each `claude -p` exec
+	env     agent.SecretEnv   // env-var allowlist (NAME → VALUE) forwarded into each `claude -p` exec
+	backend container.Backend // for Version + Launch; nil → those methods error
 }
 
 // Option configures the Adapter at construction time. Functional-options
@@ -72,6 +74,21 @@ func WithEnv(env map[string]string) Option {
 			out[k] = v
 		}
 		a.env = out
+	}
+}
+
+// WithBackend supplies the container.Backend the adapter uses to run
+// claude inside the handle (Version, Launch). Required for Version and
+// Launch to function; tests that only need Ref/Capabilities/ValidateConfig
+// may omit it. Production wiring at cli/agent_registry.go passes the
+// CLI's constructed Backend.
+//
+// (Slightly redundant with Backend.Exec receiving handle on every call,
+// but the adapter needs the Backend reference to call Exec at all; the
+// Backend's identity is configured once at construction.)
+func WithBackend(b container.Backend) Option {
+	return func(a *Adapter) {
+		a.backend = b
 	}
 }
 
