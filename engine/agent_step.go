@@ -79,6 +79,33 @@ func runAgentStep(
 		return "", fmt.Errorf("engine.runAgentStep: build retry policy at path %q: %w", path, err)
 	}
 
+	// Slice 5.3: populate Feedback from the enclosing gate's prior verdict.
+	// When `path` is inside a gate's `.generate.` subtree, the same gate-path
+	// resolver used by template `{{ evaluate.<field> }}` (engine/gate_path.go)
+	// gives us the gate's path; from runstate.LookupGateAttempts we read the
+	// most-recent committed verdict. nil on attempt 1 (no prior verdict yet),
+	// nil for non-gate paths.
+	//
+	// Anti-aliasing note: the map copy below is INTENTIONAL — `last.Verdict`
+	// is a pointer to the live runstate.GateAttempts map. Aliasing it into
+	// `feedback` would let downstream callers (the adapter, a future template
+	// substitution path) mutate runstate by mistake. The copy keeps Feedback
+	// owned by this step's invocation, runstate immutable. Cheap — verdicts
+	// are small (typed schema-validated outputs, ~10-100 fields).
+	var feedback ir.RawConfig
+	if gatePath, ok := enclosingGateForEvaluate(path); ok {
+		attempts := runstate.LookupGateAttempts(gatePath)
+		if len(attempts) > 0 {
+			last := attempts[len(attempts)-1]
+			if len(last.Verdict) > 0 {
+				feedback = ir.RawConfig{}
+				for k, v := range last.Verdict {
+					feedback[k] = v
+				}
+			}
+		}
+	}
+
 	// 4. Build ResolvedInputs. Timeout cast follows the runCodeStep idiom
 	// (engine/interpreter.go:283): ir.AgentStep.Timeout is *ir.Duration where
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
@@ -87,6 +114,7 @@ func runAgentStep(
 		With:                  resolvedWith,
 		OutputSchema:          as.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
+		Feedback:              feedback, // slice 5.3
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)
