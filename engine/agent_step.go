@@ -108,18 +108,27 @@ func runAgentStep( //nolint:unused // wired in Task 9 (interpNodes switch case *
 	drainTap(chunks, as.ID, tap)
 
 	// 4. Write agent.event log entries from the buffered events. Done BEFORE
-	// the commit so the journal records them adjacent to the node.completed.
-	if appendErr := appendAgentEvents(log, blobs, path, dr.AgentEvents); appendErr != nil {
-		return "", fmt.Errorf("engine.runAgentStep: append agent.event entries at %q: %w", path, appendErr)
+	// the commit so the journal records them adjacent to the node.completed
+	// (happy path) or node.failed (failure path). On failure, runErr is
+	// authoritative — appendErr is reported only when runErr is nil so we
+	// never silently mask a step failure with an internal append error.
+	appendErr := appendAgentEvents(log, blobs, path, dr.AgentEvents)
+
+	// 5. Failure paths: mirror runCodeStep's split (engine/interpreter.go:309-316).
+	// dr.Outcome == "" means the dispatcher never dispatched (unknown container,
+	// ErrUnsupportedKind). That's an INTERNAL error — no node.failed entry,
+	// no fold corruption on resume. dr.Outcome != "" means the step ran and
+	// failed — failStep writes node.failed with the underlying cause.
+	if runErr != nil {
+		if dr.Outcome == "" {
+			return "", fmt.Errorf("engine.runAgentStep: dispatch at path %q: %w", path, runErr)
+		}
+		return failStep(log, path, dr.Outcome, runErr)
 	}
 
-	// 5. Failure paths: classify + commit node.failed via the existing helper.
-	if runErr != nil {
-		outcome := dr.Outcome
-		if outcome == "" {
-			outcome = OutcomeRetryableFailure
-		}
-		return failStep(log, path, outcome, runErr)
+	// On happy path, surface any earlier appendAgentEvents failure now.
+	if appendErr != nil {
+		return "", fmt.Errorf("engine.runAgentStep: append agent.event entries at %q: %w", path, appendErr)
 	}
 
 	// 6. Happy path: commit via the canonical engine.Commit. Commit owns the
