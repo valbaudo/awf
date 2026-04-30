@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -120,5 +121,37 @@ func TestAgentResult_OutputIsMap(t *testing.T) {
 	}
 	if got.Metrics.Cost.USD != r.Metrics.Cost.USD {
 		t.Errorf("Metrics.Cost.USD = %v, want %v", got.Metrics.Cost.USD, r.Metrics.Cost.USD)
+	}
+}
+
+func TestAgentOutcome_HappyPath(t *testing.T) {
+	o := agent.AgentOutcome{
+		Result: agent.AgentResult{
+			Output: map[string]any{"verdict": "pass"},
+			Metrics: agent.MetricSet{
+				Cost: agent.MetricCost{USD: 0.01, Source: agent.CostSourceReported},
+			},
+		},
+		Err: nil,
+	}
+	if o.Err != nil {
+		t.Errorf("Err should be nil on happy path")
+	}
+	if o.Result.Output["verdict"] != "pass" {
+		t.Errorf("Output[verdict] = %v", o.Result.Output["verdict"])
+	}
+}
+
+func TestAgentOutcome_FailurePath(t *testing.T) {
+	cause := errors.New("transport bad")
+	o := agent.AgentOutcome{
+		Err: &agent.ErrAgentLaunch{Cause: cause},
+	}
+	var launch *agent.ErrAgentLaunch
+	if !errors.As(o.Err, &launch) {
+		t.Fatalf("Err = %v; want *ErrAgentLaunch", o.Err)
+	}
+	if !errors.Is(launch.Cause, cause) {
+		t.Errorf("Cause not preserved")
 	}
 }
