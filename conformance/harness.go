@@ -207,9 +207,10 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 	}
 
 	dispatcher := &engine.LocalDispatcher{
-		Backend:  backend,
-		Handles:  handles,
-		Resolver: h.agentRegistry, // empty Registry by default (newHarness init); newHarnessWithAgentRegistry populates it
+		Backend:      backend,
+		Handles:      handles,
+		ComposeFiles: ld.ComposeFiles,
+		Resolver:     h.agentRegistry, // empty Registry by default (newHarness init); newHarnessWithAgentRegistry populates it
 		// AgentEventTap: nil — conformance is silent; bucket tests assert log entries, not tap output
 	}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, nil, h.broker)
