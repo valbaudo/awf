@@ -20,8 +20,10 @@ import (
 //     the same Ref makes the dispatch fail with *agent.ErrInvalidConfig →
 //     permanent_failure; run halts.
 //   - unresolved_uses_halts_run: AgentStep references a `uses:` ref no
-//     registered adapter satisfies → *agent.ErrAdapterNotFound →
-//     permanent_failure; run halts. (Engine-side peer of slice 5.1's
+//     registered adapter satisfies → *agent.ErrAdapterNotFound surfaces
+//     as an internal halt (engine.Run returns ("", wrappedError) — no
+//     node.failed entry; see engine/agent_step.go:122-126 for the
+//     dr.Outcome == "" split). (Engine-side peer of slice 5.1's
 //     cli/resume drift check — see plan prose for the re-interpretation.)
 func testAgentStep(t *testing.T, factory BackendFactory) {
 	t.Helper()
