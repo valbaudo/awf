@@ -1116,3 +1116,44 @@ func TestResolvedInputs_FeedbackField_Populated(t *testing.T) {
 		t.Errorf("Feedback[feedback] = %v, want %q", ri.Feedback["feedback"], "missing detection")
 	}
 }
+
+func TestLocalDispatcher_runAgent_ThreadFeedback(t *testing.T) {
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"done": true},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	intent := engine.NodeIntent{
+		Path: "gate[0].attempt-2.generate[0]",
+		Node: &ir.AgentStep{ID: "gen", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:     "anthropic/claude-code",
+			With:     ir.RawConfig{"prompt": "do the thing"},
+			Feedback: ir.RawConfig{"verified": false, "feedback": "missing detection"},
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q", dr.Outcome)
+	}
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls len = %d", len(calls))
+	}
+	if calls[0].Feedback == nil {
+		t.Fatal("Feedback = nil; want propagated from ResolvedInputs")
+	}
+	if calls[0].Feedback["feedback"] != "missing detection" {
+		t.Errorf("Feedback[feedback] = %v", calls[0].Feedback["feedback"])
+	}
+}

@@ -75,16 +75,18 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}, nil, nil
 	}
 
-	// Build AgentInvocation. (AgentInvocation.Feedback is left at zero —
-	// slice 5.3 wires it when the Claude Code adapter consumes the previous
-	// verdict preamble. Slice 5.2's gate-repair feedback flows through
-	// template substitution into With.prompt instead.)
+	// Build AgentInvocation. Feedback (slice 5.3) carries the prior evaluator
+	// verdict on gate repair attempts N>1 — populated by runAgentStep from
+	// the enclosing gate's runstate.LookupGateAttempts. Adapters that consume
+	// an implicit "previous verdict:" preamble (the Claude Code adapter) read
+	// it; nil on attempt 1, non-gate paths, and code steps.
 	inv := agent.AgentInvocation{
 		NodePath:       intent.Path,
 		Uses:           intent.ResolvedInputs.Uses,
 		With:           intent.ResolvedInputs.With,
 		OutputSchema:   intent.ResolvedInputs.OutputSchema,
 		IdempotencyKey: intent.IdempotencyKey,
+		Feedback:       intent.ResolvedInputs.Feedback, // slice 5.3
 	}
 
 	// γ contract: Launch returns immediately with events + outcome channels
