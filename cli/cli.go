@@ -68,6 +68,17 @@ type Runner struct {
 	// fixture) run unaffected — they hit zero Lookup calls regardless of
 	// what Resolver is.
 	Resolver agent.Resolver
+	// AgentEnv is the env-var allowlist the CLI uses to construct the
+	// production *agent.Registry (when Resolver is nil). Slice 5.3
+	// test-injection point: tests assign []string{"ANTHROPIC_API_KEY"} to
+	// drive cli/agent_registry.go's buildAgentRegistry without the
+	// os.Setenv dance that --agent-env-via-flag would require.
+	//
+	// When Resolver is non-nil, AgentEnv is ignored (the test has injected
+	// a fully-constructed Registry, bypassing buildAgentRegistry).
+	// Production: cli/run.go reads --agent-env, splits to []string, and
+	// passes here BEFORE calling buildAgentRegistry.
+	AgentEnv []string
 	// AgentEventTap is the io.Writer agent.AgentEvent live-tap lines are written
 	// to during dispatch. Test-injection point: tests assign a bytes.Buffer to
 	// capture the rendered lines, or io.Discard to silence. Production wiring
