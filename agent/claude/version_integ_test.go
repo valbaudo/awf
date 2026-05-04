@@ -4,6 +4,7 @@ package claude_test
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"regexp"
 	"testing"
@@ -55,4 +56,16 @@ func TestClaudeAdapterVersionDetection(t *testing.T) {
 	} else {
 		t.Logf("Version = %q", ver)
 	}
+}
+
+// skipIfNoAuthEnv skips when neither ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
+// nor CLAUDE_CODE_OAUTH_TOKEN is set on the host.
+func skipIfNoAuthEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		if os.Getenv(name) != "" {
+			return
+		}
+	}
+	t.Skip("no auth env (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN); skipping integ test")
 }
