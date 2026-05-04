@@ -129,3 +129,20 @@ type MetricTokens struct {
 	CacheCreationInput int `json:"cache_creation_input,omitempty"`
 	CacheReadInput     int `json:"cache_read_input,omitempty"`
 }
+
+// AgentOutcome is the envelope the streaming Adapter.Launch contract
+// delivers via its outcome channel (slice 5.3 γ). Carries either an
+// AgentResult (happy path) or an Err (in-flight failure:
+// *ErrUnparseableOutput, *ErrAgentLaunch, *ErrAuthFailureSentinel wrapped
+// via *ErrAgentLaunch). Exactly one is populated; the other is the type's
+// zero value.
+//
+// Why an envelope vs (AgentResult, error) tuple? The outcome channel must
+// carry both pieces atomically — a struct on a channel is the idiomatic
+// way to do that in Go. Tuple-returning a 2-value `(<-chan AgentResult,
+// <-chan error)` would force the caller to select between two channels
+// with no guaranteed ordering; the envelope avoids that.
+type AgentOutcome struct {
+	Result AgentResult `json:"result,omitempty"`
+	Err    error       `json:"-"` // errors don't JSON-marshal well; engine state log handles errors separately
+}

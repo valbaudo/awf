@@ -6,7 +6,25 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// parseCSV splits a comma-separated string into a clean []string. Trims
+// whitespace, drops empties. Empty input → nil slice (NOT empty slice —
+// the buildAgentRegistry path treats nil as "no allowlist").
+func parseCSV(s string) []string {
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == ',' })
+	out := parts[:0]
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 // requireRunDir checks that <stateDir>/runs/<runID> exists. Returns ExitOK if
 // present; ExitUsage with a helpful stderr message otherwise. Shared by the

@@ -50,17 +50,18 @@ func testBucket10UpExecDown(t *testing.T, factory DockerBackendFactory) {
 		t.Errorf("Handle.Service = %q, want \"web\"", h.Service)
 	}
 
-	result, ch, err := env.Backend.Exec(context.Background(), h, container.Cmd{Run: "echo hello"})
+	ch, resultCh, err := env.Backend.Exec(context.Background(), h, container.Cmd{Run: "echo hello"})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
+	for range ch {
+	}
+	result := <-resultCh
 	if result.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
 	}
 	if !bytes.Contains(result.Stdout, []byte("hello")) {
 		t.Errorf("Stdout = %q, want to contain hello", result.Stdout)
-	}
-	for range ch {
 	}
 }
 
@@ -81,12 +82,13 @@ func testBucket10CrossServiceExec(t *testing.T, factory DockerBackendFactory) {
 	ctx := context.Background()
 
 	// Default service: web.
-	result, ch, err := env.Backend.Exec(ctx, h, container.Cmd{Run: "cat /tmp/awf-svc-marker"})
+	ch, resultCh, err := env.Backend.Exec(ctx, h, container.Cmd{Run: "cat /tmp/awf-svc-marker"})
 	if err != nil {
 		t.Fatalf("Exec web: %v", err)
 	}
 	for range ch {
 	}
+	result := <-resultCh
 	if got := strings.TrimSpace(string(result.Stdout)); got != "web" {
 		t.Errorf("default-service marker = %q, want \"web\"", got)
 	}
@@ -94,12 +96,13 @@ func testBucket10CrossServiceExec(t *testing.T, factory DockerBackendFactory) {
 	// Cross-service exec: same project, different service.
 	crossH := h
 	crossH.Service = "db"
-	result, ch, err = env.Backend.Exec(ctx, crossH, container.Cmd{Run: "cat /tmp/awf-svc-marker"})
+	ch, resultCh, err = env.Backend.Exec(ctx, crossH, container.Cmd{Run: "cat /tmp/awf-svc-marker"})
 	if err != nil {
 		t.Fatalf("Exec db (cross-service): %v", err)
 	}
 	for range ch {
 	}
+	result = <-resultCh
 	if got := strings.TrimSpace(string(result.Stdout)); got != "db" {
 		t.Errorf("cross-service marker = %q, want \"db\"", got)
 	}
@@ -125,12 +128,13 @@ func testBucket10UpWaitHonorsHealthcheck(t *testing.T, factory DockerBackendFact
 	}
 
 	// Post-Create Exec succeeds first-try.
-	result, ch, err := env.Backend.Exec(context.Background(), h, container.Cmd{Run: "test -f /tmp/ready"})
+	ch, resultCh, err := env.Backend.Exec(context.Background(), h, container.Cmd{Run: "test -f /tmp/ready"})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	for range ch {
 	}
+	result := <-resultCh
 	if result.ExitCode != 0 {
 		t.Errorf("test -f /tmp/ready exit = %d, want 0 (service should be healthy)", result.ExitCode)
 	}

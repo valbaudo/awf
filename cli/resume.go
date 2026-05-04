@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -179,6 +180,19 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	defer cleanup()
+
+	// Slice 5.3: if Resolver isn't test-injected, build the production
+	// *agent.Registry from the SAME default --agent-env allowlist `awf
+	// run` uses (per Phase 5 design § E — `awf resume` does not accept
+	// --agent-env; it re-reads env from the host with the standard set).
+	if r.Resolver == nil {
+		reg, err := buildAgentRegistry(claude.DefaultEnvAllowlist, backend)
+		if err != nil {
+			fprintf(stderr, "awf resume: build agent registry: %v\n", err)
+			return ExitUsage
+		}
+		r.Resolver = reg
+	}
 
 	// Step 6: load + validate + digest the workflow at wfPath. Failures here
 	// are independent of the log — bad path / bad YAML / validator errors all

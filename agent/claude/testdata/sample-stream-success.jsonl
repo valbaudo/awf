@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"sess-success","model":"claude-opus-4-7","tools":["Bash","Read"],"apiKeySource":"ANTHROPIC_API_KEY","claude_code_version":"2.1.153","permissionMode":"default","fast_mode_state":"off"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"4"}]},"session_id":"sess-success","uuid":"u1"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1234,"ttft_ms":500,"num_turns":1,"result":"4","stop_reason":"end_turn","total_cost_usd":0.001,"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"structured_output":{"answer":4},"session_id":"sess-success","uuid":"u2"}

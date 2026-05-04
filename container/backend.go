@@ -45,20 +45,46 @@ type Backend interface {
 	// monotonic ID. Phase 4 Docker: image-pinned create or compose `up --wait`.
 	Create(ctx context.Context, spec ContainerSpec) (Handle, error)
 
-	// Exec runs a command synchronously inside the handle and returns its full
-	// result (ExitCode, AWFOutput, Stdout). The returned channel is buffered
-	// and CLOSED before Exec returns — it contains every IOChunk the command
-	// produced. The synchronous-with-pre-buffered-chunks shape lets Phase 2
-	// ship without spawning goroutines; Phase 4 may revisit if Docker's
-	// streaming API requires true live consumption (the receive-only direction
-	// keeps both impls compatible). ctx cancellation aborts the command; the
-	// returned error is non-nil if Exec couldn't run the command at all (the
-	// "launch / transport" class — retryable_failure per §6); if the command
-	// ran and merely exited nonzero, err is nil and ExitCode carries the code.
+	// Exec runs a command synchronously inside the handle. Returns two
+	// channels and an error.
 	//
-	// On non-nil error, the returned channel is nil; callers MUST check err
-	// before ranging over the channel (a `for range nil-chan` deadlocks).
-	Exec(ctx context.Context, h Handle, cmd Cmd) (ExecResult, <-chan IOChunk, error)
+	// chunks: STREAMING channel of IOChunks. Emits each stdout/stderr chunk
+	//   as it arrives from the underlying pipe — callers ranging over it
+	//   observe the process's output in real time. Closed by the Backend
+	//   implementation when both stdout and stderr pipes drain (process
+	//   either exited or ctx-cancelled). MUST be drained by the caller; an
+	//   unread chunk back-pressures the reader goroutines (chan buffer is
+	//   unspecified but bounded).
+	//
+	// result: SINGLE-VALUE channel of ExecResult. Receives exactly one
+	//   value AFTER the chunks channel closes AND the process has been
+	//   waited-on (ExitCode + accumulated Stdout + Err available). Then
+	//   closes. Receiving from it before chunks closes is permitted (blocks
+	//   until the close) but unusual — the natural order is
+	//   `for range chunks { ... }; r := <-result`. ExecResult.Err surfaces
+	//   transport-class errors (stdcopy mid-stream failure on docker;
+	//   ctx.Canceled on native pipe close mid-read) WITHOUT swallowing them
+	//   silently.
+	//
+	// On non-nil error return, BOTH channels are nil; callers must check
+	// err before ranging or receiving. The "launch / transport" error
+	// class — couldn't start the command at all — surfaces here. If the
+	// command ran and merely exited nonzero, err is nil and result's
+	// ExecResult.ExitCode carries the code.
+	//
+	// ctx cancellation: aborts the command; chunks channel closes; result
+	// emits an ExecResult with Err set to ctx.Err() (and likely
+	// process-killed ExitCode). The function's error return remains nil —
+	// the cancellation surfaces via the result value's Err field, NOT via
+	// err. Callers that used `errors.Is(err, context.Canceled)` must
+	// update to check `result.Err` instead.
+	//
+	// Slice 5.3: STREAMING refactor of the original Phase 2
+	// "(ExecResult, <-chan IOChunk, error)" contract. The Claude Code
+	// adapter (agent/claude.Launch) needs progressive event arrival;
+	// refactoring Backend.Exec across all three backends is the
+	// load-bearing prerequisite.
+	Exec(ctx context.Context, h Handle, cmd Cmd) (<-chan IOChunk, <-chan ExecResult, error)
 
 	// CaptureFiles reads the named in-container paths and returns their content,
 	// one CapturedFile per path in the input order. Missing-path is a hard error
@@ -208,11 +234,12 @@ type Cmd struct {
 	Env map[string]string
 }
 
-// ExecResult is the synchronous result of an Exec call. Slice 2.4's outcome
-// classifier reads ExitCode (per §6 — nonzero outside non_retryable_exit_codes
-// is retryable_failure; in the list is permanent_failure); the dispatcher
-// parses AWFOutput against the step's output_schema for typed outputs; Stdout
-// is exposed via {{ step.<id>.stdout }} substitution.
+// ExecResult is the streamed result of an Exec call (slice 5.3: delivered
+// via Backend.Exec's result channel). Slice 2.4's outcome classifier reads
+// ExitCode (per §6 — nonzero outside non_retryable_exit_codes is
+// retryable_failure; in the list is permanent_failure); the dispatcher
+// parses AWFOutput against the step's output_schema for typed outputs;
+// Stdout is exposed via {{ step.<id>.stdout }} substitution.
 //
 // Stderr is intentionally NOT a field — AgentWorkflowFormat §4.1 lists only
 // exit_code and stdout as implicit outputs; §7 never templates stderr. The
@@ -222,6 +249,14 @@ type ExecResult struct {
 	ExitCode  int
 	AWFOutput []byte
 	Stdout    []byte
+	// Err (slice 5.3) surfaces transport-class errors that occurred AFTER
+	// Backend.Exec successfully launched the process — stdcopy mid-stream
+	// failure (docker), pipe-read failure (native), ctx-cancel during
+	// in-flight read. nil on the happy path. Pre-slice-5.3 these came back
+	// via Backend.Exec's err return; the streaming refactor moved them
+	// here so the result channel can carry them without the function
+	// returning early before chunks drain.
+	Err error
 }
 
 // IOChunk is one stream slice produced during Exec. Phase 2 emits the chunks

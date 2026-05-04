@@ -146,14 +146,14 @@ func (b *Backend) destroyCompose(ctx context.Context, r registeredContainer) err
 //
 // Service resolution: h.Service if non-empty (cross-service exec from a
 // dispatcher Handle clone, Design Q4), else r.defaultSvc.
-func (b *Backend) execCompose(ctx context.Context, h cont.Handle, r registeredContainer, cmd cont.Cmd) (cont.ExecResult, <-chan cont.IOChunk, error) {
+func (b *Backend) execCompose(ctx context.Context, h cont.Handle, r registeredContainer, cmd cont.Cmd) (<-chan cont.IOChunk, <-chan cont.ExecResult, error) {
 	svc := h.Service
 	if svc == "" {
 		svc = r.defaultSvc
 	}
 	dockerID, err := b.resolveComposeContainer(ctx, r.project, svc)
 	if err != nil {
-		return cont.ExecResult{}, nil, fmt.Errorf("container/docker: execCompose: %w", err)
+		return nil, nil, fmt.Errorf("container/docker: execCompose: %w", err)
 	}
 	return b.execImage(ctx, dockerID, cmd)
 }

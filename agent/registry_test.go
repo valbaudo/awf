@@ -19,8 +19,8 @@ func (s *stubAdapter) Ref() string                                              
 func (s *stubAdapter) Capabilities() agent.Caps                                  { return agent.Caps{} }
 func (s *stubAdapter) Version(context.Context, container.Handle) (string, error) { return "v0", nil }
 func (s *stubAdapter) ValidateConfig(ir.RawConfig) error                         { return nil }
-func (s *stubAdapter) Launch(context.Context, container.Handle, agent.AgentInvocation) (agent.AgentResult, <-chan agent.AgentEvent, error) {
-	return agent.AgentResult{}, nil, nil
+func (s *stubAdapter) Launch(context.Context, container.Handle, agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+	return nil, nil, nil
 }
 
 func TestRegistry_RegisterAndLookup(t *testing.T) {

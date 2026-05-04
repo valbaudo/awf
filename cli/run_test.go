@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -1044,7 +1046,14 @@ func TestCLIRunCVEPipelineErrorsAtFirstAgentStep(t *testing.T) {
 		t.Errorf("rc = %d, want non-zero (agent step should error)", rc)
 	}
 	combined := stdout.String() + stderr.String()
-	if !strings.Contains(combined, "not implemented") && !strings.Contains(combined, "no adapter registered") {
+	// Slice 5.3 Task 19 update: with production --agent-env wiring, the Claude
+	// adapter is now registered by default, so the prior "no adapter registered"
+	// branch is replaced by a real version-resolution failure (the fake backend
+	// has no "claude --version" programmed). Both branches are acceptable
+	// agent-error markers.
+	if !strings.Contains(combined, "not implemented") &&
+		!strings.Contains(combined, "no adapter registered") &&
+		!strings.Contains(combined, "version resolution") {
 		t.Errorf("output missing agent-error marker: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
@@ -1300,4 +1309,72 @@ func TestCLIRun_NoAgentSteps_RuntimesIsAbsent(t *testing.T) {
 	// absent from the run.started JSON. This test is here to lock that
 	// invariant (additive extension didn't break pre-Phase-5 logs).
 	t.Skip("Inspect run.started JSON of any existing fixture run (e.g. testdata/phase2/seq.yaml). Assert no \"runtimes\" key in the JSON. Implementation deferred — relies on a helper that opens the log file and re-parses the first event's JSON.")
+}
+
+func TestCLIRun_AgentEnvFlag_DefaultPopulatesResolver(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
+	tmpDir := t.TempDir()
+	wfPath := writeMinimalWorkflow(t, tmpDir)
+	stateDir := filepath.Join(tmpDir, ".awf")
+
+	fake := container.NewFake()
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	var stdout, stderr bytes.Buffer
+	r := &cli.Runner{
+		IDGen:   &clock.Fake{IDs: []string{"agent-env-default-run"}},
+		Backend: fake,
+		// NOT setting Resolver — buildAgentRegistry path triggers.
+	}
+	exit := r.Run([]string{"run", "--state-dir", stateDir, "--backend", "fake", wfPath}, &stdout, &stderr)
+	if exit != cli.ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
+	}
+	if r.Resolver == nil {
+		t.Error("Resolver still nil after Run; want populated by --agent-env default")
+	}
+}
+
+func TestCLIRun_AgentEnvFlag_EmptyValue_NoClaudeAdapter(t *testing.T) {
+	tmpDir := t.TempDir()
+	wfPath := writeMinimalWorkflow(t, tmpDir)
+	stateDir := filepath.Join(tmpDir, ".awf")
+
+	fake := container.NewFake()
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	var stdout, stderr bytes.Buffer
+	r := &cli.Runner{
+		IDGen:   &clock.Fake{IDs: []string{"agent-env-empty-run"}},
+		Backend: fake,
+	}
+	exit := r.Run([]string{"run", "--state-dir", stateDir, "--backend", "fake", "--agent-env", "", wfPath}, &stdout, &stderr)
+	if exit != cli.ExitOK {
+		t.Fatalf("exit = %d, stderr=%s", exit, stderr.String())
+	}
+	if r.Resolver == nil {
+		t.Fatal("Resolver nil after Run with --agent-env=''; want non-nil but empty Registry")
+	}
+	if reg, ok := r.Resolver.(*agent.Registry); ok {
+		if _, found := reg.Lookup(claude.AdapterRef); found {
+			t.Error("Claude adapter registered with --agent-env=''; want absent")
+		}
+	}
+}
+
+func writeMinimalWorkflow(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "wf.yaml")
+	content := `workflow: minimal
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: noop
+    container: lab
+    run: "true"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	return path
 }

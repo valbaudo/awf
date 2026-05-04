@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,4 +196,139 @@ func mustJSON(v any) []byte {
 		panic(err)
 	}
 	return b
+}
+
+// capturingDispatcher wraps a base Dispatcher and records each NodeIntent
+// it receives — the test inspects intent.ResolvedInputs.Feedback to verify
+// runAgentStep's gate-repair feedback population (Task 9). Task 10 verifies
+// the AgentInvocation.Feedback end-to-end via the fake adapter; this test
+// scopes to runAgentStep's deliverable in isolation so it can be bisected
+// to Task 9 without depending on Task 10's threading change in runAgent.
+type capturingDispatcher struct {
+	inner    engine.Dispatcher
+	captured []engine.NodeIntent
+}
+
+func (c *capturingDispatcher) Run(ctx context.Context, intent engine.NodeIntent) (engine.DispatchResult, <-chan container.IOChunk, error) {
+	c.captured = append(c.captured, intent)
+	return c.inner.Run(ctx, intent)
+}
+
+func TestRunAgentStep_FeedbackPopulatedOnGateRepair(t *testing.T) {
+	const yaml = `workflow: gate-agent-feedback
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      max_attempts: 2
+      until: "{{ evaluate.verified }}"
+      generate:
+        - id: gen
+          container: lab
+          uses: anthropic/claude-code
+          with:
+            prompt: "write the thing"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [done]
+            properties:
+              done: { type: boolean }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: anthropic/claude-code
+          with:
+            prompt: "evaluate"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	// Indices 0 (gen attempt 1) and 2 (gen attempt 2) — generator outputs.
+	// Indices 1 (judge attempt 1) and 3 (judge attempt 2) — evaluator verdicts.
+	// Same adapter ref handles both; fake's call index advances per Launch.
+	fk := fake.New("anthropic/claude-code").
+		Script(0, fake.Result{Output: map[string]any{"done": false}}).
+		Script(1, fake.Result{Output: map[string]any{"verified": false, "feedback": "missing detection"}}).
+		Script(2, fake.Result{Output: map[string]any{"done": true}}).
+		Script(3, fake.Result{Output: map[string]any{"verified": true, "feedback": ""}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	base := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	cap := &capturingDispatcher{inner: base}
+
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, cap, log, blobs, clk, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q", oc)
+	}
+
+	if len(cap.captured) != 4 {
+		t.Fatalf("captured intents = %d, want 4 (2 generate + 2 evaluate)", len(cap.captured))
+	}
+
+	// Locate the generate-attempt-2 intent — its path contains
+	// ".attempt-2.generate". That's the one runAgentStep must populate with
+	// the prior verdict from attempt 1's evaluator.
+	var gen2 *engine.NodeIntent
+	var gen1 *engine.NodeIntent
+	for i := range cap.captured {
+		path := cap.captured[i].Path
+		if !strings.Contains(path, ".generate") {
+			continue
+		}
+		if strings.Contains(path, ".attempt-1.") {
+			gen1 = &cap.captured[i]
+		}
+		if strings.Contains(path, ".attempt-2.") {
+			gen2 = &cap.captured[i]
+		}
+	}
+	if gen1 == nil {
+		t.Fatal("generate attempt-1 intent not captured")
+	}
+	if gen2 == nil {
+		t.Fatal("generate attempt-2 intent not captured")
+	}
+
+	// Attempt 1: no prior verdict → Feedback must be nil.
+	if gen1.ResolvedInputs.Feedback != nil {
+		t.Errorf("gen1.ResolvedInputs.Feedback = %v, want nil (attempt 1, no prior verdict)", gen1.ResolvedInputs.Feedback)
+	}
+
+	// Attempt 2: Feedback must carry attempt-1's evaluator verdict.
+	if gen2.ResolvedInputs.Feedback == nil {
+		t.Fatalf("gen2.ResolvedInputs.Feedback = nil, want populated with prior verdict")
+	}
+	if gen2.ResolvedInputs.Feedback["verified"] != false {
+		t.Errorf("gen2.ResolvedInputs.Feedback[verified] = %v, want false", gen2.ResolvedInputs.Feedback["verified"])
+	}
+	if gen2.ResolvedInputs.Feedback["feedback"] != "missing detection" {
+		t.Errorf("gen2.ResolvedInputs.Feedback[feedback] = %v, want %q", gen2.ResolvedInputs.Feedback["feedback"], "missing detection")
+	}
 }

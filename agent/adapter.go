@@ -67,30 +67,64 @@ type Adapter interface {
 	// (slice 5.3 enforces this for the Claude Code adapter).
 	ValidateConfig(with ir.RawConfig) error
 
-	// Launch runs the agent inside the supplied handle. The dispatcher
-	// (slice 5.2) calls this once per attempt (one per gate attempt; one
-	// per retry). Returns synchronously with the typed result AFTER the
-	// agent exits and ALL events have been drained from the returned
-	// channel.
+	// Launch runs the agent inside the supplied handle. Slice 5.3 γ contract:
+	// returns IMMEDIATELY with both channels open. The events channel emits
+	// AgentEvents as the harness produces them (one per content block for
+	// assistant messages); the caller MUST range over it concurrently with
+	// awaiting outcome. The events channel CLOSES when the harness's stream
+	// ends (process exit + stdout pipe drain). The outcome channel delivers
+	// exactly one AgentOutcome AFTER events closes, then closes itself.
 	//
-	// The returned channel is buffered and closed by Launch before
-	// returning; callers MUST drain it (the dispatcher's slice 5.2
-	// goroutine consumes events as they arrive and writes them to the log
-	// as agent.event entries). On non-nil error, the returned channel is
-	// nil; callers must check err before ranging.
+	// === DRAIN-OR-LEAK CONTRACT =====================================
+	// Callers MUST drain the events channel to completion. Failure to
+	// drain blocks the adapter's parser goroutine on `events <- ev` once
+	// the channel's internal buffer fills (Claude adapter: 16 events;
+	// fake adapter: scripted-event-count + 1, so unbounded for practical
+	// purposes). A blocked parser goroutine cannot send AgentOutcome on
+	// outcomeCh — it hangs until ctx-cancel. Two safe patterns:
 	//
-	// Error contract:
-	//   - nil error + AgentResult.Output validates against inv.OutputSchema
-	//     → ok outcome
-	//   - *ErrUnparseableOutput → retryable_failure (transient parse miss)
-	//   - *ErrAgentLaunch → retryable_failure (transport/launch issue)
-	//   - *ErrInvalidConfig → permanent_failure (config bug; retry won't fix)
-	//   - any other non-nil error → retryable_failure (treated as transport)
+	//   // Sequential drain (simplest):
+	//   events, outcomeCh, err := adapter.Launch(...)
+	//   if err != nil { /* pre-launch failure */ }
+	//   for ev := range events { /* render, log, etc. */ }
+	//   outcome := <-outcomeCh
+	//
+	//   // Concurrent drain (runAgent's pattern — preserves realtime UX):
+	//   events, outcomeCh, err := adapter.Launch(...)
+	//   if err != nil { /* pre-launch failure */ }
+	//   drainDone := make(chan []AgentEvent, 1)
+	//   go func() {
+	//       var buf []AgentEvent
+	//       for ev := range events {
+	//           buf = append(buf, ev)
+	//           // tap.Write(ev) here — this is where realtime renders.
+	//       }
+	//       drainDone <- buf
+	//   }()
+	//   outcome := <-outcomeCh
+	//   buf := <-drainDone
+	//
+	// Adapters that buffer events to a size matching scripted/expected
+	// event count (the fake's pattern) are forgiving — caller-side bugs
+	// that ignore events don't leak. The Claude adapter cannot do this
+	// because event count is unknown until claude exits, so it ships a
+	// fixed-size buffer and relies on the caller to drain.
+	// ================================================================
+	//
+	// On a non-nil err return (pre-launch), BOTH channels are nil — the
+	// adapter never reached the launch step. On a successful return both
+	// channels are non-nil and must be drained.
 	//
 	// Independence (spec §5.5): Launch MUST NOT reference, store, or
 	// reuse any state from a prior Launch call against the same Adapter
 	// instance. Each call is fresh.
-	Launch(ctx context.Context, handle container.Handle, inv AgentInvocation) (AgentResult, <-chan AgentEvent, error)
+	//
+	// (Pre-slice-5.3: signature was (AgentResult, <-chan AgentEvent,
+	// error) with events pre-closed before Launch returned — buffer-then-
+	// burst. The γ rewrite enables true realtime UX; the events
+	// buffer-then-burst pattern is preserved by the caller's
+	// `for range events` loop.)
+	Launch(ctx context.Context, handle container.Handle, inv AgentInvocation) (<-chan AgentEvent, <-chan AgentOutcome, error)
 }
 
 // Resolver is the read-only subset of Registry. The engine's dispatcher

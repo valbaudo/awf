@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -24,12 +26,13 @@ import (
 
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
-	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] [--backend <fake|docker|native>] <path>")
+	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] [--backend <fake|docker|native>] [--agent-env <CSV>] <path>")
 	fprintln(w, "")
 	fprintln(w, "  --input <json>     run-input as a JSON object (validated against workflow.input schema if declared)")
 	fprintln(w, "  --run-id <id>      override the minted run id (testing aid)")
 	fprintln(w, "  --state-dir <dir>  base directory for .awf/runs and .awf/blobs (default: ./.awf)")
 	fprintln(w, "  --backend <kind>   container backend: \"fake\", \"docker\", or \"native\" (default: native)")
+	fprintln(w, "  --agent-env <CSV>  env-var allowlist forwarded into claude -p invocations (default: "+strings.Join(claude.DefaultEnvAllowlist, ",")+")")
 }
 
 // teardownGrace is how long Backend.Destroy gets after the run's ctx has been
@@ -50,6 +53,8 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	runID := flags.String("run-id", "", "override the run id")
 	stateDir := flags.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	backendKind := flags.String("backend", engine.BackendNative, "container backend: fake, docker, or native")
+	agentEnv := flags.String("agent-env", strings.Join(claude.DefaultEnvAllowlist, ","),
+		"CSV allowlist of env-var names forwarded into each claude -p invocation (default: the three claude reads per its auth-precedence docs)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRunUsage(stdout)
@@ -152,6 +157,19 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	defer cleanup()
+
+	// Slice 5.3: if Resolver isn't test-injected, build the production
+	// *agent.Registry from --agent-env + the resolved backend. Tests that
+	// inject r.Resolver skip this step entirely.
+	if r.Resolver == nil {
+		envNames := parseCSV(*agentEnv)
+		reg, err := buildAgentRegistry(envNames, backend)
+		if err != nil {
+			fprintf(stderr, "awf run: build agent registry: %v\n", err)
+			return ExitUsage
+		}
+		r.Resolver = reg
+	}
 
 	// Step 7: Create container handles. Defer Destroy with a SEPARATE
 	// non-cancelled ctx so teardown survives signal-induced cancellation.

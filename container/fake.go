@@ -48,6 +48,13 @@ type Fake struct {
 	// The fake's doc-comment anticipated this need at slice-2.2 time but
 	// shipped no mechanism; this is the recording slot.
 	Calls []Cmd
+
+	// "Any" programmed response (slice 5.3 Task 16). Used by tests where
+	// the Cmd.Run is built by the caller (the test's SUBJECT), not the
+	// key to look up. nil = unset; takes effect only as a fall-through
+	// after execTable[cmd.Run] misses.
+	anyExec   *ExecResult
+	anyChunks []IOChunk
 }
 
 // fakeHandle is the per-Create internal state: an in-mem fs map.
@@ -76,20 +83,28 @@ func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
 	return Handle{Name: spec.Name, ID: id}, nil
 }
 
-// Exec returns the ExecResult programmed for cmd.Run (via ProgramExec); the
-// channel is buffered with every programmed IOChunk and closed before return.
+// Exec returns the ExecResult programmed for cmd.Run (via ProgramExec). The
+// streaming contract (slice 5.3): returns two channels. chunks is buffered
+// with every programmed IOChunk and pre-closed; result is 1-buffered with the
+// programmed ExecResult and pre-closed. chunks closes BEFORE result emits
+// (the Fake's deterministic-burst semantic — every chunk is materialized
+// before the result is observable).
+//
 // Unprogrammed cmd.Run is a hard error — silent zero-value would mask
 // dispatcher bugs in slice 2.4. Unknown handle is a hard error. Cmd.Env is
 // accepted but not used (slice 2.4 verifies dispatcher env injection by
 // inspecting what it passes to Exec, not by what the fake does with it).
-func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (ExecResult, <-chan IOChunk, error) {
+//
+// On any error return, both channels are nil — the new Backend contract
+// requires callers to check err before ranging or receiving.
+func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (<-chan IOChunk, <-chan ExecResult, error) {
 	if err := ctx.Err(); err != nil {
-		return ExecResult{}, nil, err
+		return nil, nil, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.handles[h.ID]; !ok {
-		return ExecResult{}, nil, fmt.Errorf("container/fake: Exec: unknown handle %q", h.ID)
+		return nil, nil, fmt.Errorf("container/fake: Exec: unknown handle %q", h.ID)
 	}
 	// Record the call BEFORE the fault check / programmed lookup — the dispatcher
 	// invoked us with this Cmd; the recording is what the env-injection test
@@ -108,32 +123,44 @@ func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (ExecResult, <-chan 
 		case <-blockCh:
 		case <-ctx.Done():
 			f.mu.Lock()
-			return ExecResult{}, nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 		f.mu.Lock()
 		if err := ctx.Err(); err != nil {
-			return ExecResult{}, nil, err
+			return nil, nil, err
 		}
 	}
 
 	if f.failExecAt != nil && f.execCalls == *f.failExecAt {
 		n := f.execCalls
 		f.execCalls++
-		return ExecResult{}, nil, fmt.Errorf("container/fake: induced Exec fault at call #%d", n)
+		return nil, nil, fmt.Errorf("container/fake: induced Exec fault at call #%d", n)
 	}
 	f.execCalls++
 
-	result, ok := f.execTable[cmd.Run]
+	programmed, ok := f.execTable[cmd.Run]
+	streamed := f.streamTable[cmd.Run] // may be nil
 	if !ok {
-		return ExecResult{}, nil, fmt.Errorf("container/fake: Exec: no programmed result for cmd.Run=%q (call ProgramExec first)", cmd.Run)
+		if f.anyExec != nil {
+			programmed = *f.anyExec
+			streamed = f.anyChunks
+		} else {
+			return nil, nil, fmt.Errorf("container/fake: Exec: no programmed result for cmd.Run=%q (call ProgramExec first)", cmd.Run)
+		}
 	}
-	chunks := f.streamTable[cmd.Run] // may be nil
-	ch := make(chan IOChunk, len(chunks))
-	for _, c := range chunks {
-		ch <- c
+
+	// Build the two channels. chunks is pre-buffered (deterministic burst is
+	// the Fake's contract); result is 1-buffered. Both are pre-closed so the
+	// caller observes the full burst plus the result without blocking.
+	chunks := make(chan IOChunk, len(streamed))
+	for _, c := range streamed {
+		chunks <- c
 	}
-	close(ch)
-	return result, ch, nil
+	close(chunks)
+	result := make(chan ExecResult, 1)
+	result <- programmed
+	close(result)
+	return chunks, result, nil
 }
 
 // CaptureFiles reads each path from the handle's in-mem fs and returns the
@@ -216,6 +243,38 @@ func (f *Fake) ProgramExec(run string, result ExecResult, chunks []IOChunk) {
 			dup[i] = IOChunk{Stream: c.Stream, Data: cloneBytes(c.Data)}
 		}
 		f.streamTable[run] = dup
+	}
+}
+
+// ProgramExecAny is the "match any Cmd.Run" variant of ProgramExec, used
+// by tests where the Cmd.Run is built by the caller and the test only
+// cares about the response (e.g., agent/claude.Launch_test, where the
+// assembled command line is the test SUBJECT, not the lookup key).
+//
+// The fake keeps a single "any" programmed entry; subsequent calls
+// overwrite. Use ProgramExec when you want exact-match lookup. The
+// fall-through in Exec consults anyExec only AFTER execTable[cmd.Run]
+// misses, so ProgramExec entries still win when both are programmed.
+//
+// Defensive-copies bytes per the same discipline as ProgramExec.
+func (f *Fake) ProgramExecAny(result ExecResult, chunks []IOChunk) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stored := ExecResult{
+		ExitCode:  result.ExitCode,
+		AWFOutput: cloneBytes(result.AWFOutput),
+		Stdout:    cloneBytes(result.Stdout),
+		Err:       result.Err,
+	}
+	f.anyExec = &stored
+	if len(chunks) > 0 {
+		dup := make([]IOChunk, len(chunks))
+		for i, c := range chunks {
+			dup[i] = IOChunk{Stream: c.Stream, Data: cloneBytes(c.Data)}
+		}
+		f.anyChunks = dup
+	} else {
+		f.anyChunks = nil
 	}
 }
 

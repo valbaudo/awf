@@ -376,9 +376,18 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	}
 
 	for _, del := range deletes {
-		result, _, execErr := b.execImage(ctx, resp.ID, container.Cmd{Run: "rm -rf -- " + shellQuotePath(del)})
+		chunks, resultCh, execErr := b.execImage(ctx, resp.ID, container.Cmd{Run: "rm -rf -- " + shellQuotePath(del)})
 		if execErr != nil {
 			return b.restoreFail(ctx, resp.ID, fmt.Sprintf("delete %q", del), execErr)
+		}
+		// Drain chunks (slice 5.3 streaming contract); the rm command's
+		// output is irrelevant to Restore, but the channel must be drained
+		// before the result is delivered.
+		for range chunks {
+		}
+		result := <-resultCh
+		if result.Err != nil {
+			return b.restoreFail(ctx, resp.ID, fmt.Sprintf("delete %q", del), result.Err)
 		}
 		if result.ExitCode != 0 {
 			return b.restoreFail(ctx, resp.ID, fmt.Sprintf("delete %q exited %d", del, result.ExitCode), nil)

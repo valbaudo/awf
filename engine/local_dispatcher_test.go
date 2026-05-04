@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/fake"
@@ -669,11 +671,11 @@ type rejectingAdapter struct {
 
 func (r *rejectingAdapter) ValidateConfig(_ ir.RawConfig) error { return r.validateErr }
 
-func (r *rejectingAdapter) Launch(_ context.Context, _ container.Handle, _ agent.AgentInvocation) (agent.AgentResult, <-chan agent.AgentEvent, error) {
+func (r *rejectingAdapter) Launch(_ context.Context, _ container.Handle, _ agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
 	if r.launchErr != nil {
-		return agent.AgentResult{}, nil, r.launchErr
+		return nil, nil, r.launchErr
 	}
-	return agent.AgentResult{}, nil, fmt.Errorf("test stub: missing happy-path script")
+	return nil, nil, fmt.Errorf("test stub: missing happy-path script")
 }
 
 func TestLocalDispatcher_runAgent_AdapterNotFound(t *testing.T) {
@@ -958,5 +960,200 @@ func TestLocalDispatcher_runAgent_HappyPath(t *testing.T) {
 	}
 	if got := calls[0].With["prompt"]; got != "do the thing" {
 		t.Errorf("With[prompt] = %v, want %q", got, "do the thing")
+	}
+}
+
+// TestLocalDispatcher_runCode_StreamingDrain pins the slice 5.3 drain-to-slice
+// shape of LocalDispatcher.runCode: Backend.Exec now returns
+// (chunks, result, error); runCode drains chunks before reading result, then
+// re-emits collected chunks on a pre-closed channel for the interpreter's
+// drainTap. Live-tap for CodeSteps is post-hoc by design (forwarder-goroutine
+// pattern deadlocks on long streams — see runCode's inline rationale).
+func TestLocalDispatcher_runCode_StreamingDrain(t *testing.T) {
+	f := container.NewFake()
+	h, err := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	f.ProgramExec("echo hi", container.ExecResult{ExitCode: 0, Stdout: []byte("hi\n")}, []container.IOChunk{
+		{Stream: "stdout", Data: []byte("hi\n")},
+	})
+	d := &engine.LocalDispatcher{
+		Backend: f,
+		Handles: map[string]container.Handle{"lab": h},
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.CodeStep{ID: "x", Container: "lab", Run: "echo hi"},
+		ResolvedInputs: engine.ResolvedInputs{Command: "echo hi"},
+	}
+	dr, chunks, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Errorf("Outcome = %q, want %q", dr.Outcome, engine.OutcomeOK)
+	}
+	// Drain the dispatcher's returned chunks channel — interpreter does this via drainTap.
+	var seen []container.IOChunk
+	for c := range chunks {
+		seen = append(seen, c)
+	}
+	if len(seen) != 1 || string(seen[0].Data) != "hi\n" {
+		t.Errorf("chunks = %+v", seen)
+	}
+	if string(dr.Stdout) != "hi\n" {
+		t.Errorf("Stdout = %q, want hi\\n", dr.Stdout)
+	}
+}
+
+func TestLocalDispatcher_runAgent_StreamsEventsProgressively(t *testing.T) {
+	// Asserts the tap renders events as they arrive (NOT all at once after
+	// outcome). Uses agent/fake.WithEmitDelay so emissions are paced.
+	const delay = 50 * time.Millisecond
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").
+		WithEmitDelay(delay).
+		Script(0, fake.Result{
+			Output: map[string]any{"ok": true},
+			Events: []agent.AgentEvent{
+				{Kind: "a"}, {Kind: "b"}, {Kind: "c"},
+			},
+		})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	tap := newTimestampTap()
+	d := &engine.LocalDispatcher{
+		Backend:       container.NewFake(),
+		Handles:       map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver:      &reg,
+		AgentEventTap: tap,
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.AgentStep{ID: "x", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "anthropic/claude-code", With: ir.RawConfig{"prompt": "p"}},
+	}
+
+	start := time.Now()
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_ = start // for clarity; the tap captures wall-clock per write
+
+	writes := tap.Writes()
+	if len(writes) != 3 {
+		t.Fatalf("tap writes = %d, want 3", len(writes))
+	}
+	span := writes[2].At.Sub(writes[0].At)
+	if span < delay {
+		t.Errorf("first→last tap-write span = %v, want ≥ %v (proves tap renders progressively, not buffer-then-burst)", span, delay)
+	}
+
+	// Assert dr.AgentEvents was populated for downstream log writes.
+	// A regression that dropped events into the buffer would fan-out break
+	// silently — the kinds-in-order check pins it.
+	if len(dr.AgentEvents) != 3 {
+		t.Errorf("dr.AgentEvents len = %d, want 3 (events buffered for interpreter agent.event log writes)", len(dr.AgentEvents))
+	}
+	wantKinds := []string{"a", "b", "c"}
+	for i, want := range wantKinds {
+		if i >= len(dr.AgentEvents) {
+			break
+		}
+		if dr.AgentEvents[i].Kind != want {
+			t.Errorf("dr.AgentEvents[%d].Kind = %q, want %q", i, dr.AgentEvents[i].Kind, want)
+		}
+	}
+}
+
+// timestampTap records the wall-clock time of each Write.
+type timestampTap struct {
+	mu sync.Mutex
+	w  []timestampedWrite
+}
+type timestampedWrite struct {
+	Data []byte
+	At   time.Time
+}
+
+func newTimestampTap() *timestampTap { return &timestampTap{} }
+func (t *timestampTap) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dup := make([]byte, len(p))
+	copy(dup, p)
+	t.w = append(t.w, timestampedWrite{Data: dup, At: time.Now()})
+	return len(p), nil
+}
+func (t *timestampTap) Writes() []timestampedWrite {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]timestampedWrite, len(t.w))
+	copy(out, t.w)
+	return out
+}
+
+func TestResolvedInputs_FeedbackField_ZeroValueByDefault(t *testing.T) {
+	var ri engine.ResolvedInputs
+	if ri.Feedback != nil {
+		t.Errorf("Feedback default = %v, want nil", ri.Feedback)
+	}
+}
+
+func TestResolvedInputs_FeedbackField_Populated(t *testing.T) {
+	ri := engine.ResolvedInputs{
+		Feedback: ir.RawConfig{"verified": false, "feedback": "missing detection"},
+	}
+	if ri.Feedback["verified"] != false {
+		t.Errorf("Feedback[verified] = %v, want false", ri.Feedback["verified"])
+	}
+	if ri.Feedback["feedback"] != "missing detection" {
+		t.Errorf("Feedback[feedback] = %v, want %q", ri.Feedback["feedback"], "missing detection")
+	}
+}
+
+func TestLocalDispatcher_runAgent_ThreadFeedback(t *testing.T) {
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"done": true},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	intent := engine.NodeIntent{
+		Path: "gate[0].attempt-2.generate[0]",
+		Node: &ir.AgentStep{ID: "gen", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:     "anthropic/claude-code",
+			With:     ir.RawConfig{"prompt": "do the thing"},
+			Feedback: ir.RawConfig{"verified": false, "feedback": "missing detection"},
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q", dr.Outcome)
+	}
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls len = %d", len(calls))
+	}
+	if calls[0].Feedback == nil {
+		t.Fatal("Feedback = nil; want propagated from ResolvedInputs")
+	}
+	if calls[0].Feedback["feedback"] != "missing detection" {
+		t.Errorf("Feedback[feedback] = %v", calls[0].Feedback["feedback"])
 	}
 }
