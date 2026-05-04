@@ -120,11 +120,19 @@ func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.
 	stderrWriter := streamingWriter{stream: "stderr", out: chunks, accum: nil}
 
 	go func() {
-		defer close(readerDone)
 		// Capture readerErr from stdcopy.StdCopy. Phase 4 surfaced transport
 		// errors (daemon disconnect, malformed multiplex frames) via this
 		// error; slice 5.3 preserves it via ExecResult.Err.
 		_, readerErr := stdcopy.StdCopy(stdoutWriter, stderrWriter, attachResp.Reader)
+		// Close readerDone EXPLICITLY (not via defer) BEFORE waiting on
+		// watcherDone, otherwise we deadlock: defer-based close would fire
+		// only after this goroutine returns, but it can't return because
+		// it's blocked here; meanwhile the watcher's select is blocked
+		// waiting for readerDone to fire. Surfaced in CI integ runs against
+		// real Docker (TestE2E_ComposeContainerStepDispatch,
+		// TestConformanceDockerBackend/bucket9/streamed_exec_demux,
+		// TestCLIRunDockerBackendPauseResumeRoundTrip).
+		close(readerDone)
 		<-watcherDone
 		attachResp.Close()
 
