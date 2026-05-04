@@ -3,6 +3,8 @@ package claude_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -224,6 +226,80 @@ func TestShellQuote_EdgeCases(t *testing.T) {
 				t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLaunch_ErrorMaxStructuredOutputRetries_MapsToErrUnparseableOutput
+// (slice 5.4 Bucket 14b unit-test relocation — revision 5 round 1).
+//
+// Drives the adapter's parser end-to-end against a stream-json fixture
+// whose final result event carries subtype: "error_max_structured_output_retries".
+// Asserts the returned error is *agent.ErrUnparseableOutput so the
+// slice-5.2 dispatcher maps it to retryable_failure.
+//
+// Why this lives here (not in conformance.RunAgentSuite): Anthropic's
+// structured-outputs API enforces schemas at decoding via forced tool
+// calls (Phase 5 design Appendix H), so the error path is rare in
+// practice and not reliably reproducible via prompt. The fixture is
+// derived from sample-stream-success.jsonl (a real captured stream)
+// by substituting only the final result event's subtype — all earlier
+// events are the real captured ones, so the adapter parser sees a
+// realistic prefix.
+func TestLaunch_ErrorMaxStructuredOutputRetries_MapsToErrUnparseableOutput(t *testing.T) {
+	fixturePath := filepath.Join("testdata", "error-max-retries-stream.jsonl")
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	// ProgramExecAny (not ProgramExec): the slice-5.3 adapter's
+	// assembleCommand at agent/claude/launch.go:175 builds a long
+	// command line like `claude -p "<prompt>" --output-format
+	// stream-json --json-schema '...' --no-session-persistence ...`.
+	// ProgramExec keys on EXACT cmd.Run match — would never hit. The
+	// fall-through ProgramExecAny ([container/fake.go:260]) matches
+	// any command the adapter sends.
+	fk := container.NewFake()
+	h, err := fk.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	chunks := []container.IOChunk{{Stream: "stdout", Data: fixture}}
+	fk.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: fixture}, chunks)
+
+	ad, err := claude.New(claude.WithBackend(fk), claude.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "test"}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	schema := ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"answer"},
+		"properties": map[string]any{
+			"answer": map[string]any{"type": "integer"},
+		},
+	}
+
+	events, outcomeCh, lerr := ad.Launch(context.Background(), h, agent.AgentInvocation{
+		NodePath:     "/test/14b-relocated",
+		Uses:         "anthropic/claude-code",
+		With:         ir.RawConfig{"prompt": "any"},
+		OutputSchema: &schema,
+	})
+	if lerr != nil {
+		t.Fatalf("Launch: %v", lerr)
+	}
+	for range events {
+	}
+	oc, ok := <-outcomeCh
+	if !ok {
+		t.Fatal("outcome channel closed without emitting")
+	}
+
+	var target *agent.ErrUnparseableOutput
+	if !errors.As(oc.Err, &target) {
+		t.Errorf("oc.Err = %T %v; want *agent.ErrUnparseableOutput", oc.Err, oc.Err)
 	}
 }
 
