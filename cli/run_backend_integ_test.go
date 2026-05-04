@@ -19,8 +19,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	dockerclient "github.com/docker/docker/client"
 
-	"github.com/valbaudo/awf/agent"
-	"github.com/valbaudo/awf/agent/fake"
+	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/engine"
@@ -168,55 +167,50 @@ func waitForCommittedStep(t *testing.T, stateDir, runID, path string) {
 	}
 }
 
-// TestCLIRunCVEPipelineRealDockerToFirstAgentStep — Phase 4 exit bar:
-// "Appendix A compose lab boots under real Docker."
+// TestCLIRunCVEPipelineRealDockerThroughFirstAgentStep (slice 5.4
+// rename of Phase 4.5's TestCLIRunCVEPipelineRealDockerToFirstAgentStep).
 //
-// Runs `awf run --backend docker testdata/phase3/cve-pipeline.yaml`
-// against real Docker. The cve-pipeline's first step (triage) is an
-// agent step (uses: anthropic/claude-code) which Phase 4 still errors
-// with ErrNodeNotImplemented (Phase 5 closes it).
+// Phase 4.5 asserted the run errored at the first agent step because
+// the dispatcher rejected AgentStep with ErrNodeNotImplemented. Slice 5.2
+// closed that arm; slice 5.3 shipped the Claude adapter. This slice
+// flips the assertion: the first agent step (triage) now COMPLETES
+// under real claude with typed Output the downstream `if` guard reads.
 //
-// Assertion: the log carries a node.failed event at path "triage". If
-// we reached triage's failure, by definition Create succeeded (cli/run.go
-// fails fast on Create errors before any node runs — see the
-// create-handles loop). Structural assertion replaces the original
-// fragile "stderr does NOT contain 'create container'" string-grep per
-// slice-4.5 plan §Major #9.
-//
-// The expected boot envelope (~90 seconds for pull cache miss + 4
-// compose-up services) is informational only; the test relies on the
-// underlying runner / Docker timeouts rather than a wrapping context.
-func TestCLIRunCVEPipelineRealDockerToFirstAgentStep(t *testing.T) {
+// Skips when claude not on PATH, no auth env, OR docker unreachable.
+func TestCLIRunCVEPipelineRealDockerThroughFirstAgentStep(t *testing.T) {
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
 		t.Fatalf("NewClientWithOpts: %v", err)
 	}
 	defer func() { _ = dockerCli.Close() }()
+	if _, perr := dockerCli.Ping(context.Background()); perr != nil {
+		t.Skipf("docker ping: %v", perr)
+	}
+
+	authEnv := map[string]string{}
+	for _, name := range claude.DefaultEnvAllowlist {
+		if v, ok := os.LookupEnv(name); ok {
+			authEnv[name] = v
+		}
+	}
+	if len(authEnv) == 0 {
+		t.Skipf("no Claude auth env var present (set one of %v)", claude.DefaultEnvAllowlist)
+	}
+
 	pullImage(t, dockerCli, alpineDigest)
 
 	stateDir := t.TempDir()
-	// UnixNano suffix makes the runID unique across re-runs in the same
-	// shell session (so a leftover from a prior failed run doesn't collide
-	// with this run's OpenLogExclusive). registerComposeProjectCleanup
-	// operates on the unique `awf-<runID>` container-name prefix.
 	runID := fmt.Sprintf("cve-real-docker-%d", time.Now().UnixNano())
 	registerComposeProjectCleanup(t, dockerCli, runID)
 
-	// Slice 5.1 wires runtime resolution before engine dispatch: an
-	// unregistered `uses:` ref fails at run-start with *ErrAdapterNotFound.
-	// Slice 5.2 wires LocalDispatcher.Resolver in cli/execute.go so the fake
-	// adapter is also consulted at dispatch time. Inject a fake adapter so
-	// both resolution stages succeed and the engine actually reaches the
-	// agent step. The fake's Launch fails ("no scripted result") → the graph
-	// demonstrably reached triage, which proves the Docker lab booted.
-	var reg agent.Registry
-	if err := reg.Register(fake.New("anthropic/claude-code")); err != nil {
-		t.Fatalf("Register fake adapter: %v", err)
-	}
+	// Production code path: AgentEnv populated; no test-injected
+	// Resolver. cli/run.go builds the claude registry from --agent-env
+	// at startup (slice 5.3).
 	runner := &cli.Runner{
 		IDGen:    &clock.Fake{IDs: []string{runID}},
-		Resolver: &reg,
+		AgentEnv: claude.DefaultEnvAllowlist,
 	}
+
 	var stdout, stderr bytes.Buffer
 	rc := runner.Run(
 		[]string{"run", "--state-dir", stateDir, "--backend", "docker",
@@ -224,29 +218,71 @@ func TestCLIRunCVEPipelineRealDockerToFirstAgentStep(t *testing.T) {
 			"testdata/phase3/cve-pipeline.yaml"},
 		&stdout, &stderr,
 	)
-
-	if rc == cli.ExitOK {
-		t.Fatalf("rc = %d, want non-zero (first agent step should error)\nstdout: %s\nstderr: %s", rc, stdout.String(), stderr.String())
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d; want %d (triage should complete; downstream skip is OK)\nstdout:\n%s\nstderr:\n%s",
+			rc, cli.ExitOK, stdout.String(), stderr.String())
 	}
 
-	// Slice 5.2 wires LocalDispatcher.Resolver in cli/execute.go. The fake
-	// adapter registered above is now found at dispatch time; its Launch is
-	// called but has no scripted result for index 0, so it returns
-	// "agent/fake: no scripted result…" which classifies as retryable_failure.
-	// The run ends with OutcomeRetryableFailure and the CLI writes that error
-	// to stderr. "agent/fake" in the output proves the adapter was looked up
-	// and Launch was attempted — i.e. the graph reached the first agent step.
-	combined := stdout.String() + stderr.String()
-	if !strings.Contains(combined, "agent/fake") {
-		t.Fatalf("output missing 'agent/fake' — graph didn't reach the first agent step (adapter Launch not called).\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
+	// Read the log + verify step.triage completed with typed outputs.
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	events, ferr := state.FoldFile(logPath)
+	if ferr != nil {
+		t.Fatalf("state.FoldFile(%s): %v", logPath, ferr)
 	}
-	// Structural proof the lab booted: if Create failed, the error has
-	// "create container" in it (per cli/run.go's create-handles loop). We
-	// reached the agent step, so by construction Create succeeded for every
-	// declared container — the lab compose project booted cleanly.
-	if strings.Contains(combined, "create container") {
-		t.Fatalf("Create failed — the lab compose project did NOT boot.\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
+	var triageCompleted *state.Event
+	for i, ev := range events {
+		// state.Event field is Path (not NodePath) — verified state/event.go:23-32.
+		if ev.Type == "node.completed" && ev.Path == "triage" {
+			triageCompleted = &events[i]
+			break
+		}
 	}
+	if triageCompleted == nil {
+		t.Fatalf("node.completed for 'triage' not found; events: %v", eventPaths(events))
+	}
+	outputs := readNodeCompletedOutputs(t, stateDir, triageCompleted)
+	if _, ok := outputs["web_exploitable"].(bool); !ok {
+		t.Errorf("triage.web_exploitable not bool; got %T (%v)", outputs["web_exploitable"], outputs["web_exploitable"])
+	}
+	if _, ok := outputs["has_source"].(bool); !ok {
+		t.Errorf("triage.has_source not bool; got %T (%v)", outputs["has_source"], outputs["has_source"])
+	}
+}
+
+// readNodeCompletedOutputs decodes the node.completed event's
+// OutputsRef and reads the resulting blob from <stateDir>/blobs.
+//
+// state.Event.Data is the inline json.RawMessage payload — verified
+// state/event.go:23-32. state.OpenBlobs returns *FSBlobs which has no
+// Close method (verified state/blobs.go) — the FS-backed store has no
+// long-lived handles to release, so there's nothing to defer.
+func readNodeCompletedOutputs(t *testing.T, stateDir string, ev *state.Event) map[string]any {
+	t.Helper()
+	var data engine.NodeCompletedData
+	if err := json.Unmarshal(ev.Data, &data); err != nil {
+		t.Fatalf("unmarshal NodeCompletedData: %v", err)
+	}
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
+	if err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	raw, err := blobs.Get(data.OutputsRef)
+	if err != nil {
+		t.Fatalf("blobs.Get(%s): %v", data.OutputsRef, err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal outputs: %v", err)
+	}
+	return out
+}
+
+func eventPaths(events []state.Event) []string {
+	out := make([]string, 0, len(events))
+	for _, ev := range events {
+		out = append(out, ev.Type+"@"+ev.Path)
+	}
+	return out
 }
 
 // TestCLIRunDockerBackendPauseResumeRoundTrip — Phase 4 exit-bar item:
