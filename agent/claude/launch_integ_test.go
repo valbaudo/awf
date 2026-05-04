@@ -19,7 +19,7 @@ import (
 // the host. Returned to WithEnv at adapter construction.
 func hostEnvAllowlist() map[string]string {
 	out := map[string]string{}
-	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+	for _, name := range claude.DefaultEnvAllowlist {
 		if v := os.Getenv(name); v != "" {
 			out[name] = v
 		}

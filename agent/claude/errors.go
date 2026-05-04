@@ -120,3 +120,14 @@ func wrapInvalidConfig(reason string, key string) error {
 // returns from Ref(). Constant so cli/agent_registry.go and unit tests
 // can refer to it without typing the string literal.
 const AdapterRef = "anthropic/claude-code"
+
+// DefaultEnvAllowlist is the canonical set of env-var names claude reads
+// per its auth-precedence docs. Single source of truth for `awf run`'s
+// --agent-env default, `awf resume`'s implicit allowlist, and the integ
+// tests' skipIfNoAuthEnv helper. If Anthropic adds a new auth env var,
+// this is the only place that changes.
+var DefaultEnvAllowlist = []string{
+	"ANTHROPIC_API_KEY",
+	"ANTHROPIC_AUTH_TOKEN",
+	"CLAUDE_CODE_OAUTH_TOKEN",
+}

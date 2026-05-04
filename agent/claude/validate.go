@@ -2,6 +2,7 @@ package claude
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/valbaudo/awf/agent"
@@ -42,12 +43,12 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 
 	// 2. Unknown-key rejection. Walk the map in deterministic order for
 	// reproducible error messages.
-	for _, k := range sortedKeys(with) {
+	for _, k := range slices.Sorted(maps.Keys(with)) {
 		if _, ok := allowedKeys[k]; !ok {
 			return &agent.ErrInvalidConfig{
 				Ref:    AdapterRef,
 				Key:    k,
-				Reason: fmt.Sprintf("unknown with-key (allowed: %v)", sortedKeysOf(allowedKeys)),
+				Reason: fmt.Sprintf("unknown with-key (allowed: %v)", slices.Sorted(maps.Keys(allowedKeys))),
 			}
 		}
 	}
@@ -114,32 +115,9 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		_, haveAPIKey := a.env["ANTHROPIC_API_KEY"]
 		_, haveAuthToken := a.env["ANTHROPIC_AUTH_TOKEN"]
 		if !haveAPIKey && !haveAuthToken {
-			keys := make([]string, 0, len(a.env))
-			for k := range a.env {
-				keys = append(keys, k)
-			}
-			slices.Sort(keys)
-			return &ErrBareRequiresAPIKey{AvailableKeys: keys}
+			return &ErrBareRequiresAPIKey{AvailableKeys: slices.Sorted(maps.Keys(a.env))}
 		}
 	}
 
 	return nil
-}
-
-func sortedKeys(m ir.RawConfig) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
-}
-
-func sortedKeysOf(m map[string]struct{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
 }

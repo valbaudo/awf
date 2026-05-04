@@ -157,9 +157,9 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			outcomeCh <- agent.AgentOutcome{Result: capturedResult}
 		case kind == "unparseable":
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrUnparseableOutput{NodePath: inv.NodePath}}
-		case kind == "auth":
-			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: captureErr}}
-		case kind == "fatal":
+		case kind == "auth", kind == "fatal":
+			// Both auth-failure (subtype:success + is_error:true) and other
+			// extract errors surface as ErrAgentLaunch wrapping captureErr.
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: captureErr}}
 		default: // kind == "" — no result event was seen
 			outcomeCh <- agent.AgentOutcome{Err: &ErrUnexpectedExit{ExitCode: execResult.ExitCode, Stderr: ""}}
@@ -170,8 +170,8 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 }
 
 // assembleCommand builds the full `claude -p ... ` shell-command string.
-// Shell-escapes user-controlled strings via single-quoting (with
-// single-quote-escape via the standard `'\”` trick).
+// Shell-escapes user-controlled strings via POSIX single-quoting (see
+// shellQuote below for the literal escape sequence).
 func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	prompt, ok := inv.With["prompt"].(string)
 	if !ok {
@@ -237,7 +237,8 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 }
 
 // shellQuote single-quotes s for `sh -c` consumption. Embedded single
-// quotes use the POSIX-portable `'\”` trick.
+// quotes are escaped using the POSIX-portable pattern: close-quote,
+// backslash-quote, reopen-quote (see the literal in the body).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
