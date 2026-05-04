@@ -48,6 +48,13 @@ type Fake struct {
 	// The fake's doc-comment anticipated this need at slice-2.2 time but
 	// shipped no mechanism; this is the recording slot.
 	Calls []Cmd
+
+	// "Any" programmed response (slice 5.3 Task 16). Used by tests where
+	// the Cmd.Run is built by the caller (the test's SUBJECT), not the
+	// key to look up. nil = unset; takes effect only as a fall-through
+	// after execTable[cmd.Run] misses.
+	anyExec   *ExecResult
+	anyChunks []IOChunk
 }
 
 // fakeHandle is the per-Create internal state: an in-mem fs map.
@@ -132,10 +139,15 @@ func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (<-chan IOChunk, <-c
 	f.execCalls++
 
 	programmed, ok := f.execTable[cmd.Run]
-	if !ok {
-		return nil, nil, fmt.Errorf("container/fake: Exec: no programmed result for cmd.Run=%q (call ProgramExec first)", cmd.Run)
-	}
 	streamed := f.streamTable[cmd.Run] // may be nil
+	if !ok {
+		if f.anyExec != nil {
+			programmed = *f.anyExec
+			streamed = f.anyChunks
+		} else {
+			return nil, nil, fmt.Errorf("container/fake: Exec: no programmed result for cmd.Run=%q (call ProgramExec first)", cmd.Run)
+		}
+	}
 
 	// Build the two channels. chunks is pre-buffered (deterministic burst is
 	// the Fake's contract); result is 1-buffered. Both are pre-closed so the
@@ -231,6 +243,38 @@ func (f *Fake) ProgramExec(run string, result ExecResult, chunks []IOChunk) {
 			dup[i] = IOChunk{Stream: c.Stream, Data: cloneBytes(c.Data)}
 		}
 		f.streamTable[run] = dup
+	}
+}
+
+// ProgramExecAny is the "match any Cmd.Run" variant of ProgramExec, used
+// by tests where the Cmd.Run is built by the caller and the test only
+// cares about the response (e.g., agent/claude.Launch_test, where the
+// assembled command line is the test SUBJECT, not the lookup key).
+//
+// The fake keeps a single "any" programmed entry; subsequent calls
+// overwrite. Use ProgramExec when you want exact-match lookup. The
+// fall-through in Exec consults anyExec only AFTER execTable[cmd.Run]
+// misses, so ProgramExec entries still win when both are programmed.
+//
+// Defensive-copies bytes per the same discipline as ProgramExec.
+func (f *Fake) ProgramExecAny(result ExecResult, chunks []IOChunk) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stored := ExecResult{
+		ExitCode:  result.ExitCode,
+		AWFOutput: cloneBytes(result.AWFOutput),
+		Stdout:    cloneBytes(result.Stdout),
+		Err:       result.Err,
+	}
+	f.anyExec = &stored
+	if len(chunks) > 0 {
+		dup := make([]IOChunk, len(chunks))
+		for i, c := range chunks {
+			dup[i] = IOChunk{Stream: c.Stream, Data: cloneBytes(c.Data)}
+		}
+		f.anyChunks = dup
+	} else {
+		f.anyChunks = nil
 	}
 }
 
