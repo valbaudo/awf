@@ -64,5 +64,8 @@ jobs:
           docker version
           docker info
 
+      - name: Verify vulnerable-service fixture
+        run: cd cli/testdata/phase5/oracle/vulnerable-service && go test -race -count=1 ./...
+
       - name: Run integration tests
         run: make integ

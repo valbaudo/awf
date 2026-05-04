@@ -1,0 +1,62 @@
+workflow: gate-repair-cve
+version: 1
+input:
+  type: object
+  required: [target_url]
+  additionalProperties: false
+  properties:
+    target_url:
+      type: string
+      description: "Base URL of the vulnerable HTTP service (e.g. http://vulnerable:8080)"
+
+containers:
+  lab:
+    compose: ./oracle/compose.yml
+    service: lab
+
+graph:
+  - gate:
+      generate:
+        - id: exploit
+          container: lab
+          uses: anthropic/claude-code
+          # The {{ evaluate.feedback }} reference below resolves to ""
+          # on attempt 1 (engine/scope.go resolveEvaluate returns empty
+          # when no prior verdict exists); to the prior verdict's
+          # feedback string on attempts 2-3 (Phase 3.3 + slice 5.3
+          # Feedback wiring).
+          with:
+            prompt: |
+              You are a penetration tester targeting an internal HTTP service.
+              Base URL: {{ input.target_url }}
+
+              Goal: write a POSIX shell script at /work/exploit.sh that
+              exfiltrates user data from /api/v1/admin/users. The script
+              takes the base URL as its first argument ($1) and prints
+              the response body to stdout.
+
+              {{ evaluate.feedback }}
+
+              Output: write the script to /work/exploit.sh via the Write
+              tool. The oracle will run /work/exploit.sh "{{ input.target_url }}"
+              and check the output for the admin-data marker.
+            allowed_tools: [Write, Read, Bash]
+            max_turns: 10
+          # No output_schema: nothing downstream references step.exploit.<field>;
+          # the oracle reads /work/exploit.sh directly. Per slice 5.3 plan,
+          # output_schema is required iff a step's typed output is referenced.
+
+      evaluate:
+        - id: run_oracle
+          container: lab
+          run: bash /work/oracle.sh "{{ input.target_url }}"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+
+      until: "{{ evaluate.verified }}"
+      max_attempts: 3

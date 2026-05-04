@@ -1,0 +1,49 @@
+# Slice 5.4 Bucket 14c lab.
+# Both images are Docker Hub official + digest-pinned (publicly
+# reproducible across machines).
+#
+# Readiness model: a SINGLE healthcheck on `lab`. Lab's startup script
+# polls `vulnerable` via curl, then installs claude, then becomes
+# healthy when `command -v claude` succeeds. AWF dispatches docker
+# compose with `up --wait`, so this gates the whole lab readiness.
+# (Verified: container/docker/end_to_end_compose_integ_test.go:19.)
+#
+# No healthcheck on vulnerable — alpine ships neither wget nor curl by
+# default, and adding apk just for a healthcheck is overhead. The
+# lab-side curl-poll handles readiness gating instead.
+#
+# Digest refresh: re-run the slice-5.4 Task 4 shell block to regenerate
+# this file with fresh digests.
+
+services:
+  lab:
+    image: node@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+    working_dir: /work
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        apk add --no-cache bash curl jq
+        until curl -sf http://vulnerable:8080/api/v1/version > /dev/null 2>&1; do
+          sleep 1
+        done
+        npm install -g @anthropic-ai/claude-code@2.1.156 --silent
+        sleep infinity
+    volumes:
+      - ./:/work:rw
+    depends_on:
+      - vulnerable
+    healthcheck:
+      test: ["CMD-SHELL", "command -v claude > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 24      # 24 × 5s = 120s grace (vulnerable boot ~5s + npm install ~30-60s)
+      start_period: 5s
+
+  vulnerable:
+    image: golang@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d
+    working_dir: /src
+    volumes:
+      - ./vulnerable-service:/src:ro
+    command: ["go", "run", "/src/main.go"]
