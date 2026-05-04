@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
@@ -85,5 +86,103 @@ func TestClaudeAdapterSimpleSchemaOutput(t *testing.T) {
 	}
 	if res.Metrics.Cost.USD <= 0 {
 		t.Errorf("Cost.USD = %v, want > 0 (claude reports total_cost_usd)", res.Metrics.Cost.USD)
+	}
+}
+
+func TestClaudeAdapterSubscriptionAuthViaBareFalse(t *testing.T) {
+	skipIfNoClaude(t)
+	skipIfNoAuthEnv(t)
+
+	a, h, _ := newClaudeAdapterForInteg(t)
+
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]",
+		Uses:     claude.AdapterRef,
+		With: ir.RawConfig{
+			"prompt": "Return ok=true.",
+			"bare":   false, // opt out of bare mode — host config pollution acceptable
+		},
+		OutputSchema: &ir.JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"ok"},
+			"properties": map[string]any{
+				"ok": map[string]any{"type": "boolean"},
+			},
+		},
+	}
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v (bare:false should accept subscription auth path)", err)
+	}
+	for range eventCh {
+	}
+	outcome := <-outcomeCh
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if v, ok := outcome.Result.Output["ok"].(bool); !ok || !v {
+		t.Errorf("Output[ok] = %v, want true", outcome.Result.Output["ok"])
+	}
+}
+
+func TestClaudeAdapterRealtimeStreaming(t *testing.T) {
+	skipIfNoClaude(t)
+	skipIfNoAuthEnv(t)
+
+	a, h, _ := newClaudeAdapterForInteg(t)
+
+	// Multi-output prompt to maximize multi-event emission.
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]",
+		Uses:     claude.AdapterRef,
+		With: ir.RawConfig{
+			"prompt": "List the first 5 prime numbers; for each, briefly explain in one sentence why it is prime. Take your time and think carefully.",
+		},
+		OutputSchema: &ir.JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"primes", "explanations"},
+			"properties": map[string]any{
+				"primes":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+				"explanations": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+		},
+	}
+	start := time.Now()
+	// γ contract: Launch returns IMMEDIATELY with events + outcome channels open.
+	// Wall-clock measurements taken inside the range loop reflect REAL event
+	// arrival times — the realtime UX is end-to-end verifiable.
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	var arrivals []time.Duration
+	for range eventCh {
+		arrivals = append(arrivals, time.Since(start))
+	}
+	outcome := <-outcomeCh
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	res := outcome.Result
+
+	if len(arrivals) < 3 {
+		t.Fatalf("got %d events; want >= 3 (proves multi-block stream emission)", len(arrivals))
+	}
+	if arrivals[0] > 5*time.Second {
+		t.Errorf("first event at %v; want < 5s (proves Launch returns events promptly)", arrivals[0])
+	}
+	span := arrivals[len(arrivals)-1] - arrivals[0]
+	if span < time.Second {
+		t.Errorf("first→last span = %v; want >= 1s (proves progressive emission, not batched at end)", span)
+	}
+	primes, ok := res.Output["primes"].([]any)
+	if !ok {
+		t.Fatalf("Output[primes] missing or wrong type: %+v", res.Output)
+	}
+	if len(primes) != 5 {
+		t.Errorf("len(primes) = %d, want 5", len(primes))
 	}
 }
