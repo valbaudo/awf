@@ -36,8 +36,12 @@ func TestBuildAgentRegistry_WithAllowlist_RegistersClaude(t *testing.T) {
 }
 
 func TestBuildAgentRegistry_AllowlistedKeyAbsentFromHost_StillRegisters(t *testing.T) {
-	os.Unsetenv("ANTHROPIC_API_KEY")
-	os.Unsetenv("ANTHROPIC_AUTH_TOKEN")
+	if err := os.Unsetenv("ANTHROPIC_API_KEY"); err != nil {
+		t.Fatalf("Unsetenv ANTHROPIC_API_KEY: %v", err)
+	}
+	if err := os.Unsetenv("ANTHROPIC_AUTH_TOKEN"); err != nil {
+		t.Fatalf("Unsetenv ANTHROPIC_AUTH_TOKEN: %v", err)
+	}
 	be := container.NewFake()
 	reg, err := buildAgentRegistry([]string{"ANTHROPIC_API_KEY"}, be)
 	if err != nil {

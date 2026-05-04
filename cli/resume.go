@@ -180,6 +180,20 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	}
 	defer cleanup()
 
+	// Slice 5.3: if Resolver isn't test-injected, build the production
+	// *agent.Registry from the SAME default --agent-env allowlist `awf
+	// run` uses (per Phase 5 design § E — `awf resume` does not accept
+	// --agent-env; it re-reads env from the host with the standard set).
+	if r.Resolver == nil {
+		envNames := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+		reg, err := buildAgentRegistry(envNames, backend)
+		if err != nil {
+			fprintf(stderr, "awf resume: build agent registry: %v\n", err)
+			return ExitUsage
+		}
+		r.Resolver = reg
+	}
+
 	// Step 6: load + validate + digest the workflow at wfPath. Failures here
 	// are independent of the log — bad path / bad YAML / validator errors all
 	// exit with the usual codes.

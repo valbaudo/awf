@@ -427,3 +427,87 @@ func TestErrRuntimeDrift_AsTarget(t *testing.T) {
 func TestCLIResume_RuntimeDriftHardError(t *testing.T) {
 	t.Skip("End-to-end CLI test deferred until slice 5.2 (AgentStep dispatcher). Slice 5.1's coverage is the unit-level drift check in cli/runtimes_test.go.")
 }
+
+// TestCLIResume_PopulatesResolverFromDefaultAllowlist verifies that `awf
+// resume` (Task 20) builds a production *agent.Registry from the SAME
+// default env-var allowlist used by `awf run` when r.Resolver is nil.
+// Uses a hand-crafted in-flight log (run.started + one node.completed,
+// no run.finished) so the resume call actually reaches the backend
+// resolution + Resolver-population path instead of short-circuiting on
+// a terminal-event refusal.
+func TestCLIResume_PopulatesResolverFromDefaultAllowlist(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
+	stateDir := t.TempDir()
+	runID := "test-resume-populates-resolver"
+
+	// Hand-craft an in-flight log: run.started (with backend=fake) +
+	// node.completed for the only step.
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
+	if err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	ld, err := loader.Load("testdata/phase2/seq.yaml")
+	if err != nil {
+		t.Fatalf("Load fixture: %v", err)
+	}
+	if diags := ir.Validate(ld); ir.HasErrors(diags) {
+		t.Fatalf("fixture invalid: %v", diags)
+	}
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	if err != nil {
+		t.Fatalf("ComputeDigest: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	log, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	runStartedData, _ := json.Marshal(engine.RunStartedData{
+		RunID:          runID,
+		WorkflowDigest: digest,
+		Backend:        "fake",
+	})
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
+		t.Fatalf("Append run.started: %v", err)
+	}
+	stdoutRef, err := blobs.Put([]byte("created marker\n"))
+	if err != nil {
+		t.Fatalf("Put stdout: %v", err)
+	}
+	exit0 := 0
+	completedData, _ := json.Marshal(engine.NodeCompletedData{
+		Outcome: string(engine.OutcomeOK), ExitCode: &exit0, StdoutRef: stdoutRef,
+	})
+	if err := log.Append(state.Event{
+		Type: engine.EventNodeCompleted, Path: "touch_marker", Data: completedData,
+	}); err != nil {
+		t.Fatalf("Append node.completed: %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Resume against the in-flight log. Don't program the fake — the resume
+	// may fail later (e.g. on remaining-step dispatch), but Resolver must
+	// already be populated by the time we look.
+	fake := container.NewFake()
+	fake.ProgramExec("echo step2", container.ExecResult{
+		ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`),
+	}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	r := &cli.Runner{
+		Backend: fake,
+		IDGen:   &clock.Fake{IDs: []string{"unused"}},
+	}
+	var stdout, stderr bytes.Buffer
+	_ = r.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
+	if r.Resolver == nil {
+		t.Error("Resolver still nil after resume; want populated by buildAgentRegistry with default allowlist")
+	}
+}
