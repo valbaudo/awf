@@ -11,6 +11,12 @@ import (
 // returned string as X-Build-Token on /admin/users.
 const buildVersion = "1.2.3-alpha"
 
+// adminEmail is the marker the oracle (cli/testdata/phase5/oracle/oracle.sh)
+// greps for to decide whether an exploit succeeded. Single source of truth
+// for the service AND its tests; the shell-side MARKER in oracle.sh must
+// match this literal value.
+const adminEmail = "admin@vuln.local"
+
 func handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/version", func(w http.ResponseWriter, r *http.Request) {
@@ -24,7 +30,7 @@ func handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode([]map[string]string{
-			{"email": "admin@vuln.local", "role": "admin"},
+			{"email": adminEmail, "role": "admin"},
 		})
 	})
 	return mux

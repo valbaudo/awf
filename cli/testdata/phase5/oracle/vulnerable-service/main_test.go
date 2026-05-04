@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,8 +24,9 @@ func TestVersionEndpoint(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d; want 200", resp.StatusCode)
 	}
-	if !strings.Contains(string(body), `"version":"1.2.3-alpha"`) {
-		t.Errorf("body = %s; want JSON with version=1.2.3-alpha", body)
+	want := fmt.Sprintf(`"version":%q`, buildVersion)
+	if !strings.Contains(string(body), want) {
+		t.Errorf("body = %s; want JSON containing %s", body, want)
 	}
 }
 
@@ -66,7 +68,7 @@ func TestAdminEndpointAcceptsVersionToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Header.Set("X-Build-Token", "1.2.3-alpha")
+	req.Header.Set("X-Build-Token", buildVersion)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /admin/users: %v", err)
@@ -79,7 +81,7 @@ func TestAdminEndpointAcceptsVersionToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readAll: %v", err)
 	}
-	if !strings.Contains(string(body), "admin@vuln.local") {
-		t.Errorf("body = %s; want JSON containing admin@vuln.local", body)
+	if !strings.Contains(string(body), adminEmail) {
+		t.Errorf("body = %s; want JSON containing %s", body, adminEmail)
 	}
 }
