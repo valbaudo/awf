@@ -250,11 +250,13 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// Step 10: append run.started + fsync. Backend field carries the slice-
 	// 4.5 --backend kind so resume can pick the same backend without a flag.
 	runStartedData, err := json.Marshal(engine.RunStartedData{
-		RunID:          id,
-		WorkflowDigest: digest,
-		InputRef:       inputRef,
-		Backend:        *backendKind,
-		Runtimes:       resolvedRuntimes, // Phase 5 slice 5.1
+		RunID:           id,
+		WorkflowDigest:  digest,
+		WorkflowID:      ld.Workflow.ID,      // slice 6.1 — obs awf.workflow.id (standard §9)
+		WorkflowVersion: ld.Workflow.Version, // slice 6.1 — obs awf.workflow.version
+		InputRef:        inputRef,
+		Backend:         *backendKind,
+		Runtimes:        resolvedRuntimes, // Phase 5 slice 5.1
 	})
 	if err != nil {
 		fprintf(stderr, "awf run: marshal run.started: %v\n", err)

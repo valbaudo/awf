@@ -197,11 +197,13 @@ const (
 // vs `"runtimes":[]` wire drift a Phase 5 writer would otherwise create
 // by forgetting to initialize an empty slice.
 type RunStartedData struct {
-	RunID          string            `json:"run_id"`
-	WorkflowDigest string            `json:"workflow_digest"`
-	InputRef       string            `json:"input_ref,omitempty"` // empty if Workflow.Input is nil
-	Backend        string            `json:"backend,omitempty"`   // slice 4.5; "" → BackendDocker on resume
-	Runtimes       []ResolvedRuntime `json:"runtimes,omitempty"`
+	RunID           string            `json:"run_id"`
+	WorkflowDigest  string            `json:"workflow_digest"`
+	WorkflowID      string            `json:"workflow_id,omitempty"`      // slice 6.1 — obs awf.workflow.id (standard §9); empty in pre-6.1 logs
+	WorkflowVersion int               `json:"workflow_version,omitempty"` // slice 6.1 — obs awf.workflow.version; 0 in pre-6.1 logs
+	InputRef        string            `json:"input_ref,omitempty"`        // empty if Workflow.Input is nil
+	Backend         string            `json:"backend,omitempty"`          // slice 4.5; "" → BackendDocker on resume
+	Runtimes        []ResolvedRuntime `json:"runtimes,omitempty"`
 }
 
 // ResolvedRuntime is one element of RunStartedData.Runtimes — a `uses:` ref + the

@@ -663,6 +663,29 @@ func TestAgentEventData_FoldIgnores(t *testing.T) {
 	}
 }
 
+func TestRunStartedWorkflowIDVersionRoundTrip(t *testing.T) {
+	in := RunStartedData{RunID: "r1", WorkflowDigest: "awf-d1:sha256:abc", WorkflowID: "cve-pipeline", WorkflowVersion: 1}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out RunStartedData
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.WorkflowID != "cve-pipeline" || out.WorkflowVersion != 1 {
+		t.Errorf("round-trip = %q/%d, want cve-pipeline/1", out.WorkflowID, out.WorkflowVersion)
+	}
+	// Legacy decode: a pre-6.1 run.started (no workflow_id) yields empty/zero.
+	var legacy RunStartedData
+	if err := json.Unmarshal([]byte(`{"run_id":"r0","workflow_digest":"d"}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.WorkflowID != "" || legacy.WorkflowVersion != 0 {
+		t.Errorf("legacy decode = %q/%d, want empty/0", legacy.WorkflowID, legacy.WorkflowVersion)
+	}
+}
+
 // mustJSON is a test helper — panics on marshal failure (only used with
 // types we control whose marshalling can't actually fail).
 func mustJSON(v any) []byte {
