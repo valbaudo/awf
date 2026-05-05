@@ -74,3 +74,23 @@ func AttemptPath(gatePath string, attempt int) string {
 func ItemPath(mapPath string, item int) string {
 	return fmt.Sprintf("%s.item-%d", mapPath, item)
 }
+
+// ParentPath returns the runtime-address parent of a node path, and false when
+// the node is a top-level child of the run root (no parent segment).
+//
+// Every scope boundary in the runtime address grammar is a '.'-join — control
+// keywords are "keyword[N]" (bracket-bounded, '.'-free), branch labels
+// (.then/.else/.do/.catch/.finally/.body/.generate/.evaluate), iteration
+// suffixes (.iter-N / .attempt-N / .item-N), and step ids (validated '.'-free)
+// — so the parent is the path with its final '.'-segment trimmed. This is the
+// inverse of ir.ChildPath / IterPath / AttemptPath / ItemPath and lives here so
+// the addressing grammar stays one source of truth (CLAUDE.md invariant). obs
+// (Phase 6) walks it to synthesize control-scope spans.
+func ParentPath(path string) (string, bool) {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '.' {
+			return path[:i], true
+		}
+	}
+	return "", false
+}
