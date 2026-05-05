@@ -1,10 +1,12 @@
 package engine_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -202,6 +204,47 @@ func collectRefs(d engine.NodeCompletedData) []string {
 		refs = append(refs, r)
 	}
 	return refs
+}
+
+func TestCommitPersistsMetrics(t *testing.T) {
+	log := state.NewInMemoryLog(clock.System{})
+	blobs := state.NewInMemoryBlobs()
+
+	ms := &agent.MetricSet{Cost: agent.MetricCost{USD: 0.5, Source: agent.CostSourceReported}, Tokens: agent.MetricTokens{Input: 10, Output: 20}, Turns: 1}
+	if _, err := engine.Commit(log, blobs, "triage", engine.DispatchResult{Outcome: engine.OutcomeOK, Outputs: map[string]any{"x": 1}, Metrics: ms}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	last := events[len(events)-1]
+	var d engine.NodeCompletedData
+	if err := json.Unmarshal(last.Data, &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if d.Metrics == nil || d.Metrics.Cost.USD != 0.5 {
+		t.Fatalf("node.completed.Metrics = %+v, want cost 0.5", d.Metrics)
+	}
+}
+
+func TestCommitCodeStepOmitsMetrics(t *testing.T) {
+	log := state.NewInMemoryLog(clock.System{})
+	blobs := state.NewInMemoryBlobs()
+
+	if _, err := engine.Commit(log, blobs, "build", engine.DispatchResult{Outcome: engine.OutcomeOK, Stdout: []byte("done")}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	last := events[len(events)-1]
+	// Metrics omitted from JSON (omitempty) when nil.
+	if bytes.Contains(last.Data, []byte("\"metrics\"")) {
+		t.Errorf("code-step node.completed must omit metrics; got %s", last.Data)
+	}
 }
 
 func mapEqual(a, b map[string]any) bool {

@@ -80,6 +80,7 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult) (N
 		OutputsRef: nr.OutputsRef,
 		StdoutRef:  nr.StdoutRef,
 		Files:      nr.Files,
+		Metrics:    dr.Metrics,
 	}
 	dataJSON, err := json.Marshal(data)
 	if err != nil {

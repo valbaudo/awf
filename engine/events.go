@@ -1,5 +1,7 @@
 package engine
 
+import "github.com/valbaudo/awf/agent"
+
 // Phase 2.1 event-type names — the events the fold dispatches on. These are the
 // wire-format string values stored in state.Event.Type; renaming any of them would
 // invalidate every existing log. The vocabulary expands as later slices add writers:
@@ -246,6 +248,11 @@ type NodeCompletedData struct {
 	OutputsRef string            `json:"outputs_ref,omitempty"`
 	StdoutRef  string            `json:"stdout_ref,omitempty"` // CAS pointer; empty if step produced no stdout (or has none — agent/signal)
 	Files      map[string]string `json:"files,omitempty"`      // declared path → CAS ref
+	// Slice 6.1 — the adapter's per-step metrics, persisted VERBATIM (zero engine
+	// interpretation). nil/omitted for code & signal steps. omitempty keeps
+	// legacy logs decoding to nil (additive, like Backend slice 4.5 / Runtimes
+	// slice 5.1). obs projects this into awf.cost.* / gen_ai.usage.*.
+	Metrics *agent.MetricSet `json:"metrics,omitempty"`
 }
 
 // BranchTakenData is the if-decision marker (spec §5.1). Fold uses Which to know which
