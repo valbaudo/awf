@@ -4,14 +4,18 @@ package engine
 // wire-format string values stored in state.Event.Type; renaming any of them would
 // invalidate every existing log. The vocabulary expands as later slices add writers:
 // 2.4 added "retry.attempt"; 2.5 adds "node.failed" + "run.finished" (terminal events
-// the interpreter / CLI emit). node.started is intentionally deferred — no Phase 2
-// consumer (Phase 6's obs is the natural consumer; the Fold's default-switch-arm
-// means a later writer can land additively without breaking old logs). Phase 3 adds
-// "node.skipped" (3.1), "gate.attempt" (3.3), "map.item" (3.4), and
-// "signal.received" / "run.paused" / "run.cancelled" (3.5). Phase 5 slice 5.2
-// added "agent.event". Still future: "io.chunk" and the Phase 6 obs projection.
+// the interpreter / CLI emit). node.started writer landed in Phase 6 slice 6.1 (obs
+// is the natural consumer; the Fold's default-switch-arm means a later writer can land
+// additively without breaking old logs). Phase 3 adds "node.skipped" (3.1),
+// "gate.attempt" (3.3), "map.item" (3.4), and "signal.received" / "run.paused" /
+// "run.cancelled" (3.5). Phase 5 slice 5.2 added "agent.event". Still future:
+// "io.chunk".
 const (
-	EventRunStarted    = "run.started"
+	EventRunStarted = "run.started"
+	// EventNodeStarted is emitted by the interpreter when a STEP node enters
+	// dispatch (Phase 6 slice 6.1). OBSERVATIONAL — Fold ignores it (default
+	// arm); obs projects it as the START of a two-event span. See NodeStartedData.
+	EventNodeStarted   = "node.started"
 	EventRunResumed    = "run.resumed"
 	EventNodeCompleted = "node.completed"
 	EventBranchTaken   = "branch.taken"
@@ -215,6 +219,17 @@ type ResolvedRuntime struct {
 // the first `awf run`; 2 after the first `awf resume`; …).
 type RunResumedData struct {
 	Epoch uint32 `json:"epoch"`
+}
+
+// NodeStartedData is the payload of a node.started event (Phase 6 slice 6.1).
+// Emitted by the interpreter when a STEP node enters dispatch (after the resume
+// short-circuit, so replayed nodes don't re-emit). Kind is "code" | "agent" |
+// "signal". OBSERVATIONAL — Fold ignores it (default arm); obs projects it as
+// the START of a two-event span, finalized by the matching node.completed /
+// node.failed. A node.started with no terminal event is the Pending/Incomplete
+// (in-flight or crashed) span.
+type NodeStartedData struct {
+	Kind string `json:"kind"`
 }
 
 // NodeCompletedData is the commit-class event: the engine appends this only after the
