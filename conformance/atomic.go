@@ -23,15 +23,17 @@ import (
 // 2's fold (engine.Fold, slice 2.1) is the load-bearing test.
 //
 // Mechanics: FailAppendAfterN(k) crashes the (k+1)-th Append. For a
-// 2-step sequential workflow with no retries, the Append sequence is:
+// 2-step sequential workflow with no retries, the Append sequence is
+// (slice 6.1 added node.started before each node.completed):
 //
-//	k=0: run.started   (we don't crash this — pre-run failure isn't
-//	     the commit-atomicity concern)
-//	k=1: node.completed for step 1 (THE crash we want for step 1)
-//	k=2: node.completed for step 2
+//	k=0: run.started           (we don't crash this)
+//	k=1: node.started step 1   (observational; appendNodeStarted discards error)
+//	k=2: node.completed step 1 (THE crash we want for step 1)
+//	k=3: node.started step 2   (observational; appendNodeStarted discards error)
+//	k=4: node.completed step 2 (THE crash we want for step 2)
 //
-// So k=1 crashes step 1's commit AFTER its Blobs.Put; orphan blobs
-// exist but no node.completed.
+// So k=2 (= crashStep*2) crashes step N's commit AFTER its Blobs.Put;
+// orphan blobs exist but no node.completed.
 func testAtomic(t *testing.T, factory BackendFactory) {
 	t.Helper()
 
@@ -61,12 +63,15 @@ func testAtomic(t *testing.T, factory BackendFactory) {
 			wrappedFactory := preProgramFake(t, factory, programs)
 			h := newHarness(t, wrappedFactory, tinySeqWorkflow)
 
-			// Program FailAppendAfterN(crashStep) on the harness's log.
-			// crashStep=1 → 2nd Append crashes (node.completed_1, after
-			//  run.started). Blobs.Put for step 1 already ran → orphan
-			//  blobs exist.
-			// crashStep=2 → 3rd Append crashes (node.completed_2).
-			h.log.FailAppendAfterN(crashStep)
+			// Slice 6.1: each step now emits node.started (observational,
+			// error discarded) before node.completed. To target stepN's
+			// node.completed: k = crashStep*2 (run.started at k=0, then
+			// node.started+node.completed pairs at k=1,2 and k=3,4).
+			// crashStep=1 → k=2 (node.completed_1, after run.started +
+			//   node.started_1). Blobs.Put for step 1 already ran → orphan
+			//   blobs exist.
+			// crashStep=2 → k=4 (node.completed_2, after step 1 committed).
+			h.log.FailAppendAfterN(crashStep * 2)
 
 			// Run. engine.Run returns non-ok + error — the
 			// interpreter's Commit failure is an internal-error class
@@ -74,7 +79,7 @@ func testAtomic(t *testing.T, factory BackendFactory) {
 			// err). The harness returns whatever engine.Run produced.
 			_, err := h.runWorkflow(t)
 			if err == nil {
-				t.Fatalf("FailAppendAfterN(%d): err = nil, want induced-fault error", crashStep)
+				t.Fatalf("FailAppendAfterN(%d): err = nil, want induced-fault error", crashStep*2)
 			}
 			// The InMemoryLog fault wraps its message with "induced
 			// Append fault" (state/fake.go:36). String-match keeps this

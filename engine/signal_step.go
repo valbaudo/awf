@@ -90,6 +90,8 @@ func runSignalStep(
 		// Skip broker.Receive AND signal.received Append (already journaled);
 		// jump to node.completed at step 7b below.
 	} else {
+		appendNodeStarted(log, path, "signal")
+
 		// 4. Block on broker.Receive.
 		timeout := time.Duration(0)
 		if ss.Timeout != nil {

@@ -283,6 +283,8 @@ func runCodeStep(
 		IdempotencyKey: idemKey,
 	}
 
+	appendNodeStarted(log, path, "code")
+
 	dr, chunks, runErr := RunWithRetry(ctx, dispatcher, intent, policy, clk, log)
 	// Drain the live-tap channel (single consumer — fine for Phase 2's
 	// pre-closed fake channels; Phase 4's Docker streaming will require

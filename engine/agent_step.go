@@ -127,6 +127,8 @@ func runAgentStep(
 		IdempotencyKey: idempotencyKey,
 	}
 
+	appendNodeStarted(log, path, "agent")
+
 	dr, chunks, runErr := RunWithRetry(ctx, dispatcher, intent, policy, clk, log)
 	// Drain via the canonical helper. Agent steps' chunks channel is the
 	// pre-closed one runAgent returns, so this is a no-op on the agent path,
