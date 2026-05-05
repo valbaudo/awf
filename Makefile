@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: build test lint integ
+.PHONY: build test lint integ integ-live
 
 build:
 	go build -o bin/awf ./cmd/awf
@@ -41,5 +41,30 @@ lint:
 # -count=1 disables Go's test caching (integ tests have hidden inputs like
 # daemon state). -race stays on; if a real race surfaces in the Docker SDK,
 # document the specific symptom + SDK version then.
+#
+# COST: `integ` spends NO API money. It builds with -tags=integ only, which
+# EXCLUDES every test carrying the extra `live` constraint (the real-`claude`
+# tier — see `integ-live` below). What runs here is Docker/native exec
+# plumbing + compose lifecycle + the fake-backed conformance buckets: all
+# free. This is the per-PR CI target; .github/workflows/ci.yml runs it.
 integ:
-	go test -race -tags=integ -count=1 -p 1 -timeout=30m ./container/docker/... ./container/native/... ./cli/... ./conformance/... ./agent/claude/...
+	go test -race -tags=integ -count=1 -p 1 -timeout=30m ./container/docker/... ./container/native/... ./cli/... ./conformance/...
+
+# integ-live runs the real-`claude` tier — the handful of tests that exec the
+# actual claude CLI and may spend Anthropic API money. It is LOCAL-ONLY and
+# deliberately NOT referenced by any CI workflow.
+#
+# Why local-only: AWF pins the resolved runtime version and hard-errors on
+# drift (standard §8). It does not monitor what Anthropic ships next — a
+# newer claude is a version you have not adopted, not a regression to catch.
+# So these tests have exactly two trigger conditions: you changed the
+# agent/claude adapter, or you are deliberately bumping the pinned claude
+# version (re-capturing the testdata/*.jsonl cassettes). Outside those, real
+# Claude is already proven and spending money tells you nothing about AWF.
+#
+# The `live` tag is additive over `integ` (-tags='integ live'), so this also
+# pulls in the free Docker/conformance tests; that is fine for a local run.
+# Each live test t.Skips cleanly when `claude` is absent or no auth env var
+# is set, so even `integ-live` is free until you actually have credentials.
+integ-live:
+	go test -race -tags='integ live' -count=1 -p 1 -timeout=30m ./agent/claude/... ./conformance/... ./cli/...
