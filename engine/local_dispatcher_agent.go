@@ -140,12 +140,14 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	}
 
 	exitCodePtr := copyIntPtr(launchOutcome.Result.ExitCode)
+	metrics := launchOutcome.Result.Metrics
 	return DispatchResult{
 		Outcome:     OutcomeOK,
 		ExitCode:    exitCodePtr,
 		Outputs:     launchOutcome.Result.Output,
 		AgentEvents: bufferedEvents,
 		Files:       packFiles(launchOutcome.Result.Files),
+		Metrics:     &metrics,
 	}, closedChunks(), nil
 }
 

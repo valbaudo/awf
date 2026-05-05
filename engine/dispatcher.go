@@ -109,6 +109,12 @@ type DispatchResult struct {
 	// "interpreter is the only writer to state" — the dispatcher does NOT
 	// call Log.Append; it buffers and returns.
 	AgentEvents []agent.AgentEvent
+
+	// Slice 6.1 — the adapter's per-step metrics (cost/tokens/turns), produced
+	// by runAgent from agent.AgentResult.Metrics. nil for code/signal steps.
+	// Commit persists it VERBATIM on node.completed; the engine never
+	// interprets it. obs (Phase 6) projects it into awf.cost.* / gen_ai.usage.*.
+	Metrics *agent.MetricSet
 }
 
 // ErrUnsupportedKind is returned by LocalDispatcher for kinds it doesn't
