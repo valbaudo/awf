@@ -1,4 +1,4 @@
-//go:build integ
+//go:build integ && live
 
 package conformance
 
