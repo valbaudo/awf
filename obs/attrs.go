@@ -17,26 +17,25 @@ const (
 	AttrNodeKind        = "awf.node.kind"  // leaf step spans only — one of the 10 real node kinds
 	AttrScopeKind       = "awf.scope.kind" // synthesized control-scope spans only — structural role (M1)
 	AttrNodeOutcome     = "awf.node.outcome"
-	AttrStepAttempt     = "awf.step.attempt"
-	AttrContainerName   = "awf.container.name"
 	AttrExitCode        = "awf.exit_code"
-	AttrAgentRuntime    = "awf.agent.runtime"
 	AttrAgentTurns      = "awf.agent.turns"
+	AttrBranch          = "awf.branch"
+	AttrLoopIterations  = "awf.loop.iterations"
+	AttrSkipReason      = "awf.skip.reason"
+	AttrGateAttempt     = "awf.gate.attempt"
+	AttrGateStatus      = "awf.gate.status"
 	AttrCostUSD         = "awf.cost.usd"
 	AttrCostSource      = "awf.cost.source"
 	AttrGateAttempts    = "awf.gate.attempts"
 	AttrGateOutcome     = "awf.gate.outcome"
 	AttrRunCostUSD      = "awf.run.cost.usd"
 
-	AttrGenAIProvider      = "gen_ai.provider.name"
-	AttrGenAIRequestModel  = "gen_ai.request.model"
-	AttrGenAIInputTokens   = "gen_ai.usage.input_tokens"
-	AttrGenAIOutputTokens  = "gen_ai.usage.output_tokens"
-	AttrGenAICacheRead     = "gen_ai.usage.cache_read.input_tokens"
-	AttrGenAICacheCreate   = "gen_ai.usage.cache_creation.input_tokens"
-	AttrGenAIFinishReasons = "gen_ai.response.finish_reasons"
-	AttrGenAIConversation  = "gen_ai.conversation.id"
-	AttrSessionID          = "session.id"
+	AttrGenAIInputTokens  = "gen_ai.usage.input_tokens"
+	AttrGenAIOutputTokens = "gen_ai.usage.output_tokens"
+	AttrGenAICacheRead    = "gen_ai.usage.cache_read.input_tokens"
+	AttrGenAICacheCreate  = "gen_ai.usage.cache_creation.input_tokens"
+	AttrGenAIConversation = "gen_ai.conversation.id"
+	AttrSessionID         = "session.id"
 
 	// gen_ai.evaluation.result event (Task 11). Not in the Go semconv package.
 	EventGenAIEvaluation = "gen_ai.evaluation.result"
@@ -44,6 +43,7 @@ const (
 
 	// outcomeIncomplete is the AttrNodeOutcome value on a Pending span (Task 9).
 	outcomeIncomplete = "incomplete"
+	outcomeSkipped    = "skipped"
 )
 
 // stepAttributes builds the attribute map for a leaf step span from its
