@@ -11,12 +11,12 @@ import (
 type RunStatus string
 
 const (
-	RunRunning   RunStatus = "running"    // resolved by the CLI: incomplete + live lock holder
-	RunPaused    RunStatus = "paused"     // run.paused, not subsequently resumed
-	RunFinished  RunStatus = "finished"   // run.finished{ok}
-	RunFailed    RunStatus = "failed"     // run.finished{failed-outcome} OR terminal node.failed
-	RunCancelled RunStatus = "cancelled"  // run.cancelled (terminal)
-	RunCrashed   RunStatus = "crashed"    // resolved by the CLI: incomplete + no live lock holder
+	RunRunning   RunStatus = "running"   // resolved by the CLI: incomplete + live lock holder
+	RunPaused    RunStatus = "paused"    // run.paused, not subsequently resumed
+	RunFinished  RunStatus = "finished"  // run.finished{ok}
+	RunFailed    RunStatus = "failed"    // run.finished{failed-outcome} OR terminal node.failed
+	RunCancelled RunStatus = "cancelled" // run.cancelled (terminal)
+	RunCrashed   RunStatus = "crashed"   // resolved by the CLI: incomplete + no live lock holder
 	// RunIncomplete = started, no terminal event. DeriveStatus stops here; the
 	// CLI resolves it to RunRunning (lock held) or RunCrashed (lock free) via the
 	// sidecar flock probe (cli/runlock.go). DeriveStatus itself is pure / no OS.
