@@ -43,7 +43,7 @@ const (
 	AttrGenAIEvalName    = "gen_ai.evaluation.name"
 
 	// outcomeIncomplete is the AttrNodeOutcome value on a Pending span (Task 9).
-	outcomeIncomplete = "incomplete" //nolint:unused // used in project.go (Task 9)
+	outcomeIncomplete = "incomplete"
 )
 
 // stepAttributes builds the attribute map for a leaf step span from its
