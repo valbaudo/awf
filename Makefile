@@ -1,8 +1,21 @@
 .DEFAULT_GOAL := build
-.PHONY: build test lint integ integ-live
+.PHONY: build test lint integ integ-live man
 
 build:
 	go build -o bin/awf ./cmd/awf
+
+# man builds the troff man pages from their Markdown sources via go-md2man.
+# go-md2man is pinned (the version already in the module graph) so output is
+# reproducible, and is run via `go run` — no system dependency and no go.mod
+# entry, since it is a build tool rather than a library import. Sources
+# (man/*.md) are committed; the generated man/awf.1 and man/awf-workflow.5 are
+# gitignored build artifacts. View locally with e.g. `man ./man/awf.1`.
+MD2MAN := go run github.com/cpuguy83/go-md2man/v2@v2.0.7
+
+man: man/awf.1 man/awf-workflow.5
+
+man/%: man/%.md
+	$(MD2MAN) -in $< -out $@
 
 test:
 	go test -race ./...

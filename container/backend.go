@@ -1,6 +1,6 @@
 // Package container provides the Backend seam — the interface the engine's
 // Dispatcher uses to run commands inside long-lived containers (a single
-// digest-pinned image or a compose project, per AgentWorkflowFormat.md §3).
+// digest-pinned image or a compose project, per awf-workflow(5), CONTAINERS).
 //
 // Phase 2 ships only the interface and an in-memory fake (fake.go); Phase 4
 // adds the Docker impl behind the same interface. Cross-impl conformance is
@@ -241,8 +241,8 @@ type Cmd struct {
 // parses AWFOutput against the step's output_schema for typed outputs;
 // Stdout is exposed via {{ step.<id>.stdout }} substitution.
 //
-// Stderr is intentionally NOT a field — AgentWorkflowFormat §4.1 lists only
-// exit_code and stdout as implicit outputs; §7 never templates stderr. The
+// Stderr is intentionally NOT a field — awf-workflow(5) (Code step) lists only
+// exit_code and stdout as implicit outputs; the templating section never references stderr. The
 // live tap (slice 2.5) and node.failed events (slice 2.4) get stderr via
 // IOChunk{Stream: "stderr"} on the chunk channel.
 type ExecResult struct {

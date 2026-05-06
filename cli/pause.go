@@ -18,7 +18,7 @@ func printPauseUsage(w io.Writer) {
 	fprintln(w, "  --reason <text>       operator-supplied free-text reason")
 	fprintln(w, "  --state-dir <dir>     state directory (default: ./.awf)")
 	fprintln(w, "")
-	fprintln(w, "  note: --before <node-path> (per AgentWorkflowFormat.md §8) is reserved")
+	fprintln(w, "  note: --before <node-path> (per awf-workflow(5)) is reserved")
 	fprintln(w, "  for Phase 6's obs subsystem and is rejected in Phase 3. Pause currently")
 	fprintln(w, "  halts at the next commit boundary only.")
 }
@@ -64,7 +64,7 @@ func cliPause(args []string, stdout, stderr io.Writer) int {
 	// H8 fix: reject --before explicitly. Phase 6 obs ships the breakpoint
 	// mechanism (watches commits in real time); Phase 3 has no machinery to
 	// check "execution reached node path X." Silent accept-and-ignore would
-	// be UX drift from AgentWorkflowFormat.md §8.
+	// be UX drift from awf-workflow(5) (CHECKPOINTING AND RESUME).
 	if *before != "" {
 		fprintf(stderr, "awf pause: --before <node-path> is not yet supported in Phase 3 (lands with Phase 6 obs). Drop the flag to pause at the next commit boundary.\n")
 		return ExitUsage

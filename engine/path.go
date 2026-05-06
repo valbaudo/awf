@@ -47,7 +47,7 @@ func iterPrefix(bodyPath string) string {
 //	IterPath("loop[0].body", 3) → "loop[0].body.iter-3"
 //
 // `iter` is 1-based (the first iteration is iter-1) — matching the design's "iter-3"
-// example in runtime-design §5 and AgentWorkflowFormat.md §8.
+// example in runtime-design §5 and awf-workflow(5) (CHECKPOINTING AND RESUME).
 func IterPath(bodyPath string, iter int) string {
 	return iterPrefix(bodyPath) + strconv.Itoa(iter)
 }

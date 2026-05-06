@@ -2,5 +2,7 @@
 CLAUDE.md
 docs/
 ROADMAP.md
-AgentWorkflowFormat.md
 /bin/
+# Generated man pages (built from man/*.md by `make man`); sources are committed.
+man/*.1
+man/*.5

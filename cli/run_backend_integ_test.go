@@ -193,8 +193,8 @@ func waitForCommittedStep(t *testing.T, stateDir, runID, path string) {
 // Why we use cli's "signal" subcommand (runner.Run) instead of
 // broker.WriteSignal direct: matches the existing TestCLIRunOnSignalFixture
 // pattern (cli/run_test.go:818) and exercises the production signal-
-// delivery path end-to-end. Signals are buffered per AgentWorkflowFormat.md
-// §4.3 — writing the signal BEFORE resume starts is safe; the broker
+// delivery path end-to-end. Signals are buffered per awf-workflow(5)
+// (Signal step) — writing the signal BEFORE resume starts is safe; the broker
 // stores it and the await consumes when reached.
 func TestCLIRunDockerBackendPauseResumeRoundTrip(t *testing.T) {
 	dockerCli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
@@ -337,7 +337,7 @@ graph:
 	}
 
 	// Pre-load the signal that will unblock the await. Signals are
-	// buffered per AgentWorkflowFormat.md §4.3 ("journaled on receipt
+	// buffered per awf-workflow(5) (Signal step) ("journaled on receipt
 	// even before the await is reached, consumed earliest-first per
 	// name, never lost across a restart"). Writing it BEFORE resume
 	// means the engine consumes it as soon as resume reaches the

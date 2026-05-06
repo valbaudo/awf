@@ -1,6 +1,6 @@
 // Package agent provides the Adapter interface — the seam between the
 // engine's dispatcher and external agent CLIs (Claude Code first, per
-// AgentWorkflowFormat.md §4.2 and runtime-design.md §8).
+// awf-workflow(5) (Agent step) and runtime-design.md §8).
 //
 // Phase 5 slice 5.1 ships only the interface, the typed `Registry` value
 // type, the read-only `Resolver` subset, the shared types
