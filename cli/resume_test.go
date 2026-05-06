@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/valbaudo/awf/cli"
@@ -426,6 +427,47 @@ func TestErrRuntimeDrift_AsTarget(t *testing.T) {
 
 func TestCLIResume_RuntimeDriftHardError(t *testing.T) {
 	t.Skip("End-to-end CLI test deferred until slice 5.2 (AgentStep dispatcher). Slice 5.1's coverage is the unit-level drift check in cli/runtimes_test.go.")
+}
+
+func TestResumeRefusesWhenRunLockHeld(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runID := "lk-resume"
+	runDir := filepath.Join(stateDir, "runs", runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Minimal openable log: just run.started.
+	lg, err := state.OpenLog(filepath.Join(runDir, "log"), clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	rsd, _ := json.Marshal(engine.RunStartedData{RunID: runID})
+	if err := lg.Append(state.Event{Type: engine.EventRunStarted, Data: rsd}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = lg.Sync()
+	_ = lg.Close()
+
+	// Hold the run lock as if another process were actively driving the run.
+	lf, err := os.OpenFile(filepath.Join(runDir, "run.lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatalf("open run.lock: %v", err)
+	}
+	defer func() { _ = lf.Close() }()
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("hold lock: %v", err)
+	}
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{IDs: []string{runID}}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("resume of a locked (live) run: rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "already active") {
+		t.Errorf("expected an 'already active' refusal, got: %s", stderr.String())
+	}
 }
 
 // TestCLIResume_PopulatesResolverFromDefaultAllowlist verifies that `awf
