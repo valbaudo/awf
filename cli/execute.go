@@ -73,6 +73,7 @@ func (r *Runner) runAndFinish(
 		ComposeFiles:  ld.ComposeFiles,
 		Resolver:      r.resolverOrEmpty(),
 		AgentEventTap: r.agentEventTap(stderr),
+		StepCostLine:  true,
 	}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout, broker)
 

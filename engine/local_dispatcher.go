@@ -56,6 +56,13 @@ type LocalDispatcher struct {
 	// agent events render with their own per-kind formatting without
 	// interleaving with code-step stdout.
 	AgentEventTap io.Writer
+
+	// StepCostLine, when true, makes runAgent write one cost/token line per
+	// agent step to AgentEventTap (slice 6.2 live renderer). Default false so
+	// engine unit tests' exact tap-write-count assertions are unaffected; the
+	// CLI (cli/execute.go) sets it true. Sourced from the adapter's already-
+	// extracted MetricSet — never parses harness output, never touches obs.
+	StepCostLine bool
 }
 
 // Run executes one attempt of intent.Node. See the Dispatcher interface doc
@@ -321,5 +328,6 @@ func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *Local
 		ComposeFiles:  d.ComposeFiles,
 		Resolver:      d.Resolver,
 		AgentEventTap: d.AgentEventTap,
+		StepCostLine:  d.StepCostLine,
 	}
 }
