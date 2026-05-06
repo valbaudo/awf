@@ -137,6 +137,8 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return cliLS(args[1:], stdout, stderr)
 	case "inspect":
 		return cliInspect(args[1:], stdout, stderr)
+	case "trace":
+		return cliTrace(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return ExitOK

@@ -3,6 +3,7 @@ package obs
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,4 +93,34 @@ func TestNewOTLPProviderConstructs(t *testing.T) {
 		t.Fatalf("NewOTLPProvider: %v", err)
 	}
 	defer func() { _ = tp.Shutdown(context.Background()) }()
+}
+
+func TestExportWithLiftedEventLimitKeepsAllEvents(t *testing.T) {
+	// Build a span with 200 events; the SDK default EventCountLimit=128 would
+	// silently drop 72. The event Name uses a DISTINCT marker ("evtmarker") that
+	// appears in the exported JSON only as the event name — never as an attribute
+	// key/value — so strings.Count is an exact event tally and the test genuinely
+	// FAILS without the lifted limit (a naive count of "awf.agent.event" would
+	// also match the "awf.agent.event.kind" attribute key, double-counting and
+	// passing even at the 128 cap).
+	const totalEvents = 200
+	s := Span{Path: "a1", Name: "a1", Kind: "agent", Status: StatusOK}
+	for i := 0; i < totalEvents; i++ {
+		s.Events = append(s.Events, SpanEvent{Name: "evtmarker", Attributes: map[string]any{"k": "v"}})
+	}
+	var buf bytes.Buffer
+	limits := sdktrace.NewSpanLimits()
+	limits.EventCountLimit = -1
+	limits.AttributePerEventCountLimit = -1
+	tp, err := NewStdoutProviderWithLimits(&buf, limits)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	if err := Export(context.Background(), []Span{s}, tp); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if n := strings.Count(buf.String(), "evtmarker"); n != totalEvents {
+		t.Errorf("exported %d events, want %d (SDK dropped events past the default 128 cap — limit not lifted)", n, totalEvents)
+	}
 }

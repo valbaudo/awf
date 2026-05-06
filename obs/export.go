@@ -87,6 +87,33 @@ func NewOTLPProvider(ctx context.Context, endpoint string) (*sdktrace.TracerProv
 	return sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp))), nil
 }
 
+// NewStdoutProviderWithLimits is NewStdoutProvider with caller-supplied span
+// limits. awf trace --capture-content passes limits with EventCountLimit /
+// AttributePerEventCountLimit lifted (the SDK default is 128), so a long agent
+// run's content span events aren't silently dropped at export.
+func NewStdoutProviderWithLimits(w io.Writer, limits sdktrace.SpanLimits) (*sdktrace.TracerProvider, error) {
+	exp, err := stdouttrace.New(stdouttrace.WithWriter(w), stdouttrace.WithPrettyPrint())
+	if err != nil {
+		return nil, fmt.Errorf("obs.NewStdoutProviderWithLimits: %w", err)
+	}
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+		sdktrace.WithRawSpanLimits(limits),
+	), nil
+}
+
+// NewOTLPProviderWithLimits is NewOTLPProvider with caller-supplied span limits.
+func NewOTLPProviderWithLimits(ctx context.Context, endpoint string, limits sdktrace.SpanLimits) (*sdktrace.TracerProvider, error) {
+	exp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpoint(endpoint), otlptracehttp.WithInsecure())
+	if err != nil {
+		return nil, fmt.Errorf("obs.NewOTLPProviderWithLimits: %w", err)
+	}
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+		sdktrace.WithRawSpanLimits(limits),
+	), nil
+}
+
 // depth counts '.'-separated segments so parents export before children.
 func depth(path string) int {
 	if path == "" {
