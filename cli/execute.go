@@ -105,6 +105,7 @@ func (r *Runner) runAndFinish(
 			fprintf(stderr, "%s: sync log after run.finished: %v\n", opName, err)
 			return ExitUsage
 		}
+		printRunCostSummary(stdout, log)
 	}
 
 	switch outcome {
@@ -118,4 +119,38 @@ func (r *Runner) runAndFinish(
 		fprintf(stderr, "run %s: internal error: %v\n", runID, runErr)
 		return ExitUsage
 	}
+}
+
+// printRunCostSummary folds the just-written log and prints a one-line cost/
+// token rollup — but ONLY when at least one node.completed carried agent
+// metrics, so code-step-only runs print nothing. Sums per-step costs (matching
+// obs's sumLeafCostsUSD); cross-call dedup is obs's rollup concern, not here.
+// Sibling of the Phase-5 live tap: never routes through obs (keeps obs off the
+// hot path). Best-effort — a fold error just suppresses the summary.
+func printRunCostSummary(stdout io.Writer, log state.Log) {
+	events, err := log.Fold()
+	if err != nil {
+		return
+	}
+	var totalUSD float64
+	var inTok, outTok, turns, agentSteps int
+	for _, e := range events {
+		if e.Type != engine.EventNodeCompleted {
+			continue
+		}
+		var d engine.NodeCompletedData
+		if err := json.Unmarshal(e.Data, &d); err != nil || d.Metrics == nil {
+			continue
+		}
+		agentSteps++
+		totalUSD += d.Metrics.Cost.USD
+		inTok += d.Metrics.Tokens.Input
+		outTok += d.Metrics.Tokens.Output
+		turns += d.Metrics.Turns
+	}
+	if agentSteps == 0 {
+		return
+	}
+	fprintf(stdout, "  cost: $%.4f · %d tok (%d in / %d out) · %d turns across %d agent step(s)\n",
+		totalUSD, inTok+outTok, inTok, outTok, turns, agentSteps)
 }
