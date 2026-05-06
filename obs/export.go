@@ -3,10 +3,13 @@ package obs
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -59,6 +62,29 @@ func Export(ctx context.Context, spans []Span, tp *sdktrace.TracerProvider) erro
 		return fmt.Errorf("obs.Export: flush: %w", err)
 	}
 	return nil
+}
+
+// NewStdoutProvider builds a TracerProvider that writes spans to w as JSON via
+// a synchronous SimpleSpanProcessor — the zero-infra default for `awf trace`
+// and the conformance round-trip target. Uses the SDK default ID generator
+// (random); deterministic IDs are a test-only concern (m3), not a prod knob.
+func NewStdoutProvider(w io.Writer) (*sdktrace.TracerProvider, error) {
+	exp, err := stdouttrace.New(stdouttrace.WithWriter(w), stdouttrace.WithPrettyPrint())
+	if err != nil {
+		return nil, fmt.Errorf("obs.NewStdoutProvider: %w", err)
+	}
+	return sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp))), nil
+}
+
+// NewOTLPProvider builds a TracerProvider exporting to an OTLP/HTTP endpoint
+// (e.g. a local collector / Jaeger / Honeycomb). endpoint is host:port (no
+// scheme); WithInsecure for a plaintext local collector.
+func NewOTLPProvider(ctx context.Context, endpoint string) (*sdktrace.TracerProvider, error) {
+	exp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpoint(endpoint), otlptracehttp.WithInsecure())
+	if err != nil {
+		return nil, fmt.Errorf("obs.NewOTLPProvider: %w", err)
+	}
+	return sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp))), nil
 }
 
 // depth counts '.'-separated segments so parents export before children.

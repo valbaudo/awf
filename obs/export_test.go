@@ -1,6 +1,7 @@
 package obs
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -44,11 +45,11 @@ func TestExportReplaysSpansToExporter(t *testing.T) {
 		sdktrace.WithIDGenerator(newSeqIDGen()),
 		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
 	)
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 	if err := Export(context.Background(), spans, tp); err != nil {
 		t.Fatalf("Export: %v", err)
 	}
 	got := exp.GetSpans() // read before Shutdown clears the in-memory exporter
-	_ = tp.Shutdown(context.Background())
 	if len(got) != 3 {
 		t.Fatalf("exported %d spans, want 3", len(got))
 	}
@@ -65,4 +66,30 @@ func TestExportReplaysSpansToExporter(t *testing.T) {
 	if !s1.StartTime.Equal(t0.Add(1 * time.Second)) {
 		t.Errorf("s1 start = %v, want replayed +1s", s1.StartTime)
 	}
+}
+
+func TestStdoutExporterWritesSpans(t *testing.T) {
+	var buf bytes.Buffer
+	tp, err := NewStdoutProvider(&buf)
+	if err != nil {
+		t.Fatalf("NewStdoutProvider: %v", err)
+	}
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	t0 := time.Unix(1000, 0).UTC()
+	spans := []Span{{Path: "s1", Name: "s1", Kind: "code", Start: t0, End: t0.Add(time.Second), Status: StatusOK,
+		Attributes: map[string]any{AttrNodePath: "s1"}}}
+	if err := Export(context.Background(), spans, tp); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("s1")) {
+		t.Errorf("stdout exporter wrote no span; got %q", buf.String())
+	}
+}
+
+func TestNewOTLPProviderConstructs(t *testing.T) {
+	tp, err := NewOTLPProvider(context.Background(), "localhost:4318")
+	if err != nil {
+		t.Fatalf("NewOTLPProvider: %v", err)
+	}
+	defer func() { _ = tp.Shutdown(context.Background()) }()
 }
