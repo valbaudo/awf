@@ -10,17 +10,31 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
-// Project folds an event log into a deterministic span tree. It is a pure
-// function: the same events yield byte-identical []Span (spec D6). Step spans
-// come from node.started → node.completed/node.failed (two-event model); a
-// step started but never finalized is Pending; node.skipped yields a "skipped"
-// marker span. Control-scope spans and the run root are synthesized in later
-// passes (Tasks 10-12).
-//
-// The blobs param is UNUSED in slice 6.1 (named `_`): agent.event *content*
-// projection as span events is opt-in content-capture, deferred to 6.2's
-// `awf trace --capture-content`. 6.1 reads only event timestamps + metadata.
-func Project(events []state.Event, _ state.Blobs) ([]Span, error) {
+// ProjectOptions tunes the projection. CaptureContent (default false) makes
+// ProjectWithOptions dereference agent I/O + typed-output/stdout blobs and
+// attach them to spans (slice 6.2, awf trace --capture-content); when false the
+// blobs param is unused and the output is byte-identical to slice 6.1 (so the
+// conformance byte-identical-replay assertion holds).
+type ProjectOptions struct {
+	CaptureContent bool
+}
+
+// Project is the default projection (no content capture). Preserved signature
+// from slice 6.1; a thin wrapper over ProjectWithOptions.
+func Project(events []state.Event, blobs state.Blobs) ([]Span, error) {
+	return ProjectWithOptions(events, blobs, ProjectOptions{})
+}
+
+// ProjectWithOptions folds an event log into a deterministic span tree (see
+// Project's slice-6.1 contract). With opts.CaptureContent it additionally
+// attaches raw agent I/O (agent.event payloads, inline or via blobs) and the
+// typed-output / stdout blobs as span events / attributes under awf.* — opaque,
+// never parsed (the "obs must not parse harness internals" invariant). Requires
+// a non-nil blobs when CaptureContent is set.
+func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOptions) ([]Span, error) {
+	if opts.CaptureContent && blobs == nil {
+		return nil, fmt.Errorf("obs.ProjectWithOptions: CaptureContent requires a non-nil blob store")
+	}
 	// lastTS is the "as-of" bound for Pending spans (deterministic, not Now()).
 	var lastTS time.Time
 	for _, e := range events {
