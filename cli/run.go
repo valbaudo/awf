@@ -247,6 +247,21 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 
+	// Slice 6.2: hold a sidecar flock for the run's lifetime so `awf ls` can
+	// tell this live run from a crashed one. The kernel releases it on any
+	// death; Release fires on clean exit. The lock is liveness metadata, not
+	// durable state (it never touches the log or blobs).
+	lock, lockErr := acquireRunLock(runDir)
+	if lockErr != nil {
+		if errors.Is(lockErr, ErrRunLockHeld) {
+			fprintf(stderr, "awf run: run id %q is already active in another process\n", id)
+		} else {
+			fprintf(stderr, "awf run: acquire run lock: %v\n", lockErr)
+		}
+		return ExitUsage
+	}
+	defer lock.Release()
+
 	// Step 10: append run.started + fsync. Backend field carries the slice-
 	// 4.5 --backend kind so resume can pick the same backend without a flag.
 	runStartedData, err := json.Marshal(engine.RunStartedData{

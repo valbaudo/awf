@@ -1,0 +1,67 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/obs"
+	"github.com/valbaudo/awf/state"
+)
+
+func TestInspectTextTreeFoldByStatus(t *testing.T) {
+	stateDir := t.TempDir()
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	exit0 := 0
+	writeRunLog(t, stateDir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: d(engine.RunStartedData{RunID: "r1", WorkflowID: "wf"})},
+		state.Event{Type: engine.EventNodeStarted, Path: "ok1", Data: d(engine.NodeStartedData{Kind: "code"})},
+		state.Event{Type: engine.EventNodeCompleted, Path: "ok1", Data: d(engine.NodeCompletedData{Outcome: "ok", ExitCode: &exit0})},
+		state.Event{Type: engine.EventNodeStarted, Path: "bad1", Data: d(engine.NodeStartedData{Kind: "code"})},
+		state.Event{Type: engine.EventNodeFailed, Path: "bad1", Data: d(engine.NodeFailedData{Outcome: "permanent_failure", Error: "boom"})},
+		state.Event{Type: engine.EventRunFinished, Data: d(engine.RunFinishedData{Outcome: "permanent_failure"})},
+	)
+
+	var out, errb bytes.Buffer
+	if rc := cliInspect([]string{"r1", "--state-dir", stateDir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("inspect rc = %d, stderr: %s", rc, errb.String())
+	}
+	text := out.String()
+	for _, needle := range []string{"r1", "ok1", "bad1", "failed", "permanent_failure"} {
+		if !strings.Contains(text, needle) {
+			t.Errorf("inspect text missing %q:\n%s", needle, text)
+		}
+	}
+}
+
+func TestInspectJSONOutput(t *testing.T) {
+	stateDir := t.TempDir()
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	exit0 := 0
+	writeRunLog(t, stateDir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: d(engine.RunStartedData{RunID: "r1"})},
+		state.Event{Type: engine.EventNodeStarted, Path: "s1", Data: d(engine.NodeStartedData{Kind: "code"})},
+		state.Event{Type: engine.EventNodeCompleted, Path: "s1", Data: d(engine.NodeCompletedData{Outcome: "ok", ExitCode: &exit0})},
+		state.Event{Type: engine.EventRunFinished, Data: d(engine.RunFinishedData{Outcome: "ok"})},
+	)
+	var out, errb bytes.Buffer
+	if rc := cliInspect([]string{"r1", "--state-dir", stateDir, "--output", "json"}, &out, &errb); rc != ExitOK {
+		t.Fatalf("inspect rc = %d", rc)
+	}
+	var spans []obs.Span
+	if err := json.Unmarshal(out.Bytes(), &spans); err != nil {
+		t.Fatalf("inspect json: %v\n%s", err, out.String())
+	}
+	if len(spans) == 0 {
+		t.Fatal("inspect --output json produced no spans")
+	}
+}
+
+func TestInspectNoSuchRun(t *testing.T) {
+	var out, errb bytes.Buffer
+	if rc := cliInspect([]string{"ghost", "--state-dir", t.TempDir()}, &out, &errb); rc != ExitUsage {
+		t.Fatalf("inspect missing-run rc = %d, want ExitUsage", rc)
+	}
+}

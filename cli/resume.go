@@ -108,6 +108,21 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = log.Close() }()
 
+	// Slice 6.2: hold the run-lifetime flock for this resume epoch so `awf ls`
+	// sees the run as running again. Refuse if another process already drives
+	// it (double-driving one run corrupts nothing durable but is never intended).
+	runDir := filepath.Join(*stateDir, "runs", runID)
+	lock, lockErr := acquireRunLock(runDir)
+	if lockErr != nil {
+		if errors.Is(lockErr, ErrRunLockHeld) {
+			fprintf(stderr, "awf resume: run %q is already active in another process; refusing to resume a live run\n", runID)
+		} else {
+			fprintf(stderr, "awf resume: acquire run lock: %v\n", lockErr)
+		}
+		return ExitUsage
+	}
+	defer lock.Release()
+
 	// Step 2: fold the log into a populated RunState. The blobs need to be
 	// available so engine.Fold can resolve OutputsRef / StdoutRef / InputRef.
 	blobsDir := filepath.Join(*stateDir, "blobs")

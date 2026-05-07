@@ -41,6 +41,23 @@ const (
 	EventGenAIEvaluation = "gen_ai.evaluation.result"
 	AttrGenAIEvalName    = "gen_ai.evaluation.name"
 
+	// awf.agent.event span-event name (slice 6.2 content capture).
+	EventNameAgentContent = "awf.agent.event"
+
+	// Content-capture attribute names (slice 6.2). STABLE wire contract — never renamed.
+	AttrNodeOutput               = "awf.node.output"
+	AttrNodeOutputRef            = "awf.node.output_ref"
+	AttrNodeOutputError          = "awf.node.output_error"
+	AttrNodeStdout               = "awf.node.stdout"
+	AttrNodeStdoutRef            = "awf.node.stdout_ref"
+	AttrNodeStdoutError          = "awf.node.stdout_error"
+	AttrAgentEventKind           = "awf.agent.event.kind"
+	AttrAgentEventStream         = "awf.agent.event.stream"
+	AttrAgentEventPayload        = "awf.agent.event.payload"
+	AttrAgentEventPayloadRef     = "awf.agent.event.payload_ref"
+	AttrAgentEventPayloadError   = "awf.agent.event.payload_error"
+	AttrAgentEventPayloadPreview = "awf.agent.event.payload_preview"
+
 	// outcomeIncomplete is the AttrNodeOutcome value on a Pending span (Task 9).
 	outcomeIncomplete = "incomplete"
 	outcomeSkipped    = "skipped"

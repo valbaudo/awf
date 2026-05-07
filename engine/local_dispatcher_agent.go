@@ -141,6 +141,9 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 
 	exitCodePtr := copyIntPtr(launchOutcome.Result.ExitCode)
 	metrics := launchOutcome.Result.Metrics
+	if d.StepCostLine && d.AgentEventTap != nil {
+		writeAgentCostLine(d.AgentEventTap, intent.Path, metrics)
+	}
 	return DispatchResult{
 		Outcome:     OutcomeOK,
 		ExitCode:    exitCodePtr,
@@ -197,6 +200,14 @@ func packFiles(files map[string][]byte) []container.CapturedFile {
 		out = append(out, container.CapturedFile{Path: path, Content: content})
 	}
 	return out
+}
+
+// writeAgentCostLine emits one per-step cost/token summary line to the live tap.
+// Best-effort (write errors ignored, like writeAgentEventTap). Sourced from the
+// adapter's MetricSet — no harness parsing, no obs.
+func writeAgentCostLine(w io.Writer, path string, m agent.MetricSet) {
+	_, _ = fmt.Fprintf(w, "[cost] %s: $%.4f · %d tok (%d in / %d out) · %d turns\n",
+		path, m.Cost.USD, m.Tokens.Input+m.Tokens.Output, m.Tokens.Input, m.Tokens.Output, m.Turns)
 }
 
 // writeAgentEventTap emits one line per AgentEvent to the tap writer.

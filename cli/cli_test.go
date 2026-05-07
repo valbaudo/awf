@@ -1,10 +1,22 @@
 package cli_test
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/cli"
 )
+
+func TestPrintUsageListsReadCommands(t *testing.T) {
+	var b bytes.Buffer
+	cli.PrintUsageForTest(&b)
+	for _, cmd := range []string{"ls", "inspect", "trace"} {
+		if !strings.Contains(b.String(), cmd) {
+			t.Errorf("printUsage missing %q:\n%s", cmd, b.String())
+		}
+	}
+}
 
 func TestRunner_AgentEnvField_ZeroValue(t *testing.T) {
 	var r cli.Runner

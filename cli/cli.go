@@ -133,6 +133,12 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return cliPause(args[1:], stdout, stderr)
 	case "cancel":
 		return cliCancel(args[1:], stdout, stderr)
+	case "ls":
+		return cliLS(args[1:], stdout, stderr)
+	case "inspect":
+		return cliInspect(args[1:], stdout, stderr)
+	case "trace":
+		return cliTrace(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return ExitOK
@@ -162,6 +168,19 @@ func printUsage(w io.Writer) {
 	fprintln(w, "                              --state-dir <dir>  state directory")
 	fprintln(w, "  cancel <run-id>           TERMINAL cancel; `awf resume` refuses afterwards")
 	fprintln(w, "                              --reason <text>    operator-supplied reason")
+	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "  ls                        list runs and their derived status")
+	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "                              --output <fmt>     text (default) or json")
+	fprintln(w, "  inspect <run-id>          fold-by-status text tree of a run's addressing tree")
+	fprintln(w, "                              --fold <statuses>  outcomes to collapse (default: ok)")
+	fprintln(w, "                              --depth <n>        max tree depth")
+	fprintln(w, "                              --output <fmt>     text (default) or json")
+	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "  trace <run-id>            export a run's OTel span projection")
+	fprintln(w, "                              --otlp <endpoint>  export to an OTLP/HTTP collector")
+	fprintln(w, "                              --capture-content  attach agent I/O + outputs (default OFF)")
+	fprintln(w, "                              --output <fmt>     otel (default) or json")
 	fprintln(w, "                              --state-dir <dir>  state directory")
 	fprintln(w, "  help                      print this usage")
 }

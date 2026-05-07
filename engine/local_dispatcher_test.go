@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1155,5 +1156,59 @@ func TestLocalDispatcher_runAgent_ThreadFeedback(t *testing.T) {
 	}
 	if calls[0].Feedback["feedback"] != "missing detection" {
 		t.Errorf("Feedback[feedback] = %v", calls[0].Feedback["feedback"])
+	}
+}
+
+func TestLocalDispatcher_runAgent_StepCostLine(t *testing.T) {
+	ctx := context.Background()
+	cfake := container.NewFake()
+	h, err := cfake.Create(ctx, container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fk := fake.New("test/agent").Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+		Cost:   0.0123,
+		Tokens: agent.MetricTokens{Input: 100, Output: 50},
+	})
+	reg := &agent.Registry{}
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	var tapBuf bytes.Buffer
+	disp := &engine.LocalDispatcher{
+		Backend: cfake, Handles: map[string]container.Handle{"lab": h}, Resolver: reg,
+		AgentEventTap: &tapBuf,
+		StepCostLine:  true,
+	}
+	intent := engine.NodeIntent{
+		Path:           "a1",
+		Node:           &ir.AgentStep{ID: "a1", Container: "lab", Uses: "test/agent"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "test/agent"},
+	}
+	if _, _, err := disp.Run(ctx, intent); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	tap := tapBuf.String()
+	if !strings.Contains(tap, "[cost]") || !strings.Contains(tap, "a1") || !strings.Contains(tap, "0.0123") {
+		t.Errorf("tap missing per-step cost line:\n%s", tap)
+	}
+}
+
+func TestLocalDispatcher_runAgent_StepCostLineOffByDefault(t *testing.T) {
+	ctx := context.Background()
+	cfake := container.NewFake()
+	h, _ := cfake.Create(ctx, container.ContainerSpec{Name: "lab"})
+	fk := fake.New("test/agent").Script(0, fake.Result{Output: map[string]any{"ok": true}, Cost: 0.5})
+	reg := &agent.Registry{}
+	_ = reg.Register(fk)
+	var tapBuf bytes.Buffer
+	disp := &engine.LocalDispatcher{Backend: cfake, Handles: map[string]container.Handle{"lab": h}, Resolver: reg, AgentEventTap: &tapBuf}
+	intent := engine.NodeIntent{Path: "a1", Node: &ir.AgentStep{ID: "a1", Container: "lab", Uses: "test/agent"}, ResolvedInputs: engine.ResolvedInputs{Uses: "test/agent"}}
+	if _, _, err := disp.Run(ctx, intent); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(tapBuf.String(), "[cost]") {
+		t.Errorf("cost line emitted with StepCostLine unset:\n%s", tapBuf.String())
 	}
 }

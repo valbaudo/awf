@@ -187,3 +187,32 @@ func TestProjectResumeDoubleStartLastWins(t *testing.T) {
 		t.Errorf("Start = %v, want the LAST node.started (+5s), not the abandoned +1s", s.Start)
 	}
 }
+
+func TestProjectWithOptionsCaptureOffEqualsProject(t *testing.T) {
+	t0 := time.Unix(1000, 0).UTC()
+	exit := 0
+	events := []state.Event{
+		ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "r1"}),
+		ev(t, engine.EventNodeStarted, "s1", t0.Add(time.Second), engine.NodeStartedData{Kind: "code"}),
+		ev(t, engine.EventNodeCompleted, "s1", t0.Add(2*time.Second), engine.NodeCompletedData{Outcome: "ok", ExitCode: &exit}),
+		ev(t, engine.EventRunFinished, "", t0.Add(3*time.Second), engine.RunFinishedData{Outcome: "ok"}),
+	}
+	a, err := Project(events, nil)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	b, err := ProjectWithOptions(events, nil, ProjectOptions{})
+	if err != nil {
+		t.Fatalf("ProjectWithOptions: %v", err)
+	}
+	if len(a) != len(b) {
+		t.Fatalf("span count differs: %d vs %d", len(a), len(b))
+	}
+}
+
+func TestProjectCaptureContentRequiresBlobs(t *testing.T) {
+	_, err := ProjectWithOptions(nil, nil, ProjectOptions{CaptureContent: true})
+	if err == nil {
+		t.Fatal("CaptureContent with nil blobs must error")
+	}
+}

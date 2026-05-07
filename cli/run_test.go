@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1358,6 +1359,36 @@ func TestCLIRun_AgentEnvFlag_EmptyValue_NoClaudeAdapter(t *testing.T) {
 			t.Error("Claude adapter registered with --agent-env=''; want absent")
 		}
 	}
+}
+
+func TestRunReleasesRunLockOnExit(t *testing.T) {
+	fake := container.NewFake()
+	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("echo step2", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`)}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, fake) // IDGen mints "test-run-1"
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("run rc = %d, stderr: %s", rc, stderr.String())
+	}
+
+	lockPath := filepath.Join(stateDir, "runs", "test-run-1", "run.lock")
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("run.lock not created (acquire never happened): %v", err)
+	}
+	// The run finished and Release fired ⇒ a fresh exclusive acquire must succeed.
+	f, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open run.lock: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("run.lock still held after run exit: %v", err)
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
 
 func writeMinimalWorkflow(t *testing.T, dir string) string {
