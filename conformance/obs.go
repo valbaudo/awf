@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/valbaudo/awf/container"
@@ -17,6 +18,8 @@ import (
 func testObs(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	t.Run("span_tree_mirrors_addressing", func(t *testing.T) { testObsSpanTreeMirrorsAddressing(t, factory) })
+	t.Run("byte_identical_replay", func(t *testing.T) { testObsByteIdenticalReplay(t, factory) })
+	t.Run("truncated_log_pending", func(t *testing.T) { testObsTruncatedLogPending(t, factory) })
 }
 
 // obsScopeTreeWorkflow — obs-owned, self-contained (decision 3). An all-ok
@@ -45,8 +48,6 @@ graph:
 
 // findObsSpan returns the span at the given addressing path. (obs's own findSpan
 // is a _test.go symbol, not visible here.)
-//
-//nolint:unused // reserved for sub-tests (b)/(c) added in later slices
 func findObsSpan(spans []obs.Span, path string) (obs.Span, bool) {
 	for _, s := range spans {
 		if s.Path == path {
@@ -153,5 +154,59 @@ func testObsSpanTreeMirrorsAddressing(t *testing.T, factory BackendFactory) {
 		if _, ok := byPath[lp]; !ok {
 			t.Errorf("leaf-event path %q has no span", lp)
 		}
+	}
+}
+
+// testObsByteIdenticalReplay — Regression guarded: introducing wall-clock or
+// map-iteration-order nondeterminism into Project (so two folds of the same log
+// diverge) is caught here at the full engine->log->project path. (Unit-level
+// idempotence is already covered by obs/determinism_test.go; the conformance
+// value is the real-engine-produced log.) A JSON-byte assertion was rejected as
+// redundant — DeepEqual is the stricter relation.
+func testObsByteIdenticalReplay(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	h := runObsScopeFixture(t, factory)
+	spans1, err := obs.Project(mustFoldEvents(t, h), h.blobs)
+	if err != nil {
+		t.Fatalf("obs.Project (first): %v", err)
+	}
+	spans2, err := obs.Project(mustFoldEvents(t, h), h.blobs)
+	if err != nil {
+		t.Fatalf("obs.Project (replay): %v", err)
+	}
+	if !reflect.DeepEqual(spans1, spans2) {
+		t.Fatalf("projection not deterministic on replay")
+	}
+}
+
+// testObsTruncatedLogPending — Regression guarded: failing to mark an
+// unfinalized node.started (no terminal node.completed/failed) as Pending. OTel
+// has no notion of a still-open span at export time; obs derives the
+// in-flight/crashed state from the log and marks the span Pending (spec App. A).
+func testObsTruncatedLogPending(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	h := runObsScopeFixture(t, factory)
+	events := mustFoldEvents(t, h)
+	cut := -1
+	for i, e := range events {
+		if e.Type == engine.EventNodeStarted {
+			cut = i // first node.started is a STEP node (scopes never get node.started)
+			break
+		}
+	}
+	if cut < 0 {
+		t.Fatalf("no node.started event in the log (%d events)", len(events))
+	}
+	startedPath := events[cut].Path
+	spans, err := obs.Project(events[:cut+1], h.blobs) // run.started ... first node.started
+	if err != nil {
+		t.Fatalf("obs.Project (truncated): %v", err)
+	}
+	s, ok := findObsSpan(spans, startedPath)
+	if !ok {
+		t.Fatalf("no span for unfinalized path %q", startedPath)
+	}
+	if !s.Pending {
+		t.Errorf("span %q: Pending = false, want true (started, never finalized)", startedPath)
 	}
 }
