@@ -34,7 +34,8 @@ func testObs(t *testing.T, factory BackendFactory) {
 
 // obsScopeTreeWorkflow — obs-owned, self-contained (decision 3). An all-ok
 // loop with a 2-step body yields a multi-level addressing tree
-// (loop[0] / loop[0].iter-{0,1} scopes + leaf steps) with no gate, no input,
+// (a loop scope + per-iteration body scopes — paths are loop[0].body.iter-N,
+// 1-based — plus leaf steps) with no gate, no input,
 // no agent cost. Used by sub-tests (a)/(b)/(c). Does NOT borrow Bucket 5's
 // gateFeedbackThreadingWorkflow.
 var obsScopeTreeWorkflow = fmt.Sprintf(`workflow: conformance-obs-scope-tree
@@ -105,6 +106,9 @@ func testObsSpanTreeMirrorsAddressing(t *testing.T, factory BackendFactory) {
 		byPath[s.Path] = s
 	}
 	if _, ok := byPath[""]; !ok {
+		// Also covers the connectivity check below: a direct-root-child's
+		// ParentPath returns ("", false) and stops, so root existence is
+		// asserted here rather than in that ancestor walk.
 		t.Fatalf("no root span (Path == %q)", "")
 	}
 
@@ -172,7 +176,8 @@ func testObsSpanTreeMirrorsAddressing(t *testing.T, factory BackendFactory) {
 // diverge) is caught here at the full engine->log->project path. (Unit-level
 // idempotence is already covered by obs/determinism_test.go; the conformance
 // value is the real-engine-produced log.) A JSON-byte assertion was rejected as
-// redundant — DeepEqual is the stricter relation.
+// redundant: DeepEqual already catches the map-iteration / wall-clock
+// divergence that matters here, with no JSON-marshaling dependency.
 func testObsByteIdenticalReplay(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	h := runObsScopeFixture(t, factory)
