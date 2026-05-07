@@ -339,6 +339,37 @@ func testObsLocalExporterRoundTrips(t *testing.T, factory BackendFactory) {
 	}
 }
 
+// testObsGateEvaluationResult — Regression guarded: miswiring gate.attempt ->
+// gen_ai.evaluation.result (wrong event count, name, or outcome/attempts attr).
+// The obs-owned gate rejects on both attempts -> 2 evaluation events, outcome
+// "rejected", attempts 2.
+func testObsGateEvaluationResult(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	h := runObsGateFixture(t, factory)
+	spans, err := obs.Project(mustFoldEvents(t, h), h.blobs)
+	if err != nil {
+		t.Fatalf("obs.Project: %v", err)
+	}
+	gate, ok := findObsSpan(spans, "gate[0]")
+	if !ok {
+		t.Fatalf("no gate span at %q", "gate[0]")
+	}
+	if got := gate.Attributes[obs.AttrGateAttempts]; got != int64(2) {
+		t.Errorf("%s = %v (%T), want int64(2)", obs.AttrGateAttempts, got, got)
+	}
+	if got := gate.Attributes[obs.AttrGateOutcome]; got != "rejected" {
+		t.Errorf("%s = %v, want %q", obs.AttrGateOutcome, got, "rejected")
+	}
+	if len(gate.Events) != 2 {
+		t.Fatalf("gate span has %d events, want 2 (one gen_ai.evaluation.result per attempt)", len(gate.Events))
+	}
+	for i, e := range gate.Events {
+		if e.Name != obs.EventGenAIEvaluation {
+			t.Errorf("gate.Events[%d].Name = %q, want %q", i, e.Name, obs.EventGenAIEvaluation)
+		}
+	}
+}
+
 // obsCostParallelWorkflow — a parallel of two distinct-container agent steps
 // (the validator requires distinct containers for parallel step branches). Both
 // use ref "test/worker"; the bucket scripts BOTH invocation indices with the
@@ -429,36 +460,5 @@ func testObsCostRollupScopeNotSummed(t *testing.T, factory BackendFactory) {
 	}
 	if rollup < leafSum-1e-9 || rollup > leafSum+1e-9 {
 		t.Errorf("root rollup %v != sum of leaf costs %v", rollup, leafSum)
-	}
-}
-
-// testObsGateEvaluationResult — Regression guarded: miswiring gate.attempt ->
-// gen_ai.evaluation.result (wrong event count, name, or outcome/attempts attr).
-// The obs-owned gate rejects on both attempts -> 2 evaluation events, outcome
-// "rejected", attempts 2.
-func testObsGateEvaluationResult(t *testing.T, factory BackendFactory) {
-	t.Helper()
-	h := runObsGateFixture(t, factory)
-	spans, err := obs.Project(mustFoldEvents(t, h), h.blobs)
-	if err != nil {
-		t.Fatalf("obs.Project: %v", err)
-	}
-	gate, ok := findObsSpan(spans, "gate[0]")
-	if !ok {
-		t.Fatalf("no gate span at %q", "gate[0]")
-	}
-	if got := gate.Attributes[obs.AttrGateAttempts]; got != int64(2) {
-		t.Errorf("%s = %v (%T), want int64(2)", obs.AttrGateAttempts, got, got)
-	}
-	if got := gate.Attributes[obs.AttrGateOutcome]; got != "rejected" {
-		t.Errorf("%s = %v, want %q", obs.AttrGateOutcome, got, "rejected")
-	}
-	if len(gate.Events) != 2 {
-		t.Fatalf("gate span has %d events, want 2 (one gen_ai.evaluation.result per attempt)", len(gate.Events))
-	}
-	for i, e := range gate.Events {
-		if e.Name != obs.EventGenAIEvaluation {
-			t.Errorf("gate.Events[%d].Name = %q, want %q", i, e.Name, obs.EventGenAIEvaluation)
-		}
 	}
 }
