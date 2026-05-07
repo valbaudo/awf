@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
-	"strings"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
@@ -42,34 +41,9 @@ func cliTrace(args []string, stdout, stderr io.Writer) int {
 	otlp := fs0.String("otlp", "", "OTLP/HTTP endpoint host:port")
 	output := fs0.String("output", "otel", "output format: otel or json")
 	capture := fs0.Bool("capture-content", false, "attach agent I/O + typed-output/stdout content")
-	// Run-id is the leading positional; extract it before parsing flags (stdlib
-	// flag stops at the first non-flag, so "r1 --flag" would leave --flag unparsed).
-	if len(args) == 0 {
-		printTraceUsage(stderr)
-		return ExitUsage
-	}
-	if strings.HasPrefix(args[0], "-") {
-		// No run-id first: let flag parse so -h/--help → ErrHelp → ExitOK.
-		if err := fs0.Parse(args); errors.Is(err, flag.ErrHelp) {
-			printTraceUsage(stdout)
-			return ExitOK
-		}
-		printTraceUsage(stderr)
-		return ExitUsage
-	}
-	runID := args[0]
-	if err := fs0.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printTraceUsage(stdout)
-			return ExitOK
-		}
-		fprintf(stderr, "awf trace: %v\n", err)
-		printTraceUsage(stderr)
-		return ExitUsage
-	}
-	if fs0.NArg() != 0 {
-		printTraceUsage(stderr)
-		return ExitUsage
+	runID, code, ok := parseRunIDFirst(fs0, args, "awf trace", printTraceUsage, stdout, stderr)
+	if !ok {
+		return code
 	}
 	if *output != "otel" && *output != "json" {
 		fprintf(stderr, "awf trace: unknown --output %q (want otel or json)\n", *output)

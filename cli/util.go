@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"flag"
 	"io"
 	"io/fs"
 	"os"
@@ -24,6 +25,42 @@ func parseCSV(s string) []string {
 		return nil
 	}
 	return out
+}
+
+// parseRunIDFirst parses a "<run-id> [flags]" command line where the run id is
+// the leading positional (stdlib flag stops at the first non-flag, so flags must
+// follow the id). Returns the run id and ok=true to proceed; on any usage problem
+// it prints usage (to stdout for -h/--help → ExitOK, else stderr → ExitUsage) and
+// returns ok=false with the exit code the caller should return. cmd is the
+// "awf <subcommand>" prefix for error messages.
+func parseRunIDFirst(fs *flag.FlagSet, args []string, cmd string, usage func(io.Writer), stdout, stderr io.Writer) (runID string, exit int, ok bool) {
+	if len(args) == 0 {
+		usage(stderr)
+		return "", ExitUsage, false
+	}
+	if strings.HasPrefix(args[0], "-") {
+		if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
+			usage(stdout)
+			return "", ExitOK, false
+		}
+		usage(stderr)
+		return "", ExitUsage, false
+	}
+	runID = args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(stdout)
+			return "", ExitOK, false
+		}
+		fprintf(stderr, "%s: %v\n", cmd, err)
+		usage(stderr)
+		return "", ExitUsage, false
+	}
+	if fs.NArg() != 0 {
+		usage(stderr)
+		return "", ExitUsage, false
+	}
+	return runID, ExitOK, true
 }
 
 // requireRunDir checks that <stateDir>/runs/<runID> exists. Returns ExitOK if

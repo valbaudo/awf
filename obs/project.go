@@ -93,22 +93,7 @@ func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOpt
 				s.Attributes[k] = v
 			}
 			if opts.CaptureContent {
-				if d.OutputsRef != "" {
-					s.Attributes["awf.node.output_ref"] = d.OutputsRef
-					if b, gerr := blobs.Get(d.OutputsRef); gerr != nil {
-						s.Attributes["awf.node.output_error"] = gerr.Error()
-					} else {
-						s.Attributes["awf.node.output"] = boundedString(b, contentInlineCap)
-					}
-				}
-				if d.StdoutRef != "" {
-					s.Attributes["awf.node.stdout_ref"] = d.StdoutRef
-					if b, gerr := blobs.Get(d.StdoutRef); gerr != nil {
-						s.Attributes["awf.node.stdout_error"] = gerr.Error()
-					} else {
-						s.Attributes["awf.node.stdout"] = boundedString(b, contentInlineCap)
-					}
-				}
+				attachNodeCompletedContent(s, d, blobs)
 			}
 
 		case engine.EventNodeFailed:
@@ -172,31 +157,7 @@ func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOpt
 				// Malformed log STRUCTURE is a real fault → abort (M2 invariant).
 				return nil, fmt.Errorf("obs.Project: agent.event at %q: %w", e.Path, err)
 			}
-			s := ensureSpan(byPath, e.Path)
-			attrs := map[string]any{"awf.agent.event.kind": d.Kind}
-			if d.Stream != "" {
-				attrs["awf.agent.event.stream"] = d.Stream
-			}
-			switch {
-			case d.PayloadInline != nil:
-				// Inline payloads are already ≤ the log's 4 KiB offload threshold
-				// (engine.agentEventInlineThreshold); boundedString is defensive
-				// against a corrupt/synthetic oversized inline payload, since the
-				// OTel SDK does not cap attribute value length.
-				attrs["awf.agent.event.payload"] = boundedString(d.PayloadInline, contentInlineCap)
-			case d.PayloadRef != "":
-				// Blob-backed (>4 KiB): emit the CAS ref (full content stays
-				// retrievable, §10) + a BOUNDED preview, never the whole blob.
-				// Degrade on a missing/corrupt CONTENT blob — never abort the
-				// trace (agent.event is non-authoritative; you trace damaged runs).
-				attrs["awf.agent.event.payload_ref"] = d.PayloadRef
-				if b, gerr := blobs.Get(d.PayloadRef); gerr != nil {
-					attrs["awf.agent.event.payload_error"] = gerr.Error()
-				} else {
-					attrs["awf.agent.event.payload_preview"] = boundedString(b, contentPreviewCap)
-				}
-			}
-			s.Events = append(s.Events, SpanEvent{Name: "awf.agent.event", Time: e.TS, Attributes: attrs})
+			attachAgentEventContent(ensureSpan(byPath, e.Path), d, blobs, e.TS)
 
 		case engine.EventNodeSkipped:
 			// node.skipped is emitted for a `skip` node (skip.go:65); it is NOT a
@@ -294,24 +255,4 @@ func collect(byPath map[string]*Span) []Span {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
-}
-
-const (
-	// contentInlineCap bounds an inlined content value. Mirrors the log's
-	// agentEventInlineThreshold (engine, 4096) — beyond this, content lives in a
-	// blob and is referenced, not inlined verbatim (the OTel Go SDK does NOT cap
-	// attribute value length by default, so obs must bound it).
-	contentInlineCap = 4096
-	// contentPreviewCap bounds the preview of blob-backed content (the full bytes
-	// stay retrievable via the emitted CAS ref).
-	contentPreviewCap = 256
-)
-
-// boundedString returns b as a string truncated to limit bytes, with a marker
-// when truncated, so a multi-MB blob never becomes a multi-MB span attribute.
-func boundedString(b []byte, limit int) string {
-	if len(b) <= limit {
-		return string(b)
-	}
-	return string(b[:limit]) + fmt.Sprintf("…[truncated %d bytes]", len(b)-limit)
 }

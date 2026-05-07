@@ -37,36 +37,9 @@ func cliInspect(args []string, stdout, stderr io.Writer) int {
 	foldArg := fs0.String("fold", "ok", "comma list of statuses to collapse")
 	depth := fs0.Int("depth", -1, "max tree depth (-1 = unlimited)")
 	output := fs0.String("output", "text", "output format: text or json")
-	// Extract the positional run-id before parsing flags.
-	// Go's flag package stops at the first non-flag argument, so "r1 --flag"
-	// would leave --flag unparsed if we don't separate them first.
-	if len(args) == 0 {
-		printInspectUsage(stderr)
-		return ExitUsage
-	}
-	if strings.HasPrefix(args[0], "-") {
-		// No run-id first: let flag parse it so -h/--help yields ErrHelp → ExitOK
-		// (consistent with pause/cancel); any other leading flag is "missing run-id".
-		if err := fs0.Parse(args); errors.Is(err, flag.ErrHelp) {
-			printInspectUsage(stdout)
-			return ExitOK
-		}
-		printInspectUsage(stderr)
-		return ExitUsage
-	}
-	runID := args[0]
-	if err := fs0.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printInspectUsage(stdout)
-			return ExitOK
-		}
-		fprintf(stderr, "awf inspect: %v\n", err)
-		printInspectUsage(stderr)
-		return ExitUsage
-	}
-	if fs0.NArg() != 0 {
-		printInspectUsage(stderr)
-		return ExitUsage
+	runID, code, ok := parseRunIDFirst(fs0, args, "awf inspect", printInspectUsage, stdout, stderr)
+	if !ok {
+		return code
 	}
 	if *output != "text" && *output != "json" {
 		fprintf(stderr, "awf inspect: unknown --output %q (want text or json)\n", *output)
