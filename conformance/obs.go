@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"testing"
@@ -8,6 +9,10 @@ import (
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/obs"
+
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // testObs is Bucket 16 (Phase 6 slice 6.3). It locks obs.Project as a
@@ -20,6 +25,8 @@ func testObs(t *testing.T, factory BackendFactory) {
 	t.Run("span_tree_mirrors_addressing", func(t *testing.T) { testObsSpanTreeMirrorsAddressing(t, factory) })
 	t.Run("byte_identical_replay", func(t *testing.T) { testObsByteIdenticalReplay(t, factory) })
 	t.Run("truncated_log_pending", func(t *testing.T) { testObsTruncatedLogPending(t, factory) })
+	t.Run("local_exporter_roundtrips", func(t *testing.T) { testObsLocalExporterRoundTrips(t, factory) })
+	t.Run("gate_evaluation_result", func(t *testing.T) { testObsGateEvaluationResult(t, factory) })
 }
 
 // obsScopeTreeWorkflow — obs-owned, self-contained (decision 3). An all-ok
@@ -208,5 +215,149 @@ func testObsTruncatedLogPending(t *testing.T, factory BackendFactory) {
 	}
 	if !s.Pending {
 		t.Errorf("span %q: Pending = false, want true (started, never finalized)", startedPath)
+	}
+}
+
+// obsVerdictRejectedJSON is obs.go's OWN copy of a rejecting verdict — the same
+// shape as gate.go's verdictRejectedJSON, copied so the obs bucket does not
+// depend on Bucket 5's const (decision 3).
+const obsVerdictRejectedJSON = `{"verified":false,"feedback":"nope"}`
+
+// obsGateRejectedWorkflow — obs-owned, self-contained 1-step-per-block gate whose
+// evaluator always returns obsVerdictRejectedJSON, so it exhausts max_attempts:2
+// and rejects. Emits gate.attempt events + a rich gate scope tree. Used by (d)/(e).
+var obsGateRejectedWorkflow = fmt.Sprintf(`workflow: conformance-obs-gate-rejected
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - gate:
+      generate:
+        - id: gen
+          container: lab
+          run: "./gen.sh"
+          retry: { attempts: 1 }
+      evaluate:
+        - id: eval
+          container: lab
+          run: "./eval.sh"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [verified, feedback]
+            properties:
+              verified: { type: boolean }
+              feedback: { type: string }
+      until: "{{ evaluate.verified }}"
+      max_attempts: 2
+`, fakeImageDigest)
+
+// runObsGateFixture runs obsGateRejectedWorkflow on the fake backend (rejects
+// after 2 attempts) and returns the harness. Used by (d)/(e). The generator
+// command is static "./gen.sh" (no feedback template), so one ProgramExec entry
+// serves both attempts (the fake keys by command).
+func runObsGateFixture(t *testing.T, factory BackendFactory) *harness {
+	t.Helper()
+	pf := preProgramFake(t, factory, []execProgram{
+		{cmd: "./gen.sh", res: container.ExecResult{ExitCode: 0}},
+		{cmd: "./eval.sh", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(obsVerdictRejectedJSON)}},
+	})
+	h := newHarness(t, pf, obsGateRejectedWorkflow)
+	oc, err := h.runWorkflow(t)
+	if oc != engine.OutcomeRejected {
+		t.Fatalf("obs gate fixture: outcome = %q, want %q", oc, engine.OutcomeRejected)
+	}
+	if err == nil {
+		t.Fatalf("obs gate fixture: err = nil, want non-nil (a rejected gate propagates)")
+	}
+	return h
+}
+
+// testObsLocalExporterRoundTrips — Regression guarded: a dropping exporter
+// (span count drifts) or a mangling exporter (attribute VALUE corrupted). The
+// gate scope is found by its awf.node.path ATTRIBUTE, not SpanStub.Name — the
+// OTel span Name is the low-cardinality scope kind "gate".
+func testObsLocalExporterRoundTrips(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	h := runObsGateFixture(t, factory)
+	spans, err := obs.Project(mustFoldEvents(t, h), h.blobs)
+	if err != nil {
+		t.Fatalf("obs.Project: %v", err)
+	}
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)))
+	ctx := context.Background()
+	if err := obs.Export(ctx, spans, tp); err != nil {
+		t.Fatalf("obs.Export: %v", err)
+	}
+	got := exp.GetSpans() // read BEFORE Shutdown clears the store
+	if err := tp.Shutdown(ctx); err != nil {
+		t.Fatalf("TracerProvider.Shutdown: %v", err)
+	}
+
+	if len(got) != len(spans) {
+		t.Fatalf("exporter received %d spans, want %d (one OTel span per obs.Span)", len(got), len(spans))
+	}
+
+	attrVal := func(kvs []attribute.KeyValue, key string) (attribute.Value, bool) {
+		for _, kv := range kvs {
+			if string(kv.Key) == key {
+				return kv.Value, true
+			}
+		}
+		return attribute.Value{}, false
+	}
+	found := false
+	for i := range got {
+		v, ok := attrVal(got[i].Attributes, obs.AttrNodePath)
+		if !ok || v.AsString() != "gate[0]" {
+			continue
+		}
+		found = true
+		outcome, ok := attrVal(got[i].Attributes, obs.AttrGateOutcome)
+		if !ok {
+			t.Fatalf("gate[0] stub missing %s; attrs = %v", obs.AttrGateOutcome, got[i].Attributes)
+		}
+		if outcome.AsString() != "rejected" {
+			t.Errorf("%s = %q, want %q", obs.AttrGateOutcome, outcome.AsString(), "rejected")
+		}
+		break
+	}
+	if !found {
+		t.Fatalf("no exported span with %s == %q", obs.AttrNodePath, "gate[0]")
+	}
+}
+
+// testObsGateEvaluationResult — Regression guarded: miswiring gate.attempt ->
+// gen_ai.evaluation.result (wrong event count, name, or outcome/attempts attr).
+// The obs-owned gate rejects on both attempts -> 2 evaluation events, outcome
+// "rejected", attempts 2.
+func testObsGateEvaluationResult(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	h := runObsGateFixture(t, factory)
+	spans, err := obs.Project(mustFoldEvents(t, h), h.blobs)
+	if err != nil {
+		t.Fatalf("obs.Project: %v", err)
+	}
+	gate, ok := findObsSpan(spans, "gate[0]")
+	if !ok {
+		t.Fatalf("no gate span at %q", "gate[0]")
+	}
+	if got := gate.Attributes[obs.AttrGateAttempts]; got != int64(2) {
+		t.Errorf("%s = %v (%T), want int64(2)", obs.AttrGateAttempts, got, got)
+	}
+	if got := gate.Attributes[obs.AttrGateOutcome]; got != "rejected" {
+		t.Errorf("%s = %v, want %q", obs.AttrGateOutcome, got, "rejected")
+	}
+	if len(gate.Events) != 2 {
+		t.Fatalf("gate span has %d events, want 2 (one gen_ai.evaluation.result per attempt)", len(gate.Events))
+	}
+	for i, e := range gate.Events {
+		if e.Name != obs.EventGenAIEvaluation {
+			t.Errorf("gate.Events[%d].Name = %q, want %q", i, e.Name, obs.EventGenAIEvaluation)
+		}
 	}
 }
