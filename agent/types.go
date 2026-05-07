@@ -112,7 +112,8 @@ type MetricSet struct {
 
 // MetricCost.Source values: an adapter that wraps a harness reporting its
 // own dollar figure (Claude Code's total_cost_usd) stamps CostSourceReported;
-// Phase 6 obs's pricing-table computation stamps CostSourceDerived.
+// a future token-only adapter's derived cost (deferred — no pricing package
+// ships yet; see runtime-design.md §10) would stamp CostSourceDerived.
 const (
 	CostSourceReported = "reported"
 	CostSourceDerived  = "derived"
