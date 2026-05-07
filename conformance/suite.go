@@ -43,6 +43,15 @@
 //     next commit boundary with run.paused appended (signal_pause_halts);
 //     cancel.json appends terminal run.cancelled + returns ErrCancelled
 //     (signal_cancel_terminal).
+//   - Obs (Bucket 16): obs.Project over an obs-owned fake-backend run's folded
+//     log is a deterministic read-only projection — span tree mirrors the
+//     engine/path addressing tree bidirectionally (span_tree_mirrors_addressing);
+//     two projections of the same log are DeepEqual (byte_identical_replay); an
+//     unfinalized node.started yields a Pending span (truncated_log_pending); the
+//     in-memory exporter round-trips a value (local_exporter_roundtrips); a
+//     gate.attempt projects a gen_ai.evaluation.result event (gate_evaluation_result);
+//     a parallel of agent steps rolls up awf.run.cost.usd over leaves only, never
+//     scope spans (cost_rollup_scope_not_summed).
 //
 // Phase 2 calls RunSuite with container.NewFake (conformance_fake_test.go).
 // Slice 4.6 added RunDockerSuite + conformance_docker_test.go for Buckets
@@ -82,4 +91,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
 	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })
+	t.Run("obs", func(t *testing.T) { testObs(t, factory) })
 }
