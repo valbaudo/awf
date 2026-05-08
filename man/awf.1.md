@@ -21,6 +21,12 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **cancel** [**--reason** _text_] [**--state-dir** _dir_] _run-id_
 
+**awf** **ls** [**--state-dir** _dir_] [**--output** _text_|_json_]
+
+**awf** **inspect** _run-id_ [**--state-dir** _dir_] [**--fold** _statuses_] [**--depth** _n_] [**--output** _text_|_json_]
+
+**awf** **trace** _run-id_ [**--state-dir** _dir_] [**--otlp** _endpoint_] [**--capture-content**] [**--output** _otel_|_json_]
+
 **awf** **help**
 
 # DESCRIPTION
@@ -147,6 +153,68 @@ afterward.
 
 **--reason** _text_
 :   Operator note recorded in the journal.
+
+**--state-dir** _dir_
+:   Base directory holding the run (default `./.awf`).
+
+## awf ls
+
+List the runs under _state-dir_/`runs/`, one per line, each with a status derived
+by folding its journal: `running`, `paused`, `finished`, `failed`, `cancelled`,
+or `crashed` (started, no terminal event, and no live process holding the run's
+lock). This command only reads state; it executes nothing.
+
+**--state-dir** _dir_
+:   Base directory holding `runs/` and `blobs/` (default `./.awf`).
+
+**--output** _text_|_json_
+:   Output format. _text_ (default) prints one run per line; _json_ emits a
+    machine-readable array.
+
+## awf inspect _run-id_
+
+Render a run's addressing tree as a text tree, folded by status: `ok` subtrees
+collapse, while `failed`, `rejected`, and `incomplete` subtrees expand, so a
+failing branch stands out. This reads the journal offline and executes nothing.
+
+**--fold** _statuses_
+:   Comma-separated list of node outcomes to collapse (default `ok`).
+
+**--depth** _n_
+:   Maximum tree depth to render (default: unlimited).
+
+**--output** _text_|_json_
+:   _text_ (default) is the folded tree; _json_ emits the underlying span
+    projection.
+
+**--state-dir** _dir_
+:   Base directory holding the run (default `./.awf`).
+
+AWF does **not** offer Temporal-style deterministic replay: resume folds the
+journal and re-runs only the uncommitted frontier, with no author-code
+determinism contract.
+
+## awf trace _run-id_
+
+Project a run's journal into OpenTelemetry spans — one span per addressing-tree
+node, mirroring the resume tree — and export them. By default the spans are
+written to standard output (a zero-infrastructure local exporter); with
+**--otlp** they are sent to a collector instead. This reads the journal offline
+and executes nothing.
+
+**--otlp** _endpoint_
+:   Export to an OTLP/HTTP collector at _host:port_ (plaintext) instead of
+    standard output.
+
+**--capture-content**
+:   Also attach agent I/O (prompts, agent output, stdout) and typed-output
+    values to the spans. Off by default. Combined with **--otlp** this transmits
+    that content — including anything sensitive embedded in prompts — to the
+    collector.
+
+**--output** _otel_|_json_
+:   _otel_ (default) exports spans; _json_ dumps the span projection as JSON, for
+    download or scripting, instead of exporting.
 
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).
