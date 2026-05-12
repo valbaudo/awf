@@ -47,6 +47,12 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 		if ctr.Service != "" && strings.Contains(ctr.Service, "{{") {
 			c.errf(ContainerPath(name, "service"), "AWF1019", catalog["AWF1019"])
 		}
+		if ctr.Snapshot != "" && ctr.Snapshot != "workspace" {
+			c.errf(ContainerPath(name, "snapshot"), "AWF1021", catalog["AWF1021"])
+		}
+		if ctr.Snapshot == "workspace" && ctr.Compose != "" {
+			c.errf(ContainerPath(name, "snapshot"), "AWF1022", catalog["AWF1022"])
+		}
 	}
 
 	// (c) Walk the graph: step-id uniqueness, container-ref resolution (missing OR unresolved),
@@ -141,6 +147,18 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 					c.errf(path, "AWF1019", catalog["AWF1019"])
 				} else {
 					checkContainerRef(v.Container, path, wf, c, true /* required */)
+				}
+			}
+			// AWF1023: snapshot:workspace on the map's fanned-out container would collide
+			// bare-name snapshot keying across per-item instances. Temporary guard until a
+			// later slice designs path-keyed per-item snapshots.
+			if v.Container != "" && !strings.Contains(v.Container, "{{") {
+				bare := v.Container
+				if j := strings.Index(v.Container, ":"); j >= 0 {
+					bare = v.Container[:j]
+				}
+				if ctr, ok := wf.Containers[bare]; ok && ctr.Snapshot == "workspace" {
+					c.errf(path, "AWF1023", catalog["AWF1023"])
 				}
 			}
 			walkStructural(v.Body, ChildPath(parent, "map", i, "body"), wf, c, seen)
