@@ -20,10 +20,9 @@ Agents"][anthropic] describes the **evaluator-optimizer** workflow: one model ge
 evaluates and feeds critique back in a loop. AWF makes that pattern a first-class primitive (the
 gate) and adds the guarantee a self-grading loop can't have: the evaluator is *structurally
 independent* of the generator (a fresh context, or a deterministic check). The verdict is never the
-generator's own self-report. That matters: models favor their own outputs
-[selfpref], and self-refinement *amplifies* that bias instead of fixing it
-[selfbias], so an independent critic (ideally a different model) checks the work
-far more reliably than the generator can check itself.
+generator's own self-report. That matters: models favor their own outputs [selfpref], and
+self-refinement *amplifies* that bias instead of fixing it [selfbias], so an independent critic
+(ideally a different model) checks the work far more reliably than the generator can check itself.
 
 Everything else in AWF exists to serve that check: long-lived containers (the test needs a real
 system to run against), typed outputs (so the check reads validated fields, not fragile text), and
@@ -40,76 +39,118 @@ make man        # optional: build the man pages (then: man ./man/awf.1, man ./ma
 
 ## A first workflow
 
-Here is the whole idea in one file: hand a coding agent a failing test suite and let it fix the
-code, but only call it done when the tests *actually* pass. The test run is the gate, so the agent
-cannot declare victory on its own.
+Three stages that compose into one task: answer a customer support ticket safely. An agent gathers
+the customer's account context, a second agent drafts a reply, and an *independent* LLM judge checks
+that reply against the account and your policy before it is ever sent. The judge is the gate, so the
+agent that wrote the reply never decides whether it is safe to send.
 
 ```yaml
-workflow: fix-the-tests
+workflow: support-reply
 version: 1
 
+input:
+  type: object
+  required: [ticket_id]
+  properties:
+    ticket_id: { type: string }
+
 containers:
-  dev:
-    # an image that ships the kata: a failing test plus a stub to implement
-    image: oci://docker.io/library/python:3.12@sha256:...   # digest-pinned, not a tag
+  desk:
+    image: oci://registry.example.com/support-runner@sha256:...   # digest-pinned, not a tag
 
 graph:
+  # stage 1: gather the customer's account + order context and the relevant policy
+  - id: gather
+    container: desk
+    uses: anthropic/claude-code
+    with: { skill: support-context, ticket: "{{ input.ticket_id }}" }
+    output_files: [/out/context.json]
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [context_path]
+      properties: { context_path: { type: string } }
+
+  # stage 2: draft a reply, judged for accuracy + policy by an independent LLM, repaired until it passes
   - gate:
       generate:
-        - id: fix
-          container: dev
+        - id: draft
+          container: desk
           uses: anthropic/claude-code
-          with:
-            prompt: >
-              The test suite under /work is failing. Fix the code so the tests
-              pass. Do not edit the tests themselves.
-            # on each repair attempt the previous failing output is fed in automatically
-      evaluate:
-        - id: tests
-          container: dev
-          run: ./run-tests.sh        # runs the suite; writes {"passed":bool,"report":string} to $AWF_OUTPUT
+          with: { skill: support-reply, context: "{{ step.gather.context_path }}" }
+          output_files: [/out/reply.md]
           output_schema:
             type: object
             additionalProperties: false
-            required: [passed, report]
+            required: [reply_path]
+            properties: { reply_path: { type: string } }
+      evaluate:
+        # fresh context: sees the customer context and the draft, never the writer's reasoning
+        - id: judge
+          container: desk
+          uses: anthropic/claude-code
+          with: { skill: support-reply-judge, context: "{{ step.gather.context_path }}", reply: "{{ step.draft.reply_path }}" }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [accurate, on_policy, promises_unentitled_refund, answers_the_question, on_brand_tone, feedback]
             properties:
-              passed: { type: boolean }
-              report: { type: string }
-      until: "{{ evaluate.passed }}"
+              accurate:                   { type: boolean }
+              on_policy:                  { type: boolean }
+              promises_unentitled_refund: { type: boolean }
+              answers_the_question:       { type: boolean }
+              on_brand_tone:              { type: boolean }
+              feedback:                   { type: string }
+      until: "{{ evaluate.accurate && evaluate.on_policy && !evaluate.promises_unentitled_refund && evaluate.answers_the_question && evaluate.on_brand_tone }}"
       max_attempts: 4
+
+  # stage 3: post the approved reply to the help desk, idempotently (never double-send)
+  - id: send
+    container: desk
+    run: ./send-reply.sh "{{ input.ticket_id }}" /out/reply.md
+    idempotency_key: "{{ input.ticket_id }}:reply"
 ```
 
-The gate's data flow (generate, evaluate, repair until the real tests pass):
+The data flow (three stages, with the gate's repair loop in the middle):
 
 ```mermaid
 flowchart TD
-    agent["generate: fix<br/>(claude-code agent)"]
-    work[("/work<br/>code + tests")]
-    tests["evaluate: run-tests.sh"]
-    gate{"until: evaluate.passed?"}
-    pass(["gate passes,<br/>flow continues"])
+    ticket["input: support ticket"]
+    gather["stage 1 gather<br/>(claude-code agent)"]
+    ctx[("customer context + policy")]
+    draft["stage 2 generate: draft reply<br/>(claude-code agent)"]
+    judge["evaluate: independent judge<br/>(fresh context: context + draft only)"]
+    verdict{"until: accurate and on-policy and no<br/>unentitled-refund and answers the<br/>question and on-brand tone?"}
+    send["stage 3 send: post reply<br/>(idempotency_key)"]
+    sent(["reply posted to the customer"])
 
-    agent -->|"writes code edits"| work
-    work -->|"source under test"| tests
-    tests -->|"verdict: passed + report"| gate
-    gate -->|"true"| pass
-    gate -->|"false: report fed back (up to max_attempts)"| agent
+    ticket --> gather
+    gather --> ctx
+    ctx --> draft
+    ctx --> judge
+    draft --> judge
+    judge --> verdict
+    verdict -->|"true"| send
+    verdict -->|"false: feedback fed back (up to max_attempts)"| draft
+    send --> sent
 ```
 
 Run it:
 
 ```sh
-bin/awf validate ./fix-the-tests.yaml              # parse + check it is well-formed
-bin/awf run --backend docker ./fix-the-tests.yaml  # execute; --backend docker so it can resume
+bin/awf validate ./support-reply.yaml              # parse + check it is well-formed
+bin/awf run --backend docker ./support-reply.yaml  # execute; --backend docker so it can resume
 ```
 
-Why this is more than a "please fix my tests" script: the **evaluate** block runs the real suite as
-an *independent* judge, so a confident "I fixed it" is never taken on faith. When the tests still
-fail, that output is fed back into the next attempt automatically, and AWF repairs up to
-`max_attempts` times before giving up. If the machine dies mid-run, `awf resume` replays the work
-already committed instead of paying for the agent again. Launching a whole agent CLI as a black-box
-step, gating it with an independent check, and checkpointing the expensive parts is the combination
-AWF puts together that other tools do not.
+Why this is more than a "have an agent answer tickets" script: the middle stage is an independent
+LLM judge that re-reads the draft against the customer's actual account and your policy, making the
+call no keyword check can (is every claim accurate, does it quietly promise a refund the customer is
+not entitled to, does it answer the question, is the tone on-brand). The agent that wrote the reply
+never decides whether it is safe to send; a fresh-context judge does, and on a fail its findings
+feed back so the next draft is conditioned on the critique, up to `max_attempts`. The three stages
+compose through typed outputs and the shared workspace, the approved reply is posted idempotently so
+a retry never double-sends, and each committed stage is checkpointed so a crash never re-pays for
+finished agent work.
 
 ## Documentation
 
