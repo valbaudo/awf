@@ -291,3 +291,10 @@ type SnapshotRef string
 // doesn't implement. Phase 2 fake returns it from Snapshot / Restore. Callers
 // route with errors.Is(err, container.ErrUnsupported).
 var ErrUnsupported = errors.New("container: operation not supported by this backend")
+
+// ErrSnapshotTooLarge is the sentinel for a deterministic snapshot-capacity
+// failure (the workspace diff exceeds the backend's size cap). A backend's
+// concrete too-large error wraps this so callers can errors.Is without
+// importing the concrete backend package. Phase-4 decision 11: this is a
+// permanent_failure (retrying re-runs the step to fail identically).
+var ErrSnapshotTooLarge = errors.New("snapshot diff exceeds the backend size limit")

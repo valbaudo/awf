@@ -15,6 +15,7 @@ import (
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/state"
 )
 
 func newDispatcher(t *testing.T) (*engine.LocalDispatcher, *container.Fake, container.Handle) {
@@ -1223,5 +1224,55 @@ func TestContainerSpecForCarriesSnapshot(t *testing.T) {
 	}
 	if got := engine.ContainerSpecFor(wf, nil, "plain").Snapshot; got != "" {
 		t.Errorf("plain spec Snapshot = %q, want \"\"", got)
+	}
+}
+
+func TestDispatcherCapturesSnapshotOnEligibleOkStep(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	fake := container.NewFake().WithBlobs(blobs)
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	h, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "ws", Snapshot: "workspace"})
+	d := &engine.LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"ws": h}}
+	intent := engine.NodeIntent{
+		Path: "s1", Node: &ir.CodeStep{ID: "s1", Container: "ws", Run: "true"},
+		ResolvedInputs: engine.ResolvedInputs{Command: "true", Env: map[string]string{}, Snapshot: "workspace"},
+	}
+	dr, ch, err := d.Run(context.Background(), intent)
+	for range ch {
+	}
+	if err != nil || dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Run: outcome=%q err=%v", dr.Outcome, err)
+	}
+	if dr.SnapshotRef == "" || dr.Container != "ws" {
+		t.Errorf("dr = {ref:%q, container:%q}, want non-empty ref + ws", dr.SnapshotRef, dr.Container)
+	}
+
+	// Non-eligible step must NOT capture.
+	intent.ResolvedInputs.Snapshot = ""
+	dr2, ch2, _ := d.Run(context.Background(), intent)
+	for range ch2 {
+	}
+	if dr2.SnapshotRef != "" {
+		t.Errorf("non-eligible SnapshotRef = %q, want empty", dr2.SnapshotRef)
+	}
+}
+
+func TestDispatcherSnapshotTerminalErrorIsPermanent(t *testing.T) {
+	// A backend that cannot snapshot (no blobs wired → Snapshot returns
+	// container.ErrUnsupported, a terminal condition) yields permanent_failure,
+	// not retryable — retrying would re-run the whole step to fail identically.
+	fake := container.NewFake() // NO WithBlobs ⇒ Snapshot returns ErrUnsupported
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	h, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "ws", Snapshot: "workspace"})
+	d := &engine.LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"ws": h}}
+	intent := engine.NodeIntent{
+		Path: "s1", Node: &ir.CodeStep{ID: "s1", Container: "ws", Run: "true"},
+		ResolvedInputs: engine.ResolvedInputs{Command: "true", Env: map[string]string{}, Snapshot: "workspace"},
+	}
+	dr, ch, _ := d.Run(context.Background(), intent)
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Errorf("terminal snapshot error: outcome=%q, want permanent_failure", dr.Outcome)
 	}
 }

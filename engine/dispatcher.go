@@ -119,6 +119,14 @@ type DispatchResult struct {
 	// Commit persists it VERBATIM on node.completed; the engine never
 	// interprets it. obs (Phase 6) projects it into awf.cost.* / gen_ai.usage.*.
 	Metrics *agent.MetricSet
+
+	// SnapshotRef is the CoW workspace diff captured by the dispatcher after a
+	// successful exec, for a snapshot:workspace container (empty otherwise).
+	// The Backend already Put it to Blobs; Commit records it, never re-Puts.
+	SnapshotRef string
+	// Container is the step's bare container name (for node.completed.container —
+	// resume's snapshot→container mapping + obs's awf.container.name).
+	Container string
 }
 
 // ErrUnsupportedKind is returned by LocalDispatcher for kinds it doesn't

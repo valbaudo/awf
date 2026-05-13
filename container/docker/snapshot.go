@@ -39,6 +39,14 @@ func (e *ErrSnapshotTooLarge) Error() string {
 	return fmt.Sprintf("container/docker: snapshot exceeded size cap: writing %q pushed compressed total to %d bytes (cap %d bytes); set WithSnapshotMaxBlobBytes to raise", e.Path, e.Size, e.Limit)
 }
 
+// Is reports the docker too-large error as the package-level
+// container.ErrSnapshotTooLarge sentinel, so the engine can classify it as a
+// permanent_failure via errors.Is without importing this concrete type
+// (Phase-4 decision 11; keeps the classification behind the container seam).
+func (e *ErrSnapshotTooLarge) Is(target error) bool {
+	return target == container.ErrSnapshotTooLarge
+}
+
 // snapshotCmdSpec captures the effective Cmd/Entrypoint of a container at
 // Snapshot time, serialized into the SnapshotRef so Restore can re-create
 // the container with the same runtime configuration. omitempty JSON tags
