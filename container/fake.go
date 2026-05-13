@@ -2,9 +2,24 @@ package container
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 )
+
+// blobStore is a minimal CAS interface so container/fake stays free of any AWF
+// package import (container depends on no other AWF package — see backend.go
+// pkg doc). state.Blobs / state.InMemoryBlobs satisfy it structurally.
+type blobStore interface {
+	Put([]byte) (string, error)
+	Get(string) ([]byte, error)
+}
+
+// RestoreCall records one Restore invocation (test assertion aid).
+type RestoreCall struct {
+	Name string
+	Ref  SnapshotRef
+}
 
 // Fake is the in-memory Backend used by Phase 2 engine tests and the
 // conformance suite (slice 2.6). Deterministic: monotonic-counter handle
@@ -55,6 +70,16 @@ type Fake struct {
 	// after execTable[cmd.Run] misses.
 	anyExec   *ExecResult
 	anyChunks []IOChunk
+
+	// blobs, when non-nil (set via WithBlobs), is the CAS store the fake
+	// serializes a container's in-mem fs into on Snapshot and reads back on
+	// Restore — the durable path that survives the conformance harness's
+	// run→resume fake recreation (slice 7.1). nil = SnapshotNone / ErrUnsupported.
+	blobs blobStore
+
+	// RestoreCalls records every Restore invocation, in order (test assertion
+	// aid — mirrors Calls for Exec).
+	RestoreCalls []RestoreCall
 }
 
 // fakeHandle is the per-Create internal state: an in-mem fs map.
@@ -69,8 +94,27 @@ func NewFake() *Fake {
 	return &Fake{handles: map[string]*fakeHandle{}}
 }
 
-func (*Fake) Capabilities() Caps {
-	// Phase 2 fake never snapshots — Snapshot/Restore return ErrUnsupported.
+// WithBlobs wires a CAS store so the fake can serialize a container's in-mem
+// filesystem into Blobs on Snapshot and read it back on Restore — the durable
+// path that survives the run→resume fake recreation (the conformance harness
+// mints a fresh Fake for run and another for resume, but the same state.Blobs
+// survives). Without it the fake advertises SnapshotNone and Snapshot/Restore
+// return ErrUnsupported (preserving the Phase 2 default). Returns f for chaining.
+func (f *Fake) WithBlobs(b blobStore) *Fake {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blobs = b
+	return f
+}
+
+func (f *Fake) Capabilities() Caps {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Without an injected CAS store the fake cannot persist a snapshot across
+	// the run→resume fake recreation, so it advertises no snapshot facility.
+	if f.blobs != nil {
+		return Caps{Snapshot: SnapshotFSCoW}
+	}
 	return Caps{Snapshot: SnapshotNone}
 }
 
@@ -197,12 +241,65 @@ func (f *Fake) CaptureFiles(ctx context.Context, h Handle, paths []string) ([]Ca
 	return out, nil
 }
 
-func (*Fake) Snapshot(_ context.Context, _ Handle) (SnapshotRef, error) {
-	return "", ErrUnsupported
+// Snapshot serializes the handle's in-mem files to JSON and Puts them to the
+// injected Blobs store, returning the CAS ref. Without an injected store
+// (WithBlobs not called) returns ErrUnsupported — the Phase 2 default.
+//
+// The real Docker backend captures a CoW *diff*; the fake serializes the whole
+// file map. This exercises the capture→CAS→ref WIRING (slice 7.1's
+// snapshot:workspace round-trip), not Docker's diff fidelity, which the Docker
+// tests own.
+func (f *Fake) Snapshot(_ context.Context, h Handle) (SnapshotRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.blobs == nil {
+		return "", ErrUnsupported
+	}
+	fh, ok := f.handles[h.ID]
+	if !ok {
+		return "", fmt.Errorf("container/fake: Snapshot: unknown handle %q", h.ID)
+	}
+	raw, err := json.Marshal(fh.files)
+	if err != nil {
+		return "", fmt.Errorf("container/fake: Snapshot: marshal files: %w", err)
+	}
+	ref, err := f.blobs.Put(raw)
+	if err != nil {
+		return "", fmt.Errorf("container/fake: Snapshot: put: %w", err)
+	}
+	return SnapshotRef(ref), nil
 }
 
-func (*Fake) Restore(_ context.Context, _ SnapshotRef, _ string) (Handle, error) {
-	return Handle{}, ErrUnsupported
+// Restore reads the serialized files from the injected Blobs store and creates
+// a fresh handle preloaded with them; records the call in RestoreCalls. Without
+// an injected store returns ErrUnsupported — the Phase 2 default. The restored
+// handle is built exactly as Create builds one (monotonic-ID key into handles),
+// so CaptureFiles works on it unchanged.
+func (f *Fake) Restore(_ context.Context, ref SnapshotRef, name string) (Handle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.blobs == nil {
+		return Handle{}, ErrUnsupported
+	}
+	// Record before Get (mirroring Exec/Calls): the restore was *requested* with
+	// this (name, ref), so a test asserting on RestoreCalls observes it even if
+	// the lookup fails. Don't move this past the error checks.
+	f.RestoreCalls = append(f.RestoreCalls, RestoreCall{Name: name, Ref: ref})
+	raw, err := f.blobs.Get(string(ref))
+	if err != nil {
+		return Handle{}, fmt.Errorf("container/fake: Restore: get %q: %w", ref, err)
+	}
+	var files map[string][]byte
+	if err := json.Unmarshal(raw, &files); err != nil {
+		return Handle{}, fmt.Errorf("container/fake: Restore: unmarshal: %w", err)
+	}
+	if files == nil {
+		files = map[string][]byte{}
+	}
+	f.nextID++
+	id := fmt.Sprintf("fake-%d", f.nextID)
+	f.handles[id] = &fakeHandle{files: files}
+	return Handle{Name: name, ID: id}, nil
 }
 
 func (f *Fake) Destroy(_ context.Context, h Handle) error {
