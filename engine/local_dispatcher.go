@@ -268,6 +268,7 @@ func ContainerSpecFor(wf *ir.Workflow, composeFiles map[string][]byte, name stri
 	// Image-mode.
 	if c.Image != "" {
 		spec.Image = c.Image
+		spec.Snapshot = c.Snapshot
 		if c.Resources != nil {
 			spec.Resources = &container.ContainerResources{
 				CPU: c.Resources.CPU,

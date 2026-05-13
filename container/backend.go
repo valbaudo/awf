@@ -184,6 +184,11 @@ type ContainerSpec struct {
 	// declarations would.
 	Cmd []string
 
+	// Snapshot, when "workspace", marks this as a snapshot:workspace container
+	// (image-mode only). The engine captures a CoW diff at each commit boundary
+	// and restores it on resume instead of rebuilding from the image. "" = off.
+	Snapshot string
+
 	// Compose-mode fields (slice 4.3).
 	Compose     []byte
 	ComposePath string

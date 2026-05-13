@@ -1212,3 +1212,16 @@ func TestLocalDispatcher_runAgent_StepCostLineOffByDefault(t *testing.T) {
 		t.Errorf("cost line emitted with StepCostLine unset:\n%s", tapBuf.String())
 	}
 }
+
+func TestContainerSpecForCarriesSnapshot(t *testing.T) {
+	wf := &ir.Workflow{Containers: map[string]ir.Container{
+		"ws":    {Image: "oci://x@sha256:abc", Snapshot: "workspace"},
+		"plain": {Image: "oci://y@sha256:def"},
+	}}
+	if got := engine.ContainerSpecFor(wf, nil, "ws").Snapshot; got != "workspace" {
+		t.Errorf("ws spec Snapshot = %q, want %q", got, "workspace")
+	}
+	if got := engine.ContainerSpecFor(wf, nil, "plain").Snapshot; got != "" {
+		t.Errorf("plain spec Snapshot = %q, want \"\"", got)
+	}
+}
