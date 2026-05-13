@@ -247,6 +247,25 @@ func TestCommitCodeStepOmitsMetrics(t *testing.T) {
 	}
 }
 
+func TestCommitRecordsSnapshotRefAndContainer(t *testing.T) {
+	log := state.NewInMemoryLog(clock.System{})
+	blobs := state.NewInMemoryBlobs()
+	dr := engine.DispatchResult{Outcome: engine.OutcomeOK, SnapshotRef: "snap-ref", Container: "ws"}
+	if _, err := engine.Commit(log, blobs, "s1", dr); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	events, _ := log.Fold()
+	var last engine.NodeCompletedData
+	for _, e := range events {
+		if e.Type == engine.EventNodeCompleted {
+			_ = json.Unmarshal(e.Data, &last)
+		}
+	}
+	if last.SnapshotRef != "snap-ref" || last.Container != "ws" {
+		t.Errorf("NodeCompletedData = {%q,%q}, want {snap-ref,ws}", last.SnapshotRef, last.Container)
+	}
+}
+
 func mapEqual(a, b map[string]any) bool {
 	if len(a) != len(b) {
 		return false
