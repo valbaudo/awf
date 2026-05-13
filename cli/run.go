@@ -158,6 +158,15 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	defer cleanup()
 
+	// Slice 7.1 capability guard: a snapshot:workspace container on a backend
+	// that can't snapshot (native: no CoW) must fail-fast here — same fail-fast
+	// posture as the compose+native rejection above — rather than mid-run at
+	// the dispatcher's Snapshot call.
+	if err := checkSnapshotCapability(ld.Workflow, backend); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
+
 	// Slice 5.3: if Resolver isn't test-injected, build the production
 	// *agent.Registry from --agent-env + the resolved backend. Tests that
 	// inject r.Resolver skip this step entirely.
