@@ -62,6 +62,10 @@ type ResolvedInputs struct {
 	NonRetryableExitCodes []int
 	Timeout               time.Duration
 
+	// Snapshot is "workspace" iff the step's container is a snapshot:workspace
+	// container; the dispatcher captures a CoW diff after a successful exec.
+	Snapshot string
+
 	// Slice 5.2 — agent-step fields. Zero values when the node is a CodeStep
 	// (runCode ignores them); populated by engine/agent_step.go runAgentStep
 	// before dispatch.

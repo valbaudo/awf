@@ -109,11 +109,13 @@ func runAgentStep(
 	// 4. Build ResolvedInputs. Timeout cast follows the runCodeStep idiom
 	// (engine/interpreter.go:283): ir.AgentStep.Timeout is *ir.Duration where
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
+	snapBare, _ := SplitContainerRef(as.Container)
 	resolved := ResolvedInputs{
 		Uses:                  as.Uses,
 		With:                  resolvedWith,
 		OutputSchema:          as.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
+		Snapshot:              wf.Containers[snapBare].Snapshot,
 		Feedback:              feedback, // slice 5.3
 	}
 	if as.Timeout != nil {
