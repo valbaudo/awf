@@ -84,6 +84,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 	rs.MapItems = make(map[string][]MapItemRecord, len(events)/16)     // sparse — maps are uncommon
 	rs.Signals = make(map[string][]SignalEntry, len(events)/16)        // sparse — signals are uncommon
 	rs.SignalReceivedAt = make(map[string]SignalReceivedEntry, len(events)/16)
+	rs.SnapshotRefs = make(map[string]string) // slice 7.1 — snapshot:workspace containers only; sparse
 
 	seenRunStarted := false
 	for _, e := range events {
@@ -173,6 +174,9 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				nr.Stdout = raw
 			}
 			rs.Completed[e.Path] = nr
+			if d.SnapshotRef != "" && d.Container != "" {
+				rs.SnapshotRefs[d.Container] = d.SnapshotRef // last write wins = latest commit
+			}
 
 		case EventBranchTaken:
 			var d BranchTakenData
