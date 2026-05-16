@@ -144,14 +144,40 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	if d.StepCostLine && d.AgentEventTap != nil {
 		writeAgentCostLine(d.AgentEventTap, intent.Path, metrics)
 	}
-	return DispatchResult{
+	dr := DispatchResult{
 		Outcome:     OutcomeOK,
 		ExitCode:    exitCodePtr,
 		Outputs:     launchOutcome.Result.Output,
 		AgentEvents: bufferedEvents,
 		Files:       packFiles(launchOutcome.Result.Files),
 		Metrics:     &metrics,
-	}, closedChunks(), nil
+	}
+
+	// Record the container for OK (committed) steps; failed steps carry none
+	// (decision 3: node.completed.container is recorded only for committed/OK
+	// steps — obs reads it off every committed step's node.completed).
+	if dr.Outcome == OutcomeOK {
+		dr.Container = bare
+	}
+	// snapshot:workspace capture (slice 7.1) — identical to runCode. Only an OK
+	// step that committed records its container; a failed launch returned
+	// earlier without it. Capture the CoW workspace diff after success;
+	// terminal failure → permanent_failure (Phase-4 decision 11), transient →
+	// retryable, classified behind the container seam via errors.Is.
+	if dr.Outcome == OutcomeOK && intent.ResolvedInputs.Snapshot == "workspace" {
+		ref, snapErr := d.Backend.Snapshot(ctx, h)
+		if snapErr != nil {
+			oc := snapshotFailureOutcome(snapErr)
+			return DispatchResult{
+				Outcome:     oc,
+				ExitCode:    exitCodePtr,
+				AgentEvents: bufferedEvents,
+				Err:         fmt.Errorf("engine.LocalDispatcher.runAgent: snapshot %q at %q: %w", bare, intent.Path, snapErr),
+			}, closedChunks(), nil
+		}
+		dr.SnapshotRef = string(ref)
+	}
+	return dr, closedChunks(), nil
 }
 
 // classifyAgentLaunchErr maps an Adapter.Launch error to an Outcome per the

@@ -141,6 +141,9 @@ var catalog = map[string]string{
 	// AWF1018 is intentionally skipped (folded into AWF1009 after critique).
 	"AWF1019": "container or service reference uses template syntax (`{{ }}`); these fields must be static names",
 	"AWF1020": "step id has invalid characters or collides with a reserved addressing token",
+	"AWF1021": "container snapshot value is not supported (only \"workspace\" or empty)",
+	"AWF1022": "snapshot: workspace is only supported on image-mode containers, not compose",
+	"AWF1023": "snapshot: workspace inside a map body is not yet supported (per-item snapshots land with the map slice); remove snapshot from this container or move it out of the map",
 	"AWF2001": "JSON Schema does not compile per the JSON Schema 2020-12 metaschema",
 	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",

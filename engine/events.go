@@ -255,6 +255,13 @@ type NodeCompletedData struct {
 	// legacy logs decoding to nil (additive, like Backend slice 4.5 / Runtimes
 	// slice 5.1). obs projects this into awf.cost.* / gen_ai.usage.*.
 	Metrics *agent.MetricSet `json:"metrics,omitempty"`
+	// Slice 7.1 — recorded ONLY when snapshot:workspace captured a CoW diff
+	// (the dispatcher Put it to Blobs pre-commit; Commit records the ref, never
+	// re-Puts). omitempty keeps pre-Phase-7 logs and non-snapshot steps byte-
+	// identical (additive, like Metrics slice 6.1). Resume folds these into a
+	// separate snapshot map; obs reads them off this event.
+	SnapshotRef string `json:"snapshot_ref,omitempty"` // CoW workspace diff ref (snapshot:workspace only)
+	Container   string `json:"container,omitempty"`    // bare container name (resume snapshot mapping + obs)
 }
 
 // BranchTakenData is the if-decision marker (spec §5.1). Fold uses Which to know which

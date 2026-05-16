@@ -404,3 +404,54 @@ func TestStructuralSignalStepAwaitCharset(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateSnapshotField exercises the snapshot-field structural rules:
+//   - AWF1021: snapshot value other than "workspace"/empty.
+//   - AWF1022: snapshot:workspace on a compose-mode container (image-mode only).
+//   - AWF1023: snapshot:workspace on a container a map fans out (temporary guard —
+//     per-item snapshots land in a later slice).
+func TestValidateSnapshotField(t *testing.T) {
+	img := "oci://example.com/x@sha256:" + strings.Repeat("0", 64)
+	cases := []struct {
+		name     string
+		snapshot string
+		compose  bool
+		inMap    bool
+		wantCode string // "" = no snapshot-related error
+	}{
+		{"empty ok", "", false, false, ""},
+		{"workspace ok image", "workspace", false, false, ""},
+		{"bad value", "frozen", false, false, "AWF1021"},
+		{"workspace on compose", "workspace", true, false, "AWF1022"},
+		{"workspace in map", "workspace", false, true, "AWF1023"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctr := Container{Snapshot: c.snapshot}
+			if c.compose {
+				ctr.Compose = "./compose.yml"
+				ctr.Service = "web"
+			} else {
+				ctr.Image = img
+			}
+			step := &CodeStep{ID: "s", Container: "c", Run: "true"}
+			var graph NodeList
+			if c.inMap {
+				graph = NodeList{&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{step}}}
+			} else {
+				graph = NodeList{step}
+			}
+			wf := &Workflow{ID: "w", Version: 1, Containers: map[string]Container{"c": ctr}, Graph: graph}
+			diags := Validate(&LoadedDefinition{Workflow: wf})
+			got := ""
+			for _, d := range diags {
+				if d.Code == "AWF1021" || d.Code == "AWF1022" || d.Code == "AWF1023" {
+					got = d.Code
+				}
+			}
+			if got != c.wantCode {
+				t.Errorf("snapshot=%q compose=%v inMap=%v: got %q, want %q (diags: %v)", c.snapshot, c.compose, c.inMap, got, c.wantCode, diags)
+			}
+		})
+	}
+}

@@ -254,6 +254,17 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// Phase 4 Docker honors the image / compose recipe (spec §8 "containers
 	// are reconstructed from their image/compose recipe on every (re)creation,
 	// including resume").
+	//
+	// Slice 7.1 capability guard (parallels cli/run.go): refuse to resume a
+	// snapshot:workspace workflow on a backend that can't snapshot. Resume
+	// already reads the backend kind from the log (native is rejected upstream
+	// in readBackendKindFromLog), so this is a cheap consistency check before
+	// the create/restore loop.
+	if err := checkSnapshotCapability(ld.Workflow, backend); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+
 	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
 	skipTeardown := false
 	defer func() {
@@ -266,10 +277,21 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 			_ = backend.Destroy(teardownCtx, h)
 		}
 	}()
-	for name := range ld.Workflow.Containers {
-		h, err := backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
+	// Slice 7.1: a snapshot:workspace container with a folded ref is RESTORED
+	// from its latest committed snapshot (resume folds the log; committed work
+	// is replayed, not recomputed). Every other container — and a
+	// snapshot:workspace one with NO ref (crashed before its first commit) —
+	// takes the Create path: infra rebuilt from its image/compose recipe.
+	for name, c := range ld.Workflow.Containers {
+		var h container.Handle
+		var err error
+		if c.Snapshot == "workspace" && rs.SnapshotRefs[name] != "" {
+			h, err = backend.Restore(ctx, container.SnapshotRef(rs.SnapshotRefs[name]), name)
+		} else {
+			h, err = backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
+		}
 		if err != nil {
-			fprintf(stderr, "awf resume: create container %q: %v\n", name, err)
+			fprintf(stderr, "awf resume: create/restore container %q: %v\n", name, err)
 			return ExitUsage
 		}
 		handles[name] = h

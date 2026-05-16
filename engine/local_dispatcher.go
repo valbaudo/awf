@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -235,7 +236,47 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 	if parseErr != nil {
 		dr.Err = parseErr
 	}
+
+	// Record the container for OK (committed) steps; failed steps carry none
+	// (decision 3: node.completed.container is recorded only for committed/OK
+	// steps — obs reads it off every committed step's node.completed).
+	if dr.Outcome == OutcomeOK {
+		dr.Container = bare
+	}
+	// snapshot:workspace capture (slice 7.1). Only an OK step that committed
+	// records its container; a failed exec returned earlier without it. After a
+	// successful exec, capture the CoW workspace diff (the Backend materializes
+	// it in Blobs and returns a ref; the interpreter records it at commit).
+	if dr.Outcome == OutcomeOK && intent.ResolvedInputs.Snapshot == "workspace" {
+		ref, snapErr := d.Backend.Snapshot(ctx, h)
+		if snapErr != nil {
+			oc := snapshotFailureOutcome(snapErr)
+			return DispatchResult{
+				Outcome:  oc,
+				ExitCode: copyIntPtr(exec.ExitCode),
+				Stdout:   exec.Stdout,
+				Err:      fmt.Errorf("engine.LocalDispatcher: snapshot %q at %q: %w", bare, intent.Path, snapErr),
+			}, chunks, nil
+		}
+		dr.SnapshotRef = string(ref)
+	}
 	return dr, chunks, nil
+}
+
+// snapshotFailureOutcome classifies a Backend.Snapshot error. A terminal error
+// (the diff is too large, or the backend can't snapshot) is a permanent_failure:
+// it is deterministic, so retrying re-runs the whole step to fail identically
+// (Phase-4 decision 11). Anything else (daemon hiccup, ctx-cancel, I/O) is a
+// transient retryable_failure. The terminal predicate is matched behind the
+// container seam (errors.Is against container sentinels), never a docker type.
+//
+// Shared by runCode (here) and runAgent (local_dispatcher_agent.go); both files
+// are package engine.
+func snapshotFailureOutcome(err error) Outcome {
+	if errors.Is(err, container.ErrSnapshotTooLarge) || errors.Is(err, container.ErrUnsupported) {
+		return OutcomePermanentFailure
+	}
+	return OutcomeRetryableFailure
 }
 
 func copyIntPtr(v int) *int {

@@ -1391,6 +1391,41 @@ func TestRunReleasesRunLockOnExit(t *testing.T) {
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
 
+// TestRunRejectsSnapshotWorkspaceOnNativeBackend exercises the slice 7.1
+// capability guard (cli/snapshotguard.go): a container declaring
+// snapshot: workspace cannot run on the native backend, which advertises
+// container.SnapshotNone. The guard must fail fast with ExitUsage and a
+// message naming "snapshot: workspace". No backend is injected so the real
+// native backend is constructed (its Capabilities() is what the guard reads).
+func TestRunRejectsSnapshotWorkspaceOnNativeBackend(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	wf := filepath.Join(t.TempDir(), "ws.yaml")
+	if err := os.WriteFile(wf, []byte(`workflow: ws
+version: 1
+containers:
+  lab: { image: oci://example.com/x@sha256:`+strings.Repeat("0", 64)+`, snapshot: workspace }
+graph:
+  - id: s
+    container: lab
+    run: "true"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	// Backend is left nil so the real native backend is constructed (its
+	// Capabilities() == SnapshotNone is what the guard reads). IDGen is set so
+	// the run-id mint step (which precedes backend construction) doesn't nil-panic.
+	r := &cli.Runner{IDGen: &clock.Fake{IDs: []string{"test-run-1"}}}
+	rc := r.Run([]string{"run", "--backend", "native", "--state-dir", stateDir, wf}, &out, &errb)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, errb.String())
+	}
+	if !strings.Contains(errb.String(), "snapshot: workspace") {
+		t.Errorf("expected a capability-guard message, got: %s", errb.String())
+	}
+}
+
 func writeMinimalWorkflow(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "wf.yaml")

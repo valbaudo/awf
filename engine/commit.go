@@ -81,6 +81,10 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult) (N
 		StdoutRef:  nr.StdoutRef,
 		Files:      nr.Files,
 		Metrics:    dr.Metrics,
+		// Slice 7.1 — the snapshot blob was already Put to Blobs by the
+		// dispatcher (Backend.Snapshot); Commit records the ref ONLY. No re-Put.
+		SnapshotRef: dr.SnapshotRef,
+		Container:   dr.Container,
 	}
 	dataJSON, err := json.Marshal(data)
 	if err != nil {

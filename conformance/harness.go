@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -109,6 +110,18 @@ func newHarnessWithAgentRegistry(t *testing.T, factory BackendFactory, workflowY
 	return h
 }
 
+// newSnapshotHarness shares one InMemoryBlobs between the engine and every fake
+// the factory mints, so a snapshot Put on the first run is readable by the
+// fresh fake on resume (Slice 7.1). The caller overrides h.factory to program
+// the fake / inject faults, re-wiring WithBlobs(h.blobs).
+func newSnapshotHarness(t *testing.T, workflowYAML string) *harness {
+	t.Helper()
+	blobs := state.NewInMemoryBlobs()
+	h := newHarness(t, func() container.Backend { return container.NewFake().WithBlobs(blobs) }, workflowYAML)
+	h.blobs = blobs
+	return h
+}
+
 func (h *harness) runWorkflow(t *testing.T) (engine.Outcome, error) {
 	t.Helper()
 	return h.runOrResume(t, false)
@@ -198,8 +211,22 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 			_ = backend.Destroy(ctx, hndl)
 		}
 	}()
-	for name := range ld.Workflow.Containers {
-		hndl, err := backend.Create(ctx, container.ContainerSpec{Name: name})
+	for name, c := range ld.Workflow.Containers {
+		// Slice 7.1 capability guard (mirrors cli/snapshotguard.go): a
+		// snapshot:workspace container needs a snapshot-capable backend.
+		if c.Snapshot == "workspace" && backend.Capabilities().Snapshot == container.SnapshotNone {
+			return "", fmt.Errorf("harness: container %q declares snapshot: workspace but the backend cannot snapshot", name)
+		}
+		var hndl container.Handle
+		var err error
+		// Slice 7.1: on resume, restore a snapshot:workspace container from its
+		// latest committed snapshot (folded into rs.SnapshotRefs) instead of
+		// Create-ing a fresh one. No ref (crashed before first commit) → Create.
+		if isResume && c.Snapshot == "workspace" && rs.SnapshotRefs[name] != "" {
+			hndl, err = backend.Restore(ctx, container.SnapshotRef(rs.SnapshotRefs[name]), name)
+		} else {
+			hndl, err = backend.Create(ctx, container.ContainerSpec{Name: name})
+		}
 		if err != nil {
 			return "", err
 		}

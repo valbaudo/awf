@@ -265,12 +265,14 @@ func runCodeStep(
 		return "", fmt.Errorf("engine.Run: build retry policy at path %q: %w", path, err)
 	}
 
+	snapBare, _ := SplitContainerRef(cs.Container)
 	resolved := ResolvedInputs{
 		Command:               command,
 		Env:                   map[string]string{},
 		OutputFiles:           cs.OutputFiles,
 		OutputSchema:          cs.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
+		Snapshot:              wf.Containers[snapBare].Snapshot,
 	}
 	if cs.Timeout != nil {
 		resolved.Timeout = time.Duration(*cs.Timeout)

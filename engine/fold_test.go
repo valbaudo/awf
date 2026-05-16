@@ -843,6 +843,25 @@ func TestFold_RunCancelledIsTerminal(t *testing.T) {
 	}
 }
 
+func TestFoldTracksLatestSnapshotRefPerContainer(t *testing.T) {
+	mk := func(path, ref, ctr string) state.Event {
+		d, _ := json.Marshal(NodeCompletedData{Outcome: "ok", SnapshotRef: ref, Container: ctr})
+		return state.Event{Type: EventNodeCompleted, Path: path, Data: d}
+	}
+	rsd, _ := json.Marshal(RunStartedData{RunID: "r"})
+	events := []state.Event{
+		{Type: EventRunStarted, Data: rsd},
+		mk("a", "r1", "ws"), mk("b", "rx", "other"), mk("c", "r2", "ws"),
+	}
+	rs, err := Fold(events, state.NewInMemoryBlobs())
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if rs.SnapshotRefs["ws"] != "r2" || rs.SnapshotRefs["other"] != "rx" {
+		t.Errorf("SnapshotRefs = %v, want {ws:r2, other:rx}", rs.SnapshotRefs)
+	}
+}
+
 // TestFold_Golden_Sequential — a flat 3-step sequential workflow with no branches or
 // loops. Verifies the most common shape — a linear pipeline — folds correctly with
 // Completed entries keyed by step id.

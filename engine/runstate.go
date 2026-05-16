@@ -247,6 +247,15 @@ type RunState struct {
 	// signal.received append and writes only node.completed.
 	SignalReceivedAt map[string]SignalReceivedEntry
 
+	// SnapshotRefs maps a container name to its latest committed snapshot ref
+	// (snapshot:workspace containers only); resume restores each from this ref.
+	// Slice 7.1 addition. Built by Fold from node.completed events' SnapshotRef
+	// / Container fields — last write wins per container (a container is
+	// snapshotted at every commit, so the last one is the resume point). Empty
+	// for non-snapshot containers and pre-Phase-7 logs (the event fields are
+	// omitempty, so the Fold guard skips them).
+	SnapshotRefs map[string]string
+
 	// mu serializes access to Completed / Branches / LoopIters / GateAttempts
 	// / MapItems / Signals / SignalReceivedAt / Paused / Cancelled / CancelReason.
 	// Phase 2 callers were single-threaded; Phase 3 slice 3.2
@@ -289,6 +298,7 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		MapItems:         map[string][]MapItemRecord{},
 		Signals:          map[string][]SignalEntry{},
 		SignalReceivedAt: map[string]SignalReceivedEntry{},
+		SnapshotRefs:     map[string]string{},
 		// Paused, Cancelled, CancelReason — zero values are correct
 	}
 }
