@@ -15,7 +15,7 @@ func TestFakeSnapshotRestoreRoundTripViaBlobs(t *testing.T) {
 	if f1.Capabilities().Snapshot != SnapshotFSCoW {
 		t.Fatalf("Capabilities with blobs = %v, want fs-cow", f1.Capabilities().Snapshot)
 	}
-	h1, err := f1.Create(ctx, ContainerSpec{Name: "ws", Snapshot: "workspace"})
+	h1, err := f1.Create(ctx, ContainerSpec{Name: "ws"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

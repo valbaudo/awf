@@ -1214,24 +1214,11 @@ func TestLocalDispatcher_runAgent_StepCostLineOffByDefault(t *testing.T) {
 	}
 }
 
-func TestContainerSpecForCarriesSnapshot(t *testing.T) {
-	wf := &ir.Workflow{Containers: map[string]ir.Container{
-		"ws":    {Image: "oci://x@sha256:abc", Snapshot: "workspace"},
-		"plain": {Image: "oci://y@sha256:def"},
-	}}
-	if got := engine.ContainerSpecFor(wf, nil, "ws").Snapshot; got != "workspace" {
-		t.Errorf("ws spec Snapshot = %q, want %q", got, "workspace")
-	}
-	if got := engine.ContainerSpecFor(wf, nil, "plain").Snapshot; got != "" {
-		t.Errorf("plain spec Snapshot = %q, want \"\"", got)
-	}
-}
-
 func TestDispatcherCapturesSnapshotOnEligibleOkStep(t *testing.T) {
 	blobs := state.NewInMemoryBlobs()
 	fake := container.NewFake().WithBlobs(blobs)
 	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
-	h, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "ws", Snapshot: "workspace"})
+	h, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "ws"})
 	d := &engine.LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"ws": h}}
 	intent := engine.NodeIntent{
 		Path: "s1", Node: &ir.CodeStep{ID: "s1", Container: "ws", Run: "true"},
@@ -1263,7 +1250,7 @@ func TestDispatcherSnapshotTerminalErrorIsPermanent(t *testing.T) {
 	// not retryable — retrying would re-run the whole step to fail identically.
 	fake := container.NewFake() // NO WithBlobs ⇒ Snapshot returns ErrUnsupported
 	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
-	h, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "ws", Snapshot: "workspace"})
+	h, _ := fake.Create(context.Background(), container.ContainerSpec{Name: "ws"})
 	d := &engine.LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"ws": h}}
 	intent := engine.NodeIntent{
 		Path: "s1", Node: &ir.CodeStep{ID: "s1", Container: "ws", Run: "true"},
