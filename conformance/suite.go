@@ -92,4 +92,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
 	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })
 	t.Run("obs", func(t *testing.T) { testObs(t, factory) })
+	t.Run("snapshot", func(t *testing.T) { testSnapshot(t, factory) })
 }
