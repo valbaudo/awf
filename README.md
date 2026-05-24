@@ -30,7 +30,7 @@ content-addressed checkpoint/resume (so an expensive agent run is never redone a
 
 ## Getting started
 
-Requirements: Go 1.26+, and Docker for the isolated container backend.
+Requirements: Go 1.26+, and Docker (optional) for the isolated container backend.
 
 ```sh
 make build      # builds ./bin/awf
