@@ -6,3 +6,8 @@ ROADMAP.md
 # Generated man pages (built from man/*.md by `make man`); sources are committed.
 man/*.1
 man/*.5
+
+# Guard: attackerview-derived CVE pipeline content must NEVER land in this public repo.
+# It lives in the separate PRIVATE repo ~/Documents/GitHub/cve-feasibility-awf.
+examples/cve-feasibility*
+*attackerview*
