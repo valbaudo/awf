@@ -390,6 +390,16 @@ is the typed output of the enclosing gate's `evaluate` block, supplied
 automatically on repair attempts. Values over the runtime's inline limit are
 rejected at resolution (pass large data as an `output_files` artifact).
 
+Substitution into a shell host (`run:`, `idempotency_key:`) is verbatim and
+pre-shell: AWF inserts the resolved value as-is and does **not** quote or escape
+it. Use those slots for trusted scalars — ids, counts, enums, flags, `input`
+fields. Do not interpolate free-text *agent* output into a shell host; backticks
+or `$(...)` in agent-written text are then executed by the shell. Route free-text
+or untrusted data through an `output_files` artifact and read it from a file
+inside the command. (Composites are rejected mechanically; a free-text `string`
+passes both validation and resolution, so keeping it out of shell hosts is the
+author's contract. Agent `with:` prompts are not shell hosts.)
+
 Condition evaluation, for `if.cond`, `loop.until`, and `gate.until`, is a bounded
 evaluator over references, literals, comparisons (`== != < <= > >=`), and boolean
 operators (`&& || !`). No arithmetic, calls, or loops.
