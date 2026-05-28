@@ -231,8 +231,8 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
 
 **1**
 :   `validate` found one or more error-severity diagnostics, or `run` completed
-    but the run terminated as a failure (`retryable_failure` or
-    `permanent_failure`).
+    but the run terminated as a failure (`retryable_failure`, `permanent_failure`,
+    or `rejected` — an uncaught gate that exhausted its repair budget).
 
 **2**
 :   Usage error — bad arguments, an unreadable file, or a loader-stage failure
@@ -243,7 +243,10 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
 **ANTHROPIC_API_KEY**, **ANTHROPIC_AUTH_TOKEN**, **CLAUDE_CODE_OAUTH_TOKEN**
 :   Authentication for the `anthropic/claude-code` agent runtime. **awf** does not
     read these itself; it forwards those named in **--agent-env** (all three by
-    default) into the agent invocation.
+    default) into the agent invocation. The runtime defaults to a minimal *bare*
+    mode that accepts only `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`; to
+    authenticate with a subscription `CLAUDE_CODE_OAUTH_TOKEN` the agent step must
+    set `bare: false`, otherwise the token is ignored and config validation fails.
 
 **DOCKER_HOST**, **DOCKER_TLS_VERIFY**, **DOCKER_CERT_PATH**
 :   Honored by the _docker_ backend through the standard Docker client

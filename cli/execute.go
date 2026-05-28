@@ -39,6 +39,7 @@ func (r *Runner) agentEventTap(stderr io.Writer) io.Writer {
 //  3. Map outcome → exit code:
 //     OutcomeOK              → ExitOK,        success line on stdout.
 //     Retryable/Permanent    → ExitRunFailed, cause on stderr.
+//     Rejected               → ExitRunFailed, gate-rejection cause on stderr.
 //     "" (interpreter bug)   → ExitUsage,     "internal error" on stderr.
 //
 // opName is the verb-prefix for error messages ("awf run" or "awf resume").
@@ -114,6 +115,14 @@ func (r *Runner) runAndFinish(
 		return ExitOK
 	case engine.OutcomeRetryableFailure, engine.OutcomePermanentFailure:
 		fprintf(stderr, "run %s: %s: %v\n", runID, outcome, runErr)
+		return ExitRunFailed
+	case engine.OutcomeRejected:
+		// A gate exhausted max_attempts without passing — a legitimate terminal
+		// outcome, not an internal error. run.finished{rejected} is the durable
+		// distinguisher; surface it as a run failure (ExitRunFailed), never the
+		// ExitUsage "internal error" path (which is reserved for an empty,
+		// interpreter-bug outcome).
+		fprintf(stderr, "run %s: rejected: %v\n", runID, runErr)
 		return ExitRunFailed
 	default:
 		fprintf(stderr, "run %s: internal error: %v\n", runID, runErr)

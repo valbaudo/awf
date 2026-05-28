@@ -76,8 +76,11 @@ A container is backed by either a single digest-pinned image or a Compose projec
 
 **compose**
 :   One of `image`/`compose`. A Compose file for a multi-service lab. Every
-    `image:` inside it must be digest-pinned (the validator checks this), and the
-    file's bytes fold into the workflow definition digest.
+    `image:` inside it must be digest-pinned (the validator checks each `image:`
+    is `@sha256:`-pinned; it does **not** verify that a service which `build:`s
+    its image locally actually matches that digest, so a `build:`+`image:` service
+    silently defeats reproducibility), and the file's bytes fold into the workflow
+    definition digest.
 
 **service**
 :   Required with `compose`. The service that `run:`/`uses:` exec into by
@@ -156,7 +159,10 @@ inside. A node with more than one, or none, is invalid.
       retry: { ... }                 # optional
 
 Implicit outputs are always `exit_code` and `stdout`. `output_schema` adds typed
-fields (the step writes conforming JSON to the file named by `$AWF_OUTPUT`);
+fields (the step writes conforming JSON to the file named by `$AWF_OUTPUT`; the
+runtime sets that variable but does **not** create its parent directory, so the
+step must `mkdir -p "$(dirname "$AWF_OUTPUT")"` before writing — a missing file
+is a `retryable_failure`, not a typed verdict);
 `output_files` captures named artifacts. A nonzero exit is a `retryable_failure`
 unless its code is declared permanent (see **OUTCOMES, RETRY, AND REPAIR**).
 
@@ -303,7 +309,11 @@ properties that make the pattern work:
     available to `generate` — resolvable as `{{ evaluate.<field> }}` and injected
     into an agent generator's context — so regeneration is conditioned on the
     critique. The author does not wire this up. On the first attempt
-    `evaluate.*` is empty.
+    `evaluate.*` is empty. Because the verdict is fed into the next generator,
+    an evaluator that inspects untrusted or adversarial input must keep raw
+    input bytes out of the verdict's typed fields (route them through
+    `output_files` instead) — otherwise the verdict becomes an injection channel
+    into the generator.
 
 Constraints: `generate` must be non-empty (a gate with no generator cannot
 repair); the final node of `evaluate` must declare `output_schema` (the verdict

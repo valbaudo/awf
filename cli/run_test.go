@@ -921,6 +921,64 @@ func TestCLIRunOnSignalFixture(t *testing.T) {
 	}
 }
 
+// TestCLIRunGateRejectedIsExitRunFailed: a top-level gate that exhausts
+// max_attempts without passing terminates the run as OutcomeRejected. The CLI
+// must surface that as a rejected run (ExitRunFailed) with a "rejected"
+// message — NOT mislabel it "internal error"/ExitUsage (the switch's default
+// arm is for the empty-outcome interpreter-bug case only).
+func TestCLIRunGateRejectedIsExitRunFailed(t *testing.T) {
+	t.Parallel()
+	fake := container.NewFake()
+	fake.ProgramExec("echo gen1", container.ExecResult{
+		ExitCode: 0, Stdout: []byte("gen1\n"),
+	}, []container.IOChunk{{Stream: "stdout", Data: []byte("gen1\n")}})
+	// verified:false → until false → max_attempts:1 → rejected on attempt 1.
+	fake.ProgramExec("echo eval1", container.ExecResult{
+		ExitCode:  0,
+		Stdout:    []byte("eval1\n"),
+		AWFOutput: []byte(`{"verified":false,"feedback":"nope"}`),
+	}, []container.IOChunk{{Stream: "stdout", Data: []byte("eval1\n")}})
+
+	stateDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	runner := newTestRunner(t, fake)
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "testdata/phase3/gate-reject.yaml"},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitRunFailed {
+		t.Fatalf("rc = %d, want %d (ExitRunFailed for a rejected gate)\nstderr: %s", rc, cli.ExitRunFailed, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "rejected") {
+		t.Errorf("stderr should name the rejection; got %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "internal error") {
+		t.Errorf("a gate rejection must NOT be mislabeled 'internal error'; got %q", stderr.String())
+	}
+	// The durable record carries the distinct 'rejected' outcome.
+	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var finishedOutcome string
+	for _, e := range events {
+		if e.Type == engine.EventRunFinished {
+			var dd engine.RunFinishedData
+			_ = json.Unmarshal(e.Data, &dd)
+			finishedOutcome = dd.Outcome
+		}
+	}
+	if finishedOutcome != "rejected" {
+		t.Errorf("run.finished outcome = %q, want %q", finishedOutcome, "rejected")
+	}
+}
+
 func TestCLIRunOnGateFixture(t *testing.T) {
 	t.Parallel()
 	fake := container.NewFake()
