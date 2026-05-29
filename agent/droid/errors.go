@@ -38,8 +38,10 @@ func (e *ErrSessionReuseAttempted) Error() string {
 	return fmt.Sprintf("agent/droid: with-key %q would re-use a droid session, breaking gate independence (spec §5.5)", e.Key)
 }
 
-// ErrStreamParse is returned when the -o json envelope failed to decode.
-// Wrapped into *agent.ErrAgentLaunch by Launch (transport class — retryable).
+// ErrStreamParse is returned by parseEnvelope when a stdout line fails to decode
+// as the -o json envelope. lastEnvelope treats an unparseable buffer as "no
+// envelope" (→ the ErrUnexpectedExit / stderr-config-error path), so this type
+// does not itself propagate out of Launch; it backs the parse unit tests.
 type ErrStreamParse struct {
 	Line  []byte
 	Cause error
@@ -56,9 +58,11 @@ func (e *ErrStreamParse) Error() string {
 
 func (e *ErrStreamParse) Unwrap() error { return e.Cause }
 
-// ErrUnexpectedExit is returned by Launch when droid exited with no parseable
-// result envelope on stdout AND stderr did not match a known permanent
-// config-error pattern. Wrapped into *agent.ErrAgentLaunch (retryable).
+// ErrUnexpectedExit is sent (bare) on Launch's outcome channel when droid exited
+// with no parseable result envelope on stdout AND stderr matched no known
+// config-error pattern. The engine's classifier maps unrecognized error types to
+// retryable_failure via its default branch, so a bare ErrUnexpectedExit is
+// treated as transport-class (retryable) without an explicit ErrAgentLaunch wrap.
 type ErrUnexpectedExit struct {
 	ExitCode int
 	Stderr   string

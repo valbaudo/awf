@@ -38,6 +38,35 @@ func okStdout(result string) []byte {
 	return []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"` + result + `"}` + "\n")
 }
 
+func TestLaunch_ReadOnlyAutonomy_NoFlag(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: okStdout("ok")}, []container.IOChunk{{Stream: "stdout", Data: okStdout("ok")}})
+	a := droidAdapter(t, f)
+	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x", "autonomy": "read-only"}})
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	cmd := f.Calls[0].Run
+	if strings.Contains(cmd, "--auto") || strings.Contains(cmd, "--skip-permissions-unsafe") {
+		t.Errorf("autonomy=read-only must emit no autonomy flag: %s", cmd)
+	}
+}
+
+func TestLaunch_TransportError_AgentLaunch(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	// ExecResult.Err models a mid-stream backend transport fault (process launched,
+	// then the exec died). Launch must surface it as retryable *agent.ErrAgentLaunch.
+	f.ProgramExecAny(container.ExecResult{Err: errors.New("backend exec died mid-stream")}, nil)
+	a := droidAdapter(t, f)
+	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
+	var launch *agent.ErrAgentLaunch
+	if !errors.As(outcome.Err, &launch) {
+		t.Fatalf("outcome.Err = %v, want *agent.ErrAgentLaunch (transport fault)", outcome.Err)
+	}
+}
+
 func TestLaunch_HappyPath_TypedOutput(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
