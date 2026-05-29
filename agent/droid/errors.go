@@ -90,8 +90,8 @@ func (e *ErrRuntimeNotFound) Error() string {
 
 func (e *ErrRuntimeNotFound) Unwrap() error { return e.Cause }
 
-// Keep-alive: also marks these types as used for the `unused` linter so they
-// stay lint-clean in this commit before their callers land in later tasks.
+// Compile-time assertion that every typed error in this file satisfies the error
+// interface (the engine classifies them per the agent.Adapter Launch contract).
 var _ = []error{
 	(*ErrMissingAPIKey)(nil),
 	(*ErrSessionReuseAttempted)(nil),

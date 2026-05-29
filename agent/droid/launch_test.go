@@ -221,6 +221,35 @@ func TestLaunch_NilBackend(t *testing.T) {
 	}
 }
 
+func TestLaunch_FeedbackAndSchema_Compose(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: okStdout("{\\\"ok\\\":true}")}, []container.IOChunk{{Stream: "stdout", Data: okStdout("{\\\"ok\\\":true}")}})
+	a := droidAdapter(t, f)
+	inv := agent.AgentInvocation{
+		NodePath: "gate[0].attempt-2.generate[0]", Uses: droid.AdapterRef,
+		With:         ir.RawConfig{"prompt": "fix it"},
+		Feedback:     ir.RawConfig{"reason": "tests failed"},
+		OutputSchema: &ir.JSONSchema{"type": "object", "required": []string{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	cmd := f.Calls[0].Run
+	verdictIdx := strings.Index(cmd, "previous verdict")
+	schemaIdx := strings.Index(cmd, "JSON Schema")
+	if verdictIdx < 0 || !strings.Contains(cmd, "tests failed") {
+		t.Errorf("feedback not prepended: %s", cmd)
+	}
+	if schemaIdx < 0 {
+		t.Errorf("schema directive not appended: %s", cmd)
+	}
+	if verdictIdx >= 0 && schemaIdx >= 0 && verdictIdx > schemaIdx {
+		t.Errorf("expected feedback (verdict) BEFORE the schema directive; got verdict@%d schema@%d", verdictIdx, schemaIdx)
+	}
+}
+
 func TestShellQuote_EscapesSingleQuotes(t *testing.T) {
 	if got, want := droid.ShellQuoteForTest("it's"), `'it'\''s'`; got != want {
 		t.Errorf("shellQuote = %q, want %q", got, want)

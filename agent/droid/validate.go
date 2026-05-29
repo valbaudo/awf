@@ -24,11 +24,6 @@ var sessionKeysList = []string{"session_id", "resume", "fork", "continue"}
 // caught as a permanent config error from stderr at Launch (see launch.go).
 var reasoningEffortValues = []string{"off", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
-// autonomyValues maps the `autonomy` with-key: read-only → (no flag);
-// low|medium|high → --auto X; skip → --skip-permissions-unsafe. Kept in sync
-// with the switch in launch.go assembleCommand.
-var autonomyValues = []string{"read-only", "low", "medium", "high", "skip"}
-
 // wrapInvalidConfig builds the engine-classified *agent.ErrInvalidConfig.
 func wrapInvalidConfig(reason string, key string) error {
 	return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: key, Reason: reason}
@@ -86,8 +81,8 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		if !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), "autonomy")
 		}
-		if !slices.Contains(autonomyValues, s) {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", autonomyValues, s), "autonomy")
+		if _, ok := autonomyFlags[s]; !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", slices.Sorted(maps.Keys(autonomyFlags)), s), "autonomy")
 		}
 	}
 	for _, key := range []string{"enabled_tools", "disabled_tools"} {

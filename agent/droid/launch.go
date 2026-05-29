@@ -151,6 +151,18 @@ func configErrorFromStderr(stderr string) (string, bool) {
 // backstop, but a clean directive minimizes parse failures → fewer gate repairs).
 const schemaDirective = "\n\nIMPORTANT: when the task is complete, your FINAL message must be ONLY a single JSON object conforming exactly to this JSON Schema — no prose before or after, no code fences:\n"
 
+// autonomyFlags maps the `autonomy` with-key to the droid exec flag args it
+// produces, and is the single source of truth for the accepted set: ValidateConfig
+// accepts a value iff it is a key here, and assembleCommand appends the value.
+// "read-only" is droid's default mode and emits no flag.
+var autonomyFlags = map[string][]string{
+	"read-only": nil,
+	"low":       {"--auto", "low"},
+	"medium":    {"--auto", "medium"},
+	"high":      {"--auto", "high"},
+	"skip":      {"--skip-permissions-unsafe"},
+}
+
 func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	prompt, ok := inv.With["prompt"].(string)
 	if !ok {
@@ -182,14 +194,7 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	if v, ok := inv.With["autonomy"].(string); ok && v != "" {
 		autonomy = v
 	}
-	switch autonomy {
-	case "read-only":
-		// no flag
-	case "low", "medium", "high":
-		parts = append(parts, "--auto", autonomy)
-	case "skip":
-		parts = append(parts, "--skip-permissions-unsafe")
-	}
+	parts = append(parts, autonomyFlags[autonomy]...) // read-only → nil → no-op
 	if sp, ok := inv.With["system_prompt"].(string); ok && sp != "" {
 		parts = append(parts, "--append-system-prompt", shellQuote(sp))
 	}
