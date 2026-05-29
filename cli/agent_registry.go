@@ -6,8 +6,18 @@ import (
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
+	"github.com/valbaudo/awf/agent/droid"
 	"github.com/valbaudo/awf/container"
 )
+
+// defaultAgentEnv is the union of every registered adapter's DefaultEnvAllowlist.
+// It is the default for `awf run --agent-env` and the implicit allowlist for
+// `awf resume`. New adapters extend it by appending their DefaultEnvAllowlist.
+var defaultAgentEnv = func() []string {
+	out := append([]string{}, claude.DefaultEnvAllowlist...)
+	out = append(out, droid.DefaultEnvAllowlist...)
+	return out
+}()
 
 // buildAgentRegistry constructs the production *agent.Registry for a CLI
 // invocation. Parallels cli/backend.go's newBackend (slice 4.5) — same
@@ -52,6 +62,14 @@ func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agen
 	}
 	if err := reg.Register(adapter); err != nil {
 		return nil, fmt.Errorf("cli: buildAgentRegistry: register claude adapter: %w", err)
+	}
+
+	dadapter, err := droid.New(droid.WithEnv(env), droid.WithBackend(backend))
+	if err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: construct droid adapter: %w", err)
+	}
+	if err := reg.Register(dadapter); err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: register droid adapter: %w", err)
 	}
 	return &reg, nil
 }

@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -32,7 +31,7 @@ func printRunUsage(w io.Writer) {
 	fprintln(w, "  --run-id <id>      override the minted run id (testing aid)")
 	fprintln(w, "  --state-dir <dir>  base directory for .awf/runs and .awf/blobs (default: ./.awf)")
 	fprintln(w, "  --backend <kind>   container backend: \"fake\", \"docker\", or \"native\" (default: native)")
-	fprintln(w, "  --agent-env <CSV>  env-var allowlist forwarded into claude -p invocations (default: "+strings.Join(claude.DefaultEnvAllowlist, ",")+")")
+	fprintln(w, "  --agent-env <CSV>  env-var allowlist forwarded into agent CLIs (default: "+strings.Join(defaultAgentEnv, ",")+")")
 }
 
 // teardownGrace is how long Backend.Destroy gets after the run's ctx has been
@@ -53,8 +52,8 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	runID := flags.String("run-id", "", "override the run id")
 	stateDir := flags.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	backendKind := flags.String("backend", engine.BackendNative, "container backend: fake, docker, or native")
-	agentEnv := flags.String("agent-env", strings.Join(claude.DefaultEnvAllowlist, ","),
-		"CSV allowlist of env-var names forwarded into each claude -p invocation (default: the three claude reads per its auth-precedence docs)")
+	agentEnv := flags.String("agent-env", strings.Join(defaultAgentEnv, ","),
+		"CSV allowlist of env-var names forwarded into each agent CLI invocation")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRunUsage(stdout)

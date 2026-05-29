@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -201,7 +200,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// run` uses (per Phase 5 design § E — `awf resume` does not accept
 	// --agent-env; it re-reads env from the host with the standard set).
 	if r.Resolver == nil {
-		reg, err := buildAgentRegistry(claude.DefaultEnvAllowlist, backend)
+		reg, err := buildAgentRegistry(defaultAgentEnv, backend)
 		if err != nil {
 			fprintf(stderr, "awf resume: build agent registry: %v\n", err)
 			return ExitUsage

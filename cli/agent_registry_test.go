@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/valbaudo/awf/agent/claude"
+	"github.com/valbaudo/awf/agent/droid"
 	"github.com/valbaudo/awf/container"
 )
 
@@ -56,5 +57,32 @@ func TestBuildAgentRegistry_NilBackend_Errors(t *testing.T) {
 	_, err := buildAgentRegistry([]string{"ANTHROPIC_API_KEY"}, nil)
 	if err == nil {
 		t.Fatal("err nil; want error when Backend is nil (adapter needs it for Version + Launch)")
+	}
+}
+
+func TestBuildAgentRegistry_RegistersDroid(t *testing.T) {
+	reg, err := buildAgentRegistry([]string{"ANTHROPIC_API_KEY", "FACTORY_API_KEY"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	if _, ok := reg.Lookup(droid.AdapterRef); !ok {
+		t.Errorf("registry has no adapter for %q", droid.AdapterRef)
+	}
+	if _, ok := reg.Lookup("anthropic/claude-code"); !ok {
+		t.Errorf("registry lost the claude adapter")
+	}
+}
+
+func TestDefaultAgentEnv_IncludesBothVendors(t *testing.T) {
+	has := func(name string) bool {
+		for _, n := range defaultAgentEnv {
+			if n == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("ANTHROPIC_API_KEY") || !has("FACTORY_API_KEY") {
+		t.Errorf("defaultAgentEnv = %v, want both ANTHROPIC_API_KEY and FACTORY_API_KEY", defaultAgentEnv)
 	}
 }
