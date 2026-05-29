@@ -95,9 +95,11 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 
 **--agent-env** _csv_
 :   Comma-separated allowlist of environment-variable *names* forwarded into
-    `uses: anthropic/claude-code` invocations (default
-    `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN`). Names not
-    on the list are not passed through. See **ENVIRONMENT**.
+    agent runtime CLIs (default
+    `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN,FACTORY_API_KEY`).
+    The same allowlist applies to every registered adapter, including
+    `uses: anthropic/claude-code` and `uses: factory/droid`. Names not on the
+    list are not passed through. See **ENVIRONMENT**.
 
 ## awf resume _run-id_ _path_
 
@@ -248,12 +250,27 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     authenticate with a subscription `CLAUDE_CODE_OAUTH_TOKEN` the agent step must
     set `bare: false`, otherwise the token is ignored and config validation fails.
 
+**FACTORY_API_KEY**
+:   API key for the `factory/droid` agent runtime (`fk-…`). **awf** does not read
+    this itself; it forwards the value into the droid invocation when the name
+    appears in **--agent-env** (included in the default allowlist). Required for
+    `uses: factory/droid`; absent key is a hard error at run start.
+
 **DOCKER_HOST**, **DOCKER_TLS_VERIFY**, **DOCKER_CERT_PATH**
 :   Honored by the _docker_ backend through the standard Docker client
     environment.
 
 Secrets are a stopgap: any injected secret is passed as container environment at
 exec time only, never written to the journal, and redacted from traces.
+
+**Droid opsec.** The droid adapter sets **OTEL_SDK_DISABLED**=**true** and
+**OTEL_CUSTOMER_ENABLED**=**false** in the container to suppress Factory
+telemetry. However, droid's **cloudSessionSync** feature — which mirrors session
+content to Factory's web app — is on by default and has no environment-variable
+knob; operators running sensitive workflows must disable it at the image level by
+writing `{"general":{"cloudSessionSync":false}}` to
+_~/.factory/settings.json_ inside the container image. The adapter cannot write
+that file.
 
 # FILES
 
