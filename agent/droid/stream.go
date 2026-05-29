@@ -9,19 +9,6 @@ import (
 	"github.com/valbaudo/awf/agent"
 )
 
-// execEnvelope is droid's `-o json` result envelope (a single JSON object on
-// stdout). Field set verified against droid v0.138.0.
-type execEnvelope struct {
-	Type       string    `json:"type"`    // "result"
-	Subtype    string    `json:"subtype"` // "success" | "failure"
-	IsError    bool      `json:"is_error"`
-	DurationMS int64     `json:"duration_ms"`
-	NumTurns   int       `json:"num_turns"`
-	Result     string    `json:"result"`
-	SessionID  string    `json:"session_id"`
-	Usage      *usageRec `json:"usage"`
-}
-
 type usageRec struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
@@ -29,66 +16,81 @@ type usageRec struct {
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
-// ErrAuthFailureSentinel marks a droid result whose is_error is true and whose
-// message names auth/FACTORY_API_KEY. Launch wraps it as *agent.ErrAgentLaunch
-// (RETRYABLE): the envelope carries only free text, so we cannot distinguish a
+// ErrAuthFailureSentinel marks a droid terminal "error" event whose message
+// names auth/FACTORY_API_KEY. Launch wraps it as *agent.ErrAgentLaunch
+// (RETRYABLE): the event carries only free text, so we cannot distinguish a
 // permanent bad key from a transient auth-infra error — the bounded retry
 // budget covers the transient case, and the present-key precondition is checked
 // in ValidateConfig.
-var ErrAuthFailureSentinel = errors.New("agent/droid: droid exec reported is_error with an authentication failure")
+var ErrAuthFailureSentinel = errors.New("agent/droid: droid exec reported an authentication failure")
 
-// parseEnvelope decodes one `-o json` line. Wraps decode errors as *ErrStreamParse.
-func parseEnvelope(b []byte) (*execEnvelope, error) {
-	var env execEnvelope
-	if err := json.Unmarshal(b, &env); err != nil {
-		return nil, &ErrStreamParse{Line: b, Cause: err}
-	}
-	return &env, nil
+// streamEvent is one line of droid's `-o stream-json` NDJSON output. droid emits
+// these incrementally as the agent works (verified v0.138.0): a "system"/init
+// line, "message" lines, "tool_call"/"tool_result" lines, then a terminal
+// "completion" (success) — or a terminal "error" (failure, e.g. auth). Only the
+// fields the adapter needs for the OUTCOME are modeled; live AgentEvents carry
+// the raw line, so per-event detail isn't decoded here.
+type streamEvent struct {
+	Type string `json:"type"` // system | message | tool_call | tool_result | completion | error
+
+	// completion (terminal, success). Note: camelCase in the wire format.
+	FinalText  string    `json:"finalText,omitempty"`
+	NumTurns   int       `json:"numTurns,omitempty"`
+	DurationMS int64     `json:"durationMs,omitempty"`
+	Usage      *usageRec `json:"usage,omitempty"`
+
+	// error (terminal, failure)
+	Source  string `json:"source,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
-// extractResult builds an AgentResult from a droid result envelope.
-//   - is_error / subtype:"failure" → auth sentinel (if the message names auth)
-//     or a generic failure; Launch maps both to ErrAgentLaunch (retryable).
-//   - success + OutputSchema set → parse a JSON object out of Result;
-//     non-parseable → *agent.ErrUnparseableOutput{NodePath} (retryable; the
-//     engine then re-validates schema conformance via ValidateOutputMap).
-//   - success + no schema → Output nil (matches claude; transcript lives in the
-//     AgentEvent payload, not the typed-binding surface).
-//
-// Cost is left zero — droid's -o json reports no dollar figure.
-func extractResult(env *execEnvelope, inv agent.AgentInvocation) (agent.AgentResult, error) {
-	if env.IsError || env.Subtype == "failure" {
-		if strings.Contains(env.Result, "Authentication failed") || strings.Contains(env.Result, "FACTORY_API_KEY") {
-			return agent.AgentResult{}, fmt.Errorf("%w: %s", ErrAuthFailureSentinel, env.Result)
-		}
-		return agent.AgentResult{}, fmt.Errorf("agent/droid: droid exec failed (subtype %q): %s", env.Subtype, env.Result)
+// parseStreamEvent decodes one stream-json line. Wraps decode errors as *ErrStreamParse.
+func parseStreamEvent(b []byte) (*streamEvent, error) {
+	var ev streamEvent
+	if err := json.Unmarshal(b, &ev); err != nil {
+		return nil, &ErrStreamParse{Line: b, Cause: err}
 	}
+	return &ev, nil
+}
 
+// resultFromCompletion builds an AgentResult from the terminal "completion"
+// event. With a schema, parses a JSON object out of finalText (layer-2);
+// non-parseable → *agent.ErrUnparseableOutput{NodePath}. Without a schema,
+// Output is nil (the transcript lives in the streamed AgentEvents). Cost zero
+// (droid reports no USD).
+func resultFromCompletion(ev *streamEvent, inv agent.AgentInvocation) (agent.AgentResult, error) {
 	var output map[string]any
 	if inv.OutputSchema != nil {
-		parsed, perr := extractJSONObject(env.Result)
+		parsed, perr := extractJSONObject(ev.FinalText)
 		if perr != nil {
 			return agent.AgentResult{}, &agent.ErrUnparseableOutput{NodePath: inv.NodePath}
 		}
 		output = parsed
 	}
-
 	var tokens agent.MetricTokens
-	if env.Usage != nil {
-		tokens.Input = env.Usage.InputTokens
-		tokens.Output = env.Usage.OutputTokens
-		tokens.CacheReadInput = env.Usage.CacheReadInputTokens
-		tokens.CacheCreationInput = env.Usage.CacheCreationInputTokens
+	if ev.Usage != nil {
+		tokens.Input = ev.Usage.InputTokens
+		tokens.Output = ev.Usage.OutputTokens
+		tokens.CacheReadInput = ev.Usage.CacheReadInputTokens
+		tokens.CacheCreationInput = ev.Usage.CacheCreationInputTokens
 	}
-	return agent.AgentResult{
-		Output:   output,
-		ExitCode: 0,
-		Metrics:  agent.MetricSet{Tokens: tokens, Turns: env.NumTurns},
-	}, nil
+	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: agent.MetricSet{Tokens: tokens, Turns: ev.NumTurns}}, nil
+}
+
+// errorFromEvent maps a terminal "error" event to an outcome error. Auth
+// failures (message names auth / FACTORY_API_KEY) wrap ErrAuthFailureSentinel;
+// Launch maps both to retryable *agent.ErrAgentLaunch (the message is free text,
+// so a bad key can't be told from a transient auth-infra fault — bounded retry
+// covers the transient case; the present-key precondition is in ValidateConfig).
+func errorFromEvent(ev *streamEvent) error {
+	if strings.Contains(ev.Message, "Authentication failed") || strings.Contains(ev.Message, "FACTORY_API_KEY") {
+		return fmt.Errorf("%w: %s", ErrAuthFailureSentinel, ev.Message)
+	}
+	return fmt.Errorf("agent/droid: droid exec error (%s): %s", ev.Source, ev.Message)
 }
 
 // extractJSONObject pulls a JSON object out of droid's free-text result. droid
-// has no native schema mode, so Result may wrap the JSON in prose or a fence.
+// has no native schema mode, so finalText may wrap the JSON in prose or a fence.
 // Strategy (stdlib only, STRING-AWARE via json.Decoder so braces/quotes inside
 // strings and escaped quotes don't fool it): strip a ```json fence → strict
 // whole-text decode → else scan each '{' start, decode with json.Decoder (which

@@ -38,10 +38,10 @@ func (e *ErrSessionReuseAttempted) Error() string {
 	return fmt.Sprintf("agent/droid: with-key %q would re-use a droid session, breaking gate independence (spec §5.5)", e.Key)
 }
 
-// ErrStreamParse is returned by parseEnvelope when a stdout line fails to decode
-// as the -o json envelope. lastEnvelope treats an unparseable buffer as "no
-// envelope" (→ the ErrUnexpectedExit / stderr-config-error path), so this type
-// does not itself propagate out of Launch; it backs the parse unit tests.
+// ErrStreamParse is returned by parseStreamEvent when a stdout line fails to
+// decode as a -o stream-json event. Launch tolerates a stray non-JSON line
+// (skips it), so this type does not itself propagate out of Launch; it backs
+// the parse unit tests.
 type ErrStreamParse struct {
 	Line  []byte
 	Cause error
@@ -53,7 +53,7 @@ func (e *ErrStreamParse) Error() string {
 	if len(preview) > maxLine {
 		preview = preview[:maxLine]
 	}
-	return fmt.Sprintf("agent/droid: parse droid -o json line %q: %v", preview, e.Cause)
+	return fmt.Sprintf("agent/droid: parse droid -o stream-json line %q: %v", preview, e.Cause)
 }
 
 func (e *ErrStreamParse) Unwrap() error { return e.Cause }

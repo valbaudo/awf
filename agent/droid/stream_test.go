@@ -8,14 +8,14 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
-func TestExtractResult_SuccessNoSchema_NilOutput(t *testing.T) {
-	env, err := parseEnvelope([]byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"all done","usage":{"input_tokens":10,"output_tokens":4,"cache_read_input_tokens":1,"cache_creation_input_tokens":2}}`))
+func TestResultFromCompletion_SuccessNoSchema_NilOutput(t *testing.T) {
+	ev, err := parseStreamEvent([]byte(`{"type":"completion","finalText":"all done","numTurns":2,"durationMs":10,"session_id":"s1","usage":{"input_tokens":10,"output_tokens":4,"cache_read_input_tokens":1,"cache_creation_input_tokens":2}}`))
 	if err != nil {
-		t.Fatalf("parseEnvelope: %v", err)
+		t.Fatalf("parseStreamEvent: %v", err)
 	}
-	res, eerr := extractResult(env, agent.AgentInvocation{NodePath: "graph[0]"})
+	res, eerr := resultFromCompletion(ev, agent.AgentInvocation{NodePath: "graph[0]"})
 	if eerr != nil {
-		t.Fatalf("extractResult: %v", eerr)
+		t.Fatalf("resultFromCompletion: %v", eerr)
 	}
 	if res.Output != nil {
 		t.Errorf("Output = %v, want nil (no schema → no typed output; matches claude)", res.Output)
@@ -28,39 +28,39 @@ func TestExtractResult_SuccessNoSchema_NilOutput(t *testing.T) {
 	}
 }
 
-func TestExtractResult_SuccessWithSchema_ParsesJSON(t *testing.T) {
+func TestResultFromCompletion_SuccessWithSchema_ParsesJSON(t *testing.T) {
 	// Prose then the JSON object; all one backtick raw string (\" and \n are JSON
 	// escapes, not Go escapes).
-	env, _ := parseEnvelope([]byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"Here is the answer: {\"answer\": 42}"}`))
+	ev, _ := parseStreamEvent([]byte(`{"type":"completion","finalText":"Here is the answer: {\"answer\": 42}","numTurns":1,"durationMs":10}`))
 	inv := agent.AgentInvocation{NodePath: "graph[0]", OutputSchema: &ir.JSONSchema{"type": "object"}}
-	res, eerr := extractResult(env, inv)
+	res, eerr := resultFromCompletion(ev, inv)
 	if eerr != nil {
-		t.Fatalf("extractResult: %v", eerr)
+		t.Fatalf("resultFromCompletion: %v", eerr)
 	}
 	if v, ok := res.Output["answer"].(float64); !ok || v != 42 {
 		t.Errorf("Output[answer] = %v (%T)", res.Output["answer"], res.Output["answer"])
 	}
 }
 
-func TestExtractResult_SchemaButResultNotJSON_Unparseable(t *testing.T) {
-	env, _ := parseEnvelope([]byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"sorry, no json here"}`))
-	_, eerr := extractResult(env, agent.AgentInvocation{NodePath: "graph[2]", OutputSchema: &ir.JSONSchema{"type": "object"}})
+func TestResultFromCompletion_SchemaButFinalTextNotJSON_Unparseable(t *testing.T) {
+	ev, _ := parseStreamEvent([]byte(`{"type":"completion","finalText":"no json","numTurns":1,"durationMs":10}`))
+	_, eerr := resultFromCompletion(ev, agent.AgentInvocation{NodePath: "graph[2]", OutputSchema: &ir.JSONSchema{"type": "object"}})
 	var unp *agent.ErrUnparseableOutput
 	if !errors.As(eerr, &unp) || unp.NodePath != "graph[2]" {
 		t.Fatalf("err = %v, want *agent.ErrUnparseableOutput{NodePath:graph[2]}", eerr)
 	}
 }
 
-func TestExtractResult_AuthFailure_Retryable(t *testing.T) {
-	env, _ := parseEnvelope([]byte(`{"type":"result","subtype":"failure","is_error":true,"num_turns":0,"result":"Authentication failed. ... set a valid FACTORY_API_KEY environment variable."}`))
-	_, eerr := extractResult(env, agent.AgentInvocation{NodePath: "graph[0]"})
-	if !errors.Is(eerr, ErrAuthFailureSentinel) {
-		t.Fatalf("err = %v, want wrapped ErrAuthFailureSentinel (retryable in Launch)", eerr)
+func TestErrorFromEvent_Auth(t *testing.T) {
+	ev, _ := parseStreamEvent([]byte(`{"type":"error","source":"cli","message":"Error: Authentication failed. Please log in using /login or set a valid FACTORY_API_KEY environment variable."}`))
+	err := errorFromEvent(ev)
+	if !errors.Is(err, ErrAuthFailureSentinel) {
+		t.Fatalf("err = %v, want wrapped ErrAuthFailureSentinel (retryable in Launch)", err)
 	}
 }
 
-func TestParseEnvelope_BadJSON(t *testing.T) {
-	_, err := parseEnvelope([]byte(`not json`))
+func TestParseStreamEvent_BadJSON(t *testing.T) {
+	_, err := parseStreamEvent([]byte(`not json`))
 	var sp *ErrStreamParse
 	if !errors.As(err, &sp) {
 		t.Fatalf("err = %v, want *ErrStreamParse", err)

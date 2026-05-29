@@ -3,18 +3,21 @@
 // agent package itself stays import-free of harness specifics.
 //
 // Capabilities().NativeSchema is FALSE: droid has no native JSON-schema flag.
-// The adapter runs `droid exec -o json`, parses the result envelope's `result`
-// text into a map, and the engine re-validates it against the step's
-// output_schema (engine/schema.go ValidateOutputMap). This is the spec §4.2
-// layer-2 path (conformance Bucket 15).
+// The adapter runs `droid exec -o stream-json`, parses a JSON object out of the
+// terminal "completion" event's finalText into a map, and the engine
+// re-validates it against the step's output_schema (engine/schema.go
+// ValidateOutputMap). This is the spec §4.2 layer-2 path (conformance Bucket 15).
 //
 // Gate independence is enforced structurally: every Launch is a fresh
 // `droid exec`; the command line NEVER contains --session-id / --resume /
 // --fork; ValidateConfig rejects with-keys session_id/resume/fork/continue.
 //
-// Output: `droid exec -o json` emits a SINGLE result envelope line on stdout.
-// Launch reads it in one goroutine under the γ contract (returns immediately
-// with both channels open; drains chunks; emits one event; sends one outcome).
+// Output: `droid exec -o stream-json` emits newline-delimited JSON events
+// PROGRESSIVELY as the agent works (system/message/tool_call/tool_result, then a
+// terminal "completion" or "error"). Launch scans those lines and emits one
+// AgentEvent per line as droid produces it (the realtime tap renders them live),
+// capturing the terminal completion/error for the AgentOutcome. γ contract:
+// returns immediately with both channels open; events closes before outcome.
 package droid
 
 import (

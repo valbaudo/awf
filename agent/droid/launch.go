@@ -1,23 +1,27 @@
 package droid
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
 )
 
-// Launch runs `droid exec -o json ...` inside handle. Because -o json emits a
-// SINGLE result envelope (no streaming), one goroutine suffices: it drains the
-// chunks channel into stdout/stderr buffers, reads the ExecResult, parses the
-// envelope, emits ONE AgentEvent (the raw line), and sends ONE AgentOutcome.
+// Launch runs `droid exec -o stream-json ...` inside handle via the streaming
+// Backend.Exec. -o stream-json emits NDJSON flushed LIVE (verified v0.138.0:
+// a system/init line, message lines, tool_call/tool_result lines, then a
+// terminal "completion" — or a terminal "error"). Launch scans those lines and
+// emits ONE AgentEvent per line as it arrives (the realtime tap renders these
+// live), capturing the terminal completion/error for the AgentOutcome.
 // γ contract: returns IMMEDIATELY with both channels open; events closes BEFORE
-// outcome (defer order); never reuses a session.
+// outcome (defer LIFO); never reuses a session.
 func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
 	if a.backend == nil {
 		return nil, nil, &agent.ErrAgentLaunch{Cause: errors.New("agent/droid: Launch: no Backend wired (use WithBackend in New)")}
@@ -26,18 +30,15 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 	if err != nil {
 		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
 	}
-
-	// Exec env = forwarded allowlist + opsec hardening + idempotency.
 	env := make(map[string]string, len(a.env)+3)
 	for k, v := range a.env {
 		env[k] = v
 	}
 	// Opsec (verified, droid v0.138.0): the CLI's OTel tracer is hardcoded-on and
 	// exports to telemetry.factory.ai unless OTEL_SDK_DISABLED=true; the
-	// customer-export path is gated by OTEL_CUSTOMER_ENABLED. We disable both so an
-	// AWF run leaks no telemetry. (FACTORY_OTEL_ENABLED is NOT read by the CLI.)
-	// cloudSessionSync (mirrors session content to Factory's web app, ON by
-	// default) has no env knob — disable it operationally in the image; see Task 8.
+	// customer-export path is gated by OTEL_CUSTOMER_ENABLED. (FACTORY_OTEL_ENABLED
+	// is NOT read by the CLI.) cloudSessionSync has no env knob — disable it
+	// operationally in the image (see man/awf.1.md).
 	env["OTEL_SDK_DISABLED"] = "true"
 	env["OTEL_CUSTOMER_ENABLED"] = "false"
 	if inv.IdempotencyKey != "" {
@@ -49,87 +50,112 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		return nil, nil, &agent.ErrAgentLaunch{Cause: execErr}
 	}
 
-	events := make(chan agent.AgentEvent, 1)
+	// γ contract: both channels returned OPEN; events emitted progressively.
+	events := make(chan agent.AgentEvent, 16)
 	outcomeCh := make(chan agent.AgentOutcome, 1)
+	pr, pw := io.Pipe()
+	stderrCh := make(chan string, 1)
 
+	// Goroutine A: forward stdout chunks into the pipe (for line scanning) and
+	// accumulate stderr (for the no-terminal-event config-error path). Hands the
+	// stderr off on a buffered channel after closing the pipe writer.
 	go func() {
-		defer close(outcomeCh) // closes LAST
-		defer close(events)    // closes BEFORE outcomeCh
-
-		var stdout, stderr bytes.Buffer
-		for c := range chunks { // drain fully (or the streaming backend can block)
+		var stderr bytes.Buffer
+		defer func() {
+			_ = pw.Close()
+			stderrCh <- stderr.String()
+		}()
+		for c := range chunks {
 			switch c.Stream {
 			case "stdout":
-				stdout.Write(c.Data)
+				if _, werr := pw.Write(c.Data); werr != nil {
+					for range chunks { // reader closed early; drain so the backend can finish
+					}
+					return
+				}
 			case "stderr":
 				stderr.Write(c.Data)
 			}
 		}
-		execResult := <-resultCh
-		if execResult.Err != nil { // transport/mid-stream fault → retryable
-			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: execResult.Err}}
-			return
-		}
+	}()
 
-		rawLine, parsed := lastEnvelope(stdout.Bytes())
-		if parsed == nil {
-			// No result envelope. droid prints config-validation errors (invalid
-			// model / bad reasoning-effort) to STDERR with empty stdout + exit 1 —
-			// deterministic, PERMANENT. Everything else → retryable unexpected exit.
-			if reason, ok := configErrorFromStderr(stderr.String()); ok {
-				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrInvalidConfig{Ref: AdapterRef, Reason: reason}}
+	// Goroutine B: scan stdout lines, emit one AgentEvent per line PROGRESSIVELY
+	// (this is the realtime path), capture the terminal completion/error, then
+	// send exactly one AgentOutcome. defer LIFO: outcomeCh closes LAST.
+	go func() {
+		defer close(outcomeCh)
+		defer close(events)
+		defer func() { _ = pr.Close() }()
+
+		var capturedResult agent.AgentResult
+		var kind string // "" none | "ok" | "unparseable" | "fatal"
+		var captureErr error
+
+		scanner := bufio.NewScanner(pr)
+		scanner.Buffer(make([]byte, 64*1024), 1<<20)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			// Scanner reuses its buffer; copy the line since it outlives this
+			// iteration as the event Payload.
+			raw := append([]byte(nil), line...)
+			ev, perr := parseStreamEvent(raw)
+			if perr != nil {
+				continue // tolerate a stray non-JSON line
+			}
+			select {
+			case events <- agent.AgentEvent{Kind: ev.Type, Payload: raw, Stream: "stdout"}:
+			case <-ctx.Done():
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
 				return
 			}
-			outcomeCh <- agent.AgentOutcome{Err: &ErrUnexpectedExit{ExitCode: execResult.ExitCode, Stderr: stderr.String()}}
-			return
+			switch ev.Type {
+			case "completion":
+				res, eerr := resultFromCompletion(ev, inv)
+				var unparseable *agent.ErrUnparseableOutput
+				switch {
+				case eerr == nil:
+					capturedResult = res
+					kind = "ok"
+				case errors.As(eerr, &unparseable):
+					kind = "unparseable"
+				default:
+					kind = "fatal"
+					captureErr = eerr
+				}
+			case "error":
+				kind = "fatal"
+				captureErr = errorFromEvent(ev)
+			}
+		}
+		if serr := scanner.Err(); serr != nil && kind == "" {
+			kind = "fatal"
+			captureErr = fmt.Errorf("agent/droid: scan stream-json: %w", serr)
 		}
 
-		// One event carrying the raw envelope line (lossless transcript).
-		select {
-		case events <- agent.AgentEvent{Kind: "result", Payload: rawLine, Stream: "stdout"}:
-		case <-ctx.Done():
-			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
-			return
-		}
-
-		res, eerr := extractResult(parsed, inv)
-		var unparseable *agent.ErrUnparseableOutput
+		execResult := <-resultCh
+		stderrStr := <-stderrCh
 		switch {
-		case eerr == nil:
-			outcomeCh <- agent.AgentOutcome{Result: res}
-		case errors.As(eerr, &unparseable):
+		case execResult.Err != nil:
+			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: execResult.Err}}
+		case kind == "ok":
+			outcomeCh <- agent.AgentOutcome{Result: capturedResult}
+		case kind == "unparseable":
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrUnparseableOutput{NodePath: inv.NodePath}}
-		default: // auth + other in-flight failures → retryable
-			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: eerr}}
+		case kind == "fatal":
+			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: captureErr}}
+		default: // no terminal completion/error event seen
+			if reason, ok := configErrorFromStderr(stderrStr); ok {
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrInvalidConfig{Ref: AdapterRef, Reason: reason}}
+			} else {
+				outcomeCh <- agent.AgentOutcome{Err: &ErrUnexpectedExit{ExitCode: execResult.ExitCode, Stderr: stderrStr}}
+			}
 		}
 	}()
 
 	return events, outcomeCh, nil
-}
-
-// lastEnvelope returns the raw bytes + parsed form of droid's result envelope.
-// -o json emits exactly one JSON object; parse the whole trimmed buffer, else
-// scan lines bottom-up for the last that parses (tolerates a stray stdout line).
-// Returns (nil, nil) if nothing parses.
-func lastEnvelope(stdout []byte) ([]byte, *execEnvelope) {
-	trimmed := bytes.TrimSpace(stdout)
-	if len(trimmed) == 0 {
-		return nil, nil
-	}
-	if env, err := parseEnvelope(trimmed); err == nil && env.Type != "" {
-		return trimmed, env
-	}
-	lines := bytes.Split(trimmed, []byte("\n"))
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := bytes.TrimSpace(lines[i])
-		if len(line) == 0 {
-			continue
-		}
-		if env, err := parseEnvelope(line); err == nil && env.Type != "" {
-			return line, env
-		}
-	}
-	return nil, nil
 }
 
 // configErrorPatterns are stable substrings droid prints to STDERR for
@@ -183,7 +209,7 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 		prompt = prompt + schemaDirective + string(schemaBytes)
 	}
 
-	parts := []string{"droid", "exec", "-o", "json"}
+	parts := []string{"droid", "exec", "-o", "stream-json"}
 	if model, ok := inv.With["model"].(string); ok && model != "" {
 		parts = append(parts, "--model", shellQuote(model))
 	}

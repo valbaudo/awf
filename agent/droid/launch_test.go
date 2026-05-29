@@ -34,14 +34,26 @@ func drainLaunch(t *testing.T, a *droid.Adapter, h container.Handle, inv agent.A
 	return events, <-outcomeCh
 }
 
-func okStdout(result string) []byte {
-	return []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"` + result + `"}` + "\n")
+// stream-json line helpers. droid emits one JSON event object per line; the
+// adapter scans them progressively and emits one AgentEvent per line.
+func sysLine() []byte {
+	return []byte(`{"type":"system","subtype":"init","model":"claude-opus-4-8","session_id":"s1"}` + "\n")
 }
+func asstLine(text string) []byte {
+	return []byte(`{"type":"message","role":"assistant","id":"m1","text":"` + text + `"}` + "\n")
+}
+func completionLine(finalText string) []byte {
+	return []byte(`{"type":"completion","finalText":"` + finalText + `","numTurns":1,"durationMs":10,"session_id":"s1","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}` + "\n")
+}
+
+// chunk wraps a single stdout line as one IOChunk (so callers can stage the
+// stream as separate chunks, exercising progressive multi-line parsing).
+func chunk(b []byte) container.IOChunk { return container.IOChunk{Stream: "stdout", Data: b} }
 
 func TestLaunch_ReadOnlyAutonomy_NoFlag(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: okStdout("ok")}, []container.IOChunk{{Stream: "stdout", Data: okStdout("ok")}})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
 	a := droidAdapter(t, f)
 	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x", "autonomy": "read-only"}})
 	if outcome.Err != nil {
@@ -70,8 +82,12 @@ func TestLaunch_TransportError_AgentLaunch(t *testing.T) {
 func TestLaunch_HappyPath_TypedOutput(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	line := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"{\"answer\":42}","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}` + "\n")
-	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: line}, []container.IOChunk{{Stream: "stdout", Data: line}})
+	// SEPARATE IOChunks (one per line) → also demonstrates progressive multi-line parsing.
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{
+		chunk(sysLine()),
+		chunk(asstLine("working")),
+		chunk(completionLine(`{\"answer\":42}`)),
+	})
 
 	a := droidAdapter(t, f)
 	inv := agent.AgentInvocation{
@@ -86,18 +102,51 @@ func TestLaunch_HappyPath_TypedOutput(t *testing.T) {
 	if v, ok := outcome.Result.Output["answer"].(float64); !ok || v != 42 {
 		t.Errorf("Output[answer] = %v", outcome.Result.Output["answer"])
 	}
-	if len(events) != 1 {
-		t.Errorf("events = %d, want exactly 1 (the result envelope)", len(events))
+	if len(events) < 3 {
+		t.Fatalf("events = %d, want >= 3 (system, message, completion)", len(events))
 	}
-	if len(events) == 1 && !strings.Contains(string(events[0].Payload), `"num_turns":1`) {
-		t.Errorf("event payload not the raw line: %s", events[0].Payload)
+	wantKinds := []string{"system", "message", "completion"}
+	for i, want := range wantKinds {
+		if events[i].Kind != want {
+			t.Errorf("events[%d].Kind = %q, want %q", i, events[i].Kind, want)
+		}
+	}
+	if !strings.Contains(string(events[2].Payload), "finalText") {
+		t.Errorf("completion event payload not the raw line: %s", events[2].Payload)
+	}
+}
+
+func TestLaunch_StreamsProgressively(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	toolCall := []byte(`{"type":"tool_call","id":"tc1","messageId":"m1","toolId":"t1","toolName":"Read","parameters":{"summary":"read a file"}}` + "\n")
+	toolResult := []byte(`{"type":"tool_result","id":"tr1","messageId":"m1","toolId":"t1","isError":false,"value":"contents"}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{
+		chunk(sysLine()),
+		chunk(asstLine("let me look")),
+		chunk(toolCall),
+		chunk(toolResult),
+		chunk(completionLine("done")),
+	})
+	a := droidAdapter(t, f)
+	events, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	got := make([]string, len(events))
+	for i, ev := range events {
+		got[i] = ev.Kind
+	}
+	want := []string{"system", "message", "tool_call", "tool_result", "completion"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("event Kind sequence = %v, want %v (one event per line, in arrival order)", got, want)
 	}
 }
 
 func TestLaunch_CommandLine_Flags_And_OpsecEnv(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: okStdout("{\\\"ok\\\":true}")}, []container.IOChunk{{Stream: "stdout", Data: okStdout("{\\\"ok\\\":true}")}})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine(`{\"ok\":true}`))})
 
 	a := droidAdapter(t, f)
 	inv := agent.AgentInvocation{
@@ -114,10 +163,13 @@ func TestLaunch_CommandLine_Flags_And_OpsecEnv(t *testing.T) {
 		t.Fatalf("outcome.Err = %v", outcome.Err)
 	}
 	cmd := f.Calls[0].Run
-	for _, want := range []string{"droid exec", "-o json", "--model 'gpt-5.5'", "--reasoning-effort high", "--auto high", "--append-system-prompt 'be terse'", "--enabled-tools 'Read,Edit'", "--disabled-tools 'Execute'"} {
+	for _, want := range []string{"droid exec", "-o stream-json", "--model 'gpt-5.5'", "--reasoning-effort high", "--auto high", "--append-system-prompt 'be terse'", "--enabled-tools 'Read,Edit'", "--disabled-tools 'Execute'"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("command missing %q\nfull: %s", want, cmd)
 		}
+	}
+	if strings.Contains(cmd, "-o json") {
+		t.Errorf("command must use -o stream-json, not -o json: %s", cmd)
 	}
 	env := f.Calls[0].Env
 	if env["FACTORY_API_KEY"] != "fk-test" {
@@ -134,7 +186,7 @@ func TestLaunch_CommandLine_Flags_And_OpsecEnv(t *testing.T) {
 func TestLaunch_DefaultAutonomy_SkipPermissions(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: okStdout("ok")}, []container.IOChunk{{Stream: "stdout", Data: okStdout("ok")}})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
 	a := droidAdapter(t, f)
 	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
 	if outcome.Err != nil {
@@ -148,7 +200,7 @@ func TestLaunch_DefaultAutonomy_SkipPermissions(t *testing.T) {
 func TestLaunch_OmitsSessionFlags(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: okStdout("ok")}, []container.IOChunk{{Stream: "stdout", Data: okStdout("ok")}})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
 	a := droidAdapter(t, f)
 	_, _ = drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
 	for _, forbidden := range []string{"--session-id", "--resume", "--fork", "-s ", " -r "} {
@@ -161,7 +213,7 @@ func TestLaunch_OmitsSessionFlags(t *testing.T) {
 func TestLaunch_FeedbackPrependedToPrompt(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: okStdout("ok")}, []container.IOChunk{{Stream: "stdout", Data: okStdout("ok")}})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
 	a := droidAdapter(t, f)
 	inv := agent.AgentInvocation{NodePath: "gate[0].attempt-2.generate[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "fix it"}, Feedback: ir.RawConfig{"reason": "tests failed"}}
 	_, _ = drainLaunch(t, a, h, inv)
@@ -173,8 +225,9 @@ func TestLaunch_FeedbackPrependedToPrompt(t *testing.T) {
 func TestLaunch_ConfigErrorStderr_Permanent(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	// No stdout events → kind "" → stderr pattern → permanent ErrInvalidConfig.
 	stderr := []byte("Invalid model: nope-xyz\nAvailable built-in models: ...\n")
-	f.ProgramExecAny(container.ExecResult{ExitCode: 1, Stdout: nil}, []container.IOChunk{{Stream: "stderr", Data: stderr}})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{{Stream: "stderr", Data: stderr}})
 	a := droidAdapter(t, f)
 	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
 	var bad *agent.ErrInvalidConfig
@@ -183,18 +236,20 @@ func TestLaunch_ConfigErrorStderr_Permanent(t *testing.T) {
 	}
 }
 
-func TestLaunch_NoEnvelopeNoConfigPattern_UnexpectedExit(t *testing.T) {
+func TestLaunch_NoTerminalEventNoConfigPattern_UnexpectedExit(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	stderr := []byte("segfault: core dumped\n")
-	f.ProgramExecAny(container.ExecResult{ExitCode: 139, Stdout: nil}, []container.IOChunk{{Stream: "stderr", Data: stderr}})
+	// A system line but NO terminal completion/error event, plus an unrecognized
+	// stderr → kind "" → ErrUnexpectedExit carrying the captured stderr.
+	stderr := []byte("boom\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{chunk(sysLine()), {Stream: "stderr", Data: stderr}})
 	a := droidAdapter(t, f)
 	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
 	var unexp *droid.ErrUnexpectedExit
 	if !errors.As(outcome.Err, &unexp) {
 		t.Fatalf("outcome.Err = %v, want *droid.ErrUnexpectedExit", outcome.Err)
 	}
-	if !strings.Contains(unexp.Stderr, "segfault") {
+	if !strings.Contains(unexp.Stderr, "boom") {
 		t.Errorf("ErrUnexpectedExit.Stderr should carry the captured stderr: %q", unexp.Stderr)
 	}
 }
@@ -202,8 +257,8 @@ func TestLaunch_NoEnvelopeNoConfigPattern_UnexpectedExit(t *testing.T) {
 func TestLaunch_AuthFailure_Retryable_AgentLaunch(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	line := []byte(`{"type":"result","subtype":"failure","is_error":true,"num_turns":0,"result":"Authentication failed. set a valid FACTORY_API_KEY environment variable."}` + "\n")
-	f.ProgramExecAny(container.ExecResult{ExitCode: 1, Stdout: line}, []container.IOChunk{{Stream: "stdout", Data: line}})
+	errLine := []byte(`{"type":"error","source":"cli","message":"Error: Authentication failed. set a valid FACTORY_API_KEY environment variable."}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{chunk(sysLine()), chunk(errLine)})
 	a := droidAdapter(t, f)
 	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
 	var launch *agent.ErrAgentLaunch
@@ -224,7 +279,7 @@ func TestLaunch_NilBackend(t *testing.T) {
 func TestLaunch_FeedbackAndSchema_Compose(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
-	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: okStdout("{\\\"ok\\\":true}")}, []container.IOChunk{{Stream: "stdout", Data: okStdout("{\\\"ok\\\":true}")}})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine(`{\"ok\":true}`))})
 	a := droidAdapter(t, f)
 	inv := agent.AgentInvocation{
 		NodePath: "gate[0].attempt-2.generate[0]", Uses: droid.AdapterRef,
