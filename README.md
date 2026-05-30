@@ -1,8 +1,9 @@
 # AWF: Agentic Workflow Format
 
 A runtime for **agentic pipelines**: you write author-defined control flow whose steps are
-black-box agent CLIs (such as Claude Code) and shell commands, run against long-lived containers,
-with an independent judge (the **gate**) checking every stage. It is one Go binary, `awf`.
+black-box agent CLIs (such as Anthropic's Claude Code or Factory's droid) and shell commands, run
+against long-lived containers, with an independent judge (the **gate**) checking every stage. It is
+one Go binary, `awf`.
 
 Think of it as **TDD for agent workflows**: you write the acceptance check, the runtime runs it,
 and a stage advances only when the check passes. The agent never marks its own homework.
@@ -151,6 +152,57 @@ feed back so the next draft is conditioned on the critique, up to `max_attempts`
 compose through typed outputs and the shared workspace, the approved reply is posted idempotently so
 a retry never double-sends, and each committed stage is checkpointed so a crash never re-pays for
 finished agent work.
+
+## Supported agents
+
+An agent step names its runtime with `uses:`; that runtime's per-step config lives in the opaque
+`with:` map, which only the named adapter reads and validates. Two black-box CLI agents ship behind
+the uniform adapter seam today, and you can mix them within one workflow — e.g. draft with one and
+have a *different* model judge it, which makes the gate's independence stronger:
+
+- **`anthropic/claude-code`** — Anthropic's Claude Code. The reference adapter.
+- **`factory/droid`** — Factory's [droid](https://docs.factory.ai/cli/droid-exec/overview) (its
+  `droid exec` non-interactive mode).
+
+Both launch one fresh, non-resumable invocation per step (so the gate's evaluator stays structurally
+independent — no `--continue`/`--resume`/session reuse), stream their events live, validate `with:`
+strictly, and bind typed outputs to the step's `output_schema`.
+
+| Capability | `anthropic/claude-code` | `factory/droid` |
+| --- | --- | --- |
+| Maturity | reference adapter | supported |
+| Live streaming (realtime events) | ✅ | ✅ |
+| Typed outputs (`output_schema`) | ✅ native (`--json-schema`) | ✅ layer-2 <sup>1</sup> |
+| Gate repair (critique fed back) | ✅ | ✅ |
+| Session independence (no reuse) | ✅ | ✅ |
+| Token-usage metrics | ✅ | ✅ |
+| Cost (USD) reporting | ✅ (`total_cost_usd`) | ❌ tokens only <sup>2</sup> |
+| Model selection | ✅ `model` | ✅ `model` |
+| Reasoning effort | ➖ | ✅ `reasoning_effort` |
+| Autonomy / sandbox level | ➖ | ✅ `autonomy` |
+| System-prompt append | ✅ `system_prompt` | ✅ `system_prompt` |
+| Tool gating | ✅ `allowed_tools` | ✅ `enabled_tools` / `disabled_tools` |
+| Budget cap | ✅ `max_budget_usd` | ➖ |
+| Real-binary conformance | ✅ native + Docker (14a + gate-e2e 14c) | ⚠️ native (14a verified e2e); compose gate-e2e (14c) deferred <sup>3</sup> |
+| Auth env var(s) | `ANTHROPIC_API_KEY` · `ANTHROPIC_AUTH_TOKEN` · `CLAUDE_CODE_OAUTH_TOKEN` | `FACTORY_API_KEY` |
+
+Legend: ✅ full · ⚠️ partial · ➖ not applicable · ❌ not supported.
+
+1. droid has no native schema flag, so the adapter injects the `output_schema` into the prompt and
+   parses/validates droid's final JSON. The single-agent typed-output round-trip is **verified
+   end-to-end against the real `droid` binary**; output that doesn't match the schema is a retryable
+   failure the gate repairs.
+2. droid reports token counts but no dollar figure, so `MetricCost` is left zero.
+3. Bucket 14a (typed-output round-trip) and live streaming are verified end-to-end against the real
+   `droid` binary; bucket 14c (gate repair end-to-end under a compose lab) needs a compose image with
+   `droid` installed and is deferred. The gate itself is engine-enforced and adapter-agnostic, so it
+   works for both runtimes regardless.
+
+> **droid opsec.** The adapter disables Factory telemetry (`OTEL_SDK_DISABLED` /
+> `OTEL_CUSTOMER_ENABLED`) inside the container, but droid's `cloudSessionSync` mirrors session
+> content to Factory's web app and is **on by default with no env switch** — for sensitive
+> workflows, disable it in the container image's `~/.factory/settings.json`
+> (`{"general":{"cloudSessionSync":false}}`). See the `awf(1)` ENVIRONMENT section.
 
 ## Documentation
 

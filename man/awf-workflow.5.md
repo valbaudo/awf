@@ -174,7 +174,7 @@ format never hard-codes one harness's options.
 
     - id: <id>
       container: <name>
-      uses: <agent-runtime-ref>      # e.g. anthropic/claude-code
+      uses: <agent-runtime-ref>      # e.g. anthropic/claude-code or factory/droid
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
       output_files: [<path>, ...]    # optional
