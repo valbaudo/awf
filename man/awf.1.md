@@ -272,6 +272,14 @@ writing `{"general":{"cloudSessionSync":false}}` to
 _~/.factory/settings.json_ inside the container image. The adapter cannot write
 that file.
 
+**Droid model IDs.** The `factory/droid` `model` with-key is passed verbatim to
+droid's `--model`. IDs are provider-prefixed and versioned per family — e.g.
+`claude-sonnet-4-6` (Claude uses dashes), `gpt-5.5` (GPT/Gemini use dots),
+`gemini-3.5-flash` — and default to `claude-opus-4-8`. **awf** keeps no model
+list of its own (it drifts per droid release); an unknown ID is rejected at step
+launch as a permanent config error carrying droid's available-models list. Run
+`droid exec --model x` to print the IDs the installed droid accepts.
+
 # FILES
 
 _state-dir_/runs/_run-id_/log

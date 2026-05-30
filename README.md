@@ -164,6 +164,12 @@ have a *different* model judge it, which makes the gate's independence stronger:
 - **`factory/droid`** — Factory's [droid](https://docs.factory.ai/cli/droid-exec/overview) (its
   `droid exec` non-interactive mode).
 
+droid `model` IDs are provider-prefixed and versioned per family — e.g. `claude-sonnet-4-6` (Claude
+uses dashes), `gpt-5.5` (GPT/Gemini use dots), `gemini-3.5-flash`; the default is `claude-opus-4-8`.
+AWF doesn't keep its own model list (it drifts per droid release), so an unknown ID fails the step at
+launch with droid's available-models list in the error — run `droid exec --model x` to print the set
+your installed droid accepts.
+
 Both launch one fresh, non-resumable invocation per step (so the gate's evaluator stays structurally
 independent — no `--continue`/`--resume`/session reuse), stream their events live, validate `with:`
 strictly, and bind typed outputs to the step's `output_schema`.
