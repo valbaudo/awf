@@ -31,7 +31,7 @@ var ErrAuthFailureSentinel = errors.New("agent/droid: droid exec reported an aut
 // fields the adapter needs for the OUTCOME are modeled; live AgentEvents carry
 // the raw line, so per-event detail isn't decoded here.
 type streamEvent struct {
-	Type string `json:"type"` // system | message | tool_call | tool_result | completion | error
+	Type string `json:"type"` // system | message | reasoning | tool_call | tool_result | completion | error | status
 
 	// completion (terminal, success). Note: camelCase in the wire format.
 	FinalText  string    `json:"finalText,omitempty"`
@@ -42,6 +42,18 @@ type streamEvent struct {
 	// error (terminal, failure)
 	Source  string `json:"source,omitempty"`
 	Message string `json:"message,omitempty"`
+
+	// display-only fields (verified against droid v0.138.0 -o stream-json)
+	Role       string          `json:"role,omitempty"`
+	Text       string          `json:"text,omitempty"`
+	Model      string          `json:"model,omitempty"`
+	Tools      []string        `json:"tools,omitempty"`
+	ToolName   string          `json:"toolName,omitempty"`
+	ToolID     string          `json:"toolId,omitempty"`
+	Parameters json.RawMessage `json:"parameters,omitempty"`
+	Value      string          `json:"value,omitempty"`
+	IsError    bool            `json:"isError,omitempty"`
+	Details    string          `json:"details,omitempty"`
 }
 
 // parseStreamEvent decodes one stream-json line. Wraps decode errors as *ErrStreamParse.
@@ -136,4 +148,41 @@ func stripJSONFence(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
+}
+
+// displayForDroid maps one droid stream-json event to the normalized
+// agent.EventDisplay. droid is the only place that understands droid's JSON;
+// unknown types return the zero value (DisplayOther → terse fallback).
+func displayForDroid(ev *streamEvent) agent.EventDisplay {
+	switch ev.Type {
+	case "system":
+		return agent.EventDisplay{Class: agent.DisplayInit, Text: fmt.Sprintf("%s · %d tools", ev.Model, len(ev.Tools))}
+	case "message":
+		if ev.Role == "assistant" {
+			return agent.EventDisplay{Class: agent.DisplayAssistant, Text: ev.Text}
+		}
+		return agent.EventDisplay{} // user echo → Other (terse)
+	case "reasoning":
+		return agent.EventDisplay{Class: agent.DisplayReasoning, Text: ev.Text}
+	case "tool_call":
+		return agent.EventDisplay{Class: agent.DisplayToolCall, Tool: ev.ToolName, Text: agent.SummarizeToolInput(ev.Parameters)}
+	case "tool_result":
+		return agent.EventDisplay{
+			Class: agent.DisplayToolResult, Tool: ev.ToolID, IsError: ev.IsError,
+			Text:  agent.Elide(ev.Value, agent.ToolResultHeadTail, agent.ToolResultHeadTail),
+			Lines: agent.CountLines(ev.Value), Bytes: len(ev.Value),
+		}
+	case "completion":
+		return agent.EventDisplay{Class: agent.DisplayFinal, Text: ev.FinalText}
+	case "error":
+		return agent.EventDisplay{Class: agent.DisplayError, IsError: true, Text: ev.Message}
+	case "status":
+		t := ev.Text
+		if t == "" {
+			t = ev.Details
+		}
+		return agent.EventDisplay{Class: agent.DisplayNotice, Text: t}
+	default:
+		return agent.EventDisplay{}
+	}
 }

@@ -106,7 +106,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 				continue // tolerate a stray non-JSON line
 			}
 			select {
-			case events <- agent.AgentEvent{Kind: ev.Type, Payload: raw, Stream: "stdout"}:
+			case events <- agent.AgentEvent{Kind: ev.Type, Payload: raw, Stream: "stdout", Display: displayForDroid(ev)}:
 			case <-ctx.Done():
 				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
 				return
