@@ -100,6 +100,10 @@ type AgentEvent struct {
 	Kind    string `json:"kind"`
 	Payload []byte `json:"payload,omitempty"`
 	Stream  string `json:"stream,omitempty"`
+	// Display is the adapter-populated, normalized summary the live renderer uses.
+	// json:"-" — transient presentation, never journaled (the raw Payload is the
+	// durable artifact). Zero value (DisplayOther) → terse fallback.
+	Display EventDisplay `json:"-"`
 }
 
 // MetricSet aggregates the per-step counters the obs package (Phase 6)
