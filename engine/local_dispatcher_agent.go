@@ -105,11 +105,13 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	drainDone := make(chan []agent.AgentEvent, 1)
 	go func() {
 		var buf []agent.AgentEvent
+		render := d.eventRenderer()
 		for ev := range events {
-			buf = append(buf, ev)
 			if d.AgentEventTap != nil {
-				writeAgentEventTap(d.AgentEventTap, ev)
+				render(d.AgentEventTap, ev)
 			}
+			ev.Display = agent.EventDisplay{} // transient; not journaled — drop before buffering
+			buf = append(buf, ev)
 		}
 		drainDone <- buf
 	}()
@@ -228,12 +230,21 @@ func packFiles(files map[string][]byte) []container.CapturedFile {
 	return out
 }
 
+// eventRenderer returns the live-tap formatter: the injected RenderAgentEvent if
+// set, else the built-in terse fallback. Never nil.
+func (d *LocalDispatcher) eventRenderer() func(io.Writer, agent.AgentEvent) {
+	if d.RenderAgentEvent != nil {
+		return d.RenderAgentEvent
+	}
+	return writeAgentEventTap
+}
+
 // writeAgentCostLine emits one per-step cost/token summary line to the live tap.
 // Best-effort (write errors ignored, like writeAgentEventTap). Sourced from the
 // adapter's MetricSet — no harness parsing, no obs.
 func writeAgentCostLine(w io.Writer, path string, m agent.MetricSet) {
-	_, _ = fmt.Fprintf(w, "[cost] %s: $%.4f · %d tok (%d in / %d out) · %d turns\n",
-		path, m.Cost.USD, m.Tokens.Input+m.Tokens.Output, m.Tokens.Input, m.Tokens.Output, m.Turns)
+	_, _ = fmt.Fprintf(w, "%s %s — $%.4f · %d tok (%d in / %d out) · %d turns\n",
+		"·", path, m.Cost.USD, m.Tokens.Input+m.Tokens.Output, m.Tokens.Input, m.Tokens.Output, m.Turns)
 }
 
 // writeAgentEventTap emits one line per AgentEvent to the tap writer.

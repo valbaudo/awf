@@ -58,6 +58,11 @@ type LocalDispatcher struct {
 	// interleaving with code-step stdout.
 	AgentEventTap io.Writer
 
+	// RenderAgentEvent formats each live AgentEvent to the AgentEventTap writer.
+	// nil → the built-in terse fallback (writeAgentEventTap). cli injects a
+	// TTY-aware, per-kind renderer; the engine stays presentation-agnostic.
+	RenderAgentEvent func(io.Writer, agent.AgentEvent)
+
 	// StepCostLine, when true, makes runAgent write one cost/token line per
 	// agent step to AgentEventTap (slice 6.2 live renderer). Default false so
 	// engine unit tests' exact tap-write-count assertions are unaffected; the
@@ -364,11 +369,12 @@ func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *Local
 	}
 	cloned[name] = h
 	return &LocalDispatcher{
-		Backend:       d.Backend,
-		Handles:       cloned,
-		ComposeFiles:  d.ComposeFiles,
-		Resolver:      d.Resolver,
-		AgentEventTap: d.AgentEventTap,
-		StepCostLine:  d.StepCostLine,
+		Backend:          d.Backend,
+		Handles:          cloned,
+		ComposeFiles:     d.ComposeFiles,
+		Resolver:         d.Resolver,
+		AgentEventTap:    d.AgentEventTap,
+		RenderAgentEvent: d.RenderAgentEvent,
+		StepCostLine:     d.StepCostLine,
 	}
 }

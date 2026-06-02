@@ -1191,7 +1191,7 @@ func TestLocalDispatcher_runAgent_StepCostLine(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	tap := tapBuf.String()
-	if !strings.Contains(tap, "[cost]") || !strings.Contains(tap, "a1") || !strings.Contains(tap, "0.0123") {
+	if !strings.Contains(tap, "a1") || !strings.Contains(tap, "0.0123") || !strings.Contains(tap, "turns") {
 		t.Errorf("tap missing per-step cost line:\n%s", tap)
 	}
 }
@@ -1209,7 +1209,7 @@ func TestLocalDispatcher_runAgent_StepCostLineOffByDefault(t *testing.T) {
 	if _, _, err := disp.Run(ctx, intent); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if strings.Contains(tapBuf.String(), "[cost]") {
+	if strings.Contains(tapBuf.String(), "turns") {
 		t.Errorf("cost line emitted with StepCostLine unset:\n%s", tapBuf.String())
 	}
 }
