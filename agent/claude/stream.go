@@ -100,16 +100,23 @@ func messageToEvents(msg streamMessage) []agent.AgentEvent {
 	switch msg.Type {
 	case "system":
 		raw, _ := json.Marshal(msg)
-		return []agent.AgentEvent{{Kind: "system", Payload: raw, Stream: "stdout"}}
+		return []agent.AgentEvent{{Kind: "system", Payload: raw, Stream: "stdout",
+			Display: agent.EventDisplay{Class: agent.DisplayInit, Text: fmt.Sprintf("%s · %d tools", msg.Model, len(msg.Tools))}}}
 	case "rate_limit_event":
 		raw, _ := json.Marshal(msg)
-		return []agent.AgentEvent{{Kind: "rate_limit", Payload: raw, Stream: "stdout"}}
+		return []agent.AgentEvent{{Kind: "rate_limit", Payload: raw, Stream: "stdout",
+			Display: agent.EventDisplay{Class: agent.DisplayNotice, Text: "rate limit"}}}
 	case "result":
 		raw, _ := json.Marshal(msg)
-		return []agent.AgentEvent{{Kind: "result", Payload: raw, Stream: "stdout"}}
+		return []agent.AgentEvent{{Kind: "result", Payload: raw, Stream: "stdout",
+			Display: agent.EventDisplay{Class: agent.DisplayFinal, Text: msg.Result}}}
 	case "user":
 		raw, _ := json.Marshal(msg)
-		return []agent.AgentEvent{{Kind: "user", Payload: raw, Stream: "stdout"}}
+		// v1 clean stub: claude delivers tool RESULTS inside user messages with
+		// polymorphic content (string OR []{text}); rather than spew raw JSON, show
+		// a terse notice. Full per-result rendering is a fast-follow.
+		return []agent.AgentEvent{{Kind: "user", Payload: raw, Stream: "stdout",
+			Display: agent.EventDisplay{Class: agent.DisplayNotice, Text: "tool result"}}}
 	case "assistant":
 		return splitAssistantMessage(msg)
 	default:
@@ -133,9 +140,26 @@ func splitAssistantMessage(msg streamMessage) []agent.AgentEvent {
 	out := make([]agent.AgentEvent, 0, len(wrapper.Content))
 	for _, block := range wrapper.Content {
 		payload, _ := json.Marshal(block)
-		out = append(out, agent.AgentEvent{Kind: block.Type, Payload: payload, Stream: "stdout"})
+		out = append(out, agent.AgentEvent{Kind: block.Type, Payload: payload, Stream: "stdout", Display: displayForClaudeBlock(block)})
 	}
 	return out
+}
+
+// displayForClaudeBlock maps one assistant content block to the normalized
+// EventDisplay. Unknown block types (e.g. tool_result inside assistant) return
+// the zero value → DisplayOther. The tool_use arg is summarized via the shared
+// agent.SummarizeToolInput (one bound, one salient-key list across adapters).
+func displayForClaudeBlock(b messageContentBlock) agent.EventDisplay {
+	switch b.Type {
+	case "text":
+		return agent.EventDisplay{Class: agent.DisplayAssistant, Text: b.Text}
+	case "thinking":
+		return agent.EventDisplay{Class: agent.DisplayReasoning, Text: b.Thinking}
+	case "tool_use":
+		return agent.EventDisplay{Class: agent.DisplayToolCall, Tool: b.Name, Text: agent.SummarizeToolInput(b.Input)}
+	default:
+		return agent.EventDisplay{}
+	}
 }
 
 // ErrNoResultEvent is the sentinel returned by extractResult when the
