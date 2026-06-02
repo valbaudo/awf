@@ -1,0 +1,17 @@
+workflow: render-probe
+version: 1
+containers:
+  box:
+    image: oci://example.invalid/x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: probe
+    container: box
+    uses: test/fake
+    with:
+      prompt: go
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }

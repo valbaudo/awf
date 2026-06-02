@@ -68,13 +68,15 @@ func (r *Runner) runAndFinish(
 	broker *signal.Broker,
 	skipTeardown *bool,
 ) int {
+	tap := r.agentEventTap(stderr)
 	dispatcher := &engine.LocalDispatcher{
-		Backend:       backend,
-		Handles:       handles,
-		ComposeFiles:  ld.ComposeFiles,
-		Resolver:      r.resolverOrEmpty(),
-		AgentEventTap: r.agentEventTap(stderr),
-		StepCostLine:  true,
+		Backend:          backend,
+		Handles:          handles,
+		ComposeFiles:     ld.ComposeFiles,
+		Resolver:         r.resolverOrEmpty(),
+		AgentEventTap:    tap,
+		RenderAgentEvent: r.newDispatcherEventRenderer(tap),
+		StepCostLine:     true,
 	}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout, broker)
 

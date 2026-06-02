@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/fake"
+	"github.com/valbaudo/awf/clock"
+	"github.com/valbaudo/awf/container"
 )
 
 func render(ev agent.AgentEvent) string {
@@ -89,4 +92,48 @@ func TestHumanizeBytes(t *testing.T) {
 
 func ag(c agent.DisplayClass, tool, text string, lines, bytesN int, isErr bool) agent.AgentEvent {
 	return agent.AgentEvent{Display: agent.EventDisplay{Class: c, Tool: tool, Text: text, Lines: lines, Bytes: bytesN, IsError: isErr}}
+}
+
+func TestRunner_WiresRenderer(t *testing.T) {
+	render := (&Runner{}).newDispatcherEventRenderer(&bytes.Buffer{})
+	if render == nil {
+		t.Fatal("CLI must provide a renderer")
+	}
+	var b bytes.Buffer
+	render(&b, ag(agent.DisplayToolCall, "Execute", "ls", 0, 0, false))
+	if b.String() != "→ Execute(ls)\n" {
+		t.Errorf("not wired to the per-kind formatter: %q", b.String())
+	}
+}
+
+// End-to-end: a fake-agent workflow run must render per-kind lines through the
+// engine drain → injected renderer → tap. Proves the whole chain, not just units.
+func TestCLIRun_RendersAgentEventsEndToEnd(t *testing.T) {
+	backend := container.NewFake()
+	f := fake.New("test/fake").WithVersion("v1").Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+		Events: []agent.AgentEvent{
+			{Kind: "tool_call", Stream: "stdout", Display: agent.EventDisplay{Class: agent.DisplayToolCall, Tool: "Execute", Text: "ls -la"}},
+			{Kind: "completion", Stream: "stdout", Display: agent.EventDisplay{Class: agent.DisplayFinal, Text: "all done"}},
+		},
+	})
+	var reg agent.Registry
+	if err := reg.Register(f); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	var tap, stdout, stderr bytes.Buffer
+	r := &Runner{
+		Backend:       backend,
+		Resolver:      &reg,
+		AgentEventTap: &tap,
+		IDGen:         &clock.Fake{IDs: []string{"render-run-1"}},
+	}
+	rc := r.Run([]string{"run", "--state-dir", t.TempDir(), "testdata/render-probe.yaml"}, &stdout, &stderr)
+	if rc != ExitOK {
+		t.Fatalf("run rc=%d, stderr=%s", rc, stderr.String())
+	}
+	out := tap.String()
+	if !strings.Contains(out, "→ Execute(ls -la)\n") || !strings.Contains(out, "all done\n") {
+		t.Errorf("tap did not render per-kind agent events end-to-end:\n%s", out)
+	}
 }

@@ -40,6 +40,13 @@ func newAgentEventRenderer(w io.Writer) func(io.Writer, agent.AgentEvent) {
 	}
 }
 
+// newDispatcherEventRenderer builds the renderer the CLI hands the engine. tapW
+// is the same writer used as AgentEventTap, so the color decision matches where
+// the lines go.
+func (r *Runner) newDispatcherEventRenderer(tapW io.Writer) func(io.Writer, agent.AgentEvent) {
+	return newAgentEventRenderer(tapW)
+}
+
 // wantColor: ANSI only when w is a character device and NO_COLOR is unset.
 func wantColor(w io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" {
