@@ -109,21 +109,27 @@ func formatEvent(ev agent.AgentEvent, color bool) string {
 }
 
 // formatReasoning shows up to reasoningMaxLines of the (already model-bounded)
-// reasoning text, dimmed: first line prefixed "· thinking: ", the rest indented.
+// reasoning text, dimmed: first shown line prefixed "· thinking: ", the rest
+// indented. Blank lines are skipped (like formatToolResult) so the prominent
+// first slot and the small line budget always carry real thoughts — markdown-
+// style reasoning leads with a heading + blank line routinely; whitespace-only
+// reasoning renders nothing rather than a bare header.
 func formatReasoning(text string, color bool) string {
-	if text == "" {
-		return ""
-	}
 	var b strings.Builder
-	for i, ln := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		if i >= reasoningMaxLines {
+	shown := 0
+	for _, ln := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		if shown >= reasoningMaxLines {
 			break
 		}
 		prefix := "  "
-		if i == 0 {
+		if shown == 0 {
 			prefix = reasonPrefix
 		}
 		b.WriteString(dim(prefix+truncate(ln, textLineBudget), color) + "\n")
+		shown++
 	}
 	return b.String()
 }

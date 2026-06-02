@@ -53,6 +53,20 @@ func TestRender_ReasoningUpTo3Lines(t *testing.T) {
 		t.Errorf("reasoning should show up to 3 lines: %q", got)
 	}
 }
+func TestRender_ReasoningSkipsBlankLines(t *testing.T) {
+	// leading blank: the first slot must carry a real thought, not an empty line.
+	if got := render(ag(agent.DisplayReasoning, "", "\nreal thought\nmore", 0, 0, false)); got != "· thinking: real thought\n  more\n" {
+		t.Errorf("leading blank: %q", got)
+	}
+	// interior blank: the 3-line budget spends on real content, not blanks.
+	if got := render(ag(agent.DisplayReasoning, "", "head\n\ntail\nfourth", 0, 0, false)); got != "· thinking: head\n  tail\n  fourth\n" {
+		t.Errorf("interior blank: %q", got)
+	}
+	// whitespace-only reasoning renders nothing (not a bare header).
+	if got := render(ag(agent.DisplayReasoning, "", "\n\n\n", 0, 0, false)); got != "" {
+		t.Errorf("whitespace-only must suppress: %q", got)
+	}
+}
 func TestRender_Error(t *testing.T) {
 	if got := render(ag(agent.DisplayError, "", "auth failed", 0, 0, false)); got != "✗ auth failed\n" {
 		t.Errorf("got %q", got)

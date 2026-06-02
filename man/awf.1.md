@@ -67,8 +67,10 @@ diagnostics in one pass; any error-severity diagnostic yields a non-zero exit
 ## awf run _path_
 
 Mint a run id, validate _path_, bring each declared container to readiness from
-its image or Compose recipe, and execute the graph. Step and agent progress
-streams to standard output as a live tap; the final line reports the run id and
+its image or Compose recipe, and execute the graph. Code-step output streams to
+standard output as a live tap, while agent-step progress — assistant text,
+reasoning, tool calls and results — streams to standard error (plain when piped
+or under `NO_COLOR`). The final line on standard output reports the run id and
 terminal outcome (for example `run 1a2b3c4d: ok`). Run state is written under
 _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 **FILES**).
