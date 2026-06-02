@@ -204,6 +204,12 @@ Legend: ✅ full · ⚠️ partial · ➖ not applicable · ❌ not supported.
    `droid` installed and is deferred. The gate itself is engine-enforced and adapter-agnostic, so it
    works for both runtimes regardless.
 
+During a run, agent steps stream a readable live view to stderr: assistant text
+in full, reasoning dimmed, tool calls as one-liners, and tool results collapsed
+to a status + size with a head **and tail** preview (the full output is preserved
+in the run journal, not the terminal). Output is plain (no color) when piped or
+under `NO_COLOR`.
+
 > **droid opsec.** The adapter disables Factory telemetry (`OTEL_SDK_DISABLED` /
 > `OTEL_CUSTOMER_ENABLED`) inside the container, but droid's `cloudSessionSync` mirrors session
 > content to Factory's web app and is **on by default with no env switch** — for sensitive
