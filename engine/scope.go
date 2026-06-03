@@ -483,16 +483,33 @@ func runtimeMapPathToStatic(runtimePath string) string {
 }
 
 // stepRuntimePath converts a step's static IR path (from StepPathIndex) to the
-// runtime path that keys into RunState.Completed. Each `loop[N].body` segment
-// pair gets suffixed with `.iter-K` where K is the current iter (if ctxPath is
-// inside that loop) or the latest completed iter (if ctxPath is outside).
+// runtime path that keys into RunState.Completed. It inserts the per-instance
+// segment at each multiplicity boundary the static path crosses:
 //
-// Nested loops (multiple loop[…] segments in one static path) are explicitly
-// rejected — slice 2.3 doesn't support them (see plan Design question 3).
+//   - loop[N].body → loop[N].body.iter-K — K is the current iter (ctxPath inside
+//     the loop) or the latest completed iter (ctxPath outside): a loop ref
+//     resolves to "the most recent iteration" (spec §5.2), so loops are
+//     transparent from outside.
+//   - gate[N] → gate[N].attempt-M — M is the attempt ctxPath sits in. A gate's
+//     internal steps are referenceable ONLY from within the same attempt
+//     (generate sibling, evaluate, or until); from outside there is no defined
+//     "which attempt", so this errors (AWF4002). The gate's product is read via
+//     evaluate.<field>, not by addressing its internal steps.
+//   - map[N].body → map[N].item-K — K is the item ctxPath sits in. Map body
+//     steps are referenceable ONLY from within the same item; items run
+//     concurrently so there is no "most recent" — a cross-item / external ref
+//     errors (AWF4002). Aggregate access is deferred per spec §11.
+//
+// try / parallel introduce no multiplicity, so their segments pass through and a
+// step inside them resolves from anywhere, exactly like a top-level step.
+//
+// Nested loops (multiple loop[…] segments in one static path) remain rejected —
+// the LoopIters wire format for nested loops is unspecified (slice 2.3 design
+// question 3); distinct nested kinds (loop in map, map in gate, …) are supported
+// because each scope's per-instance state is keyed by its runtime path.
 func (s *Scope) stepRuntimePath(staticPath string) (string, error) {
 	segments := strings.Split(staticPath, ".")
 
-	// Guard: nested loops are out of scope for slice 2.3.
 	loopCount := 0
 	for _, seg := range segments {
 		if strings.HasPrefix(seg, "loop[") {
@@ -500,47 +517,97 @@ func (s *Scope) stepRuntimePath(staticPath string) (string, error) {
 		}
 	}
 	if loopCount > 1 {
-		return "", fmt.Errorf("nested loops not supported in slice 2.3 (LoopIters wire format for nested loops is unspecified in Phase 2 design); static path %q has %d loop segments", staticPath, loopCount)
+		return "", fmt.Errorf("nested loops not supported (LoopIters wire format for nested loops is unspecified); static path %q has %d loop segments", staticPath, loopCount)
 	}
 
-	var b strings.Builder
+	cur := "" // runtime path built so far (no trailing separator)
 	for i, seg := range segments {
-		if i > 0 {
-			b.WriteByte('.')
-		}
-		b.WriteString(seg)
-		if seg == "body" && i > 0 && strings.HasPrefix(segments[i-1], "loop[") {
-			loopPath := strings.Join(segments[:i+1], ".") // up to and including ".body"
-			iter, err := s.iterForLoop(loopPath)
+		switch {
+		case seg == "body" && i > 0 && strings.HasPrefix(segments[i-1], "loop["):
+			// loop[N].body → loop[N].body.iter-K
+			cur = appendSeg(cur, seg)
+			iter, err := s.iterForLoop(cur)
 			if err != nil {
 				return "", err
 			}
-			b.WriteString(iterSep)
-			b.WriteString(strconv.Itoa(iter))
+			cur = IterPath(cur, iter)
+		case seg == "body" && i > 0 && strings.HasPrefix(segments[i-1], "map["):
+			// map[N].body → map[N].item-K (the body segment is replaced by item-K).
+			k, matched, err := s.instanceFromCtx(cur, itemSep)
+			if err != nil {
+				return "", err
+			}
+			if !matched {
+				return "", fmt.Errorf("step inside map %q is only referenceable from within the same item; cross-item or aggregate access is not defined (spec §11)", cur)
+			}
+			cur = ItemPath(cur, k)
+		default:
+			cur = appendSeg(cur, seg)
+			if strings.HasPrefix(seg, "gate[") {
+				// gate[N] → gate[N].attempt-M (inserted before the following
+				// generate/evaluate/until segment).
+				m, matched, err := s.instanceFromCtx(cur, attemptSep)
+				if err != nil {
+					return "", err
+				}
+				if !matched {
+					return "", fmt.Errorf("step inside gate %q is only referenceable from within the same attempt; read the gate's product via evaluate.<field>", cur)
+				}
+				cur = AttemptPath(cur, m)
+			}
 		}
 	}
-	return b.String(), nil
+	return cur, nil
+}
+
+// appendSeg joins one path segment onto cur with the '.' separator (cur=="" → seg).
+func appendSeg(cur, seg string) string {
+	if cur == "" {
+		return seg
+	}
+	return cur + "." + seg
+}
+
+// instanceFromCtx reads the per-instance index that ctxPath assigns to the scope
+// rooted at scopePrefix, where the runtime suffix is sep+<int> (sep is iterSep /
+// attemptSep / itemSep). Three outcomes:
+//
+//   - (n, true, nil)   — ctxPath is inside this scope instance; n is its index.
+//   - (0, false, nil)  — ctxPath is not within this scope (the reference crosses
+//     the boundary); the caller decides (loop falls back to latest, gate/map error).
+//   - (0, true, err)   — ctxPath prefix-matches but the index isn't an integer;
+//     a malformed path must error rather than silently fall back (engine invariant).
+func (s *Scope) instanceFromCtx(scopePrefix, sep string) (int, bool, error) {
+	full := scopePrefix + sep
+	if !strings.HasPrefix(s.ctxPath, full) {
+		return 0, false, nil
+	}
+	rest := s.ctxPath[len(full):]
+	end := strings.IndexByte(rest, '.')
+	if end < 0 {
+		end = len(rest)
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return 0, true, fmt.Errorf("malformed instance segment in ctxPath %q (after prefix %q)", s.ctxPath, full)
+	}
+	return n, true, nil
 }
 
 // iterForLoop returns the iteration number to use for a loop's `.body` segment.
-// Same-iter rule: if ctxPath starts with `<loopBodyPath>.iter-`, use that K.
-// Otherwise: K = RunState.LoopIters[loopPath] (the latest completed iter). Zero
+// Same-iter rule: if ctxPath is inside `<loopBodyPath>.iter-K`, use that K.
+// Otherwise: K = RunState.LoopIters[loopPath] (the latest completed iter — the
+// "most recent iteration" rule that makes loops transparent from outside). Zero
 // iters AND not inside the loop → error (no value to return).
 func (s *Scope) iterForLoop(loopBodyPath string) (int, error) {
 	if !strings.HasSuffix(loopBodyPath, ".body") {
 		return 0, fmt.Errorf("internal: iterForLoop called with non-body path %q", loopBodyPath)
 	}
-	prefix := iterPrefix(loopBodyPath)
-	if strings.HasPrefix(s.ctxPath, prefix) {
-		rest := s.ctxPath[len(prefix):]
-		end := strings.IndexByte(rest, '.')
-		if end < 0 {
-			end = len(rest)
-		}
-		n, err := strconv.Atoi(rest[:end])
-		if err != nil {
-			return 0, fmt.Errorf("malformed iter segment in ctxPath %q (after prefix %q)", s.ctxPath, prefix)
-		}
+	n, matched, err := s.instanceFromCtx(loopBodyPath, iterSep)
+	if err != nil {
+		return 0, err
+	}
+	if matched {
 		return n, nil
 	}
 	loopPath := strings.TrimSuffix(loopBodyPath, ".body")

@@ -153,4 +153,5 @@ var catalog = map[string]string{
 	"AWF3005": "compose file uses `extends:` or `include:` directives; the validator refuses these (they would follow arbitrary disk paths and bypass loader confinement)",
 	"AWF5001": "reference to `evaluate.<field>` outside a gate's generate or until",
 	"AWF5002": "reference to map item aggregation (step.<map_id>.items[*] / step.<map_id>.summary) — aggregation refs are deferred per spec §11; ships in a later phase",
+	"AWF5003": "reference to a step inside a gate or map body from outside that scope — gate/map-internal steps resolve only within the same attempt/item (read a gate's product via evaluate.<field>; map aggregation is deferred per spec §11)",
 }

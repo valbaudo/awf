@@ -242,6 +242,198 @@ func TestScopeResolveUnknownStepIDIsAWF4002(t *testing.T) {
 	}
 }
 
+// controlKindsWorkflow returns a workflow with one step buried in each Phase 3
+// control kind (try.do/catch/finally, parallel child, gate.generate/evaluate,
+// map.body), so the StepPathIndex walker's recursion into every kind is pinned.
+func controlKindsWorkflow() *ir.Workflow {
+	step := func(id string) *ir.CodeStep { return &ir.CodeStep{ID: id, Container: "lab", Run: "echo " + id} }
+	return &ir.Workflow{
+		ID: "test", Version: 1,
+		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
+		Graph: ir.NodeList{
+			&ir.Try{ // index 0
+				Do:      ir.NodeList{step("s_do")},
+				Catch:   ir.NodeList{step("s_catch")},
+				Finally: ir.NodeList{step("s_fin")},
+			},
+			&ir.Parallel{ // index 1
+				Children: ir.NodeList{step("s_par")},
+			},
+			&ir.Gate{ // index 2
+				Generate: ir.NodeList{step("s_gen")},
+				Evaluate: ir.NodeList{step("s_eval")},
+			},
+			&ir.Map{ // index 3
+				Body: ir.NodeList{step("s_map")},
+			},
+		},
+	}
+}
+
+func TestStepPathIndexControlKinds(t *testing.T) {
+	idx := StepPathIndex(controlKindsWorkflow())
+	want := map[string]string{
+		"s_do":    "try[0].do.s_do",
+		"s_catch": "try[0].catch.s_catch",
+		"s_fin":   "try[0].finally.s_fin",
+		"s_par":   "parallel[1].s_par",
+		"s_gen":   "gate[2].generate.s_gen",
+		"s_eval":  "gate[2].evaluate.s_eval",
+		"s_map":   "map[3].body.s_map",
+	}
+	for id, wantPath := range want {
+		got, ok := idx[id]
+		if !ok {
+			t.Errorf("step %q missing from index", id)
+			continue
+		}
+		if got != wantPath {
+			t.Errorf("step %q: path = %q, want %q", id, got, wantPath)
+		}
+	}
+}
+
+// resolveStepField is a tiny helper: build a Scope at ctxPath over wf+rs and
+// resolve `step.<id>.<field>`, returning the value or error.
+func resolveStepField(t *testing.T, rs *RunState, wf *ir.Workflow, ctxPath, id, field string) (any, error) {
+	t.Helper()
+	sc := NewScope(rs, wf, ctxPath)
+	return sc.Resolve(mustParseRef(t, "step."+id+"."+field))
+}
+
+func TestScopeResolveStepInTryIsTransparent(t *testing.T) {
+	wf := controlKindsWorkflow()
+	rs := &RunState{
+		RunID: testRunID,
+		Completed: map[string]NodeResult{
+			"try[0].do.s_do": {Outcome: OutcomeOK, Outputs: map[string]any{"out": "ok"}},
+		},
+	}
+	// A try step runs once; static path == runtime path. It must resolve both
+	// from a sibling inside the try AND from outside it (try is transparent).
+	for _, ctxPath := range []string{"try[0].do.s_catch", "after_try"} {
+		got, err := resolveStepField(t, rs, wf, ctxPath, "s_do", "out")
+		if err != nil {
+			t.Errorf("ctxPath %q: unexpected error: %v", ctxPath, err)
+			continue
+		}
+		if got != "ok" {
+			t.Errorf("ctxPath %q: got %v, want \"ok\"", ctxPath, got)
+		}
+	}
+}
+
+func TestScopeResolveStepInMapSameItem(t *testing.T) {
+	wf := controlKindsWorkflow()
+	rs := &RunState{
+		RunID: testRunID,
+		Completed: map[string]NodeResult{
+			"map[3].item-2.s_map": {Outcome: OutcomeOK, Outputs: map[string]any{"out": "v2"}},
+		},
+	}
+	// A reference from within item-2's body resolves to item-2's instance.
+	got, err := resolveStepField(t, rs, wf, "map[3].item-2.consumer", "s_map", "out")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "v2" {
+		t.Errorf("got %v, want \"v2\"", got)
+	}
+}
+
+func TestScopeResolveStepInMapFromOutsideIsAWF4002(t *testing.T) {
+	wf := controlKindsWorkflow()
+	rs := &RunState{
+		RunID: testRunID,
+		Completed: map[string]NodeResult{
+			"map[3].item-2.s_map": {Outcome: OutcomeOK, Outputs: map[string]any{"out": "v2"}},
+		},
+	}
+	// From outside the map, "which item?" is undefined (items run concurrently,
+	// no most-recent). Must error rather than silently pick one.
+	_, err := resolveStepField(t, rs, wf, "after_map", "s_map", "out")
+	var ee *template.EvalError
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("err = %v, want AWF4002", err)
+	}
+}
+
+func TestScopeResolveStepInGateSameAttempt(t *testing.T) {
+	wf := controlKindsWorkflow()
+	rs := &RunState{
+		RunID: testRunID,
+		Completed: map[string]NodeResult{
+			"gate[2].attempt-1.generate.s_gen": {Outcome: OutcomeOK, Outputs: map[string]any{"out": "g1"}},
+		},
+	}
+	// A reference from within attempt-1 (generate sibling, evaluate, or until)
+	// resolves to attempt-1's generate instance.
+	for _, ctxPath := range []string{
+		"gate[2].attempt-1.generate.other",
+		"gate[2].attempt-1.evaluate.judge",
+		"gate[2].attempt-1.until",
+	} {
+		got, err := resolveStepField(t, rs, wf, ctxPath, "s_gen", "out")
+		if err != nil {
+			t.Errorf("ctxPath %q: unexpected error: %v", ctxPath, err)
+			continue
+		}
+		if got != "g1" {
+			t.Errorf("ctxPath %q: got %v, want \"g1\"", ctxPath, got)
+		}
+	}
+}
+
+func TestScopeResolveStepInGateFromOutsideIsAWF4002(t *testing.T) {
+	wf := controlKindsWorkflow()
+	rs := &RunState{
+		RunID: testRunID,
+		Completed: map[string]NodeResult{
+			"gate[2].attempt-1.generate.s_gen": {Outcome: OutcomeOK, Outputs: map[string]any{"out": "g1"}},
+		},
+	}
+	_, err := resolveStepField(t, rs, wf, "after_gate", "s_gen", "out")
+	var ee *template.EvalError
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("err = %v, want AWF4002", err)
+	}
+}
+
+func TestScopeResolveStepInMapInsideGate(t *testing.T) {
+	// Nested distinct kinds: a step inside a map body that is itself inside a
+	// gate's generate. Both per-instance segments (gate attempt-M, map item-K)
+	// must be inserted, reading each index from ctxPath. This pins the spec's
+	// "distinct nested kinds are supported" claim.
+	wf := &ir.Workflow{
+		ID: "test", Version: 1,
+		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
+		Graph: ir.NodeList{
+			&ir.Gate{
+				Generate: ir.NodeList{
+					&ir.Map{Body: ir.NodeList{
+						&ir.CodeStep{ID: "fetch", Container: "lab", Run: "echo fetch"},
+					}},
+				},
+				Evaluate: ir.NodeList{&ir.CodeStep{ID: "judge", Container: "lab", Run: "true"}},
+			},
+		},
+	}
+	rs := &RunState{
+		RunID: testRunID,
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-2.generate.map[0].item-3.fetch": {Outcome: OutcomeOK, Outputs: map[string]any{"out": "deep"}},
+		},
+	}
+	// A sibling reference from within attempt-2's item-3.
+	got, err := resolveStepField(t, rs, wf, "gate[0].attempt-2.generate.map[0].item-3.consumer", "fetch", "out")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "deep" {
+		t.Errorf("got %v, want \"deep\"", got)
+	}
+}
+
 func TestScopeResolveStepInLoopWithNoIterIsAWF4002(t *testing.T) {
 	// A ref to a step inside a loop, where the loop has zero completed iters
 	// AND ctxPath is outside the loop: there is no value to return.

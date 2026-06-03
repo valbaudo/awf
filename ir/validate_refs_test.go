@@ -367,3 +367,124 @@ func TestValidateRefsEvaluateScope(t *testing.T) {
 		})
 	}
 }
+
+// --- AWF5003: cross-scope references into gate/map bodies ---
+
+// codeStep is a tiny fixture helper for the AWF5003 tests.
+func awf5003Step(id string) *CodeStep { return &CodeStep{ID: id, Container: "c", Run: "true"} }
+
+func awf5003Container() map[string]Container {
+	return map[string]Container{"c": {Image: "oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000"}}
+}
+
+func TestRefsCrossScopeIntoMapBodyRejected(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Input:      &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
+		Graph: NodeList{
+			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
+				awf5003Step("inner"),
+			}},
+			// A top-level step referencing a step inside the map body: "which item?"
+			// is undefined → AWF5003.
+			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.inner.exit_code }}"},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF5003", "after.run")
+}
+
+func TestRefsCrossScopeIntoGateRejected(t *testing.T) {
+	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&Gate{
+				Generate:    NodeList{awf5003Step("gen")},
+				Evaluate:    NodeList{&CodeStep{ID: "judge", Container: "c", Run: "true", OutputSchema: schema}},
+				Until:       Expr("{{ step.judge.exit_code == 0 }}"),
+				MaxAttempts: 2,
+			},
+			// A top-level step reaching into the gate's generate: from outside the
+			// gate there's no defined attempt → AWF5003.
+			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.gen.exit_code }}"},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF5003", "after.run")
+}
+
+func TestRefsSameItemMapSiblingAllowed(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Input:      &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
+		Graph: NodeList{
+			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
+				awf5003Step("a"),
+				&CodeStep{ID: "b", Container: "c", Run: "echo {{ step.a.exit_code }}"}, // same item → allowed
+			}},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF5003")
+}
+
+func TestRefsSameAttemptGateSiblingAllowed(t *testing.T) {
+	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{awf5003Step("gen")},
+				// evaluate referencing a generate step: same gate → allowed.
+				Evaluate:    NodeList{&CodeStep{ID: "judge", Container: "c", Run: "echo {{ step.gen.exit_code }}", OutputSchema: schema}},
+				Until:       Expr("{{ step.judge.exit_code == 0 }}"),
+				MaxAttempts: 2,
+			},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF5003")
+}
+
+func TestRefsIntoTryIsTransparent(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&Try{Do: NodeList{awf5003Step("work")}},
+			// try introduces no multiplicity → a step inside it is referenceable
+			// from outside, exactly like a top-level step.
+			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.work.exit_code }}"},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF5003")
+}
+
+func TestRefsCrossScopeNestedMapInGateRejected(t *testing.T) {
+	// A step inside a gate's generate but OUTSIDE the map nested within it
+	// references a step inside that map's body: the innermost opaque scope (the
+	// map) doesn't enclose the reference site → AWF5003, even though both sit in
+	// the same gate.
+	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Input:      &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{
+					&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
+						awf5003Step("inner"),
+					}},
+					// same gate attempt, but outside the map item → cross-item.
+					&CodeStep{ID: "sibling", Container: "c", Run: "echo {{ step.inner.exit_code }}"},
+				},
+				Evaluate:    NodeList{&CodeStep{ID: "judge", Container: "c", Run: "true", OutputSchema: schema}},
+				Until:       Expr("{{ step.judge.exit_code == 0 }}"),
+				MaxAttempts: 2,
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF5003", "gate[0].generate.sibling.run")
+}

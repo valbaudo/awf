@@ -25,6 +25,7 @@ import (
 type scriptedDispatcher struct {
 	t      *testing.T
 	script map[string]scriptedResult // step id → result
+	gotCmd map[string]string         // optional: if non-nil, records the substituted command per step id
 }
 
 type scriptedResult struct {
@@ -42,6 +43,9 @@ func (d *scriptedDispatcher) Run(ctx context.Context, intent NodeIntent) (Dispat
 	res, ok := d.script[cs.ID]
 	if !ok {
 		d.t.Fatalf("scriptedDispatcher: no script entry for step %q at path %q", cs.ID, intent.Path)
+	}
+	if d.gotCmd != nil {
+		d.gotCmd[cs.ID] = intent.ResolvedInputs.Command
 	}
 	if res.ctxAware {
 		if err := ctx.Err(); err != nil {
@@ -516,5 +520,36 @@ func TestRunTryCtxCancelledSupersedeDoError(t *testing.T) {
 	}
 	if _, done := rs.Completed["try[0].finally.finally-ok"]; !done {
 		t.Errorf("finally must run: Completed = %+v", rs.Completed)
+	}
+}
+
+// TestRunTryStepRefInsideDoResolves is the end-to-end regression for the
+// reported bug: a `{{ step.X.field }}` reference to an earlier sibling inside the
+// same try.do block. Before the StepPathIndex walker recursed into Try, this
+// failed at runtime with `step "first" not declared in workflow` even though
+// `awf validate` accepted it. The reference must resolve to the producer's typed
+// output and the substituted command must carry the value.
+func TestRunTryStepRefInsideDoResolves(t *testing.T) {
+	schema := &ir.JSONSchema{"type": "object", "required": []any{"out"}, "properties": map[string]any{"out": map[string]any{"type": "string"}}, "additionalProperties": false}
+	try := &ir.Try{
+		Do: ir.NodeList{
+			&ir.CodeStep{ID: "first", Run: "produce", OutputSchema: schema},
+			&ir.CodeStep{ID: "second", Run: "echo {{ step.first.out }}"},
+		},
+	}
+	disp, logger, blobs := tryTestRig(t, map[string]scriptedResult{
+		"first":  {outcome: OutcomeOK, outputs: map[string]any{"out": "v1"}},
+		"second": {outcome: OutcomeOK},
+	})
+	disp.gotCmd = map[string]string{}
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{try}}
+	rs := NewRunState("run-x", "digest", nil)
+
+	oc, err := runTry(context.Background(), try, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("got (%q, %v); want (ok, nil) — the sibling ref inside try.do must resolve", oc, err)
+	}
+	if got := disp.gotCmd["second"]; got != "echo v1" {
+		t.Errorf("second's substituted command = %q, want %q", got, "echo v1")
 	}
 }

@@ -45,3 +45,15 @@ func makeLD(wf *Workflow) *LoadedDefinition {
 }
 
 func intPtr(n int) *int { return &n }
+
+// assertNoErrorCode asserts diags contains NO Error with the given code anywhere.
+// Used by "this reference is allowed" tests that tolerate unrelated diagnostics
+// but must not trip the rule under test.
+func assertNoErrorCode(t *testing.T, diags []Diagnostic, code string) {
+	t.Helper()
+	for _, d := range diags {
+		if d.Code == code && d.Severity == Error {
+			t.Errorf("did not expect Error %q; got %+v", code, d)
+		}
+	}
+}

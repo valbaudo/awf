@@ -278,6 +278,17 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			c.errf(path, "AWF3001", fmt.Sprintf("reference to undeclared step %q", id))
 			return
 		}
+		// AWF5003: gate/map bodies are opaque multiplicity scopes. A step inside
+		// one resolves only from within the same attempt/item (structurally: the
+		// reference site must be inside the producer's enclosing gate/map subtree).
+		// A reference from outside has no defined attempt/item and the runtime
+		// rejects it — the static counterpart of engine.Scope.stepRuntimePath's
+		// same-attempt/same-item check. loop / try / parallel are transparent
+		// (loops via the "most recent iteration" rule) and don't trigger this.
+		if scope, opaque := opaqueScopePrefix(p.path); opaque && !pathWithinScope(path, scope) {
+			c.errf(path, "AWF5003", fmt.Sprintf("%s: %s", catalog["AWF5003"], renderRef(ref)))
+			return
+		}
 		// exit_code and stdout are implicit on every code step (AWF §4.1).
 		// Agent/signal steps produce typed output via output_schema; they have no exit_code/stdout.
 		if field == "exit_code" || field == "stdout" {
@@ -366,6 +377,36 @@ func isMapID(name string, mapIDs map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// opaqueScopePrefix returns the static path of the INNERMOST gate or map body
+// enclosing staticPath, and ok=false when none encloses it. A gate's opaque
+// scope is the whole `gate[N]` subtree (generate / evaluate / until all run
+// within one attempt); a map's is its `map[N].body` subtree (the per-item
+// fan-out). loop bodies are NOT opaque — the "most recent iteration" rule (spec
+// §5.2) keeps loop steps referenceable from outside — and neither are try /
+// parallel, which introduce no multiplicity.
+//
+// Innermost suffices for the AWF5003 reachability check: a reference site that
+// is inside the innermost scope is necessarily inside every outer one too.
+func opaqueScopePrefix(staticPath string) (string, bool) {
+	segs := strings.Split(staticPath, ".")
+	for i := len(segs) - 1; i >= 0; i-- {
+		if segs[i] == "body" && i >= 1 && strings.HasPrefix(segs[i-1], "map[") {
+			return strings.Join(segs[:i+1], "."), true
+		}
+		if strings.HasPrefix(segs[i], "gate[") {
+			return strings.Join(segs[:i+1], "."), true
+		}
+	}
+	return "", false
+}
+
+// pathWithinScope reports whether refSite lies within the scope subtree rooted
+// at scopePrefix. refSite carries a trailing field segment (e.g. ".run") but
+// that only makes it deeper, so a segment-aware prefix match is exact.
+func pathWithinScope(refSite, scopePrefix string) bool {
+	return refSite == scopePrefix || strings.HasPrefix(refSite, scopePrefix+".")
 }
 
 // renderRef formats a Ref for inclusion in a diagnostic message.

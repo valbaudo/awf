@@ -10,18 +10,21 @@
 package engine
 
 import (
-	"fmt"
 	"strconv"
 )
 
-// iterSep is the separator between a loop body's path and its iteration
-// number in the runtime address grammar. The token lives here as the single
-// source of truth — other helpers (IterPath, iterPrefix) compose around it,
-// and prefix-matching callers (engine/scope.go's iterForLoop) consume it via
-// iterPrefix. Renaming this token would invalidate every existing log; the
-// concentration here is the CLAUDE.md "node addressing is one pure function"
-// invariant in action.
-const iterSep = ".iter-"
+// iterSep / attemptSep / itemSep are the separators between a loop / gate / map
+// runtime path and its per-instance index, in the runtime address grammar. These
+// tokens are the single source of truth: IterPath / AttemptPath / ItemPath
+// compose them, and the same-instance detector in engine/scope.go
+// (stepRuntimePath via instanceFromCtx) prefix-matches ctxPath against them.
+// Renaming any would invalidate every existing log; the concentration here is the
+// CLAUDE.md "node addressing is one pure function" invariant in action.
+const (
+	iterSep    = ".iter-"
+	attemptSep = ".attempt-"
+	itemSep    = ".item-"
+)
 
 // Exported segment prefixes for callers that need to recognize the
 // runtime-addressing tokens (e.g. engine/gate_path.go's
@@ -33,14 +36,6 @@ const (
 	GateSegmentPrefix    = "gate["
 )
 
-// iterPrefix returns the prefix shared by every iter-suffixed runtime path
-// for a given loop body, e.g. iterPrefix("loop[0].body") → "loop[0].body.iter-".
-// Used by engine.Scope to detect "is ctxPath inside this loop body's iter-K?"
-// via strings.HasPrefix without hard-coding the iter token.
-func iterPrefix(bodyPath string) string {
-	return bodyPath + iterSep
-}
-
 // IterPath appends a per-iteration suffix to a loop body's static path, producing the
 // runtime form the journal and OTel both use:
 //
@@ -49,7 +44,7 @@ func iterPrefix(bodyPath string) string {
 // `iter` is 1-based (the first iteration is iter-1) — matching the design's "iter-3"
 // example in runtime-design §5 and awf-workflow(5) (CHECKPOINTING AND RESUME).
 func IterPath(bodyPath string, iter int) string {
-	return iterPrefix(bodyPath) + strconv.Itoa(iter)
+	return bodyPath + iterSep + strconv.Itoa(iter)
 }
 
 // AttemptPath appends a per-attempt suffix to a gate's static path:
@@ -60,7 +55,7 @@ func IterPath(bodyPath string, iter int) string {
 // ir.ChildPath (or a literal `+".generate"`) — those are the gate-internal branch names
 // the validator already addresses.
 func AttemptPath(gatePath string, attempt int) string {
-	return fmt.Sprintf("%s.attempt-%d", gatePath, attempt)
+	return gatePath + attemptSep + strconv.Itoa(attempt)
 }
 
 // ItemPath appends a per-element suffix to a map's static path:
@@ -72,7 +67,7 @@ func AttemptPath(gatePath string, attempt int) string {
 // execute `map`, but the helper ships now so the addressing grammar is complete and
 // Phase 3 inherits it unchanged.
 func ItemPath(mapPath string, item int) string {
-	return fmt.Sprintf("%s.item-%d", mapPath, item)
+	return mapPath + itemSep + strconv.Itoa(item)
 }
 
 // ParentPath returns the runtime-address parent of a node path, and false when

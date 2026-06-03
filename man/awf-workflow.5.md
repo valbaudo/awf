@@ -400,6 +400,16 @@ is the typed output of the enclosing gate's `evaluate` block, supplied
 automatically on repair attempts. Values over the runtime's inline limit are
 rejected at resolution (pass large data as an `output_files` artifact).
 
+A `step.<id>.<field>` reference resolves the named step's typed output wherever
+the step sits, subject to scope. `try` and `parallel` introduce no multiplicity,
+so a step inside them is referenceable from anywhere, exactly like a top-level
+step. A step inside a `loop` resolves to its most recent iteration (above). A
+step inside a `gate` or a `map` is referenceable *only from within the same scope
+instance* — the same gate attempt, or the same map item — because from outside
+there is no single attempt or item to resolve to; a cross-scope reference is
+rejected at validation. Read a gate's product through `{{ evaluate.<field> }}`;
+reading a `map`'s results in aggregate is not yet defined.
+
 Substitution into a shell host (`run:`, `idempotency_key:`) is verbatim and
 pre-shell: AWF inserts the resolved value as-is and does **not** quote or escape
 it. Use those slots for trusted scalars — ids, counts, enums, flags, `input`
