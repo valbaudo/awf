@@ -43,6 +43,13 @@
 //     next commit boundary with run.paused appended (signal_pause_halts);
 //     cancel.json appends terminal run.cancelled + returns ErrCancelled
 //     (signal_cancel_terminal).
+//   - Aggregation (Bucket 17): map A scans 3 items into typed {finding,index}
+//     outputs; map B's `over: "{{ step.scan }}"` lifts A's committed per-item
+//     outputs to an index-ordered array and fans B out over exactly the
+//     aggregate length (map_chains_to_map); a post-completion resume against a
+//     BARE fake replays A's aggregate identically and never re-runs B's body —
+//     item/commit counts are unchanged across resume (map_chain_resume_replays).
+//     Pins the map-output-aggregation contract in awf-workflow(5).
 //   - Obs (Bucket 16): obs.Project over an obs-owned fake-backend run's folded
 //     log is a deterministic read-only projection — span tree mirrors the
 //     engine/path addressing tree bidirectionally (span_tree_mirrors_addressing);
@@ -90,6 +97,7 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("layer2_contract", func(t *testing.T) { testLayer2Contract(t, factory) })
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
+	t.Run("aggregation", func(t *testing.T) { testAggregation(t, factory) })
 	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })
 	t.Run("obs", func(t *testing.T) { testObs(t, factory) })
 	t.Run("snapshot", func(t *testing.T) { testSnapshot(t, factory) })

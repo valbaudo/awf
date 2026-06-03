@@ -500,6 +500,59 @@ graph:
                 retry: { attempts: 1 }
 `
 
+// mapAggregationWorkflow — Bucket 17 (Phase 5 slice 5.5). Map A scans each
+// input item into a typed {finding, index} output; map B fans out over A's
+// aggregated findings via `over: "{{ step.scan }}"` — the index-ordered array
+// of A's committed per-item `scan` outputs, each element bound as `f`. Map B's
+// body consumes `{{ f.finding }}` (object item → field access; NO `.value`).
+//
+// concurrency: 1 on both maps. Aggregation is concurrency-independent, and the
+// in-memory fake's shared Blobs race when multiple output_schema item bodies
+// commit concurrently (a known fake limitation) — serializing sidesteps it
+// without affecting what this bucket pins.
+const mapAggregationWorkflow = `workflow: conformance-map-aggregation
+version: 1
+input:
+  type: object
+  required: [items]
+  additionalProperties: false
+  properties:
+    items:
+      type: array
+      items: { type: string }
+containers:
+  c0:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: x
+      container: c0
+      concurrency: 1
+      body:
+        - id: scan
+          container: c0
+          run: "./scan.sh {{ x }}"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [finding, index]
+            properties:
+              finding: { type: string }
+              index:   { type: integer }
+  - map:
+      over: "{{ step.scan }}"
+      as: f
+      container: c0
+      concurrency: 1
+      body:
+        - id: verify
+          container: c0
+          run: "./verify.sh {{ f.finding }}"
+          retry: { attempts: 1 }
+`
+
 // agentStepBasicWorkflow — Bucket 12. One AgentStep with templated `with` +
 // output_schema. Bucket sub-test programs the fake adapter to return a
 // specific typed verdict; asserts the typed output round-trips through
