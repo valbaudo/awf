@@ -55,7 +55,7 @@ func validateRefs(ld *LoadedDefinition, c *collector) {
 	// refs (deferred per spec §11 item 4). The runtime ships per-item dispatch + commits
 	// but NOT aggregated downstream output addressing.
 	mapIDs := map[string]bool{}
-	indexMapIDs(wf.Graph, "", mapIDs)
+	indexMapIDs(wf.Graph, mapIDs)
 
 	// Track which producers had at least one ref into them (for AWF3002).
 	referenced := map[string]bool{}
@@ -80,28 +80,12 @@ func validateRefs(ld *LoadedDefinition, c *collector) {
 // in a ref is the map's RUNTIME PATH LEAF NAME — i.e. "map" (the leaf of "map[0]" or
 // "loop[0].body.map[1]"). isMapID strips the trailing `[N]` index to extract the leaf
 // kind-name for matching.
-func indexMapIDs(nodes NodeList, parent string, mapIDs map[string]bool) {
-	for i, n := range nodes {
-		switch v := n.(type) {
-		case *Map:
-			mapIDs[PathFor(parent, "map", "", i)] = true
-			indexMapIDs(v.Body, ChildPath(parent, "map", i, "body"), mapIDs)
-		case *If:
-			indexMapIDs(v.Then, ChildPath(parent, "if", i, "then"), mapIDs)
-			indexMapIDs(v.Else, ChildPath(parent, "if", i, "else"), mapIDs)
-		case *Loop:
-			indexMapIDs(v.Body, ChildPath(parent, "loop", i, "body"), mapIDs)
-		case *Try:
-			indexMapIDs(v.Do, ChildPath(parent, "try", i, "do"), mapIDs)
-			indexMapIDs(v.Catch, ChildPath(parent, "try", i, "catch"), mapIDs)
-			indexMapIDs(v.Finally, ChildPath(parent, "try", i, "finally"), mapIDs)
-		case *Parallel:
-			indexMapIDs(v.Children, PathFor(parent, "parallel", "", i), mapIDs)
-		case *Gate:
-			indexMapIDs(v.Generate, ChildPath(parent, "gate", i, "generate"), mapIDs)
-			indexMapIDs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), mapIDs)
+func indexMapIDs(nodes NodeList, mapIDs map[string]bool) {
+	WalkNodes(nodes, "", func(n Node, path string) {
+		if _, ok := n.(*Map); ok {
+			mapIDs[path] = true
 		}
-	}
+	})
 }
 
 func indexProducers(nodes NodeList, parent string, producers map[string]producer) {
