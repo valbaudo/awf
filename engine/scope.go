@@ -328,48 +328,14 @@ func (s *Scope) wf() *ir.Workflow {
 
 // mapPathIndex walks wf.Graph and returns a map: static-map-path → *ir.Map.
 // Used by resolveAsBinding to look up the As name for a given map path.
-//
-// Mirrors StepPathIndex's walker shape; includes recursion into all Phase 3
-// control kinds so nested maps (Map inside Map.Body, Map inside Loop.Body,
-// etc.) are addressable.
-//
-// KNOWN SMELL (slice 3.4 design M11): this is the 5th copy of the same
-// recursive node walker (StepPathIndex / indexProducers / walkSchemas /
-// walkStructural / mapPathIndex), and indexMapIDs in ir/validate_refs.go
-// makes it 6. A future slice should hoist a single `WalkNodes(fn func(Node,
-// path string))` higher-order helper to ir/ and migrate each caller. Out of
-// scope per CLAUDE.md rule 3 ("don't touch unrelated code"); flagging for
-// the future cleanup slice.
 func mapPathIndex(wf *ir.Workflow) map[string]*ir.Map {
 	out := map[string]*ir.Map{}
-	walkMapNodes(wf.Graph, "", out)
-	return out
-}
-
-func walkMapNodes(list ir.NodeList, parent string, out map[string]*ir.Map) {
-	for i, n := range list {
-		switch v := n.(type) {
-		case *ir.Map:
-			path := ir.PathFor(parent, "map", "", i)
-			out[path] = v
-			walkMapNodes(v.Body, ir.ChildPath(parent, "map", i, "body"), out)
-		case *ir.If:
-			walkMapNodes(v.Then, ir.ChildPath(parent, "if", i, "then"), out)
-			walkMapNodes(v.Else, ir.ChildPath(parent, "if", i, "else"), out)
-		case *ir.Loop:
-			walkMapNodes(v.Body, ir.ChildPath(parent, "loop", i, "body"), out)
-		case *ir.Try:
-			walkMapNodes(v.Do, ir.ChildPath(parent, "try", i, "do"), out)
-			walkMapNodes(v.Catch, ir.ChildPath(parent, "try", i, "catch"), out)
-			walkMapNodes(v.Finally, ir.ChildPath(parent, "try", i, "finally"), out)
-		case *ir.Parallel:
-			walkMapNodes(v.Children, ir.PathFor(parent, "parallel", "", i), out)
-		case *ir.Gate:
-			walkMapNodes(v.Generate, ir.ChildPath(parent, "gate", i, "generate"), out)
-			walkMapNodes(v.Evaluate, ir.ChildPath(parent, "gate", i, "evaluate"), out)
+	ir.WalkNodes(wf.Graph, "", func(n ir.Node, path string) {
+		if m, ok := n.(*ir.Map); ok {
+			out[path] = m
 		}
-		// Step kinds (CodeStep / AgentStep / SignalStep / Skip) don't recurse.
-	}
+	})
+	return out
 }
 
 // enclosingMapForBinding walks ctxPath back-to-front looking for `map[N].item-K`
