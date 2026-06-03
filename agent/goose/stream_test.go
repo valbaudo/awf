@@ -1,6 +1,7 @@
 package goose_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/valbaudo/awf/agent/goose"
@@ -11,7 +12,7 @@ func msgLine(role, text string) []byte {
 	return []byte(`{"type":"message","message":{"role":"` + role + `","content":[{"type":"text","text":"` + text + `"}]}}`)
 }
 func completeLine(in, out int) []byte {
-	return []byte(`{"type":"complete","total_tokens":0,"input_tokens":0,"output_tokens":0}`)
+	return []byte(fmt.Sprintf(`{"type":"complete","total_tokens":%d,"input_tokens":%d,"output_tokens":%d}`, in+out, in, out))
 }
 
 func TestAssistantText_RoleFilter(t *testing.T) {

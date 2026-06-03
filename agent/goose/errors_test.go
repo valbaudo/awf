@@ -2,6 +2,7 @@ package goose_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent/goose"
@@ -9,7 +10,7 @@ import (
 
 func TestErrUnexpectedExit_Message(t *testing.T) {
 	e := &goose.ErrUnexpectedExit{ExitCode: 0, Output: "goose produced no output (possible unknown model)"}
-	if e.Error() == "" || !errorsContains(e.Error(), "no usable result") {
+	if !strings.Contains(e.Error(), "no usable result") {
 		t.Errorf("Error() = %q", e.Error())
 	}
 }
@@ -20,14 +21,4 @@ func TestErrStreamParse_Unwrap(t *testing.T) {
 	if !errors.Is(e, cause) {
 		t.Errorf("errors.Is(ErrStreamParse, cause) = false")
 	}
-}
-
-func errorsContains(s, sub string) bool { return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0) }
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

@@ -195,3 +195,34 @@ func TestShellQuote_EscapesSingleQuotes(t *testing.T) {
 		t.Errorf("shellQuote = %q, want %q", got, want)
 	}
 }
+
+func TestLaunch_NoTerminalComplete_UnexpectedExit(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	// An assistant line but NO terminal "complete" and NO error event → the stream
+	// did not finish cleanly → retryable ErrUnexpectedExit.
+	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{chunk(nl(msgLine("assistant", "partial")))})
+	a := gooseLaunchAdapter(t, f)
+	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: goose.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
+	var unexp *goose.ErrUnexpectedExit
+	if !errors.As(outcome.Err, &unexp) {
+		t.Fatalf("outcome.Err = %v, want *goose.ErrUnexpectedExit (no terminal complete)", outcome.Err)
+	}
+}
+
+func TestLaunch_TokensPropagated_CostZero(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(nl(msgLine("assistant", "done"))), chunk(nl(completeLine(10, 5)))})
+	a := gooseLaunchAdapter(t, f)
+	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: goose.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if outcome.Result.Metrics.Tokens.Input != 10 || outcome.Result.Metrics.Tokens.Output != 5 {
+		t.Errorf("tokens = %+v, want Input:10 Output:5", outcome.Result.Metrics.Tokens)
+	}
+	if outcome.Result.Metrics.Cost.USD != 0 {
+		t.Errorf("cost = %v, want 0 (goose reports no USD)", outcome.Result.Metrics.Cost.USD)
+	}
+}
