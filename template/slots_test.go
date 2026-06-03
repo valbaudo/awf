@@ -133,6 +133,10 @@ func TestSlotsEscapedOpenerIsNotASlot(t *testing.T) {
 		{"escaped opener in text", `scan \{{7*7}} now`, nil},
 		{"escaped then real slot", `\{{lit}} {{ run.id }}`, []Slot{{Start: 9, End: 21, Inner: " run.id "}}},
 		{"real slot then escaped", `{{ run.id }} \{{lit}}`, []Slot{{Start: 0, End: 12, Inner: " run.id "}}},
+		// An escaped opener needs NO closing `}}`: the escape skips past the `{{`
+		// so a missing terminator is not an unterminated-slot error. Contrast
+		// TestSlotsErrors, where an UNescaped `{{` with no `}}` is a *SyntaxError.
+		{"escaped opener without closing braces is not a slot", `a \{{ unclosed`, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -88,6 +88,15 @@ func TestSubstituteEscapedBrace(t *testing.T) {
 		{"escape mixed with a live slot", `lit \{{x}} live {{ run.id }}`, "lit {{x}} live run-abc123"},
 		{"bare backslash elsewhere is literal", `a\b \{{x}}`, `a\b {{x}}`},
 		{"backslash not before opener is literal", `path\to\file`, `path\to\file`},
+		// `\` is special ONLY in the escaping position, so the second `\` of `\\{{`
+		// escapes the opener and the first `\` is ordinary text: one literal `\`
+		// survives ahead of the literal `{{` (spec §7, Substitute doc comment).
+		{"double backslash keeps one literal", `\\{{x}}`, `\{{x}}`},
+		// An escaped opener with NO closing `}}` still renders to a literal `{{`
+		// with the `\` consumed — the escape skips the region so the missing `}}`
+		// is never a slot to terminate. Contrast TestSubstituteSyntaxErrorIsAWF4005:
+		// an UNescaped unterminated `{{` is a hard AWF4005 SyntaxError.
+		{"escaped opener without closing braces renders literal", `a \{{ unclosed`, `a {{ unclosed`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
