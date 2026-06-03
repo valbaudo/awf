@@ -87,6 +87,31 @@ func TestInspectPendingAgentToolCalls(t *testing.T) {
 	if !strings.Contains(text, "tool call") {
 		t.Errorf("inspect text missing 'tool call'; got:\n%s", text)
 	}
+	// The pending-agent suffix also renders the elapsed duration (e.g. "0s)").
+	if !strings.Contains(text, "s)") {
+		t.Errorf("inspect text missing elapsed duration suffix (expected 's)'); got:\n%s", text)
+	}
+}
+
+// TestInspectPendingAgentNoToolCallsNoSuffix — a pending agent span with zero
+// agent.event entries must NOT render a tool-call count suffix.
+func TestInspectPendingAgentNoToolCallsNoSuffix(t *testing.T) {
+	stateDir := t.TempDir()
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	writeRunLog(t, stateDir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: d(engine.RunStartedData{RunID: "r1", WorkflowID: "wf"})},
+		state.Event{Type: engine.EventNodeStarted, Path: "scan", Data: d(engine.NodeStartedData{Kind: "agent"})},
+		// no agent.event entries, no terminal event → pending agent span with zero tool calls
+	)
+
+	var out, errb bytes.Buffer
+	if rc := cliInspect([]string{"r1", "--state-dir", stateDir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("inspect rc = %d, stderr: %s", rc, errb.String())
+	}
+	text := out.String()
+	if strings.Contains(text, "tool call") {
+		t.Errorf("inspect text must not contain 'tool call' for zero tool-call span; got:\n%s", text)
+	}
 }
 
 // Task 4.2 — --tokens shows per-step input/output token counts.

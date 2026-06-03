@@ -221,7 +221,11 @@ func nodeLine(s obs.Span, toolCalls map[string]int, showTokens bool) string {
 		n := toolCalls[s.Path]
 		var suffix []string
 		if n > 0 {
-			suffix = append(suffix, fmt.Sprintf("%d tool calls", n))
+			unit := "tool calls"
+			if n == 1 {
+				unit = "tool call"
+			}
+			suffix = append(suffix, fmt.Sprintf("%d %s", n, unit))
 		}
 		if !s.Start.IsZero() && !s.End.IsZero() && s.End.After(s.Start) {
 			suffix = append(suffix, s.End.Sub(s.Start).Round(time.Second).String())
@@ -230,7 +234,7 @@ func nodeLine(s obs.Span, toolCalls map[string]int, showTokens bool) string {
 			parts = append(parts, "("+strings.Join(suffix, ", ")+")")
 		}
 	}
-	// Token counts for completed agent spans (--tokens flag).
+	// Token counts (--tokens flag): shown wherever the projected token attrs are present.
 	if showTokens {
 		in, inOK := s.Attributes[obs.AttrGenAIInputTokens].(int64)
 		out, outOK := s.Attributes[obs.AttrGenAIOutputTokens].(int64)
