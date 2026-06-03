@@ -30,3 +30,8 @@ func ReadBackendKindFromLogForTest(events []state.Event) (string, error) {
 func PrintUsageForTest(w io.Writer) {
 	printUsage(w)
 }
+
+// RequireRunDirForTest exposes requireRunDir for the external cli_test package.
+func RequireRunDirForTest(stateDir, runID string, stderr io.Writer) int {
+	return requireRunDir(stateDir, runID, stderr)
+}

@@ -70,7 +70,7 @@ func requireRunDir(stateDir, runID string, stderr io.Writer) int {
 	runDir := filepath.Join(stateDir, "runs", runID)
 	if _, err := os.Stat(runDir); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			fprintf(stderr, "no run with id %q at %q\n", runID, runDir)
+			fprintf(stderr, "no run with id %q at %q. Did you mean a different --state-dir?\n", runID, runDir)
 		} else {
 			fprintf(stderr, "stat run dir %q: %v\n", runDir, err)
 		}

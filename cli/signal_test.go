@@ -12,6 +12,16 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
+func TestRequireRunDirMissingSuggestsStateDir(t *testing.T) {
+	var stderr strings.Builder
+	if cli.RequireRunDirForTest(t.TempDir(), "no-such-run", &stderr) == cli.ExitOK {
+		t.Fatal("want non-OK for a missing run dir")
+	}
+	if !strings.Contains(stderr.String(), "--state-dir") {
+		t.Fatalf("error should hint --state-dir; got %q", stderr.String())
+	}
+}
+
 func TestCLISignalWritesFile(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
