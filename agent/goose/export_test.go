@@ -7,3 +7,9 @@ var (
 	ParseStreamEventForTest  = parseStreamEvent
 	DisplayForGooseForTest   = displayForGoose
 )
+
+var (
+	ShellQuoteForTest      = shellQuote
+	IsConfigErrorForTest   = isConfigError
+	AssembleCommandForTest = assembleCommand
+)
