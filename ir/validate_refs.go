@@ -43,7 +43,7 @@ func validateRefs(ld *LoadedDefinition, c *collector) {
 
 	// Build the producer index: step.id → (kind, output_schema). Used to check AWF3001.
 	producers := map[string]producer{}
-	indexProducers(wf.Graph, "", producers)
+	indexProducers(wf.Graph, producers)
 
 	// Synthetic "input" producer so the same checkRef machinery can validate input.<field>
 	// against wf.Input. Path "input" mirrors what TestSchemaInputSchemaAlsoValidated uses.
@@ -88,33 +88,17 @@ func indexMapIDs(nodes NodeList, mapIDs map[string]bool) {
 	})
 }
 
-func indexProducers(nodes NodeList, parent string, producers map[string]producer) {
-	for i, n := range nodes {
+func indexProducers(nodes NodeList, producers map[string]producer) {
+	WalkNodes(nodes, "", func(n Node, path string) {
 		switch v := n.(type) {
 		case *CodeStep:
-			producers[v.ID] = producer{path: PathFor(parent, "", v.ID, i), kind: "code", schema: v.OutputSchema}
+			producers[v.ID] = producer{path: path, kind: "code", schema: v.OutputSchema}
 		case *AgentStep:
-			producers[v.ID] = producer{path: PathFor(parent, "", v.ID, i), kind: "agent", schema: v.OutputSchema}
+			producers[v.ID] = producer{path: path, kind: "agent", schema: v.OutputSchema}
 		case *SignalStep:
-			producers[v.ID] = producer{path: PathFor(parent, "", v.ID, i), kind: "signal", schema: v.OutputSchema}
-		case *If:
-			indexProducers(v.Then, ChildPath(parent, "if", i, "then"), producers)
-			indexProducers(v.Else, ChildPath(parent, "if", i, "else"), producers)
-		case *Loop:
-			indexProducers(v.Body, ChildPath(parent, "loop", i, "body"), producers)
-		case *Try:
-			indexProducers(v.Do, ChildPath(parent, "try", i, "do"), producers)
-			indexProducers(v.Catch, ChildPath(parent, "try", i, "catch"), producers)
-			indexProducers(v.Finally, ChildPath(parent, "try", i, "finally"), producers)
-		case *Parallel:
-			indexProducers(v.Children, PathFor(parent, "parallel", "", i), producers)
-		case *Gate:
-			indexProducers(v.Generate, ChildPath(parent, "gate", i, "generate"), producers)
-			indexProducers(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), producers)
-		case *Map:
-			indexProducers(v.Body, ChildPath(parent, "map", i, "body"), producers)
+			producers[v.ID] = producer{path: path, kind: "signal", schema: v.OutputSchema}
 		}
-	}
+	})
 }
 
 // walkRefs visits every Template and Expr field in the graph and processes its refs.
