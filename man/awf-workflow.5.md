@@ -304,6 +304,12 @@ properties that make the pattern work:
     or query the database and count the rows — rather than trusting a status the
     generator wrote.
 
+    The same caution applies to typed outputs: an evaluator may reference a
+    generator step's output (commonly a path — `{{ step.<gen>.<path_field> }}` — to
+    locate the artifact it must inspect), but it should use that to *test the
+    artifact's behavior*, not to trust a self-reported status field the generator
+    declared about its own work.
+
 **Automatic feedback**
 :   On every attempt after the first, the runtime makes the previous verdict
     available to `generate` — resolvable as `{{ evaluate.<field> }}` and injected

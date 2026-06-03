@@ -368,6 +368,9 @@ func TestScopeResolveStepInGateSameAttempt(t *testing.T) {
 	}
 	// A reference from within attempt-1 (generate sibling, evaluate, or until)
 	// resolves to attempt-1's generate instance.
+	// The "gate[2].attempt-1.evaluate.judge" case is the runtime counterpart of the
+	// README's path-passing pattern (evaluate reads a same-attempt generate step).
+	// Intentional — see awf-workflow(5) gate independence note.
 	for _, ctxPath := range []string{
 		"gate[2].attempt-1.generate.other",
 		"gate[2].attempt-1.evaluate.judge",

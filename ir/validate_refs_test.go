@@ -437,7 +437,10 @@ func TestRefsSameAttemptGateSiblingAllowed(t *testing.T) {
 		Graph: NodeList{
 			&Gate{
 				Generate: NodeList{awf5003Step("gen")},
-				// evaluate referencing a generate step: same gate → allowed.
+				// evaluate referencing a generate step: same gate → allowed BY DESIGN. The
+				// README flagship example relies on this (the judge reads step.draft.reply_path
+				// to locate the artifact); see the independence note in awf-workflow(5). Do not
+				// "fix" this to AWF5003 without a deliberate format revision.
 				Evaluate:    NodeList{&CodeStep{ID: "judge", Container: "c", Run: "echo {{ step.gen.exit_code }}", OutputSchema: schema}},
 				Until:       Expr("{{ step.judge.exit_code == 0 }}"),
 				MaxAttempts: 2,
