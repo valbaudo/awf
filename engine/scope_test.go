@@ -242,6 +242,18 @@ func TestScopeResolveUnknownStepIDIsAWF4002(t *testing.T) {
 	}
 }
 
+func TestResolveStepUndeclaredErrorNamesRefSite(t *testing.T) {
+	rs := NewRunState("run-x", "digest-x", nil)
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{
+		&ir.CodeStep{ID: "a", Container: "c", Run: "echo {{ step.nope.x }}"},
+	}}
+	s := NewScope(rs, wf, "a.run")
+	_, err := s.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "nope"}, {Ident: "x"}}})
+	if err == nil || !strings.Contains(err.Error(), "a.run") {
+		t.Fatalf("error should name the ref site (ctxPath); got %v", err)
+	}
+}
+
 // controlKindsWorkflow returns a workflow with one step buried in each Phase 3
 // control kind (try.do/catch/finally, parallel child, gate.generate/evaluate,
 // map.body), so the StepPathIndex walker's recursion into every kind is pinned.

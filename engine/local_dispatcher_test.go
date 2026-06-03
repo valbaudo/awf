@@ -304,6 +304,45 @@ func TestLocalDispatcherMissingOutputFileIsRetryable(t *testing.T) {
 	}
 }
 
+func TestLocalDispatcherMissingAWFOutputNamesStepAndVar(t *testing.T) {
+	// A code step declares output_schema, exits 0, but never writes $AWF_OUTPUT.
+	// The error must mention the step path AND "$AWF_OUTPUT" so the author
+	// knows exactly which step and which env var to check.
+	d, fake, _ := newDispatcher(t)
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0, AWFOutput: nil}, nil)
+	schema := ir.JSONSchema{
+		"type": "object",
+		"properties": map[string]any{
+			"x": map[string]any{"type": "string"},
+		},
+	}
+	intent := engine.NodeIntent{
+		Path: "recon",
+		Node: &ir.CodeStep{ID: "recon", Container: "lab"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Command:      "true",
+			OutputSchema: &schema,
+			// OutputFiles intentionally absent — only AWF_OUTPUT tempfile is captured.
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeRetryableFailure {
+		t.Errorf("Outcome = %v, want retryable_failure", dr.Outcome)
+	}
+	if dr.Err == nil {
+		t.Fatal("dr.Err is nil; want enriched capture error")
+	}
+	if !strings.Contains(dr.Err.Error(), "recon") {
+		t.Errorf("dr.Err = %q; want it to contain step path %q", dr.Err.Error(), "recon")
+	}
+	if !strings.Contains(dr.Err.Error(), "AWF_OUTPUT") {
+		t.Errorf("dr.Err = %q; want it to contain \"AWF_OUTPUT\"", dr.Err.Error())
+	}
+}
+
 func TestLocalDispatcherUnknownContainerIsError(t *testing.T) {
 	d, _, _ := newDispatcher(t)
 	intent := engine.NodeIntent{

@@ -206,6 +206,9 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 			// after slice 4.2's restructure parseErr is unset at this point,
 			// so the join would be a no-op — captureErr alone is the
 			// authoritative cause.
+			if captureAWFOutput && len(intent.ResolvedInputs.OutputFiles) == 0 {
+				captureErr = fmt.Errorf("code step %q declares output_schema but did not write $AWF_OUTPUT (%s): %w", intent.Path, awfOutputPath, captureErr)
+			}
 			return DispatchResult{
 				Outcome:  OutcomeRetryableFailure,
 				ExitCode: copyIntPtr(exec.ExitCode),

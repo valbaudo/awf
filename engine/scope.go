@@ -161,7 +161,7 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 	}
 	staticPath, ok := s.stepIndex[idSeg.Ident]
 	if !ok {
-		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not declared in workflow", idSeg.Ident)
+		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not declared in workflow (referenced at %s)", idSeg.Ident, s.ctxPath)
 	}
 	runtimePath, err := s.stepRuntimePath(staticPath)
 	if err != nil {
