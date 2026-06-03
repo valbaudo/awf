@@ -3,6 +3,8 @@ CLAUDE.md
 docs/
 ROADMAP.md
 /bin/
+# A bare `go build` at the repo root drops the binary here; `make` uses /bin/.
+/awf
 # Generated man pages (built from man/*.md by `make man`); sources are committed.
 man/*.1
 man/*.5
