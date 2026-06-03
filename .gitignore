@@ -11,3 +11,5 @@ man/*.5
 # It lives in the separate PRIVATE repo ~/Documents/GitHub/cve-feasibility-awf.
 examples/cve-feasibility*
 *attackerview*
+*.code-workspace
+.DS_Store
