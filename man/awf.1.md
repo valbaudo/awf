@@ -98,10 +98,10 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 **--agent-env** _csv_
 :   Comma-separated allowlist of environment-variable *names* forwarded into
     agent runtime CLIs (default
-    `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN,FACTORY_API_KEY`).
+    `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN,FACTORY_API_KEY,GOOSE_PROVIDER,GOOSE_MODEL,OPENAI_API_KEY`).
     The same allowlist applies to every registered adapter, including
-    `uses: anthropic/claude-code` and `uses: factory/droid`. Names not on the
-    list are not passed through. See **ENVIRONMENT**.
+    `uses: anthropic/claude-code`, `uses: factory/droid`, and `uses: block/goose`.
+    Names not on the list are not passed through. See **ENVIRONMENT**.
 
 ## awf resume _run-id_ _path_
 
@@ -258,6 +258,18 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     appears in **--agent-env** (included in the default allowlist). Required for
     `uses: factory/droid`; absent key is a hard error at run start.
 
+**GOOSE_PROVIDER**, **GOOSE_MODEL**
+:   Select the provider and model for the `block/goose` agent runtime. **awf**
+    forwards those named in **--agent-env** (both in the default allowlist) into the
+    `goose run` invocation. Auth is *provider-conditional*: when **GOOSE_PROVIDER**
+    is set, an `anthropic` provider requires **ANTHROPIC_API_KEY** and an `openai`
+    provider requires **OPENAI_API_KEY** on the allowlist (a missing key is a config
+    error at run start). The default `claude-code` provider needs no awf-supplied
+    key; its authentication is handled by goose's configured provider inside the
+    image (for `claude-code`, an authenticated `claude` CLI). When **GOOSE_PROVIDER**
+    is unset, awf does not gate the key — goose selects the provider from its own
+    config inside the image.
+
 **DOCKER_HOST**, **DOCKER_TLS_VERIFY**, **DOCKER_CERT_PATH**
 :   Honored by the _docker_ backend through the standard Docker client
     environment.
@@ -273,6 +285,15 @@ knob; operators running sensitive workflows must disable it at the image level b
 writing `{"general":{"cloudSessionSync":false}}` to
 _~/.factory/settings.json_ inside the container image. The adapter cannot write
 that file.
+
+**Goose opsec.** The goose adapter sets **GOOSE_MODE**=**auto** (full tool
+autonomy, appropriate for the isolated container), **GOOSE_DISABLE_KEYRING**=**1**,
+and **GOOSE_TELEMETRY_ENABLED**=**false**, and redirects **XDG_DATA_HOME** and
+**XDG_STATE_HOME** to an ephemeral in-container path (_/tmp/awf-goose_). The
+redirect is load-bearing: goose writes the full cleartext session transcript and
+logs under those directories even with `--no-session`, so without it they would
+land in the operator's home directory. The adapter always passes `--no-session`
+and never reuses a prior goose session.
 
 **Droid model IDs.** The `factory/droid` `model` with-key is passed verbatim to
 droid's `--model`. IDs are provider-prefixed and versioned per family — e.g.
