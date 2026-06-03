@@ -353,20 +353,39 @@ func TestScopeResolveStepInMapSameItem(t *testing.T) {
 	}
 }
 
-func TestScopeResolveStepInMapFromOutsideIsAWF4002(t *testing.T) {
+func TestScopeResolveStepInMapFromOutsideAggregates(t *testing.T) {
+	// Map-output aggregation (Approach A, design §1.4): a step.<id> ref to a
+	// producer inside a single map, evaluated from OUTSIDE that map, resolves to
+	// the index-ordered compact []any of committed per-item outputs — it no
+	// longer errors (the pre-aggregation contract was "cross-item undefined →
+	// AWF4002"; this feature overturns it).
 	wf := controlKindsWorkflow()
-	rs := &RunState{
-		RunID: testRunID,
-		Completed: map[string]NodeResult{
-			"map[3].item-2.s_map": {Outcome: OutcomeOK, Outputs: map[string]any{"out": "v2"}},
-		},
+	rs := NewRunState(testRunID, testDigest, nil)
+	rs.RecordMapItem("map[3]", MapItemRecord{N: 2, ItemValue: "x", Status: ItemPassed})
+	rs.RecordCompleted("map[3].item-2.s_map", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"out": "v2"}})
+
+	// 3-seg field aggregate: step.s_map.out → ["v2"].
+	got, err := resolveStepField(t, rs, wf, "after_map", "s_map", "out")
+	if err != nil {
+		t.Fatalf("field aggregate: unexpected error: %v", err)
 	}
-	// From outside the map, "which item?" is undefined (items run concurrently,
-	// no most-recent). Must error rather than silently pick one.
-	_, err := resolveStepField(t, rs, wf, "after_map", "s_map", "out")
-	var ee *template.EvalError
-	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
-		t.Errorf("err = %v, want AWF4002", err)
+	arr, ok := got.([]any)
+	if !ok || len(arr) != 1 || arr[0] != "v2" {
+		t.Errorf("field aggregate = %#v, want []any{\"v2\"}", got)
+	}
+
+	// 2-seg whole-output aggregate: step.s_map → [{"out":"v2"}].
+	sc := NewScope(rs, wf, "after_map")
+	whole, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "s_map"}}})
+	if err != nil {
+		t.Fatalf("whole aggregate: unexpected error: %v", err)
+	}
+	warr, ok := whole.([]any)
+	if !ok || len(warr) != 1 {
+		t.Fatalf("whole aggregate = %#v, want one element", whole)
+	}
+	if m, ok := warr[0].(map[string]any); !ok || m["out"] != "v2" {
+		t.Errorf("whole aggregate[0] = %#v, want {\"out\":\"v2\"}", warr[0])
 	}
 }
 
@@ -1193,5 +1212,27 @@ func TestEnclosingMapForBindingTable(t *testing.T) {
 					c.ctxPath, c.asName, gotPath, gotN, ok, c.wantPath, c.wantN, c.wantOk)
 			}
 		})
+	}
+}
+
+func TestResolveAggregateMapOutputs(t *testing.T) {
+	rs := NewRunState("run-x", "digest-x", nil)
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{
+		&ir.Map{Over: "{{ step.seed.items }}", As: "u", Container: "c", Concurrency: 1, Body: ir.NodeList{
+			&ir.AgentStep{ID: "scan", Container: "c",
+				OutputSchema: &ir.JSONSchema{"type": "object", "required": []any{"finding"}, "properties": map[string]any{"finding": map[string]any{"type": "string"}}, "additionalProperties": false}}}}}}
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "a", Status: ItemPassed})
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 2, ItemValue: "c", Status: ItemPassed}) // N=1 absent → compaction
+	rs.RecordCompleted("map[0].item-0.scan", NodeResult{Outputs: map[string]any{"finding": "A"}})
+	rs.RecordCompleted("map[0].item-2.scan", NodeResult{Outputs: map[string]any{"finding": "C"}})
+	s := NewScope(rs, wf, "map[1].over") // ref site OUTSIDE map[0]
+	whole, err := s.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "scan"}}})
+	if err != nil || len(whole.([]any)) != 2 {
+		t.Fatalf("whole aggregate: %v / %#v", err, whole)
+	}
+	proj, err := s.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "scan"}, {Ident: "finding"}}})
+	parr, _ := proj.([]any)
+	if err != nil || len(parr) != 2 || parr[0] != "A" || parr[1] != "C" {
+		t.Fatalf("field aggregate: %v / %#v", err, proj)
 	}
 }

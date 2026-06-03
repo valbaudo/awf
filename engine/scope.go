@@ -148,20 +148,33 @@ func descendPath(start any, segs []template.Segment, prefix string) (any, error)
 }
 
 func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
-	if len(ref.Segments) < 3 {
+	if len(ref.Segments) < 2 {
 		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "`step` requires id + field (e.g. step.foo.exit_code)"}
 	}
 	idSeg := ref.Segments[1]
 	if err := mustIdent(idSeg, "step id"); err != nil {
 		return nil, err
 	}
-	fieldSeg := ref.Segments[2]
-	if err := mustIdent(fieldSeg, "step field"); err != nil {
-		return nil, err
-	}
 	staticPath, ok := s.stepIndex[idSeg.Ident]
 	if !ok {
 		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not declared in workflow (referenced at %s)", idSeg.Ident, s.ctxPath)
+	}
+	// Map-output aggregation (Approach A): a step.<id>[.<field>...] ref whose
+	// producer sits in the v1 single-map shape, evaluated from OUTSIDE that map,
+	// resolves to the index-ordered compact []any of committed per-item outputs.
+	// Checked BEFORE the len<3 reject so a 2-segment whole-output aggregate
+	// (step.<id>) is allowed. Non-aggregate refs fall through unchanged.
+	if agg, isAgg, err := s.aggregateMapOutputs(staticPath, ref); err != nil {
+		return nil, err
+	} else if isAgg {
+		return agg, nil
+	}
+	if len(ref.Segments) < 3 {
+		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "`step` requires id + field (e.g. step.foo.exit_code)"}
+	}
+	fieldSeg := ref.Segments[2]
+	if err := mustIdent(fieldSeg, "step field"); err != nil {
+		return nil, err
 	}
 	runtimePath, err := s.stepRuntimePath(staticPath)
 	if err != nil {
@@ -446,6 +459,46 @@ func runtimeMapPathToStatic(runtimePath string) string {
 		}
 	}
 	return strings.Join(segs, ".")
+}
+
+// aggregateMapOutputs resolves step.<id>[.<field>...] when the producer is in the
+// v1 single-map shape and the ref site is OUTSIDE that map: returns the index-
+// ordered, compact []any of committed per-item outputs (whole output for a 2-seg
+// ref, the descended field otherwise). isAgg=false → not an aggregate; caller falls
+// through to normal resolution.
+func (s *Scope) aggregateMapOutputs(staticPath string, ref *template.Ref) (any, bool, error) {
+	mapStatic, suffix, ok := ir.SingleMapBodyShape(staticPath)
+	if !ok {
+		return nil, false, nil
+	}
+	if _, inside, err := s.instanceFromCtx(mapStatic, itemSep); err != nil {
+		return nil, false, err
+	} else if inside {
+		return nil, false, nil // same-item ref → normal resolution
+	}
+	items := s.rs.LookupMapItems(mapStatic) // shallow copy — safe to sort in place
+	sort.Slice(items, func(i, j int) bool { return items[i].N < items[j].N })
+	out := []any{}
+	for _, mr := range items {
+		rp := ItemPath(mapStatic, mr.N)
+		if suffix != "" {
+			rp += "." + suffix
+		}
+		nr, ok := s.rs.LookupCompleted(rp)
+		if !ok || nr.Outputs == nil {
+			continue // compact: only items where the producer committed typed output
+		}
+		if len(ref.Segments) == 2 {
+			out = append(out, nr.Outputs)
+			continue
+		}
+		val, err := descendPath(nr.Outputs, ref.Segments[2:], "step."+ref.Segments[1].Ident+".")
+		if err != nil {
+			return nil, true, err
+		}
+		out = append(out, val)
+	}
+	return out, true, nil
 }
 
 // stepRuntimePath converts a step's static IR path (from StepPathIndex) to the

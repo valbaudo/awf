@@ -14,6 +14,7 @@ import (
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
+	"github.com/valbaudo/awf/template"
 )
 
 // Test-wide constants — shared across all runMap tests to remove magic-string
@@ -596,4 +597,106 @@ type nonLocalMapDispatcher struct{}
 
 func (*nonLocalMapDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error) {
 	return DispatchResult{}, nil, errors.New("unreachable")
+}
+
+// findingSchema is the output_schema for the aggregate-chain test's body step:
+// a single required string `finding`.
+var findingSchema = &ir.JSONSchema{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []any{"finding"},
+	"properties":           map[string]any{"finding": map[string]any{"type": "string"}},
+}
+
+func TestRunMapAggregateChainResume(t *testing.T) {
+	// Engine-level chain + resume for map output aggregation (Approach A,
+	// design §1.4/§1.6). Map A runs a body step `scan` producing a typed
+	// `finding` per item over 3 items; item-1 ("b") fails (compaction). After
+	// round 1, the passed items have committed Completed entries. After resume,
+	// resolving the aggregate `step.scan` from a site OUTSIDE map A yields the
+	// same index-ordered []any of the passed items' outputs — proving the
+	// aggregate replays identically post-resume.
+
+	// Body: one code step with an output_schema; each item runs a distinct
+	// command via {{ x }} substitution so the fake can return distinct outputs.
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "scan", Run: "./scan {{ x }}", Container: testMapContainer,
+			OutputSchema: findingSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	minSuccess := ir.Ratio("2") // tolerate item-1's failure
+	// Concurrency 1: the body step has an output_schema, so each item commits a
+	// typed-output blob via Commit→Blobs.Put. InMemoryBlobs is explicitly NOT
+	// safe for concurrent Put (state/fake.go) — the production FSBlobs is (atomic
+	// temp-file + rename), but the test fake is single-writer. Serializing here
+	// keeps the fake honest without weakening the aggregate semantics under test
+	// (aggregation is concurrency-independent). The other concurrent map tests
+	// dodge this only because echoStep has no output_schema (no blob Put).
+	mkWF := func() *ir.Workflow { return staticOverWorkflow("x", body, 1, &minSuccess) }
+
+	// Round 1: items a, c pass with typed findings; b fails (exit 1).
+	rig1 := newMapRig(t,
+		execProgram{cmd: "./scan a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"finding":"FA"}`)}},
+		execProgram{cmd: "./scan b", res: container.ExecResult{ExitCode: 1}},
+		execProgram{cmd: "./scan c", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"finding":"FC"}`)}},
+	)
+	input := runOverItems("a", "b", "c")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	wf1 := mkWF()
+	mapNode := wf1.Graph[0].(*ir.Map)
+	rs1 := NewRunState(testRunID, testDigest, input)
+
+	oc1, err1 := runMap(context.Background(), mapNode, testMapPath, wf1, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
+	if oc1 != OutcomeOK || err1 != nil {
+		t.Fatalf("round-1: got (%q, %v), want (ok, nil) — min_success 2 tolerates one failure", oc1, err1)
+	}
+	// The passed items (0, 2) committed their scan step; the failed item (1) did not.
+	for _, k := range []int{0, 2} {
+		if _, ok := rs1.LookupCompleted(ItemPath(testMapPath, k) + ".scan"); !ok {
+			t.Fatalf("round-1: Completed[%s.scan] missing for passed item", ItemPath(testMapPath, k))
+		}
+	}
+	if _, ok := rs1.LookupCompleted(ItemPath(testMapPath, 1) + ".scan"); ok {
+		t.Fatalf("round-1: Completed[%s.scan] present for failed item — expected absent (compaction)", ItemPath(testMapPath, 1))
+	}
+
+	// Resume: fresh RunState folded from the committed log, BARE fake (no
+	// programs — committed items must replay, not re-execute).
+	rig2 := bareRig(t, rig1)
+	rs2 := foldFromRig(t, rig2)
+	wf2 := mkWF()
+
+	// Aggregate resolution from a site OUTSIDE map[0] (a sibling map's over:).
+	sc := NewScope(rs2, wf2, "map[1].over")
+	got, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "scan"}}})
+	if err != nil {
+		t.Fatalf("resume aggregate resolve: %v", err)
+	}
+	arr, ok := got.([]any)
+	if !ok {
+		t.Fatalf("resume aggregate type = %T, want []any", got)
+	}
+	// Length == committed (passed) count; values match A's outputs, index-ordered.
+	if len(arr) != 2 {
+		t.Fatalf("resume aggregate len = %d, want 2 (passed items, failed item compacted)", len(arr))
+	}
+	want := []string{"FA", "FC"}
+	for i, w := range want {
+		m, ok := arr[i].(map[string]any)
+		if !ok {
+			t.Fatalf("resume aggregate[%d] = %#v, want map[string]any", i, arr[i])
+		}
+		if m["finding"] != w {
+			t.Errorf("resume aggregate[%d].finding = %v, want %q", i, m["finding"], w)
+		}
+	}
+
+	// Field projection (step.scan.finding) likewise compacts + orders.
+	projV, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "scan"}, {Ident: "finding"}}})
+	if err != nil {
+		t.Fatalf("resume field aggregate resolve: %v", err)
+	}
+	proj, ok := projV.([]any)
+	if !ok || len(proj) != 2 || proj[0] != "FA" || proj[1] != "FC" {
+		t.Fatalf("resume field aggregate = %#v, want []any{\"FA\",\"FC\"}", projV)
+	}
 }
