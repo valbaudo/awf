@@ -360,6 +360,12 @@ instead of cancelling every sibling on the first one. Use `parallel` for a
 static, author-known set of distinct branches; use `map` for a runtime-sized set
 of identical ones.
 
+A later step reads a `map`'s per-item results in aggregate with a `step.<id>`
+reference to a step inside the body, evaluated from outside the map: it lifts that
+step's typed output to an index-ordered array (see TEMPLATING AND TYPED OUTPUTS).
+That array is legal only as a second `map`'s `over:`, which gives the map→map
+chaining shown in EXAMPLE.
+
 # OUTCOMES, RETRY, AND REPAIR
 
 Step outcomes are *mechanical only* — quality is the gate's job, not an outcome
@@ -421,8 +427,35 @@ step. A step inside a `loop` resolves to its most recent iteration (above). A
 step inside a `gate` or a `map` is referenceable *only from within the same scope
 instance* — the same gate attempt, or the same map item — because from outside
 there is no single attempt or item to resolve to; a cross-scope reference is
-rejected at validation. Read a gate's product through `{{ evaluate.<field> }}`;
-reading a `map`'s results in aggregate is not yet defined.
+rejected at validation. Read a gate's product through `{{ evaluate.<field> }}`.
+
+A `step.<id>` reference to a step inside a `map` body, evaluated from *outside*
+that map, reads the step's per-item outputs in aggregate. It lifts the typed
+output to an array, in item-index order:
+
+- `step.<id>` resolves to the array of that step's whole typed outputs — one
+  element per item, each element the full `output_schema` object.
+- `step.<id>.<field>` resolves to the array of just that `<field>`.
+
+The array is **compact**: it holds one element only for items where the step
+actually committed. Items the step never ran for — `if`-filtered, `skip`ped, or
+failed before it ran — are simply absent, so the array's length is at most the
+worklist size *N* (and an empty `map`, `over: []`, aggregates to `[]`). There are
+no nulls; to carry the original-item position through a compacted aggregate, have
+the step write it into its own typed output under a field name *other* than
+`index` (in a map body, `{{ <as>.index }}` is the reserved item-position
+accessor, so an output field literally named `index` cannot be read back).
+
+Because substitution renders only scalars, an aggregate array cannot fill a `{{ }}`
+slot in a shell host, a prompt, or a condition — that is rejected at validation
+(**AWF5004**). Its one legal use is another `map`'s `over:`, the array-native sink:
+map A produces N typed outputs, map B fans out over them. This is the map→map
+chaining primitive (see EXAMPLE).
+
+Aggregation in v1 is defined only for the single-map case: the producing step is
+enclosed by exactly one `map`, with no `gate` between them and no `loop`
+multiplying the path. A producer nested in two or more maps, or wrapped in a
+gate, is still rejected as not-yet-defined (**AWF5002**).
 
 Substitution into a shell host (`run:`, `idempotency_key:`) is verbatim and
 pre-shell: AWF inserts the resolved value as-is and does **not** quote or escape
@@ -586,6 +619,49 @@ is torn down with the run.
 
           catch:                             # gate exhausted max_attempts -> exit cleanly
             - skip: "no validated exploit after repair budget"
+
+A map->map chain. Map A scans each input host and produces a typed `finding`;
+map B fans out over A's aggregated findings — `over: "{{ step.scan }}"` is the
+index-ordered array of A's per-item `scan` outputs, each element bound as `f`.
+
+    workflow: scan-then-verify
+    version: 1
+    input:
+      type: object
+      required: [hosts]
+      properties:
+        hosts: { type: array, items: { type: string } }
+
+    containers:
+      lab:
+        image: oci://example.com/scanner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+    graph:
+      - map:                                 # map A: one scan per host
+          over: "{{ input.hosts }}"
+          as: h
+          container: lab
+          concurrency: 4
+          body:
+            - id: scan
+              container: lab
+              run: ./scan.sh "{{ h }}"
+              output_schema:
+                type: object
+                additionalProperties: false
+                required: [finding]
+                properties:
+                  finding: { type: string }
+
+      - map:                                 # map B: one verify per aggregated finding
+          over: "{{ step.scan }}"            # []scan-output, in item-index order
+          as: f
+          container: lab
+          concurrency: 4
+          body:
+            - id: verify
+              container: lab
+              run: ./verify.sh "{{ f.finding }}"
 
 # SEE ALSO
 
