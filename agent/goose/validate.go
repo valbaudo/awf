@@ -10,8 +10,18 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
+// with-config key names. The schema's canonical keys, shared by ValidateConfig
+// (allowedKeys + per-key checks) and assembleCommand (launch.go) so the two can
+// never disagree on a key name and silently drop a configured value.
+const (
+	keyPrompt       = "prompt"
+	keyModel        = "model"
+	keyMaxTurns     = "max_turns"
+	keySystemPrompt = "system_prompt"
+)
+
 var allowedKeys = map[string]struct{}{
-	"prompt": {}, "model": {}, "max_turns": {}, "system_prompt": {},
+	keyPrompt: {}, keyModel: {}, keyMaxTurns: {}, keySystemPrompt: {},
 }
 
 // sessionKeysList — with-keys that would reuse/continue a prior goose session,
@@ -40,28 +50,28 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: k, Reason: fmt.Sprintf("unknown with-key (allowed: %v)", slices.Sorted(maps.Keys(allowedKeys)))}
 		}
 	}
-	prompt, ok := with["prompt"]
+	prompt, ok := with[keyPrompt]
 	if !ok {
-		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "prompt", Reason: "required"}
+		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyPrompt, Reason: "required"}
 	}
 	ps, ok := prompt.(string)
 	if !ok {
-		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "prompt", Reason: fmt.Sprintf("must be string, got %T", prompt)}
+		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyPrompt, Reason: fmt.Sprintf("must be string, got %T", prompt)}
 	}
 	if ps == "" {
-		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "prompt", Reason: "must not be empty"}
+		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyPrompt, Reason: "must not be empty"}
 	}
-	for _, key := range []string{"model", "system_prompt"} {
+	for _, key := range []string{keyModel, keySystemPrompt} {
 		if v, ok := with[key]; ok {
 			if _, ok := v.(string); !ok {
 				return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), key)
 			}
 		}
 	}
-	if v, ok := with["max_turns"]; ok {
+	if v, ok := with[keyMaxTurns]; ok {
 		n, ok := asInt(v)
 		if !ok || n <= 0 {
-			return wrapInvalidConfig(fmt.Sprintf("must be a positive integer, got %v (%T)", v, v), "max_turns")
+			return wrapInvalidConfig(fmt.Sprintf("must be a positive integer, got %v (%T)", v, v), keyMaxTurns)
 		}
 	}
 	// Provider-conditional auth (defense-in-depth): only enforce when GOOSE_PROVIDER

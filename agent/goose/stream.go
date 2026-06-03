@@ -14,7 +14,6 @@ import (
 type streamEvent struct {
 	Type         string         `json:"type"`
 	Message      *streamMessage `json:"message,omitempty"`
-	TotalTokens  int            `json:"total_tokens,omitempty"`
 	InputTokens  int            `json:"input_tokens,omitempty"`
 	OutputTokens int            `json:"output_tokens,omitempty"`
 	Error        string         `json:"error,omitempty"`

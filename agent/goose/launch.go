@@ -18,7 +18,9 @@ import (
 // gooseEphemeralState is the in-container path goose's data+state (cleartext
 // transcript sqlite + logs) are redirected to via XDG_DATA_HOME/XDG_STATE_HOME, so
 // they never land in the operator's home/workspace (goose persists them even under
-// --no-session). The container is ephemeral, so a fixed path is fine (deterministic).
+// --no-session). A fixed path keeps Launch deterministic (no rand); it assumes no
+// two goose execs share one container concurrently — true for AWF's sequential gate
+// and per-container map model.
 const gooseEphemeralState = "/tmp/awf-goose"
 
 // configErrorPatterns — deterministic substrings goose prints to STDOUT (stderr is
@@ -221,7 +223,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 // Feedback is prepended to the prompt; OutputSchema appends the schema directive.
 // The prompt is single-quoted last (POSIX-safe via shellQuote).
 func assembleCommand(inv agent.AgentInvocation) (string, error) {
-	prompt, ok := inv.With["prompt"].(string)
+	prompt, ok := inv.With[keyPrompt].(string)
 	if !ok {
 		return "", fmt.Errorf("agent/goose: assembleCommand: with.prompt missing or non-string")
 	}
@@ -241,15 +243,15 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	}
 
 	parts := []string{"goose", "run", "-q", "--output-format", "stream-json", "--no-session"}
-	if model, ok := inv.With["model"].(string); ok && model != "" {
+	if model, ok := inv.With[keyModel].(string); ok && model != "" {
 		parts = append(parts, "--model", shellQuote(model))
 	}
-	if mt, ok := inv.With["max_turns"]; ok {
+	if mt, ok := inv.With[keyMaxTurns]; ok {
 		if n, ok := asInt(mt); ok {
 			parts = append(parts, "--max-turns", strconv.Itoa(n))
 		}
 	}
-	if sp, ok := inv.With["system_prompt"].(string); ok && sp != "" {
+	if sp, ok := inv.With[keySystemPrompt].(string); ok && sp != "" {
 		parts = append(parts, "--system", shellQuote(sp))
 	}
 	parts = append(parts, "-t", shellQuote(prompt))
