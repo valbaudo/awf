@@ -73,6 +73,31 @@ func TestBuildAgentRegistry_RegistersDroid(t *testing.T) {
 	}
 }
 
+func TestBuildAgentRegistry_RegistersGoose(t *testing.T) {
+	reg, err := buildAgentRegistry([]string{"GOOSE_PROVIDER"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	if _, ok := reg.Lookup("block/goose"); !ok {
+		t.Errorf("block/goose not registered")
+	}
+}
+
+func TestDefaultAgentEnv_NoDuplicates(t *testing.T) {
+	seen := map[string]bool{}
+	for _, k := range defaultAgentEnv {
+		if seen[k] {
+			t.Errorf("defaultAgentEnv contains duplicate %q", k)
+		}
+		seen[k] = true
+	}
+	for _, want := range []string{"GOOSE_PROVIDER", "GOOSE_MODEL"} {
+		if !seen[want] {
+			t.Errorf("defaultAgentEnv missing %q", want)
+		}
+	}
+}
+
 func TestDefaultAgentEnv_IncludesBothVendors(t *testing.T) {
 	has := func(name string) bool {
 		for _, n := range defaultAgentEnv {

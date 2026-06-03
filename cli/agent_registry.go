@@ -7,6 +7,7 @@ import (
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/agent/droid"
+	"github.com/valbaudo/awf/agent/goose"
 	"github.com/valbaudo/awf/container"
 )
 
@@ -16,7 +17,19 @@ import (
 var defaultAgentEnv = func() []string {
 	out := append([]string{}, claude.DefaultEnvAllowlist...)
 	out = append(out, droid.DefaultEnvAllowlist...)
-	return out
+	out = append(out, goose.DefaultEnvAllowlist...)
+	// Dedup: goose's ANTHROPIC_API_KEY overlaps claude's; keep first occurrence,
+	// preserve order (don't surface a duplicate in the --agent-env default).
+	seen := make(map[string]struct{}, len(out))
+	deduped := out[:0]
+	for _, k := range out {
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		deduped = append(deduped, k)
+	}
+	return deduped
 }()
 
 // buildAgentRegistry constructs the production *agent.Registry for a CLI
@@ -70,6 +83,14 @@ func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agen
 	}
 	if err := reg.Register(dadapter); err != nil {
 		return nil, fmt.Errorf("cli: buildAgentRegistry: register droid adapter: %w", err)
+	}
+
+	gadapter, err := goose.New(goose.WithEnv(env), goose.WithBackend(backend))
+	if err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: construct goose adapter: %w", err)
+	}
+	if err := reg.Register(gadapter); err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: register goose adapter: %w", err)
 	}
 	return &reg, nil
 }
