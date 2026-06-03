@@ -15,7 +15,7 @@ const (
 	glyphCall    = "→"
 	glyphOK      = "✓"
 	glyphFail    = "✗"
-	reasonPrefix = "· thinking: "
+	reasonPrefix = glyphMeta + " thinking: " // one source of truth for the meta glyph
 )
 const (
 	reasoningMaxLines = 3   // reasoning lines shown before eliding
@@ -38,13 +38,6 @@ func newAgentEventRenderer(w io.Writer) func(io.Writer, agent.AgentEvent) {
 	return func(out io.Writer, ev agent.AgentEvent) {
 		_, _ = io.WriteString(out, formatEvent(ev, color))
 	}
-}
-
-// newDispatcherEventRenderer builds the renderer the CLI hands the engine. tapW
-// is the same writer used as AgentEventTap, so the color decision matches where
-// the lines go.
-func (r *Runner) newDispatcherEventRenderer(tapW io.Writer) func(io.Writer, agent.AgentEvent) {
-	return newAgentEventRenderer(tapW)
 }
 
 // wantColor: ANSI only when w is a character device and NO_COLOR is unset.

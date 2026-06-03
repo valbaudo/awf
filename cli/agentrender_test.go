@@ -108,15 +108,22 @@ func ag(c agent.DisplayClass, tool, text string, lines, bytesN int, isErr bool) 
 	return agent.AgentEvent{Display: agent.EventDisplay{Class: c, Tool: tool, Text: text, Lines: lines, Bytes: bytesN, IsError: isErr}}
 }
 
-func TestRunner_WiresRenderer(t *testing.T) {
-	render := (&Runner{}).newDispatcherEventRenderer(&bytes.Buffer{})
-	if render == nil {
-		t.Fatal("CLI must provide a renderer")
+// formatEvent takes color as a plain bool, so the color==true path is tested
+// directly without a fake TTY. Pins the exact ANSI wrap + reset on each colored
+// branch (a swapped or unreset escape would otherwise regress silently — render()
+// only ever exercises the plain path because a *bytes.Buffer is not a TTY).
+func TestFormatEvent_ColorWrapsANSI(t *testing.T) {
+	// error → red via colorize
+	if got := formatEvent(ag(agent.DisplayError, "", "x", 0, 0, false), true); got != ansiRed+"✗ x"+ansiReset+"\n" {
+		t.Errorf("error red: %q", got)
 	}
-	var b bytes.Buffer
-	render(&b, ag(agent.DisplayToolCall, "Execute", "ls", 0, 0, false))
-	if b.String() != "→ Execute(ls)\n" {
-		t.Errorf("not wired to the per-kind formatter: %q", b.String())
+	// init → dim via dim()
+	if got := formatEvent(ag(agent.DisplayInit, "", "m · 2 tools", 0, 0, false), true); got != ansiDim+"· m · 2 tools"+ansiReset+"\n" {
+		t.Errorf("init dim: %q", got)
+	}
+	// tool result → green header (colorize) + dimmed body line (dim)
+	if got := formatEvent(ag(agent.DisplayToolResult, "T", "body", 1, 4, false), true); got != ansiGreen+"✓ T — 1 lines, 4 B"+ansiReset+"\n"+ansiDim+"    body"+ansiReset+"\n" {
+		t.Errorf("tool result green+dim: %q", got)
 	}
 }
 

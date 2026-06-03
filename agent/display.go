@@ -28,7 +28,10 @@ const (
 // Error/Notice/Init → the message/summary. Lines/Bytes are the FULL output
 // counts for ToolResult.
 //
-// MUST stay comparable (only scalar fields) so AgentEvent remains ==-comparable.
+// MUST hold only scalar fields: EventDisplay is embedded by value in every
+// AgentEvent, so it stays ==-comparable and cheap to copy. (AgentEvent itself is
+// not ==-comparable — its Payload is a []byte.) A slice/map/pointer field here
+// would break EventDisplay's value semantics and alias bytes into each event.
 type EventDisplay struct {
 	Class   DisplayClass
 	Tool    string // tool name (ToolCall/ToolResult)
