@@ -395,9 +395,9 @@ func enclosingMapForBinding(ctxPath string, idx map[string]*ir.Map, asName strin
 		staticMapPath := runtimeMapPathToStatic(mapPath)
 		m, ok := idx[staticMapPath]
 		if !ok {
-			// idx may be incomplete (e.g. ctxPath references a map nested in
-			// a kind walkMapNodes doesn't recurse into — Skip / dead branches).
-			// Defense-in-depth: skip and continue walking.
+			// idx may not contain this path (e.g. a malformed runtime path, or a
+			// map under a dead/never-built branch). Defense-in-depth: skip and
+			// continue walking.
 			continue
 		}
 		if m.As != asName {
