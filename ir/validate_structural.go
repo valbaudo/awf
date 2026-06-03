@@ -61,6 +61,12 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 	walkStructural(wf.Graph, "", wf, c, seen)
 }
 
+// NOTE: not built on ir.WalkNodes — walkStructural attaches diagnostics to nearly
+// every control kind (AWF1010-1015) and does sibling-set / last-element checks
+// (checkParallelDistinctContainers, AWF1014 on the final evaluate node). A visitor
+// would save recursion calls but not the per-kind dispatch, and would put the
+// load-bearing diagnostic path anchors one refactor-slip from drift. Keep bespoke.
+//
 // walkStructural recurses into nodes, computing each child's path via PathFor. parent is the
 // path of the enclosing node (empty at the top level). wf is read-only — needed for container
 // ref resolution (the set of declared container names).
@@ -258,6 +264,9 @@ func checkParallelDistinctContainers(children NodeList, path string, c *collecto
 	}
 }
 
+// NOTE: not a NodeList walker — a first-child-only descent that returns a string
+// and computes no paths; not expressible as an ir.WalkNodes visit.
+//
 // firstContainerRef returns the container name referenced by a node's first step descendent,
 // or "" if the node is a pure control structure with no step. Used by the parallel-distinct
 // check to determine which container each branch is bound to.

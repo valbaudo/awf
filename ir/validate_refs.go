@@ -101,6 +101,11 @@ func indexProducers(nodes NodeList, producers map[string]producer) {
 	})
 }
 
+// NOTE: not built on ir.WalkNodes — walkRefs threads gate-asymmetric
+// evaluateAllowed (true into generate/until, false into evaluate; propagated
+// unchanged elsewhere). That is per-child-branch state a uniform pre-order
+// visitor cannot carry; this is a fold, not a visit. Keep bespoke.
+//
 // walkRefs visits every Template and Expr field in the graph and processes its refs.
 //
 // evaluateAllowed gates emission of AWF5001 in checkRef's `evaluate` case: true means
