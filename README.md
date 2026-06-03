@@ -170,6 +170,15 @@ AWF doesn't keep its own model list (it drifts per droid release), so an unknown
 launch with droid's available-models list in the error — run `droid exec --model x` to print the set
 your installed droid accepts.
 
+droid's **bring-your-own-key (BYOK)** models work too — any provider (OpenRouter, Fireworks, a
+self-hosted LiteLLM/vLLM gateway, local Ollama, or a native Anthropic/OpenAI endpoint). BYOK is a
+`customModels[]` entry (`baseUrl` + `apiKey` + `provider`) in the image's `~/.factory/settings.json`;
+you select it with `model: custom:<id>`. The adapter is provider-blind — it only passes `--model` and
+forwards env — so this needs **no** adapter config: provision the image, forward your key via
+`--agent-env`, and an unknown custom id is still a clean permanent `Invalid model:` failure. (For pure
+BYOK, `FACTORY_API_KEY` only has to be *present*, not valid.) See
+[`examples/droid-byok/`](examples/droid-byok/) for a runnable, provider-agnostic bundle.
+
 Both launch one fresh, non-resumable invocation per step (so the gate's evaluator stays structurally
 independent — no `--continue`/`--resume`/session reuse), stream their events live, validate `with:`
 strictly, and bind typed outputs to the step's `output_schema`.

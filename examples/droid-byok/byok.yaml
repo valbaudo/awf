@@ -1,0 +1,52 @@
+workflow: droid-byok
+version: 1
+
+# Asks one question of a droid agent that is wired to a BYOK (bring-your-own-key)
+# model — any provider. The workflow is provider-agnostic: nothing here names a
+# provider. The endpoint lives entirely in the image's ~/.factory/settings.json
+# (see runner.Dockerfile); this file only selects the custom model by id and
+# captures a typed answer, proving typed outputs survive over BYOK.
+#
+# Run (the image must be built and pushed so its digest can be pinned below):
+#   awf run --agent-env FACTORY_API_KEY,BYOK_API_KEY \
+#     --input '{"question":"Say PONG and nothing else."}' ./byok.yaml
+#
+# FACTORY_API_KEY only needs to be PRESENT — the AWF adapter errors at run start
+# if it is absent — but for pure BYOK its value is unused, so a dummy is fine
+# (e.g. FACTORY_API_KEY=unused). Verified: droid runs BYOK inference without
+# contacting Factory. BYOK_API_KEY is your provider key (settings.json expands
+# ${BYOK_API_KEY} at runtime).
+
+input:
+  type: object
+  required: [question]
+  properties:
+    question: { type: string }
+
+containers:
+  runner:
+    # Replace with the digest of YOUR built+pushed image. AWF requires an
+    # @sha256:-pinned image, not a tag. After `docker push`, read the digest with
+    #   docker buildx imagetools inspect <ref>      (or `docker inspect`).
+    image: oci://registry.example.com/droid-byok-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+graph:
+  - id: ask
+    container: runner
+    uses: factory/droid
+    with:
+      # custom:<sanitized-displayName>-<index>. displayName "BYOK" at index 0.
+      model: "custom:BYOK-0"
+      prompt: "{{ input.question }}"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [answer]
+      properties:
+        answer: { type: string }
+
+  # Consume the typed field to show references bind to validated output, not raw
+  # text, even when the model is a BYOK endpoint.
+  - id: show
+    container: runner
+    run: 'printf "answer: %s\n" "{{ step.ask.answer }}"'
