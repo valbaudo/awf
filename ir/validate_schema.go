@@ -29,46 +29,28 @@ func validateSchema(ld *LoadedDefinition, c *collector) {
 	if wf.Input != nil {
 		checkSchemaWellFormed(*wf.Input, "input", c)
 	}
-	walkSchemas(wf.Graph, "", c)
+	walkSchemas(wf.Graph, c)
 }
 
-func walkSchemas(nodes NodeList, parent string, c *collector) {
-	for i, n := range nodes {
+func walkSchemas(nodes NodeList, c *collector) {
+	WalkNodes(nodes, "", func(n Node, path string) {
 		switch v := n.(type) {
 		case *CodeStep:
 			if v.OutputSchema != nil {
-				path := PathFor(parent, "", v.ID, i) + ".output_schema"
-				checkSchemaWellFormed(*v.OutputSchema, path, c)
+				checkSchemaWellFormed(*v.OutputSchema, path+".output_schema", c)
 			}
 		case *AgentStep:
 			if v.OutputSchema != nil {
-				path := PathFor(parent, "", v.ID, i) + ".output_schema"
-				checkSchemaWellFormed(*v.OutputSchema, path, c)
-				checkAgentFloor(*v.OutputSchema, path, c)
+				p := path + ".output_schema"
+				checkSchemaWellFormed(*v.OutputSchema, p, c)
+				checkAgentFloor(*v.OutputSchema, p, c)
 			}
 		case *SignalStep:
 			if v.OutputSchema != nil {
-				path := PathFor(parent, "", v.ID, i) + ".output_schema"
-				checkSchemaWellFormed(*v.OutputSchema, path, c)
+				checkSchemaWellFormed(*v.OutputSchema, path+".output_schema", c)
 			}
-		case *If:
-			walkSchemas(v.Then, ChildPath(parent, "if", i, "then"), c)
-			walkSchemas(v.Else, ChildPath(parent, "if", i, "else"), c)
-		case *Loop:
-			walkSchemas(v.Body, ChildPath(parent, "loop", i, "body"), c)
-		case *Try:
-			walkSchemas(v.Do, ChildPath(parent, "try", i, "do"), c)
-			walkSchemas(v.Catch, ChildPath(parent, "try", i, "catch"), c)
-			walkSchemas(v.Finally, ChildPath(parent, "try", i, "finally"), c)
-		case *Parallel:
-			walkSchemas(v.Children, PathFor(parent, "parallel", "", i), c)
-		case *Gate:
-			walkSchemas(v.Generate, ChildPath(parent, "gate", i, "generate"), c)
-			walkSchemas(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c)
-		case *Map:
-			walkSchemas(v.Body, ChildPath(parent, "map", i, "body"), c)
 		}
-	}
+	})
 }
 
 func checkSchemaWellFormed(schema JSONSchema, path string, c *collector) {
