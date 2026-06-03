@@ -72,6 +72,50 @@ func TestSubstituteHappyPath(t *testing.T) {
 	}
 }
 
+func TestSubstituteEscapedBrace(t *testing.T) {
+	// Host-level escape: `\{{` renders to a literal `{{` with the backslash consumed,
+	// uniformly across any Template field. The escaped region is NOT a slot, so its
+	// inner text (even an SSTI payload like `7*7`) never reaches ParseRef / the scope.
+	// `\` is special ONLY immediately before `{{` — a lone `\` elsewhere is literal.
+	scope := mapScope{"run.id": "run-abc123", "step.x.field": "RESOLVED"}
+	cases := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"ssti payload round-trips", `scan \{{7*7}} now`, "scan {{7*7}} now"},
+		{"escaped ref is not resolved", `\{{ step.x.field }}`, "{{ step.x.field }}"},
+		{"escape mixed with a live slot", `lit \{{x}} live {{ run.id }}`, "lit {{x}} live run-abc123"},
+		{"bare backslash elsewhere is literal", `a\b \{{x}}`, `a\b {{x}}`},
+		{"backslash not before opener is literal", `path\to\file`, `path\to\file`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Substitute(c.host, scope)
+			if err != nil {
+				t.Fatalf("Substitute(%q): %v", c.host, err)
+			}
+			if got != c.want {
+				t.Errorf("Substitute(%q) = %q, want %q", c.host, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSubstituteUnescapedBraceStillErrors(t *testing.T) {
+	// An UNescaped `{{7*7}}` is unchanged behavior: it is parsed as a slot, ParseRef
+	// rejects `7*7`, and Substitute returns AWF4005 (syntax). The escape must not
+	// loosen this.
+	_, err := Substitute("{{7*7}}", mapScope{})
+	var ee *EvalError
+	if !errors.As(err, &ee) {
+		t.Fatalf("err is %T, want *EvalError: %v", err, err)
+	}
+	if ee.Code != EvalCodeSyntax {
+		t.Errorf("err.Code = %q, want %q (AWF4005)", ee.Code, EvalCodeSyntax)
+	}
+}
+
 func TestSubstituteUnresolvedRefIsAWF4002(t *testing.T) {
 	_, err := Substitute("{{ step.ghost.field }}", mapScope{})
 	var ee *EvalError

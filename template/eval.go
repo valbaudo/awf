@@ -73,8 +73,14 @@ type Scope interface {
 // Slots; ParseRef parses each slot's inner content (substitution targets are
 // refs only per AWF §7, never full expressions). Returned errors are always
 // *EvalError.
+//
+// Host-level escape (AWF §7): `\{{` renders to a literal `{{` with the backslash
+// consumed, and the escaped region is NOT treated as a slot (its inner text never
+// reaches ParseRef / the scope). `\` is special ONLY immediately before `{{` — a
+// `\` anywhere else copies through verbatim. `\\{{` therefore emits a literal `\`
+// followed by a literal `{{` (the second `\` escapes, the first is ordinary text).
 func Substitute(host string, scope Scope) (string, error) {
-	slots, err := Slots(host)
+	slots, escapes, err := scan(host)
 	if err != nil {
 		var se *SyntaxError
 		if errors.As(err, &se) {
@@ -82,17 +88,33 @@ func Substitute(host string, scope Scope) (string, error) {
 		}
 		return "", &EvalError{Code: EvalCodeSyntax, Msg: "slot scan: " + err.Error()}
 	}
-	if len(slots) == 0 {
+	if len(slots) == 0 && len(escapes) == 0 {
 		return host, nil
 	}
 	var b strings.Builder
 	b.Grow(len(host))
 	cursor := 0
+	// writeUpTo copies host[cursor:end] but, at each escape offset in that span, drops the
+	// `\` and emits a literal `{{`. escapes is in ascending offset order (scan emits it that
+	// way), so a single advancing index over it suffices. escapeIdx persists across the
+	// per-slot calls below and the final-tail copy.
+	escapeIdx := 0
+	writeUpTo := func(end int) {
+		for escapeIdx < len(escapes) && escapes[escapeIdx] < end {
+			e := escapes[escapeIdx]
+			b.WriteString(host[cursor:e]) // text before the `\`
+			b.WriteString(slotOpen)       // the escaped literal `{{`
+			cursor = e + len("\\") + len(slotOpen)
+			escapeIdx++
+		}
+		b.WriteString(host[cursor:end])
+		cursor = end
+	}
 	for _, sl := range slots {
 		slotErr := func(code, format string, args ...any) *EvalError {
 			return &EvalError{Code: code, Msg: fmt.Sprintf("slot at host offset %d: ", sl.Start) + fmt.Sprintf(format, args...)}
 		}
-		b.WriteString(host[cursor:sl.Start])
+		writeUpTo(sl.Start)
 		ref, perr := ParseRef(sl.Inner)
 		if perr != nil {
 			var se *SyntaxError
@@ -117,7 +139,7 @@ func Substitute(host string, scope Scope) (string, error) {
 		b.WriteString(s)
 		cursor = sl.End
 	}
-	b.WriteString(host[cursor:])
+	writeUpTo(len(host))
 	return b.String(), nil
 }
 

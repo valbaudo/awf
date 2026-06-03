@@ -29,12 +29,27 @@ type Slot struct {
 // *SyntaxError on an unterminated `{{` or on a `{{` that appears before a matching `}}`
 // (no nesting). A stray `}}` outside any open slot is treated as literal text.
 //
+// A `{{` immediately preceded by a single `\` is an ESCAPED opener (host-level escape, AWF
+// §7): it does NOT open a slot, and the `}}` that would close it is inert literal text.
+// Authors write `\{{` to embed a literal `{{` (e.g. an SSTI payload or prose teaching
+// templating). The backslash is consumed at substitution time (see Substitute); here the
+// escaped region is simply skipped. `\` is special only in this position.
+//
 // Used by validation: for every ir.Template field (e.g. CodeStep.Run, Container.Image,
 // idempotency_key), call Slots, then ParseRef each slot's Inner. Per AWF §7, substitution
 // targets are references — never full expressions — so ParseRef (not ParseExpr) is the
 // right consumer. Position translation: see the Slot doc comment.
 func Slots(src string) ([]Slot, error) {
-	var out []Slot
+	slots, _, err := scan(src)
+	return slots, err
+}
+
+// scan is the shared scanner behind Slots (validation) and Substitute (rendering). It returns
+// the `{{ … }}` slots AND the byte offsets of the `\` that escapes each escaped `{{` opener.
+// Substitute needs the escape offsets to consume the `\` and emit a literal `{{`; the validator
+// only needs the slots (escaped openers are already absent from them). Keeping ONE scanner
+// guarantees the two callers agree on exactly which `{{` are escaped.
+func scan(src string) (slots []Slot, escapes []int, err error) {
 	i := 0
 	for i < len(src) {
 		j := strings.Index(src[i:], slotOpen)
@@ -42,6 +57,14 @@ func Slots(src string) ([]Slot, error) {
 			break
 		}
 		start := i + j
+		// Escaped opener: a single `\` directly before this `{{`. Skip past the `{{` so the
+		// region is not scanned as a slot (and its `}}` stays literal). Record the `\` offset
+		// for Substitute. `\` is special only here — a `\` anywhere else is literal text.
+		if start > 0 && src[start-1] == '\\' {
+			escapes = append(escapes, start-1)
+			i = start + len(slotOpen)
+			continue
+		}
 		innerStart := start + len(slotOpen)
 		k := strings.Index(src[innerStart:], slotClose)
 		// When `strings.Index` finds no closing `}}`, we report "unterminated" rather than
@@ -49,15 +72,15 @@ func Slots(src string) ([]Slot, error) {
 		// nested-`{{` detection runs only AFTER a closing `}}` is found. Authors who write
 		// `{{{{` get "unterminated"; authors who write `{{ {{ a }} }}` get "no nesting".
 		if k < 0 {
-			return nil, &SyntaxError{Pos: start, Msg: "unterminated `" + slotOpen + "`"}
+			return nil, nil, &SyntaxError{Pos: start, Msg: "unterminated `" + slotOpen + "`"}
 		}
 		inner := src[innerStart : innerStart+k]
 		if strings.Contains(inner, slotOpen) {
-			return nil, &SyntaxError{Pos: start, Msg: "`" + slotOpen + "` inside an open slot (no nesting)"}
+			return nil, nil, &SyntaxError{Pos: start, Msg: "`" + slotOpen + "` inside an open slot (no nesting)"}
 		}
 		end := innerStart + k + len(slotClose)
-		out = append(out, Slot{Start: start, End: end, Inner: inner})
+		slots = append(slots, Slot{Start: start, End: end, Inner: inner})
 		i = end
 	}
-	return out, nil
+	return slots, escapes, nil
 }

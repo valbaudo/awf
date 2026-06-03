@@ -118,3 +118,36 @@ func TestSlotsEmptyInnerIsRejectedByParseRef(t *testing.T) {
 		t.Fatal("expected ParseRef to reject empty slot inner")
 	}
 }
+
+// TestSlotsEscapedOpenerIsNotASlot locks the host-level escape: a `{{` immediately preceded
+// by a single `\` is NOT a slot opener. The escaped region is skipped entirely (not scanned
+// for nesting / termination), so an SSTI-style literal `\{{7*7}}` produces no slots and no
+// error — the `}}` that closes it is inert literal text.
+func TestSlotsEscapedOpenerIsNotASlot(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []Slot
+	}{
+		{"escaped opener alone", `\{{7*7}}`, nil},
+		{"escaped opener in text", `scan \{{7*7}} now`, nil},
+		{"escaped then real slot", `\{{lit}} {{ run.id }}`, []Slot{{Start: 9, End: 21, Inner: " run.id "}}},
+		{"real slot then escaped", `{{ run.id }} \{{lit}}`, []Slot{{Start: 0, End: 12, Inner: " run.id "}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Slots(c.src)
+			if err != nil {
+				t.Fatalf("Slots(%q): %v", c.src, err)
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("Slots(%q) = %+v, want %+v", c.src, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("slot[%d] = %+v, want %+v", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}

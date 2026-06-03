@@ -406,6 +406,14 @@ is the typed output of the enclosing gate's `evaluate` block, supplied
 automatically on repair attempts. Values over the runtime's inline limit are
 rejected at resolution (pass large data as an `output_files` artifact).
 
+`{{` is reserved in every templated field. To write a literal `{{` — a prompt
+that teaches templating, or text that merely contains the sequence — escape it
+as `\{{`: the backslash is consumed and a literal `{{` is emitted, and the
+region is **not** parsed as a reference. This is the only escape; `\` is special
+only immediately before `{{` and is otherwise literal (so `\\{{` yields a literal
+`\` followed by a literal `{{`). An unescaped `{{` always begins a reference and
+must close with `}}`.
+
 A `step.<id>.<field>` reference resolves the named step's typed output wherever
 the step sits, subject to scope. `try` and `parallel` introduce no multiplicity,
 so a step inside them is referenceable from anywhere, exactly like a top-level

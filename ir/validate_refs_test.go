@@ -77,6 +77,22 @@ func TestRefsAgentSchemaWithoutRefWarnsAWF3002(t *testing.T) {
 	}
 }
 
+func TestRefsEscapedBraceIsNotARef(t *testing.T) {
+	// Host-level escape (AWF §7): `\{{ … }}` is a literal `{{`, NOT a reference. The
+	// validator must skip it — otherwise `\{{ step.ghost.x }}` would trip AWF3001
+	// ("undeclared step") even though the author meant a literal brace. checkTemplateRefs
+	// routes run / with-leaves / idempotency_key through template.Slots, so the escape is
+	// uniform across all of them; run: is the representative case here.
+	ld := makeLD(&Workflow{
+		ID: "esc", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{ID: "a", Container: "c", Run: `echo \{{ step.ghost.x }} and \{{7*7}}`},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF3001")
+}
+
 func TestRefsExprConditionResolved(t *testing.T) {
 	// An expression inside if.cond references step.a.exit_code — should not produce AWF3001.
 	ld := makeLD(&Workflow{
