@@ -57,3 +57,25 @@ func assertNoErrorCode(t *testing.T, diags []Diagnostic, code string) {
 		}
 	}
 }
+
+// assertNoCode asserts diags contains NO diagnostic (of any severity) with the given code.
+// Use when the test must confirm a rule fires for neither errors nor warnings.
+func assertNoCode(t *testing.T, diags []Diagnostic, code string) {
+	t.Helper()
+	for _, d := range diags {
+		if d.Code == code {
+			t.Errorf("did not expect %s %q; got %+v", d.Severity, code, d)
+		}
+	}
+}
+
+// assertWarningAt asserts diags contains a Warning with the given code at the EXACT given path.
+func assertWarningAt(t *testing.T, diags []Diagnostic, code, exactPath string) {
+	t.Helper()
+	for _, d := range diags {
+		if d.Code == code && d.Path == exactPath && d.Severity == Warning {
+			return
+		}
+	}
+	t.Fatalf("want warning %s at %q; got %+v", code, exactPath, diags)
+}

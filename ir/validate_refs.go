@@ -3,6 +3,7 @@ package ir
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/valbaudo/awf/template"
@@ -129,7 +130,24 @@ func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]
 			if v.IdempotencyKey != nil {
 				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, referenced, mapIDs, evaluateAllowed)
 			}
-			// v.With is opaque RawConfig per CLAUDE.md — do NOT walk it.
+			// Walk top-level string leaves of v.With in sorted key order (stable diagnostics).
+			// This mirrors engine.substituteRawConfig which templates every top-level string
+			// value — key-agnostic and opacity-preserving: we inspect only strings, never
+			// recurse into nested structures, and never interpret any key name.
+			if len(v.With) > 0 {
+				keys := make([]string, 0, len(v.With))
+				for k := range v.With {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					sv, ok := v.With[k].(string)
+					if !ok {
+						continue
+					}
+					checkTemplateRefs(sv, path+".with."+k, c, producers, referenced, mapIDs, evaluateAllowed)
+				}
+			}
 		case *SignalStep:
 			// no Template / Expr fields beyond the schema itself.
 		case *If:
@@ -396,6 +414,27 @@ func renderRef(r template.Ref) string {
 		}
 	}
 	return b.String()
+}
+
+// validateAwfOutputWrites emits AWF3006 (Warning) for every CodeStep that declares
+// an output_schema but whose run script contains no reference to AWF_OUTPUT. Without
+// a write to $AWF_OUTPUT the runtime will see an empty output file and the schema
+// validation will silently succeed with a null object — a common authoring mistake.
+//
+// The check is intentionally surface-level (substring match, not AST analysis) because
+// run: is an arbitrary shell script and a precise static analysis would be unsound. The
+// heuristic catches the most common forget — the author wrote `echo hi` instead of
+// `echo '{"x":1}' > "$AWF_OUTPUT"`.
+func validateAwfOutputWrites(nodes NodeList, c *collector) {
+	WalkNodes(nodes, "", func(n Node, path string) {
+		cs, ok := n.(*CodeStep)
+		if !ok || cs.OutputSchema == nil {
+			return
+		}
+		if !strings.Contains(cs.Run, "AWF_OUTPUT") {
+			c.warnf(path, "AWF3006", catalog["AWF3006"])
+		}
+	})
 }
 
 // syntaxMessage extracts the inner Msg from a *template.SyntaxError if err is one; falls

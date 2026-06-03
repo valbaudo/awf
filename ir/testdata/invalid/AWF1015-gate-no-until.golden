@@ -4,5 +4,11 @@
     "Path": "gate[0]",
     "Code": "AWF1015",
     "Message": "gate missing until"
+  },
+  {
+    "Severity": "warning",
+    "Path": "gate[0].evaluate.j",
+    "Code": "AWF3006",
+    "Message": "code step declares output_schema but its run script never writes $AWF_OUTPUT"
   }
 ]

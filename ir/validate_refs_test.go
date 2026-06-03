@@ -480,6 +480,35 @@ func TestRefsIntoTryIsTransparent(t *testing.T) {
 	assertNoErrorCode(t, Validate(ld), "AWF5003")
 }
 
+// --- Task 1.1: AWF3001/AWF3002 for with: string leaves ---
+
+// TestRefsAgentSchemaReferencedInWithPromptNoAWF3002 asserts that a valid
+// step.<id>.<field> reference inside a with: string value counts as an inbound
+// ref and suppresses AWF3002 (the schema IS referenced).
+func TestRefsAgentSchemaReferencedInWithPromptNoAWF3002(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "withref", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&AgentStep{ID: "scan", Container: "c", With: RawConfig{"prompt": "scan it"},
+				OutputSchema: &JSONSchema{"type": "object", "required": []any{"finding"}, "properties": map[string]any{"finding": map[string]any{"type": "string"}}, "additionalProperties": false}},
+			&AgentStep{ID: "verify", Container: "c", With: RawConfig{"prompt": "verify {{ step.scan.finding }}"}},
+		}})
+	assertNoCode(t, Validate(ld), "AWF3002")
+}
+
+// TestRefsBrokenRefInWithPromptReportsAWF3001 asserts that a broken reference
+// inside a with: string value emits AWF3001 at the path "<step-id>.with.<key>".
+func TestRefsBrokenRefInWithPromptReportsAWF3001(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "withbroken", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&AgentStep{ID: "scan", Container: "c", With: RawConfig{"prompt": "scan"},
+				OutputSchema: &JSONSchema{"type": "object", "required": []any{"finding"}, "properties": map[string]any{"finding": map[string]any{"type": "string"}}, "additionalProperties": false}},
+			&AgentStep{ID: "verify", Container: "c", With: RawConfig{"prompt": "verify {{ step.scan.nope }}"}},
+		}})
+	assertErrorAt(t, Validate(ld), "AWF3001", "verify.with.prompt")
+}
+
 func TestRefsCrossScopeNestedMapInGateRejected(t *testing.T) {
 	// A step inside a gate's generate but OUTSIDE the map nested within it
 	// references a step inside that map's body: the innermost opaque scope (the
@@ -506,4 +535,27 @@ func TestRefsCrossScopeNestedMapInGateRejected(t *testing.T) {
 		},
 	})
 	assertErrorAt(t, Validate(ld), "AWF5003", "gate[0].generate.sibling.run")
+}
+
+// --- Task 1.2: AWF3006 — code step with output_schema but no $AWF_OUTPUT write ---
+
+// TestCodeStepWithSchemaButNoAwfOutputWarnsAWF3006 asserts that a code step
+// declaring output_schema but whose run script never writes $AWF_OUTPUT gets a
+// Warning with code AWF3006 (the output will silently be missing at runtime).
+func TestCodeStepWithSchemaButNoAwfOutputWarnsAWF3006(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "noout", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{&CodeStep{ID: "recon", Container: "c", Run: "echo hi",
+			OutputSchema: &JSONSchema{"type": "object", "required": []any{"x"}, "properties": map[string]any{"x": map[string]any{"type": "integer"}}, "additionalProperties": false}}}})
+	assertWarningAt(t, Validate(ld), "AWF3006", "recon")
+}
+
+// TestCodeStepWritingAwfOutputNoAWF3006 asserts that a code step that writes
+// $AWF_OUTPUT does NOT trigger AWF3006.
+func TestCodeStepWritingAwfOutputNoAWF3006(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "ok", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{&CodeStep{ID: "recon", Container: "c", Run: `echo '{"x":1}' > "$AWF_OUTPUT"`,
+			OutputSchema: &JSONSchema{"type": "object", "required": []any{"x"}, "properties": map[string]any{"x": map[string]any{"type": "integer"}}, "additionalProperties": false}}}})
+	assertNoCode(t, Validate(ld), "AWF3006")
 }

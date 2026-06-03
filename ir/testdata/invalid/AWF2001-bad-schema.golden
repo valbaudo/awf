@@ -4,5 +4,11 @@
     "Path": "a.output_schema",
     "Code": "AWF2001",
     "Message": "\"inline://schema#\" is not valid against metaschema: jsonschema validation failed with 'https://json-schema.org/draft/2020-12/schema#'\n- at '': 'allOf' failed\n  - at '/type': 'anyOf' failed\n    - at '/type': value must be one of 'array', 'boolean', 'integer', 'null', 'number', 'object', 'string'\n    - at '/type': got string, want array"
+  },
+  {
+    "Severity": "warning",
+    "Path": "a",
+    "Code": "AWF3006",
+    "Message": "code step declares output_schema but its run script never writes $AWF_OUTPUT"
   }
 ]

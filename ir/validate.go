@@ -32,6 +32,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 	c := &collector{}
 	validateStructural(ld, c)
 	validateRefs(ld, c)
+	validateAwfOutputWrites(ld.Workflow.Graph, c)
 	validateSchema(ld, c)
 	validateCompose(ld, c)
 	return c.sorted()
