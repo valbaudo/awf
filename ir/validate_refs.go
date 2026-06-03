@@ -424,7 +424,9 @@ func renderRef(r template.Ref) string {
 // The check is intentionally surface-level (substring match, not AST analysis) because
 // run: is an arbitrary shell script and a precise static analysis would be unsound. The
 // heuristic catches the most common forget — the author wrote `echo hi` instead of
-// `echo '{"x":1}' > "$AWF_OUTPUT"`.
+// `echo '{"x":1}' > "$AWF_OUTPUT"`. Surface-level false negative: a script that merely
+// mentions the literal string "AWF_OUTPUT" without writing it (e.g. `echo "write to AWF_OUTPUT"`)
+// also suppresses the warning — acceptable given the check's intentionally surface-level nature.
 func validateAwfOutputWrites(nodes NodeList, c *collector) {
 	WalkNodes(nodes, "", func(n Node, path string) {
 		cs, ok := n.(*CodeStep)

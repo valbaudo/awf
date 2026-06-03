@@ -550,6 +550,15 @@ func TestCodeStepWithSchemaButNoAwfOutputWarnsAWF3006(t *testing.T) {
 	assertWarningAt(t, Validate(ld), "AWF3006", "recon")
 }
 
+// TestCodeStepWithoutSchemaNoAWF3006 asserts that AWF3006 fires ONLY when output_schema
+// is declared — a code step with no schema and no $AWF_OUTPUT write must stay silent.
+func TestCodeStepWithoutSchemaNoAWF3006(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "noschema", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph:      NodeList{&CodeStep{ID: "recon", Container: "c", Run: "echo hi"}}}) // no output_schema
+	assertNoCode(t, Validate(ld), "AWF3006")
+}
+
 // TestCodeStepWritingAwfOutputNoAWF3006 asserts that a code step that writes
 // $AWF_OUTPUT does NOT trigger AWF3006.
 func TestCodeStepWritingAwfOutputNoAWF3006(t *testing.T) {

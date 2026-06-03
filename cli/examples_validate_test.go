@@ -16,6 +16,9 @@ import (
 // Warnings (e.g. AWF3006) are permitted — they are informational and don't indicate
 // a broken workflow. Only Errors contribute to HasErrors and fail a run.
 func TestExamplesValidateClean(t *testing.T) {
+	// filepath.Glob does not support recursive ** in Go — "**/*.yaml" matches exactly one
+	// directory level (examples/<dir>/*.yaml). If examples ever nest two+ levels deep,
+	// switch to fs.WalkDir.
 	matches, err := filepath.Glob("../examples/**/*.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +47,6 @@ func TestExamplesValidateClean(t *testing.T) {
 		t.Fatal("no *.yaml files found under examples/ — check the glob pattern")
 	}
 	for _, fixture := range unique {
-		fixture := fixture
 		t.Run(filepath.Base(fixture), func(t *testing.T) {
 			ld, err := loader.Load(fixture)
 			if err != nil {

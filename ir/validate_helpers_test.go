@@ -77,5 +77,5 @@ func assertWarningAt(t *testing.T, diags []Diagnostic, code, exactPath string) {
 			return
 		}
 	}
-	t.Fatalf("want warning %s at %q; got %+v", code, exactPath, diags)
+	t.Errorf("want warning %s at %q; got %+v", code, exactPath, diags)
 }
