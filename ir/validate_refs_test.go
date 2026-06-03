@@ -7,6 +7,26 @@ import (
 
 // Tests for the AWF3001/AWF3002 reference pass — see validate_refs.go.
 
+func TestSingleMapBodyShape(t *testing.T) {
+	cases := []struct {
+		path, wantMap, wantSuffix string
+		wantOK                    bool
+	}{
+		{"map[0].body.scan", "map[0]", "scan", true},
+		{"map[0].body.if[0].then.scan", "map[0]", "if[0].then.scan", true},
+		{"scan", "", "", false},
+		{"gate[0].generate.scan", "", "", false},
+		{"map[0].body.map[1].body.scan", "", "", false},
+		{"loop[0].body.map[1].body.scan", "", "", false},
+	}
+	for _, tc := range cases {
+		gm, gs, ok := SingleMapBodyShape(tc.path)
+		if ok != tc.wantOK || gm != tc.wantMap || gs != tc.wantSuffix {
+			t.Errorf("SingleMapBodyShape(%q)=(%q,%q,%v); want (%q,%q,%v)", tc.path, gm, gs, ok, tc.wantMap, tc.wantSuffix, tc.wantOK)
+		}
+	}
+}
+
 func TestRefsStepFieldMustBeDeclared(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "refs", Version: 1,
@@ -167,122 +187,6 @@ func TestRefsRunIDIsAccepted(t *testing.T) {
 	}
 }
 
-// TestValidateRefsMapAggregationDeferred exercises AWF5002: refs of the form
-// `step.<map_id>.items[*]` / `step.<map_id>.summary.<field>` are deferred per spec §11
-// item 4. The runtime ships per-item dispatch + commits but NOT aggregation; the
-// validator catches the syntax at lint time so authors don't write Phase-N-only syntax
-// expecting it to work in slice 3.4.
-//
-// HI-A precedence: AWF5002 fires ONLY when the id is not already a known step producer.
-// A workflow with both `step.id: "map"` AND a literal Map kind sharing the leaf-name
-// "map" resolves to the step (producer wins) → no AWF5002 / no AWF3001.
-func TestValidateRefsMapAggregationDeferred(t *testing.T) {
-	digest := "oci://example.com/r@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-	// inputSchema declares `list` so the map's `over: {{ input.list }}` resolves cleanly
-	// without dragging in unrelated AWF3001 noise that would muddy the negative-case
-	// assertion (HI-A asserts no AWF5002 AND no AWF3001).
-	inputSchema := &JSONSchema{
-		"type":                 "object",
-		"additionalProperties": false,
-		"required":             []any{"list"},
-		"properties":           map[string]any{"list": map[string]any{"type": "array"}},
-	}
-	cases := []struct {
-		name     string
-		graph    NodeList
-		wantCode string
-	}{
-		{
-			name: "step.<map>.items[N] rejected",
-			graph: NodeList{
-				&Map{
-					Over: "{{ input.list }}", As: "x", Container: "c0", Concurrency: 1,
-					Body: NodeList{
-						&CodeStep{ID: "triage", Container: "c0", Run: "echo {{ x }}"},
-					},
-				},
-				&CodeStep{ID: "post", Container: "c0", Run: "echo {{ step.map.items.0.id }}"},
-			},
-			wantCode: "AWF5002",
-		},
-		{
-			name: "step.<map>.summary.succeeded rejected",
-			graph: NodeList{
-				&Map{
-					Over: "{{ input.list }}", As: "x", Container: "c0", Concurrency: 1,
-					Body: NodeList{
-						&CodeStep{ID: "triage", Container: "c0", Run: "echo {{ x }}"},
-					},
-				},
-				&CodeStep{ID: "post", Container: "c0", Run: "echo {{ step.map.summary.succeeded }}"},
-			},
-			wantCode: "AWF5002",
-		},
-		// Note: refs to a step INSIDE the map body (step.triage.<field>) are NOT aggregation
-		// refs — they still resolve via the normal AWF3001 pathway. We don't test that here
-		// because AWF3001's "field not in output_schema" would fire first (the body step has
-		// no schema in this test). A separate positive test would need a schema'd inner step;
-		// pinned by TestRunMapAsBindingThreaded at the engine level.
-		{
-			name: "HI-A: step ID shadowing map leaf does NOT trip AWF5002",
-			graph: NodeList{
-				// First step has id "map" AND a real output_schema with a `count` field.
-				&CodeStep{
-					ID: "map", Container: "c0", Run: "./step.sh",
-					OutputSchema: &JSONSchema{
-						"type":                 "object",
-						"additionalProperties": false,
-						"required":             []any{"count"},
-						"properties":           map[string]any{"count": map[string]any{"type": "integer"}},
-					},
-				},
-				// A literal Map kind whose leaf-name is also "map" (map[1]).
-				&Map{
-					Over: "{{ input.list }}", As: "x", Container: "c0", Concurrency: 1,
-					Body: NodeList{
-						&CodeStep{ID: "triage", Container: "c0", Run: "echo {{ x }}"},
-					},
-				},
-				// step.map.count: id="map" IS a producer (the first step) AND matches map[1]'s
-				// leaf-name. Per HI-A precedence, producer wins → AWF5002 does NOT fire →
-				// AWF3001 resolves normally (count IS in the step's schema) → no diagnostic.
-				&CodeStep{ID: "post", Container: "c0", Run: "echo {{ step.map.count }}"},
-			},
-			wantCode: "", // empty = assert NO AWF5002 / AWF3001 emitted
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			ld := makeLD(&Workflow{
-				ID: "agg", Version: 1,
-				Containers: map[string]Container{"c0": {Image: digest}},
-				Input:      inputSchema,
-				Graph:      c.graph,
-			})
-			diags := Validate(ld)
-			if c.wantCode == "" {
-				// Negative case: assert NO AWF5002 (and NO AWF3001).
-				// AWF3002 (warning: agent schema unreferenced) is acceptable.
-				for _, d := range diags {
-					if d.Code == "AWF5002" || d.Code == "AWF3001" {
-						t.Errorf("expected no AWF5002/AWF3001; got %s at %s: %s", d.Code, d.Path, d.Message)
-					}
-				}
-				return
-			}
-			var found bool
-			for _, d := range diags {
-				if d.Code == c.wantCode {
-					found = true
-				}
-			}
-			if !found {
-				t.Errorf("missing %s; diagnostics = %v", c.wantCode, diags)
-			}
-		})
-	}
-}
-
 // TestValidateRefsEvaluateScope exercises AWF5001: evaluate.<field> is only legal inside
 // gate.generate or gate.until. Anywhere else (top-level, gate.evaluate subtree) is a static
 // error — the static counterpart of the runtime scope check in engine.Scope.resolveEvaluate.
@@ -394,6 +298,11 @@ func awf5003Container() map[string]Container {
 }
 
 func TestRefsCrossScopeIntoMapBodyRejected(t *testing.T) {
+	// Under Approach A (map output aggregation), a `step.<id>` ref to a producer inside a
+	// single map, from a site outside that map, is an AGGREGATE (array-typed) ref. It is
+	// legal only as another map's `over:`. Here the ref site is a `run:` host (scalar) →
+	// AWF5004, not the old opaque-scope AWF5003. (exit_code is checked only after the
+	// over-sink gate, so the over-sink rejection wins.)
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
 		Containers: awf5003Container(),
@@ -402,12 +311,11 @@ func TestRefsCrossScopeIntoMapBodyRejected(t *testing.T) {
 			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
 				awf5003Step("inner"),
 			}},
-			// A top-level step referencing a step inside the map body: "which item?"
-			// is undefined → AWF5003.
+			// A top-level step referencing a single-map-body producer from a scalar host.
 			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.inner.exit_code }}"},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF5003", "after.run")
+	assertErrorAt(t, Validate(ld), "AWF5004", "after.run")
 }
 
 func TestRefsCrossScopeIntoGateRejected(t *testing.T) {
@@ -567,4 +475,108 @@ func TestCodeStepWritingAwfOutputNoAWF3006(t *testing.T) {
 		Graph: NodeList{&CodeStep{ID: "recon", Container: "c", Run: `echo '{"x":1}' > "$AWF_OUTPUT"`,
 			OutputSchema: &JSONSchema{"type": "object", "required": []any{"x"}, "properties": map[string]any{"x": map[string]any{"type": "integer"}}, "additionalProperties": false}}}})
 	assertNoCode(t, Validate(ld), "AWF3006")
+}
+
+// --- Task 5.2: map output aggregation (Approach A — step-ref lift) ---
+
+// scanSchema is the body-step schema for the aggregation tests: a `finding` string and an
+// `index` integer (the per-item correlation field, per spec §1.2 decision 3).
+func aggScanSchema() *JSONSchema {
+	return &JSONSchema{
+		"type": "object", "additionalProperties": false,
+		"required":   []any{"finding", "index"},
+		"properties": map[string]any{"finding": map[string]any{"type": "string"}, "index": map[string]any{"type": "integer"}},
+	}
+}
+
+func aggContainer() map[string]Container {
+	return map[string]Container{"c": {Image: "oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000"}}
+}
+
+// aggFindURLs is a seed code step producing an array `urls` field, used as mapA's over.
+func aggFindURLs() *CodeStep {
+	return &CodeStep{ID: "find_urls", Container: "c", Run: `echo '{"urls":[]}' > "$AWF_OUTPUT"`,
+		OutputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
+			"required": []any{"urls"}, "properties": map[string]any{"urls": map[string]any{"type": "array"}}}}
+}
+
+// TestAggregateRefIntoOverIsAccepted: seed code step → mapA(body agent `scan`) → mapB
+// `over: "{{ step.scan }}"`. The 2-seg whole-object aggregate ref into another map's `over:`
+// is the chaining primitive — valid, no AWF5002/AWF5003/AWF5004.
+func TestAggregateRefIntoOverIsAccepted(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "agg", Version: 1,
+		Containers: aggContainer(),
+		Graph: NodeList{
+			aggFindURLs(),
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
+				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
+					With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
+			}},
+			&Map{Over: Expr("{{ step.scan }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code",
+					With: RawConfig{"prompt": "Verify {{ f.finding }} (item {{ f.index }})"}},
+			}},
+		}})
+	diags := Validate(ld)
+	assertNoCode(t, diags, "AWF5002")
+	assertNoCode(t, diags, "AWF5003")
+	assertNoCode(t, diags, "AWF5004")
+}
+
+// TestAggregateRefInRunHostRejectedAWF5004: the same producer referenced from a scalar
+// `run:` host (a code step after the map) is an aggregate used outside `over:` → AWF5004.
+func TestAggregateRefInRunHostRejectedAWF5004(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "agg", Version: 1,
+		Containers: aggContainer(),
+		Graph: NodeList{
+			aggFindURLs(),
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
+				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
+					With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
+			}},
+			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.scan.finding }}"},
+		}})
+	assertErrorAt(t, Validate(ld), "AWF5004", "after.run")
+}
+
+// TestAggregateExitCodeRejectedAWF5005: exit_code/stdout are not defined on an aggregate
+// (a map-internal step aggregates to []output / []field only). Even in an `over:` sink,
+// `step.scan.exit_code` → AWF5005.
+func TestAggregateExitCodeRejectedAWF5005(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "agg", Version: 1,
+		Containers: aggContainer(),
+		Graph: NodeList{
+			aggFindURLs(),
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
+				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
+					With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
+			}},
+			&Map{Over: Expr("{{ step.scan.exit_code }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "v"}},
+			}},
+		}})
+	assertErrorAt(t, Validate(ld), "AWF5005", "map[2].over")
+}
+
+// TestAggregateNestedMapDeferredAWF5002: a producer enclosed by TWO maps (map-in-map),
+// referenced from a map outside both → not the v1 single-map shape → AWF5002 ("deferred").
+func TestAggregateNestedMapDeferredAWF5002(t *testing.T) {
+	ld := makeLD(&Workflow{ID: "agg", Version: 1,
+		Containers: aggContainer(),
+		Graph: NodeList{
+			aggFindURLs(),
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
+				&Map{Over: Expr("{{ u }}"), As: "v", Container: "c", Concurrency: 1, Body: NodeList{
+					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
+						With: RawConfig{"prompt": "Scan {{ v }}"}, OutputSchema: aggScanSchema()},
+				}},
+			}},
+			// A 3-segment field ref into the map-in-map producer's declared `finding`
+			// field. The non-v1-shape producer (two enclosing maps) makes this the
+			// opaque-scope reject; with no gate in the producer path → AWF5002.
+			&Map{Over: Expr("{{ step.scan.finding }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "v"}},
+			}},
+		}})
+	assertErrorAt(t, Validate(ld), "AWF5002", "map[2].over")
 }
