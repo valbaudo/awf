@@ -10,13 +10,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/obs"
 	"github.com/valbaudo/awf/state"
 )
 
 func printInspectUsage(w io.Writer) {
-	fprintln(w, "usage: awf inspect <run-id> [--state-dir <dir>] [--fold <status,...>] [--depth <n>] [--output text|json]")
+	fprintln(w, "usage: awf inspect <run-id> [--state-dir <dir>] [--fold <status,...>] [--depth <n>] [--output text|json] [--tokens]")
 	fprintln(w, "")
 	fprintln(w, "  render a run's addressing tree as a fold-by-status text tree.")
 	fprintln(w, "  ok subtrees collapse by default; failed / rejected / incomplete subtrees expand.")
@@ -24,9 +26,11 @@ func printInspectUsage(w io.Writer) {
 	fprintln(w, "  --depth <n>        max tree depth to render (default: unlimited)")
 	fprintln(w, "  --output <fmt>     text (default) or json (the obs.Span projection)")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ (default: ./.awf)")
+	fprintln(w, "  --tokens           show per-step input/output token counts")
 	fprintln(w, "")
 	fprintln(w, "  NOTE: AWF does not offer Temporal-style deterministic replay; resume folds")
 	fprintln(w, "  the log and re-runs only the uncommitted frontier (no author-code determinism).")
+	fprintln(w, "  Pending-agent elapsed is as of the last logged event (deterministic bound, NOT wall-clock).")
 }
 
 func cliInspect(args []string, stdout, stderr io.Writer) int {
@@ -37,6 +41,7 @@ func cliInspect(args []string, stdout, stderr io.Writer) int {
 	foldArg := fs0.String("fold", "ok", "comma list of statuses to collapse")
 	depth := fs0.Int("depth", -1, "max tree depth (-1 = unlimited)")
 	output := fs0.String("output", "text", "output format: text or json")
+	showTokens := fs0.Bool("tokens", false, "show per-step input/output token counts")
 	runID, code, ok := parseRunIDFirst(fs0, args, "awf inspect", printInspectUsage, stdout, stderr)
 	if !ok {
 		return code
@@ -78,13 +83,16 @@ func cliInspect(args []string, stdout, stderr io.Writer) int {
 			foldSet[s] = true
 		}
 	}
-	renderTree(stdout, spans, foldSet, *depth)
+	toolCalls := countToolCalls(events)
+	renderTree(stdout, spans, foldSet, *depth, toolCalls, *showTokens)
 	return ExitOK
 }
 
 // renderTree prints the span forest as an indented, fold-by-status text tree.
 // Children are indexed by ParentPath; the run root is the span with Path "".
-func renderTree(w io.Writer, spans []obs.Span, foldSet map[string]bool, maxDepth int) {
+// toolCalls maps node path → count of tool-call agent events in the current epoch.
+// showTokens, when true, appends per-step input/output token counts.
+func renderTree(w io.Writer, spans []obs.Span, foldSet map[string]bool, maxDepth int, toolCalls map[string]int, showTokens bool) {
 	byPath := map[string]obs.Span{}
 	children := map[string][]obs.Span{}
 	for _, s := range spans {
@@ -120,7 +128,7 @@ func renderTree(w io.Writer, spans []obs.Span, foldSet map[string]bool, maxDepth
 	var render func(path string, depth int)
 	render = func(path string, depth int) {
 		s := byPath[path]
-		fprintf(w, "%s%s\n", strings.Repeat("  ", depth), nodeLine(s))
+		fprintf(w, "%s%s\n", strings.Repeat("  ", depth), nodeLine(s, toolCalls, showTokens))
 		if maxDepth >= 0 && depth >= maxDepth {
 			return
 		}
@@ -185,8 +193,10 @@ func nodeStatusToken(s obs.Span) string {
 	return "ok"
 }
 
-// nodeLine is one rendered tree line: name/id, kind, status, optional cost.
-func nodeLine(s obs.Span) string {
+// nodeLine is one rendered tree line: name/id, kind, status, optional cost,
+// and (for pending agent spans) tool-call count + elapsed. showTokens adds
+// per-step input/output token counts when true.
+func nodeLine(s obs.Span, toolCalls map[string]int, showTokens bool) string {
 	name := s.Name
 	if name == "" {
 		name = "run"
@@ -206,5 +216,54 @@ func nodeLine(s obs.Span) string {
 	if c, ok := s.Attributes[obs.AttrCostUSD].(float64); ok {
 		parts = append(parts, fmt.Sprintf("$%.4f", c))
 	}
+	// For pending agent spans, append tool-call count and elapsed.
+	if s.Pending && s.Kind == "agent" {
+		n := toolCalls[s.Path]
+		var suffix []string
+		if n > 0 {
+			suffix = append(suffix, fmt.Sprintf("%d tool calls", n))
+		}
+		if !s.Start.IsZero() && !s.End.IsZero() && s.End.After(s.Start) {
+			suffix = append(suffix, s.End.Sub(s.Start).Round(time.Second).String())
+		}
+		if len(suffix) > 0 {
+			parts = append(parts, "("+strings.Join(suffix, ", ")+")")
+		}
+	}
+	// Token counts for completed agent spans (--tokens flag).
+	if showTokens {
+		in, inOK := s.Attributes[obs.AttrGenAIInputTokens].(int64)
+		out, outOK := s.Attributes[obs.AttrGenAIOutputTokens].(int64)
+		if inOK || outOK {
+			parts = append(parts, fmt.Sprintf("(%d in / %d out tok)", in, out))
+		}
+	}
 	return strings.Join(parts, "  ")
+}
+
+// countToolCalls tallies agent.event tool-call entries per node path, from the raw
+// log (Kind lives in the event Data — no blob deref). Deduped to the current epoch:
+// only events at/after the LAST node.started for that path count. Claude emits
+// "tool_use"; droid emits "tool_call".
+func countToolCalls(events []state.Event) map[string]int {
+	lastStart := map[string]time.Time{}
+	for _, e := range events {
+		if e.Type == engine.EventNodeStarted {
+			lastStart[e.Path] = e.TS
+		}
+	}
+	counts := map[string]int{}
+	for _, e := range events {
+		if e.Type != engine.EventAgentEvent || e.TS.Before(lastStart[e.Path]) {
+			continue
+		}
+		var d engine.AgentEventData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			continue
+		}
+		if d.Kind == "tool_use" || d.Kind == "tool_call" {
+			counts[e.Path]++
+		}
+	}
+	return counts
 }
