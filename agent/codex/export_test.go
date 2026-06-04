@@ -15,3 +15,8 @@ var (
 func NewUsageForTest(in, cached, out int) *usageRec {
 	return &usageRec{InputTokens: in, CachedInputTokens: cached, OutputTokens: out}
 }
+
+var (
+	ShellQuoteForTest      = shellQuote
+	AssembleCommandForTest = assembleCommand
+)

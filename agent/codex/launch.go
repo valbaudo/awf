@@ -1,0 +1,290 @@
+package codex
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/container"
+)
+
+// codexSchemaPath is the in-container path the step's output_schema is written to
+// (via printf in the same sh -c command) for --output-schema. Fixed path keeps
+// Launch deterministic (no rand — CLAUDE.md); single-exec-per-container is
+// guaranteed by the format (sequential gate/loop/retry; per-element map
+// container). `>` truncates the file in the same command immediately before codex
+// reads it, so any restored/leftover file (incl. under snapshot: workspace) is
+// overwritten before use.
+const codexSchemaPath = "/tmp/awf-codex-schema.json"
+
+// Launch runs `codex exec --json ...` inside handle via the streaming Backend.Exec.
+// codex's --json emits JSONL flushed live; Launch scans it and emits ONE AgentEvent
+// per line, records the LAST agent_message text (last-wins), captures the terminal
+// usage + any error/turn.failed message, then sends exactly one AgentOutcome.
+//
+// STREAMING GRANULARITY (accepted limitation): codex exec --json is EVENT-granular,
+// not token-granular — each agent_message arrives as ONE complete item.completed
+// line (no item.updated/text deltas). So events (tool calls, reasoning) render live,
+// but the answer TEXT does NOT stream character-by-character like goose/claude.
+// Token deltas exist only on codex's mcp-server/app-server JSON-RPC interface, which
+// the stdin-less container.Cmd seam cannot drive. See the spec §1 streaming note.
+//
+// γ contract: returns IMMEDIATELY with both channels open; events closes BEFORE
+// outcome (defer LIFO); never reuses a session.
+func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+	if a.backend == nil {
+		return nil, nil, &agent.ErrAgentLaunch{Cause: errors.New("agent/codex: Launch: no Backend wired (use WithBackend in New)")}
+	}
+	cmdString, err := assembleCommand(inv)
+	if err != nil {
+		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
+	}
+	env := make(map[string]string, len(a.env)+1)
+	for k, v := range a.env {
+		env[k] = v
+	}
+	if inv.IdempotencyKey != "" {
+		env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
+	}
+
+	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, container.Cmd{Run: cmdString, Env: env})
+	if execErr != nil {
+		return nil, nil, &agent.ErrAgentLaunch{Cause: execErr}
+	}
+
+	events := make(chan agent.AgentEvent, 16)
+	outcomeCh := make(chan agent.AgentOutcome, 1)
+	pr, pw := io.Pipe()
+	stderrCh := make(chan string, 1)
+
+	// Goroutine A: forward stdout chunks into the pipe (for line scanning) and
+	// ACCUMULATE stderr. codex's --json is stdout-only, but stderr carries the
+	// cosmetic "Reading additional input from stdin..." notice AND real diagnostics
+	// on an early/transport failure — capture it as the fallback diagnostic
+	// (Goroutine B uses it only when stdout yielded no usable result). Hands the
+	// stderr text off on the buffered channel after closing the pipe writer.
+	go func() {
+		var stderr bytes.Buffer
+		defer func() {
+			_ = pw.Close()
+			stderrCh <- stderr.String()
+		}()
+		for c := range chunks {
+			switch c.Stream {
+			case "stdout":
+				if _, werr := pw.Write(c.Data); werr != nil {
+					for range chunks { // reader closed early; drain so the backend can finish
+					}
+					return
+				}
+			case "stderr":
+				stderr.Write(c.Data)
+			}
+		}
+	}()
+
+	// Goroutine B: scan stdout lines, emit one AgentEvent per line PROGRESSIVELY
+	// (event-granular live progress; the answer TEXT is one atomic agent_message line),
+	// record last-wins agent_message + terminal usage + turn-failure/error messages
+	// + diag, then send exactly one AgentOutcome. defer LIFO: outcomeCh closes LAST.
+	go func() {
+		defer close(outcomeCh)
+		defer close(events)
+		defer func() { _ = pr.Close() }()
+
+		var finalText string
+		var haveFinal bool
+		var usage *usageRec
+		var sawTurnCompleted bool
+		var sawTurnFailed bool  // terminal turn.failed seen
+		var turnFailMsg string  // turn.failed error.message
+		var lastErrorMsg string // last bare `error` event (transient OR terminal-without-turn.failed)
+		var diag bytes.Buffer
+
+		scanner := bufio.NewScanner(pr)
+		scanner.Buffer(make([]byte, 64*1024), 1<<20)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			raw := append([]byte(nil), line...) // Scanner reuses its buffer; the line outlives this iteration as Payload.
+			ev, perr := parseStreamEvent(raw)
+			if perr != nil {
+				diag.Write(raw)
+				diag.WriteByte('\n')
+				continue
+			}
+			select {
+			case events <- agent.AgentEvent{Kind: eventKind(ev), Payload: raw, Stream: "stdout", Display: displayForCodex(ev)}:
+			case <-ctx.Done():
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
+				return
+			}
+			if txt, ok := agentMessageText(ev); ok {
+				finalText = txt
+				haveFinal = true
+			}
+			switch ev.Type {
+			case "turn.completed":
+				sawTurnCompleted = true
+				usage = ev.Usage
+			case "turn.failed":
+				sawTurnFailed = true
+				if ev.Error != nil {
+					turnFailMsg = ev.Error.Message
+				}
+			case "error":
+				// A bare `error` event can be a NON-FATAL transient notice (codex emits
+				// e.g. "Reconnecting... 1/5" while retrying a dropped stream, then
+				// continues to turn.completed), OR a terminal error with no turn.failed.
+				// Capture it as a fallback only — the failure verdict is driven by
+				// turn.failed below, so a transient error followed by turn.completed
+				// still succeeds (engine invariant: crash ≠ verdict).
+				lastErrorMsg = ev.Message
+			}
+		}
+		if serr := scanner.Err(); serr != nil && !sawTurnFailed {
+			fmt.Fprintf(&diag, "scan codex --json: %v\n", serr)
+		}
+
+		execResult := <-resultCh
+		stderrStr := <-stderrCh // drain goroutine A (also the fallback diagnostic)
+		// Prefer stdout-diag; fall back to stderr only when stdout yielded nothing
+		// (codex's cosmetic stdin notice lands on stderr, so don't surface it unless
+		// it's the only signal we have). Mirrors agent/goose/launch.go's guard.
+		diagLine := firstNonEmptyLine(diag.Bytes())
+		if diagLine == "" {
+			diagLine = firstNonEmptyLine([]byte(stderrStr))
+		}
+
+		switch {
+		case execResult.Err != nil:
+			// Transport-class error (backend died mid-stream): retryable.
+			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: execResult.Err}}
+
+		case sawTurnCompleted && haveFinal && strings.TrimSpace(finalText) != "":
+			// SUCCESS — terminal turn.completed + a non-empty agent_message. Evaluated
+			// BEFORE the failure branches so a non-fatal `error` event (a transient
+			// reconnect notice) the turn recovered from never masks a good result.
+			// (turn.completed and turn.failed are mutually exclusive, so this can't
+			// race the sawTurnFailed branch.)
+			res, eerr := buildResult(finalText, usage, inv)
+			var unparseable *agent.ErrUnparseableOutput
+			switch {
+			case eerr == nil:
+				outcomeCh <- agent.AgentOutcome{Result: res}
+			case errors.As(eerr, &unparseable):
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrUnparseableOutput{NodePath: inv.NodePath}}
+			default:
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: eerr}}
+			}
+
+		case sawTurnFailed:
+			// Terminal failure. Prefer the turn.failed message; fall back to the
+			// preceding `error` event text (codex's wire pattern is error→turn.failed).
+			msg := turnFailMsg
+			if msg == "" {
+				msg = lastErrorMsg
+			}
+			if isPermanentCodexError(msg) {
+				// HTTP 400 + invalid_request_error (bad model / schema codex rejects): permanent.
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrInvalidConfig{Ref: AdapterRef, Reason: firstNonEmptyLine([]byte(msg))}}
+			} else {
+				// auth, rate-limit, 5xx, provider/transport fault: retryable.
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: fmt.Errorf("agent/codex: codex turn failed: %s", msg)}}
+			}
+
+		case sawTurnCompleted:
+			// turn.completed but no agent_message text: retryable.
+			outcomeCh <- agent.AgentOutcome{Err: &ErrUnexpectedExit{ExitCode: execResult.ExitCode, Output: "codex produced no agent message"}}
+
+		case lastErrorMsg != "":
+			// A terminal `error` event with NO turn.failed/turn.completed (codex's
+			// "unrecoverable error emitted directly by the event stream").
+			if isPermanentCodexError(lastErrorMsg) {
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrInvalidConfig{Ref: AdapterRef, Reason: firstNonEmptyLine([]byte(lastErrorMsg))}}
+			} else {
+				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: fmt.Errorf("agent/codex: codex error: %s", lastErrorMsg)}}
+			}
+
+		default:
+			// No terminal event at all (codex died before completing): retryable.
+			outcomeCh <- agent.AgentOutcome{Err: &ErrUnexpectedExit{ExitCode: execResult.ExitCode, Output: diagLine}}
+		}
+	}()
+
+	return events, outcomeCh, nil
+}
+
+// assembleCommand builds the full `codex exec ...` shell-command string. When
+// OutputSchema is set, a `printf '%s' <json> > FILE &&` prelude writes the schema
+// to the container before codex reads it via --output-schema (both backends run
+// cmd.Run through sh -c). Feedback is prepended to the prompt; the prompt rides
+// as the last positional after `--`, with stdin from /dev/null (silences codex's
+// stdin notice; the appended <stdin> block is then empty). User strings are
+// POSIX-single-quoted via shellQuote. The prompt+feedback ride as one sh -c argv
+// element (128 KiB MAX_ARG_STRLEN ceiling, inherited from the sibling adapters);
+// the schema-to-file write keeps the --output-schema value tiny (a path).
+func assembleCommand(inv agent.AgentInvocation) (string, error) {
+	prompt, ok := inv.With[keyPrompt].(string)
+	if !ok {
+		return "", fmt.Errorf("agent/codex: assembleCommand: with.prompt missing or non-string")
+	}
+	if len(inv.Feedback) > 0 {
+		fb, ferr := json.Marshal(inv.Feedback)
+		if ferr != nil {
+			return "", fmt.Errorf("agent/codex: marshal Feedback: %w", ferr)
+		}
+		prompt = fmt.Sprintf("<previous verdict>\n%s\n\n%s", string(fb), prompt)
+	}
+
+	var prelude string
+	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral"}
+
+	if inv.OutputSchema != nil {
+		schemaBytes, serr := json.Marshal(*inv.OutputSchema)
+		if serr != nil {
+			return "", fmt.Errorf("agent/codex: marshal OutputSchema: %w", serr)
+		}
+		prelude = "printf '%s' " + shellQuote(string(schemaBytes)) + " > " + codexSchemaPath + " && "
+		parts = append(parts, "--output-schema", codexSchemaPath)
+	}
+
+	// Sandbox: an explicit non-empty key uses codex's internal sandbox; otherwise the
+	// AWF container is the boundary → bypass codex's approvals+sandbox entirely.
+	if sandbox, ok := inv.With[keySandbox].(string); ok && sandbox != "" {
+		parts = append(parts, "--sandbox", shellQuote(sandbox))
+	} else {
+		parts = append(parts, "--dangerously-bypass-approvals-and-sandbox")
+	}
+	if model, ok := inv.With[keyModel].(string); ok && model != "" {
+		parts = append(parts, "-m", shellQuote(model))
+	}
+	if re, ok := inv.With[keyReasoningEffort].(string); ok && re != "" {
+		parts = append(parts, "-c", shellQuote("model_reasoning_effort="+re))
+	}
+	parts = append(parts, "--", shellQuote(prompt))
+
+	// "</dev/null" is a SHELL REDIRECT appended AFTER the Join (NOT an argv element —
+	// never shellQuote it; it must stay last). It is load-bearing: without it
+	// `codex exec` can hang INDEFINITELY waiting for stdin EOF on a non-TTY pipe
+	// (codex#20919); it also empties the appended <stdin> block so codex's cosmetic
+	// "Reading additional input from stdin..." notice stays harmless.
+	return prelude + strings.Join(parts, " ") + " </dev/null", nil
+}
+
+// shellQuote single-quotes s for `sh -c` consumption (POSIX). COPIED verbatim from
+// the sibling adapters (package-private; agent/ exports no shellQuote).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// Compile-time assertion that Adapter satisfies agent.Adapter (all five methods).
+var _ agent.Adapter = (*Adapter)(nil)
