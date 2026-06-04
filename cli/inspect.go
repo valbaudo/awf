@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/obs"
 	"github.com/valbaudo/awf/state"
@@ -265,7 +266,7 @@ func countToolCalls(events []state.Event) map[string]int {
 		if err := json.Unmarshal(e.Data, &d); err != nil {
 			continue
 		}
-		if d.Kind == "tool_use" || d.Kind == "tool_call" {
+		if d.Kind == agent.AgentEventKindToolUse || d.Kind == agent.AgentEventKindToolCall {
 			counts[e.Path]++
 		}
 	}

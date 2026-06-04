@@ -466,6 +466,10 @@ func runtimeMapPathToStatic(runtimePath string) string {
 // ordered, compact []any of committed per-item outputs (whole output for a 2-seg
 // ref, the descended field otherwise). isAgg=false → not an aggregate; caller falls
 // through to normal resolution.
+//
+// NOTE: per-item descendPath errors are returned WITHOUT the step-context wrapper
+// (they are item-specific; the validator already guarantees the field exists, so
+// this path is defensive).
 func (s *Scope) aggregateMapOutputs(staticPath string, ref *template.Ref) (any, bool, error) {
 	mapStatic, suffix, ok := ir.SingleMapBodyShape(staticPath)
 	if !ok {
@@ -476,6 +480,7 @@ func (s *Scope) aggregateMapOutputs(staticPath string, ref *template.Ref) (any, 
 	} else if inside {
 		return nil, false, nil // same-item ref → normal resolution
 	}
+	idSeg := ref.Segments[1]
 	items := s.rs.LookupMapItems(mapStatic) // shallow copy — safe to sort in place
 	sort.Slice(items, func(i, j int) bool { return items[i].N < items[j].N })
 	out := []any{}
@@ -492,7 +497,7 @@ func (s *Scope) aggregateMapOutputs(staticPath string, ref *template.Ref) (any, 
 			out = append(out, nr.Outputs)
 			continue
 		}
-		val, err := descendPath(nr.Outputs, ref.Segments[2:], "step."+ref.Segments[1].Ident+".")
+		val, err := descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
 		if err != nil {
 			return nil, true, err
 		}

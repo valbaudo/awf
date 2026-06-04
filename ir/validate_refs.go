@@ -72,6 +72,9 @@ func validateRefs(ld *LoadedDefinition, c *collector) {
 // exactly one map[ boundary, no gate[ or loop[ anywhere, the map segment followed
 // by "body". Returns the map's static path ("...map[N]") and the producer's suffix
 // after ".body.". The single owner of this grammar predicate (engine uses it too).
+//
+// Suffix contract: suffix has NO leading dot (it is the path segments after ".body.",
+// joined by "."); callers compose it as ItemPath(mapPath, N) + "." + suffix.
 func SingleMapBodyShape(staticPath string) (mapPath, suffix string, ok bool) {
 	segs := strings.Split(staticPath, ".")
 	mapIdx, mapCount := -1, 0
@@ -236,6 +239,22 @@ func checkExprRefs(src, path string, c *collector, producers map[string]producer
 	}
 }
 
+// checkSchemaField emits AWF3001 if the producer declares no output_schema or the
+// schema doesn't declare field; returns true iff field is valid (no diagnostic emitted).
+// Shared by checkRef's aggregate and non-aggregate step branches.
+func checkSchemaField(c *collector, path, id, field string, schema *JSONSchema) bool {
+	if schema == nil {
+		c.errf(path, "AWF3001", fmt.Sprintf("reference to step %q field %q but no output_schema declared", id, field))
+		return false
+	}
+	props, _ := (*schema)["properties"].(map[string]any)
+	if _, ok := props[field]; !ok {
+		c.errf(path, "AWF3001", fmt.Sprintf("step %q output_schema does not declare field %q", id, field))
+		return false
+	}
+	return true
+}
+
 // checkRef classifies a ref by its first segment and applies the appropriate cross-check.
 // evaluateAllowed controls whether `evaluate.<field>` is legal in this position — false
 // emits AWF5001 (the static counterpart of engine.Scope.resolveEvaluate's runtime check).
@@ -277,14 +296,7 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 				c.errf(path, "AWF5005", fmt.Sprintf("%s: %s", catalog["AWF5005"], renderRef(ref)))
 				return
 			}
-			if p.schema == nil {
-				c.errf(path, "AWF3001", fmt.Sprintf("reference to step %q field %q but no output_schema declared", id, field))
-				return
-			}
-			props, _ := (*p.schema)["properties"].(map[string]any)
-			if _, ok := props[field]; !ok {
-				c.errf(path, "AWF3001", fmt.Sprintf("step %q output_schema does not declare field %q", id, field))
-			}
+			checkSchemaField(c, path, id, field, p.schema)
 			return
 		}
 		// Non-aggregate: require step.<id>.<field>.
@@ -324,13 +336,7 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			return
 		}
 		// Field must be declared in producer's output_schema.
-		if p.schema == nil {
-			c.errf(path, "AWF3001", fmt.Sprintf("reference to step %q field %q but no output_schema declared", id, field))
-			return
-		}
-		props, _ := (*p.schema)["properties"].(map[string]any)
-		if _, ok := props[field]; !ok {
-			c.errf(path, "AWF3001", fmt.Sprintf("step %q output_schema does not declare field %q", id, field))
+		if !checkSchemaField(c, path, id, field, p.schema) {
 			return
 		}
 		referenced[id] = true

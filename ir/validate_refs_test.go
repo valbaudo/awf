@@ -558,6 +558,37 @@ func TestAggregateExitCodeRejectedAWF5005(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF5005", "map[2].over")
 }
 
+// TestAggregateLoopMultipliedMapDeferredAWF5002: a producer inside a loop body's map is
+// referenced from a consuming map OUTSIDE the loop. The producer path contains "loop["
+// so SingleMapBodyShape returns false; with no "gate[" in the path, opaqueScopePrefix
+// finds the inner map's body as the opaque scope and routes to AWF5002.
+func TestAggregateLoopMultipliedMapDeferredAWF5002(t *testing.T) {
+	maxIters := 3
+	ld := makeLD(&Workflow{ID: "agg-loop", Version: 1,
+		Containers: aggContainer(),
+		Input: &JSONSchema{
+			"type": "object", "additionalProperties": false,
+			"required":   []any{"items"},
+			"properties": map[string]any{"items": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}},
+		},
+		Graph: NodeList{
+			// loop[0]: body contains map[0] producing a typed `finding` field.
+			&Loop{MaxIters: &maxIters, Body: NodeList{
+				&Map{Over: Expr("{{ input.items }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
+					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
+						With: RawConfig{"prompt": "scan {{ x }}"}, OutputSchema: aggScanSchema()},
+				}},
+			}},
+			// map[1] (outside the loop): tries to use the loop-multiplied map's producer as
+			// its over. Producer path = "loop[0].body.map[0].body.scan" → loop[ present →
+			// SingleMapBodyShape=false → opaque scope → no gate[ → AWF5002.
+			&Map{Over: Expr("{{ step.scan.finding }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "v"}},
+			}},
+		}})
+	assertErrorAt(t, Validate(ld), "AWF5002", "map[1].over")
+}
+
 // TestAggregateNestedMapDeferredAWF5002: a producer enclosed by TWO maps (map-in-map),
 // referenced from a map outside both → not the v1 single-map shape → AWF5002 ("deferred").
 func TestAggregateNestedMapDeferredAWF5002(t *testing.T) {

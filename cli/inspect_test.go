@@ -93,6 +93,29 @@ func TestInspectPendingAgentToolCalls(t *testing.T) {
 	}
 }
 
+// TestInspectPendingAgentDroidToolCall pins that countToolCalls honors the droid adapter's
+// "tool_call" Kind (not just Claude's "tool_use"). Uses the same pending-agent fixture as
+// TestInspectPendingAgentToolCalls but with droid's kind.
+func TestInspectPendingAgentDroidToolCall(t *testing.T) {
+	stateDir := t.TempDir()
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	writeRunLog(t, stateDir, "r2",
+		state.Event{Type: engine.EventRunStarted, Data: d(engine.RunStartedData{RunID: "r2", WorkflowID: "wf"})},
+		state.Event{Type: engine.EventNodeStarted, Path: "scan", Data: d(engine.NodeStartedData{Kind: "agent"})},
+		state.Event{Type: engine.EventAgentEvent, Path: "scan", Data: d(engine.AgentEventData{Kind: "tool_call", Size: 10})},
+		// no terminal event → pending agent span
+	)
+
+	var out, errb bytes.Buffer
+	if rc := cliInspect([]string{"r2", "--state-dir", stateDir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("inspect rc = %d, stderr: %s", rc, errb.String())
+	}
+	text := out.String()
+	if !strings.Contains(text, "tool call") {
+		t.Errorf("inspect text missing 'tool call' for droid tool_call kind; got:\n%s", text)
+	}
+}
+
 // TestInspectPendingAgentNoToolCallsNoSuffix — a pending agent span with zero
 // agent.event entries must NOT render a tool-call count suffix.
 func TestInspectPendingAgentNoToolCallsNoSuffix(t *testing.T) {

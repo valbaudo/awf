@@ -114,6 +114,13 @@ type MetricSet struct {
 	Turns  int          `json:"turns"`
 }
 
+// Agent event Kind values that denote a tool call (Claude emits "tool_use";
+// droid emits "tool_call"). Consumers that count tool activity match these.
+const (
+	AgentEventKindToolUse  = "tool_use"
+	AgentEventKindToolCall = "tool_call"
+)
+
 // MetricCost.Source values: an adapter that wraps a harness reporting its
 // own dollar figure (Claude Code's total_cost_usd) stamps CostSourceReported;
 // a future token-only adapter's derived cost (deferred — no pricing package
