@@ -191,7 +191,7 @@ validate `with:` strictly, and bind typed outputs to the step's `output_schema`.
 | Capability | `anthropic/claude-code` | `factory/droid` | `openai/codex` |
 | --- | --- | --- | --- |
 | Maturity | reference adapter | supported | supported |
-| Live streaming (realtime events) | ✅ token-by-token | ✅ event-granular | ✅ event-granular <sup>4</sup> |
+| Live streaming (realtime events) | ✅ | ✅ | ✅ event-granular <sup>4</sup> |
 | Typed outputs (`output_schema`) | ✅ native (`--json-schema`) | ✅ layer-2 <sup>1</sup> | ✅ native (`--output-schema`) <sup>5</sup> |
 | Gate repair (critique fed back) | ✅ | ✅ | ✅ |
 | Session independence (no reuse) | ✅ | ✅ | ✅ (`--ephemeral`) |
