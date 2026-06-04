@@ -58,16 +58,52 @@ const apiErr429 = `{"type":"error","status":429,"error":{"type":"rate_limit_erro
 
 // ---- tests -------------------------------------------------------------------
 
-func TestParse_AgentMessage_LastWins(t *testing.T) {
-	// A premature agent_message, a command, then the final agent_message: last-wins.
-	for _, raw := range [][]byte{itemMsg(`{"answer":1}`), cmdCompleted("ls", "a\nb\n", 0), itemMsg(`{"answer":4}`)} {
-		ev, err := codex.ParseStreamEventForTest(raw)
-		if err != nil {
-			t.Fatalf("parse %s: %v", raw, err)
-		}
-		if txt, ok := codex.AgentMessageTextForTest(ev); ok {
-			_ = txt // exercised; last-wins selection is asserted end-to-end in launch_test
-		}
+// agentMsgStarted is an item.started carrying an agent_message item — the
+// discriminator must return false because only item.completed items carry
+// the final text.
+func agentMsgStarted(text string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"type": "item.started",
+		"item": map[string]any{"id": "item_0", "type": "agent_message", "text": text},
+	})
+	return b
+}
+
+func TestAgentMessageText_Discriminates(t *testing.T) {
+	// item.completed / agent_message → (text, true)
+	ev, err := codex.ParseStreamEventForTest(itemMsg("hello"))
+	if err != nil {
+		t.Fatalf("parse itemMsg: %v", err)
+	}
+	if txt, ok := codex.AgentMessageTextForTest(ev); !ok || txt != "hello" {
+		t.Errorf("itemMsg: got (%q, %v), want (\"hello\", true)", txt, ok)
+	}
+
+	// item.completed / command_execution → ("", false)
+	ev, err = codex.ParseStreamEventForTest(cmdCompleted("ls", "out\n", 0))
+	if err != nil {
+		t.Fatalf("parse cmdCompleted: %v", err)
+	}
+	if txt, ok := codex.AgentMessageTextForTest(ev); ok {
+		t.Errorf("cmdCompleted: got (%q, true), want (\"\", false)", txt)
+	}
+
+	// item.started / command_execution → ("", false)
+	ev, err = codex.ParseStreamEventForTest(cmdStarted("ls"))
+	if err != nil {
+		t.Fatalf("parse cmdStarted: %v", err)
+	}
+	if txt, ok := codex.AgentMessageTextForTest(ev); ok {
+		t.Errorf("cmdStarted: got (%q, true), want (\"\", false)", txt)
+	}
+
+	// item.started / agent_message → ("", false): only item.completed carries final text
+	ev, err = codex.ParseStreamEventForTest(agentMsgStarted("partial"))
+	if err != nil {
+		t.Fatalf("parse agentMsgStarted: %v", err)
+	}
+	if txt, ok := codex.AgentMessageTextForTest(ev); ok {
+		t.Errorf("agentMsgStarted: got (%q, true), want (\"\", false)", txt)
 	}
 }
 
