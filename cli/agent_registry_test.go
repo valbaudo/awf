@@ -111,3 +111,44 @@ func TestDefaultAgentEnv_IncludesBothVendors(t *testing.T) {
 		t.Errorf("defaultAgentEnv = %v, want both ANTHROPIC_API_KEY and FACTORY_API_KEY", defaultAgentEnv)
 	}
 }
+
+func TestBuildAgentRegistry_RegistersCodex(t *testing.T) {
+	reg, err := buildAgentRegistry([]string{"OPENAI_API_KEY"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	if _, ok := reg.Lookup("openai/codex"); !ok {
+		t.Errorf("openai/codex not registered")
+	}
+	if _, ok := reg.Lookup("anthropic/claude-code"); !ok {
+		t.Errorf("registry lost the claude adapter")
+	}
+}
+
+func TestDefaultAgentEnv_IncludesCodexVars(t *testing.T) {
+	has := func(name string) bool {
+		for _, n := range defaultAgentEnv {
+			if n == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("OPENAI_API_KEY") || !has("CODEX_HOME") {
+		t.Errorf("defaultAgentEnv = %v, want OPENAI_API_KEY and CODEX_HOME", defaultAgentEnv)
+	}
+	// dedup: OPENAI_API_KEY overlaps goose — must appear exactly once.
+	seen, n := map[string]bool{}, 0
+	for _, k := range defaultAgentEnv {
+		if k == "OPENAI_API_KEY" {
+			n++
+		}
+		if seen[k] {
+			t.Errorf("defaultAgentEnv has duplicate %q", k)
+		}
+		seen[k] = true
+	}
+	if n != 1 {
+		t.Errorf("OPENAI_API_KEY appears %d times, want 1", n)
+	}
+}

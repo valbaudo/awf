@@ -6,6 +6,7 @@ import (
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
+	"github.com/valbaudo/awf/agent/codex"
 	"github.com/valbaudo/awf/agent/droid"
 	"github.com/valbaudo/awf/agent/goose"
 	"github.com/valbaudo/awf/container"
@@ -18,6 +19,7 @@ var defaultAgentEnv = func() []string {
 	out := append([]string{}, claude.DefaultEnvAllowlist...)
 	out = append(out, droid.DefaultEnvAllowlist...)
 	out = append(out, goose.DefaultEnvAllowlist...)
+	out = append(out, codex.DefaultEnvAllowlist...)
 	// Dedup: goose's ANTHROPIC_API_KEY overlaps claude's; keep first occurrence,
 	// preserve order (don't surface a duplicate in the --agent-env default).
 	seen := make(map[string]struct{}, len(out))
@@ -91,6 +93,14 @@ func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agen
 	}
 	if err := reg.Register(gadapter); err != nil {
 		return nil, fmt.Errorf("cli: buildAgentRegistry: register goose adapter: %w", err)
+	}
+
+	cadapter, err := codex.New(codex.WithEnv(env), codex.WithBackend(backend))
+	if err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: construct codex adapter: %w", err)
+	}
+	if err := reg.Register(cadapter); err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: register codex adapter: %w", err)
 	}
 	return &reg, nil
 }
