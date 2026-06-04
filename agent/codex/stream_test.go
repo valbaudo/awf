@@ -121,3 +121,24 @@ func TestIsPermanentCodexError(t *testing.T) {
 		t.Error("unparseable message must be retryable (false)")
 	}
 }
+
+func TestEventKind(t *testing.T) {
+	cases := []struct {
+		raw  []byte
+		want string
+	}{
+		{itemMsg("hi"), "agent_message"},
+		{cmdStarted("ls"), "command_execution"},
+		{turnCompleted(1, 0, 1), "turn.completed"},
+		{errorEvent(apiErr400), "error"},
+	}
+	for _, c := range cases {
+		ev, err := codex.ParseStreamEventForTest(c.raw)
+		if err != nil {
+			t.Fatalf("parse %s: %v", c.raw, err)
+		}
+		if got := codex.EventKindForTest(ev); got != c.want {
+			t.Errorf("eventKind = %q, want %q (raw: %s)", got, c.want, c.raw)
+		}
+	}
+}

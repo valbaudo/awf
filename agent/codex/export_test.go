@@ -7,6 +7,7 @@ var (
 	IsPermanentCodexErrorForTest = isPermanentCodexError
 	DisplayForCodexForTest       = displayForCodex
 	AgentMessageTextForTest      = agentMessageText
+	EventKindForTest             = eventKind
 )
 
 // NewUsageForTest builds a *usageRec for buildResult token-fill tests (usageRec
