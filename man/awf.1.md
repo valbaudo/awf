@@ -98,9 +98,10 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 **--agent-env** _csv_
 :   Comma-separated allowlist of environment-variable *names* forwarded into
     agent runtime CLIs (default
-    `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN,FACTORY_API_KEY,GOOSE_PROVIDER,GOOSE_MODEL,OPENAI_API_KEY`).
+    `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN,FACTORY_API_KEY,GOOSE_PROVIDER,GOOSE_MODEL,OPENAI_API_KEY,CODEX_HOME`).
     The same allowlist applies to every registered adapter, including
-    `uses: anthropic/claude-code`, `uses: factory/droid`, and `uses: block/goose`.
+    `uses: anthropic/claude-code`, `uses: factory/droid`, `uses: block/goose`,
+    and `uses: openai/codex`.
     Names not on the list are not passed through. See **ENVIRONMENT**.
 
 ## awf resume _run-id_ _path_
@@ -270,6 +271,45 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     is unset, awf does not gate the key — goose selects the provider from its own
     config inside the image.
 
+**OPENAI_API_KEY**, **CODEX_HOME**
+:   Authentication for the `openai/codex` agent runtime. **awf** does not read
+    these itself; it forwards those named in **--agent-env** (both included in the
+    default allowlist) into each `codex exec` invocation. Codex supports two auth
+    modes: an `OPENAI_API_KEY` env var, or ChatGPT-OAuth via an `auth.json`
+    provisioned into the runner image under `CODEX_HOME` (default `~/.codex`). The
+    adapter cannot validate auth statically — a missing or invalid credential
+    surfaces as a failed run (a `turn.failed` event with the API error message).
+
+    The adapter always passes **--ephemeral** (no session persistence, preserving
+    gate independence) and **--skip-git-repo-check**. By default it also passes
+    **--dangerously-bypass-approvals-and-sandbox**, treating the AWF container as
+    the isolation boundary. A `sandbox:` `with:` key (`read-only` |
+    `workspace-write` | `danger-full-access`) opts into codex's internal sandbox
+    instead; the bypass flag is then absent.
+
+    **OpenAI structured-output floor.** An `output_schema` for an `openai/codex`
+    step must be `additionalProperties: false` with every property listed under
+    `required` (recursively), or codex fails it permanently at runtime. **awf
+    validate** emits **AWF2002** for under-constrained schemas today (a warning, not
+    an error). Treat **AWF2002** as **blocking** for codex steps, or expect a hard
+    `ErrInvalidConfig` (permanent failure) at launch time.
+
+    **Tool/MCP and --output-schema caveat.** When codex runs with tools or MCP
+    servers active (via the workspace `AGENTS.md` or codex config inside the
+    container image), it can silently drop **--output-schema** and return a
+    non-JSON final message. The adapter fails the step loudly
+    (`ErrUnparseableOutput` → retryable → gate repair), never silently mis-binding.
+    Keep codex steps' container workspaces free of MCP and tool config when relying
+    on `output_schema`, or expect repair churn.
+
+    **Streaming granularity.** Unlike `anthropic/claude-code` and `block/goose`,
+    which stream the answer token-by-token, `openai/codex`'s live output is
+    event-granular: tool calls and reasoning steps appear as they happen, but the
+    final answer text arrives in one block when the message completes. `codex exec
+    --json` emits no token deltas; its streaming JSON-RPC interface is not
+    reachable through AWF's exec seam. The typed output is functionally identical;
+    only the live terminal UX differs.
+
 **DOCKER_HOST**, **DOCKER_TLS_VERIFY**, **DOCKER_CERT_PATH**
 :   Honored by the _docker_ backend through the standard Docker client
     environment.
@@ -294,6 +334,17 @@ redirect is load-bearing: goose writes the full cleartext session transcript and
 logs under those directories even with `--no-session`, so without it they would
 land in the operator's home directory. The adapter always passes `--no-session`
 and never reuses a prior goose session.
+
+**Codex opsec.** The codex adapter always passes **--ephemeral** (no session
+persistence) and **--skip-git-repo-check**. By default it adds
+**--dangerously-bypass-approvals-and-sandbox** — the AWF container is the
+isolation boundary; codex's internal sandbox is redundant and its approval prompts
+would block a non-interactive run. A `sandbox:` `with:` key opts into codex's
+internal sandbox and removes the bypass flag. The schema temp file
+(`/tmp/awf-codex-schema.json`) is written by the wrapping shell before codex
+starts and read by codex's own process — verified to work under
+**--sandbox read-only** (codex grants full-filesystem read; the write happens
+outside codex's process boundary). The adapter enables no MCP servers.
 
 **Droid model IDs.** The `factory/droid` `model` with-key is passed verbatim to
 droid's `--model`. IDs are provider-prefixed and versioned per family — e.g.

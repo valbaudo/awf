@@ -156,13 +156,18 @@ finished agent work.
 ## Supported agents
 
 An agent step names its runtime with `uses:`; that runtime's per-step config lives in the opaque
-`with:` map, which only the named adapter reads and validates. Two black-box CLI agents ship behind
+`with:` map, which only the named adapter reads and validates. Three black-box CLI agents ship behind
 the uniform adapter seam today, and you can mix them within one workflow — e.g. draft with one and
 have a *different* model judge it, which makes the gate's independence stronger:
 
 - **`anthropic/claude-code`** — Anthropic's Claude Code. The reference adapter.
 - **`factory/droid`** — Factory's [droid](https://docs.factory.ai/cli/droid-exec/overview) (its
   `droid exec` non-interactive mode).
+- **`openai/codex`** — OpenAI's `codex` CLI (`codex exec`). The **first native-schema** non-Claude
+  adapter: typed output is constrained API-side via `codex exec --output-schema` (OpenAI Responses
+  structured output), so the adapter never parses free text for the answer. Live output is
+  **event-granular** — tool calls and reasoning steps appear as they happen, but the final answer text
+  arrives in one block (see the `awf(1)` streaming note). Conforms to conformance Bucket 14.
 
 droid `model` IDs are provider-prefixed and versioned per family — e.g. `claude-sonnet-4-6` (Claude
 uses dashes), `gpt-5.5` (GPT/Gemini use dots), `gemini-3.5-flash`; the default is `claude-opus-4-8`.
@@ -179,27 +184,27 @@ forwards env — so this needs **no** adapter config: provision the image, forwa
 BYOK, `FACTORY_API_KEY` only has to be *present*, not valid.) See
 [`examples/droid-byok/`](examples/droid-byok/) for a runnable, provider-agnostic bundle.
 
-Both launch one fresh, non-resumable invocation per step (so the gate's evaluator stays structurally
-independent — no `--continue`/`--resume`/session reuse), stream their events live, validate `with:`
-strictly, and bind typed outputs to the step's `output_schema`.
+All three launch one fresh, non-resumable invocation per step (so the gate's evaluator stays
+structurally independent — no `--continue`/`--resume`/session reuse), stream their events live,
+validate `with:` strictly, and bind typed outputs to the step's `output_schema`.
 
-| Capability | `anthropic/claude-code` | `factory/droid` |
-| --- | --- | --- |
-| Maturity | reference adapter | supported |
-| Live streaming (realtime events) | ✅ | ✅ |
-| Typed outputs (`output_schema`) | ✅ native (`--json-schema`) | ✅ layer-2 <sup>1</sup> |
-| Gate repair (critique fed back) | ✅ | ✅ |
-| Session independence (no reuse) | ✅ | ✅ |
-| Token-usage metrics | ✅ | ✅ |
-| Cost (USD) reporting | ✅ (`total_cost_usd`) | ❌ tokens only <sup>2</sup> |
-| Model selection | ✅ `model` | ✅ `model` |
-| Reasoning effort | ➖ | ✅ `reasoning_effort` |
-| Autonomy / sandbox level | ➖ | ✅ `autonomy` |
-| System-prompt append | ✅ `system_prompt` | ✅ `system_prompt` |
-| Tool gating | ✅ `allowed_tools` | ✅ `enabled_tools` / `disabled_tools` |
-| Budget cap | ✅ `max_budget_usd` | ➖ |
-| Real-binary conformance | ✅ native + Docker (14a + gate-e2e 14c) | ⚠️ native (14a verified e2e); compose gate-e2e (14c) deferred <sup>3</sup> |
-| Auth env var(s) | `ANTHROPIC_API_KEY` · `ANTHROPIC_AUTH_TOKEN` · `CLAUDE_CODE_OAUTH_TOKEN` | `FACTORY_API_KEY` |
+| Capability | `anthropic/claude-code` | `factory/droid` | `openai/codex` |
+| --- | --- | --- | --- |
+| Maturity | reference adapter | supported | supported |
+| Live streaming (realtime events) | ✅ token-by-token | ✅ token-by-token | ✅ event-granular <sup>4</sup> |
+| Typed outputs (`output_schema`) | ✅ native (`--json-schema`) | ✅ layer-2 <sup>1</sup> | ✅ native (`--output-schema`) <sup>5</sup> |
+| Gate repair (critique fed back) | ✅ | ✅ | ✅ |
+| Session independence (no reuse) | ✅ | ✅ | ✅ (`--ephemeral`) |
+| Token-usage metrics | ✅ | ✅ | ✅ |
+| Cost (USD) reporting | ✅ (`total_cost_usd`) | ❌ tokens only <sup>2</sup> | ❌ tokens only |
+| Model selection | ✅ `model` | ✅ `model` | ✅ `model` |
+| Reasoning effort | ➖ | ✅ `reasoning_effort` | ✅ `reasoning_effort` |
+| Autonomy / sandbox level | ➖ | ✅ `autonomy` | ✅ `sandbox` |
+| System-prompt append | ✅ `system_prompt` | ✅ `system_prompt` | ➖ |
+| Tool gating | ✅ `allowed_tools` | ✅ `enabled_tools` / `disabled_tools` | ➖ |
+| Budget cap | ✅ `max_budget_usd` | ➖ | ➖ |
+| Real-binary conformance | ✅ native + Docker (14a + gate-e2e 14c) | ⚠️ native (14a verified e2e); compose gate-e2e (14c) deferred <sup>3</sup> | ✅ native (14a, `AWF_CODEX_LIVE`) |
+| Auth env var(s) | `ANTHROPIC_API_KEY` · `ANTHROPIC_AUTH_TOKEN` · `CLAUDE_CODE_OAUTH_TOKEN` | `FACTORY_API_KEY` | `OPENAI_API_KEY` · `CODEX_HOME` |
 
 Legend: ✅ full · ⚠️ partial · ➖ not applicable · ❌ not supported.
 
@@ -212,6 +217,14 @@ Legend: ✅ full · ⚠️ partial · ➖ not applicable · ❌ not supported.
    `droid` binary; bucket 14c (gate repair end-to-end under a compose lab) needs a compose image with
    `droid` installed and is deferred. The gate itself is engine-enforced and adapter-agnostic, so it
    works for both runtimes regardless.
+4. codex's `exec --json` is event-granular, not token-granular — tool calls and reasoning steps appear
+   as they happen, but the final answer text arrives in one block. The typed output is functionally
+   identical to the other adapters; only the live terminal UX differs.
+5. codex's `--output-schema` constrains the model's response via OpenAI Responses structured output
+   (API-side), so the answer text is always conforming JSON. The adapter never falls back to layer-2
+   free-text parsing. An `output_schema` for a codex step must be `additionalProperties: false` with
+   all properties `required` (recursively), or codex fails it permanently — treat `awf validate`'s
+   **AWF2002** warning as blocking for codex steps.
 
 During a run, agent steps stream a readable live view to stderr: assistant text
 in full, reasoning dimmed, tool calls as one-liners, and tool results collapsed
@@ -224,6 +237,13 @@ under `NO_COLOR`.
 > content to Factory's web app and is **on by default with no env switch** — for sensitive
 > workflows, disable it in the container image's `~/.factory/settings.json`
 > (`{"general":{"cloudSessionSync":false}}`). See the `awf(1)` ENVIRONMENT section.
+
+> **codex opsec.** The adapter always passes `--ephemeral` (no session persistence) and
+> `--skip-git-repo-check`. By default it also passes `--dangerously-bypass-approvals-and-sandbox`
+> (the AWF container is the isolation boundary; codex's approval prompts would block a
+> non-interactive run). A `sandbox:` `with:` key opts into codex's internal sandbox and removes the
+> bypass flag. The adapter enables no MCP servers. See the `awf(1)` ENVIRONMENT section for the
+> `output_schema` structured-output floor and the MCP/tool caveat.
 
 ## Documentation
 
