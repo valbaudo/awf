@@ -92,6 +92,7 @@ type Map struct {
 	Over        Expr     `json:"over"`
 	As          string   `json:"as"`
 	Container   string   `json:"container"`
+	Image       Template `json:"image,omitempty"`
 	Concurrency int      `json:"concurrency"`
 	MinSuccess  *Ratio   `json:"min_success,omitempty"`
 	Body        NodeList `json:"body"`
