@@ -37,6 +37,41 @@ var defaultAgentEnv = func() []string {
 	return deduped
 }()
 
+// mergeWorkflowEnv returns the env-var NAME allowlist forwarded into agent
+// adapters: the CLI base allowlist (from --agent-env, or the default) plus the
+// workflow's own top-level env: declarations (awf-workflow(5)). The workflow
+// names extend the base — appended after it, deduped, order-stable (first
+// occurrence wins) — so a name declared in both places is forwarded once. The
+// values themselves are never read here; only names flow through to
+// buildAgentRegistry, which resolves each via os.LookupEnv. The result is always
+// a fresh slice (it never aliases base, so a caller can't corrupt the input); an
+// all-empty result stays nil to preserve buildAgentRegistry's "no allowlist →
+// empty registry" contract.
+func mergeWorkflowEnv(base, workflowEnv []string) []string {
+	seen := make(map[string]struct{}, len(base)+len(workflowEnv))
+	out := make([]string, 0, len(base)+len(workflowEnv))
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	for _, name := range base {
+		add(name)
+	}
+	for _, name := range workflowEnv {
+		add(name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // buildAgentRegistry constructs the production *agent.Registry for a CLI
 // invocation. Parallels cli/backend.go's newBackend (slice 4.5) — same
 // "read flag → build → return" shape, no Runner field needed.

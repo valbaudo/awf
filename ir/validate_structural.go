@@ -55,11 +55,27 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 		}
 	}
 
-	// (c) Walk the graph: step-id uniqueness, container-ref resolution (missing OR unresolved),
+	// (c) Workflow-level env: a list of host env-var NAMES forwarded into agent steps
+	// (see awf-workflow(5) TOP LEVEL). Each entry must be a valid environment-variable
+	// identifier — an empty or malformed name cannot name a real host var and would
+	// silently drop from (or malform) the forwarded set. Values are never part of the
+	// definition; only the names here fold into the digest.
+	for i, name := range wf.Env {
+		if !envNamePattern.MatchString(name) {
+			c.errf(fmt.Sprintf("env[%d]", i), "AWF1024", fmt.Sprintf("%s: %q", catalog["AWF1024"], name))
+		}
+	}
+
+	// (d) Walk the graph: step-id uniqueness, container-ref resolution (missing OR unresolved),
 	// control-node shape, parallel distinct-container rule, expression-size limits, AWF1019.
 	seen := map[string]string{} // step id → first path where seen, for the duplicate diag
 	walkStructural(wf.Graph, "", wf, c, seen)
 }
+
+// envNamePattern is the POSIX-portable environment-variable identifier charset. A workflow's
+// top-level env: lists NAMES (never values); a name outside this charset can't address a real
+// host variable, so the validator rejects it (AWF1024) rather than silently dropping it.
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // NOTE: not built on ir.WalkNodes — walkStructural attaches diagnostics to nearly
 // every control kind (AWF1010-1015) and does sibling-set / last-element checks

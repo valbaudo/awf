@@ -225,6 +225,32 @@ func TestStructuralVersionMustBe1(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF1017", "")
 }
 
+func TestStructuralEnvNamesValidated(t *testing.T) {
+	// AWF1024: top-level env: lists host env-var NAMES forwarded into agent steps.
+	// A malformed name (hyphen) and an empty name are both rejected, each at its index;
+	// a well-formed name produces no diagnostic.
+	ld := makeLD(&Workflow{
+		ID: "env", Version: 1,
+		Env:        []string{"OK_NAME", "BAD-NAME", ""},
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph:      NodeList{},
+	})
+	diags := Validate(ld)
+	assertErrorAt(t, diags, "AWF1024", "env[1]") // BAD-NAME (hyphen)
+	assertErrorAt(t, diags, "AWF1024", "env[2]") // empty
+}
+
+func TestStructuralEnvValidNamesClean(t *testing.T) {
+	// A well-formed env: allowlist trips no AWF1024.
+	ld := makeLD(&Workflow{
+		ID: "env", Version: 1,
+		Env:        []string{"OPENAI_API_KEY", "_underscore", "LITELLM_API_KEY"},
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph:      NodeList{},
+	})
+	assertNoCode(t, Validate(ld), "AWF1024")
+}
+
 func TestStructuralGateGenerateNonEmpty(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "gate", Version: 1,

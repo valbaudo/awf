@@ -72,6 +72,45 @@ func TestDigestIndependentOfMapOrder(t *testing.T) {
 	}
 }
 
+func TestDigestFoldsEnvDeclaration(t *testing.T) {
+	// The top-level env: NAMES are part of the definition: changing the declared
+	// allowlist changes the digest (so resume hard-errors on a changed declaration),
+	// while an absent env: leaves the digest byte-identical (omitempty backwards-compat).
+	base, err := sampleWorkflow().ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withEnv := sampleWorkflow()
+	withEnv.Env = []string{"OPENAI_API_KEY"}
+	dEnv, err := withEnv.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base == dEnv {
+		t.Fatalf("declaring env: did not change the digest (got %s for both)", base)
+	}
+	// A nil/empty env: must NOT change the digest vs. pre-env workflows.
+	empty := sampleWorkflow()
+	empty.Env = nil
+	dEmpty, err := empty.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dEmpty != base {
+		t.Fatalf("nil env: changed the digest: %s vs %s", dEmpty, base)
+	}
+	// A different declared name yields a different digest.
+	other := sampleWorkflow()
+	other.Env = []string{"LITELLM_API_KEY"}
+	dOther, err := other.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dOther == dEnv {
+		t.Fatalf("different env names hashed equal: %s", dEnv)
+	}
+}
+
 func TestDigestStableAcrossRoundTrip(t *testing.T) {
 	wf := sampleWorkflow()
 	d1, err := wf.ComputeDigest(nil)

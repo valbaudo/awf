@@ -14,6 +14,7 @@ type Workflow struct {
 	ID         string               `json:"workflow"`
 	Version    int                  `json:"version"`
 	Input      *JSONSchema          `json:"input,omitempty"`
+	Env        []string             `json:"env,omitempty"`
 	Containers map[string]Container `json:"containers"`
 	Graph      NodeList             `json:"graph"`
 	Digest     string               `json:"-"`

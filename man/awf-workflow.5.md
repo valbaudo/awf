@@ -30,6 +30,7 @@ A workflow document has the following top-level shape:
     workflow: <id>
     version: 1
     input: <json-schema>          # optional; run parameters
+    env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent steps
     containers:
       <name>: { image: <oci-ref>, resources: { cpu, mem } }   # or compose (see CONTAINERS)
     graph: [ <node>, ... ]
@@ -43,6 +44,22 @@ A workflow document has the following top-level shape:
 **input**
 :   Optional. A JSON Schema (see **TEMPLATING AND TYPED OUTPUTS**) for the run
     parameters, referenced as `{{ input.<field> }}`.
+
+**env**
+:   Optional. A list of host environment-variable **names** to forward into this
+    workflow's agent steps — the in-workflow equivalent of the **awf run
+    --agent-env** allowlist, which it extends. Use it so a workflow that needs,
+    say, `OPENAI_API_KEY` for its agent declares that itself instead of relying
+    on a command-line flag. Each named variable's value is read from the host at
+    run time; **only the names** are part of the definition — they fold into the
+    content digest and are pinned on resume, while the **values** resolve from the
+    host on every run and resume and are never written to the log, blobs, or
+    traces. A secret value therefore never appears in the workflow file (list its
+    name, not its value). Names must be valid environment-variable identifiers
+    (`[A-Za-z_][A-Za-z0-9_]*`). `env:` forwards into agent (`uses:`) invocations
+    only; it does not inject into `run:` steps. (Independently of `env:`, a `run:`
+    step inherits the host environment on the native backend but not on docker —
+    so do not rely on `env:` to reach a `run:` step.)
 
 **containers**
 :   Required. The infrastructure the workflow runs against (see **CONTAINERS**).

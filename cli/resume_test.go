@@ -475,6 +475,85 @@ func TestResumeRefusesWhenRunLockHeld(t *testing.T) {
 // default env-var allowlist used by `awf run` when r.Resolver is nil.
 // Uses a hand-crafted in-flight log (run.started + one node.completed,
 // no run.finished) so the resume call actually reaches the backend
+// TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes guards the gap-1 resume
+// path: a workflow declaring a top-level env: must (a) fold those NAMES into the
+// definition digest identically on the run side (here, the hand-crafted log's
+// digest) and the resume side, so resume does NOT trip the digest-mismatch hard
+// error, and (b) still reach the registry build — which slice-5.3 moved to AFTER
+// the load+digest checks so ld.Workflow.Env can extend the allowlist. If env: were
+// folded asymmetrically, or the registry build were misordered, this fails.
+func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
+	stateDir := t.TempDir()
+	runID := "test-resume-workflow-env"
+
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
+	if err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	// Digest is computed from the env:-bearing fixture — the env names fold in.
+	ld, err := loader.Load("testdata/phase2/seq-with-env.yaml")
+	if err != nil {
+		t.Fatalf("Load fixture: %v", err)
+	}
+	if diags := ir.Validate(ld); ir.HasErrors(diags) {
+		t.Fatalf("fixture invalid: %v", diags)
+	}
+	if len(ld.Workflow.Env) == 0 {
+		t.Fatal("fixture lost its env: declaration on load")
+	}
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	if err != nil {
+		t.Fatalf("ComputeDigest: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	log, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	runStartedData, _ := json.Marshal(engine.RunStartedData{
+		RunID: runID, WorkflowDigest: digest, Backend: "fake",
+	})
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
+		t.Fatalf("Append run.started: %v", err)
+	}
+	stdoutRef, err := blobs.Put([]byte("created marker\n"))
+	if err != nil {
+		t.Fatalf("Put stdout: %v", err)
+	}
+	exit0 := 0
+	completedData, _ := json.Marshal(engine.NodeCompletedData{
+		Outcome: string(engine.OutcomeOK), ExitCode: &exit0, StdoutRef: stdoutRef,
+	})
+	if err := log.Append(state.Event{Type: engine.EventNodeCompleted, Path: "touch_marker", Data: completedData}); err != nil {
+		t.Fatalf("Append node.completed: %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	fake := container.NewFake()
+	fake.ProgramExec("echo step2", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`)}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	r := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{"unused"}}}
+	var stdout, stderr bytes.Buffer
+	_ = r.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq-with-env.yaml"}, &stdout, &stderr)
+	// The digest matched (env: folded symmetrically) so resume did NOT refuse;
+	// the reordered registry build then populated the Resolver.
+	if strings.Contains(stderr.String(), "digest mismatch") {
+		t.Fatalf("resume refused on digest mismatch with env: present — env names folded asymmetrically: %s", stderr.String())
+	}
+	if r.Resolver == nil {
+		t.Error("Resolver still nil after resume of an env:-bearing workflow; reordered registry build did not run")
+	}
+}
+
 // resolution + Resolver-population path instead of short-circuiting on
 // a terminal-event refusal.
 func TestCLIResume_PopulatesResolverFromDefaultAllowlist(t *testing.T) {

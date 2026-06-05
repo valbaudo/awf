@@ -9,6 +9,54 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
+func TestMergeWorkflowEnv(t *testing.T) {
+	eq := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+	cases := []struct {
+		name     string
+		base     []string
+		workflow []string
+		want     []string
+	}{
+		{"no workflow env returns base unchanged", []string{"A", "B"}, nil, []string{"A", "B"}},
+		{"workflow extends base, order-stable", []string{"A", "B"}, []string{"C"}, []string{"A", "B", "C"}},
+		{"overlap deduped, first occurrence wins", []string{"A", "B"}, []string{"B", "C"}, []string{"A", "B", "C"}},
+		{"empty base + workflow names forwards the workflow set", nil, []string{"LITELLM_API_KEY"}, []string{"LITELLM_API_KEY"}},
+		{"empty workflow names are skipped", []string{"A"}, []string{""}, []string{"A"}},
+		{"both empty stays nil", nil, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeWorkflowEnv(tc.base, tc.workflow)
+			if !eq(got, tc.want) {
+				t.Errorf("mergeWorkflowEnv(%v, %v) = %v, want %v", tc.base, tc.workflow, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMergeWorkflowEnv_DoesNotAliasBase(t *testing.T) {
+	// The returned slice must be fresh: mutating it must not corrupt the caller's
+	// base allowlist (the empty-workflow path used to return base by reference).
+	base := []string{"A", "B"}
+	got := mergeWorkflowEnv(base, nil)
+	if len(got) > 0 {
+		got[0] = "MUTATED"
+	}
+	if base[0] != "A" {
+		t.Errorf("mergeWorkflowEnv aliased base: mutating the result changed base to %v", base)
+	}
+}
+
 func TestBuildAgentRegistry_EmptyAllowlist_NoAdapter(t *testing.T) {
 	be := container.NewFake()
 	reg, err := buildAgentRegistry(nil, be)

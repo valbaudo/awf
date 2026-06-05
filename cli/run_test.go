@@ -1419,6 +1419,52 @@ func TestCLIRun_AgentEnvFlag_EmptyValue_NoClaudeAdapter(t *testing.T) {
 	}
 }
 
+func TestCLIRun_WorkflowEnv_ExtendsAgentEnvAllowlist(t *testing.T) {
+	// Gap-1: the workflow's top-level env: names extend the --agent-env allowlist.
+	// Proof by isolation: pass --agent-env "" (empty base, so no adapter would be
+	// registered) but declare env: [ANTHROPIC_API_KEY] in the workflow with the var
+	// present in the host. The claude adapter must end up registered — which can only
+	// happen if ld.Workflow.Env flowed through mergeWorkflowEnv into buildAgentRegistry.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
+	tmpDir := t.TempDir()
+	wfPath := filepath.Join(tmpDir, "wf.yaml")
+	content := `workflow: wf-env
+version: 1
+env: [ANTHROPIC_API_KEY]
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: noop
+    container: lab
+    run: "true"
+`
+	if err := os.WriteFile(wfPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	stateDir := filepath.Join(tmpDir, ".awf")
+
+	fake := container.NewFake()
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	var stdout, stderr bytes.Buffer
+	r := &cli.Runner{
+		IDGen:   &clock.Fake{IDs: []string{"wf-env-run"}},
+		Backend: fake,
+		// NOT setting Resolver — the production buildAgentRegistry path runs.
+	}
+	exit := r.Run([]string{"run", "--state-dir", stateDir, "--backend", "fake", "--agent-env", "", wfPath}, &stdout, &stderr)
+	if exit != cli.ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
+	}
+	reg, ok := r.Resolver.(*agent.Registry)
+	if !ok {
+		t.Fatalf("Resolver type = %T, want *agent.Registry", r.Resolver)
+	}
+	if _, found := reg.Lookup(claude.AdapterRef); !found {
+		t.Error("claude adapter absent despite workflow env: [ANTHROPIC_API_KEY] with --agent-env=''; workflow env: did not extend the allowlist")
+	}
+}
+
 func TestRunReleasesRunLockOnExit(t *testing.T) {
 	fake := container.NewFake()
 	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
