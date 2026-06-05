@@ -744,6 +744,25 @@ graph:
         sentiment: { type: string }
 `, fakeImageDigest)
 
+// agentStepContainerlessWorkflow — Part A. One AgentStep with NO container and
+// a typed output_schema, served by a Containerless fake. Proves the engine
+// commits a containerless agent step (and resumes it from the log).
+const agentStepContainerlessWorkflow = `workflow: conformance-agent-containerless
+version: 1
+graph:
+  - id: ask
+    uses: awf/llm
+    with:
+      model: m
+      prompt: "what is 6 times 7"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [answer]
+      properties:
+        answer: { type: string }
+`
+
 // parallelResumeWorkflow — Bucket 4b parallel_resume_consistency:
 // simple 3-branch parallel followed by a sequential after-step. The test
 // programs pb2.sh to fail deterministically on first run, then re-programs

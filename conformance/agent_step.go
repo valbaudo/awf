@@ -30,6 +30,7 @@ func testAgentStep(t *testing.T, factory BackendFactory) {
 	t.Run("typed_output_committed", func(t *testing.T) { testAgentTypedOutputCommitted(t, factory) })
 	t.Run("validate_rejects_unknown_with", func(t *testing.T) { testAgentValidateRejects(t, factory) })
 	t.Run("unresolved_uses_halts_run", func(t *testing.T) { testAgentUnresolvedUsesHalts(t, factory) })
+	t.Run("containerless_commits_and_resumes", func(t *testing.T) { testAgentContainerlessCommits(t, factory) })
 }
 
 func testAgentTypedOutputCommitted(t *testing.T, factory BackendFactory) {
@@ -120,6 +121,57 @@ func testAgentUnresolvedUsesHalts(t *testing.T, factory BackendFactory) {
 	}
 	if notFound.Ref != "anthropic/claude-code" {
 		t.Errorf("Ref = %q, want %q", notFound.Ref, "anthropic/claude-code")
+	}
+}
+
+func testAgentContainerlessCommits(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	var fk *fake.Fake // captured so we can assert the Launch count after resume (N5)
+	register := func(reg *agent.Registry) {
+		fk = fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true}).
+			Script(0, fake.Result{Output: map[string]any{"answer": "42"}})
+		if err := reg.Register(fk); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+	}
+	h := newHarnessWithAgentRegistry(t, factory, agentStepContainerlessWorkflow, register)
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("runWorkflow: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+	events, ferr := h.log.Fold()
+	if ferr != nil {
+		t.Fatalf("Fold: %v", ferr)
+	}
+	rs, ferr := engine.Fold(events, h.blobs)
+	if ferr != nil {
+		t.Fatalf("engine.Fold: %v", ferr)
+	}
+	nr, ok := rs.LookupCompleted("ask")
+	if !ok {
+		t.Fatalf("Completed[ask] missing")
+	}
+	if nr.Outputs["answer"] != "42" {
+		t.Errorf("Outputs[answer] = %v, want %q", nr.Outputs["answer"], "42")
+	}
+	// Resume: committed step replays from the log (no infra rebuilt, no
+	// container declared). Outcome stays ok, no second Launch.
+	oc2, err2 := h.resumeWorkflow(t)
+	if err2 != nil {
+		t.Fatalf("resumeWorkflow: %v", err2)
+	}
+	if oc2 != engine.OutcomeOK {
+		t.Errorf("resume Outcome = %q, want %q", oc2, engine.OutcomeOK)
+	}
+	// Replay, NOT recompute (CLAUDE.md invariant): the committed step is not
+	// re-dispatched on resume, so the fake saw exactly ONE Launch across run+resume.
+	// (Same fake instance persists — newHarnessWithAgentRegistry registers it once and
+	// both runOrResume calls reuse h.agentRegistry.)
+	if n := len(fk.Calls()); n != 1 {
+		t.Errorf("fake Launch count across run+resume = %d, want 1 (replayed, not recomputed)", n)
 	}
 }
 
