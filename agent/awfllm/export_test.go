@@ -27,3 +27,5 @@ func (a *Adapter) StreamForTest(ctx context.Context, cfg ReqConfigForTest, promp
 
 // ReqConfigForTest mirrors reqConfig (unexported) for test construction.
 type ReqConfigForTest = reqConfig
+
+var AssemblePromptForTest = assemblePrompt
