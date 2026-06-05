@@ -33,9 +33,22 @@ const (
 // decided ONCE from w (a terminal not suppressed by NO_COLOR); the returned func
 // writes to the io.Writer the engine hands it (the same tap). The engine stays
 // presentation-agnostic and just calls this per AgentEvent.
+//
+// The closure is stateful: inDelta tracks whether a DisplayAssistantDelta stream
+// is mid-line (unterminated). A non-delta event after a delta run flushes the
+// terminating "\n" before rendering its own line. claude/codex/droid/goose emit
+// DisplayAssistant (full messages) and are unaffected — inDelta stays false for
+// them.
 func newAgentEventRenderer(w io.Writer) func(io.Writer, agent.AgentEvent) {
 	color := wantColor(w)
+	inDelta := false // true while a DisplayAssistantDelta line is mid-stream (unterminated)
 	return func(out io.Writer, ev agent.AgentEvent) {
+		isDelta := ev.Display.Class == agent.DisplayAssistantDelta
+		if inDelta && !isDelta {
+			// A non-delta event after a delta stream: terminate the streamed line.
+			_, _ = io.WriteString(out, "\n")
+		}
+		inDelta = isDelta
 		_, _ = io.WriteString(out, formatEvent(ev, color))
 	}
 }
@@ -90,6 +103,8 @@ func formatEvent(ev agent.AgentEvent, color bool) string {
 		return dim(glyphCall+" "+d.Tool+"("+oneLine(d.Text)+")", color) + "\n"
 	case agent.DisplayToolResult:
 		return formatToolResult(d, color)
+	case agent.DisplayAssistantDelta:
+		return d.Text // raw, NO trailing newline — concatenates char-by-char; closure emits the terminating "\n"
 	case agent.DisplayError:
 		return colorize(glyphFail+" "+oneLine(d.Text), ansiRed, color) + "\n"
 	default: // DisplayOther → terse fallback (bounded; no raw JSON flood)

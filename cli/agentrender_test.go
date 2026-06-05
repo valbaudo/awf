@@ -104,6 +104,23 @@ func TestHumanizeBytes(t *testing.T) {
 	}
 }
 
+func TestRender_AssistantDelta_CharByChar(t *testing.T) {
+	var b strings.Builder
+	r := newAgentEventRenderer(&b) // one renderer, reused across events (state persists)
+	r(&b, ag(agent.DisplayAssistantDelta, "", "Hel", 0, 0, false))
+	r(&b, ag(agent.DisplayAssistantDelta, "", "lo", 0, 0, false))
+	r(&b, ag(agent.DisplayAssistantDelta, "", " world", 0, 0, false))
+	// deltas concatenate with NO interior newlines:
+	if b.String() != "Hello world" {
+		t.Fatalf("after deltas = %q, want %q (concatenated, no newlines)", b.String(), "Hello world")
+	}
+	// a following non-delta event terminates the streamed line first:
+	r(&b, ag(agent.DisplayFinal, "", "12 in / 3 out tokens", 0, 0, false))
+	if b.String() != "Hello world\n12 in / 3 out tokens\n" {
+		t.Fatalf("after final = %q, want streamed line terminated then the final line", b.String())
+	}
+}
+
 func ag(c agent.DisplayClass, tool, text string, lines, bytesN int, isErr bool) agent.AgentEvent {
 	return agent.AgentEvent{Display: agent.EventDisplay{Class: c, Tool: tool, Text: text, Lines: lines, Bytes: bytesN, IsError: isErr}}
 }
