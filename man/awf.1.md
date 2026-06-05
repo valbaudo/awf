@@ -102,7 +102,10 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     The same allowlist applies to every registered adapter, including
     `uses: anthropic/claude-code`, `uses: factory/droid`, `uses: block/goose`,
     `uses: openai/codex`, and `uses: awf/llm`.
-    Names not on the list are not passed through. See **ENVIRONMENT**.
+    Names not on the list are not passed through. A workflow can extend this
+    allowlist from inside its definition with the top-level `env:` field (see
+    **awf-workflow**(5)); names declared there are forwarded in addition to this
+    flag, on both **run** and **resume**. See **ENVIRONMENT**.
 
 ## awf resume _run-id_ _path_
 
@@ -253,11 +256,60 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     authenticate with a subscription `CLAUDE_CODE_OAUTH_TOKEN` the agent step must
     set `bare: false`, otherwise the token is ignored and config validation fails.
 
-**FACTORY_API_KEY**
+**FACTORY_API_KEY** (factory/droid)
 :   API key for the `factory/droid` agent runtime (`fk-…`). **awf** does not read
     this itself; it forwards the value into the droid invocation when the name
     appears in **--agent-env** (included in the default allowlist). Required for
-    `uses: factory/droid`; absent key is a hard error at run start.
+    `uses: factory/droid`; absent key is a hard error at run start — **unless** the
+    step runs in BYOK mode (see `with: base_url` below), in which case the named
+    `api_key_env` var carries auth and **FACTORY_API_KEY** is neither required nor
+    forwarded.
+
+    **Bring-your-own-key (BYOK).** A droid step can target any custom
+    OpenAI-compatible (or Anthropic) endpoint instead of Factory's gateway. Setting
+    `with: base_url` enables BYOK: the adapter writes a one-entry `customModels`
+    settings file into the container and references the model as `custom:<model>`.
+    The literal API key never enters the workflow — it is read from a named host
+    env var at runtime. For example:
+
+        uses: factory/droid
+        with:
+          base_url: https://litellm.internal/v1
+          api_key_env: LITELLM_KEY      # forward via env: or --agent-env
+          provider: generic-chat-completion-api
+          model: claude-sonnet-4
+
+    The relevant `with:` keys:
+
+    **with: base_url** (optional)
+    :   A custom OpenAI-compatible endpoint. When set, droid runs in BYOK mode
+        against it and **FACTORY_API_KEY** is not required. When omitted, the step
+        uses Factory's default gateway and needs **FACTORY_API_KEY**.
+
+    **with: api_key_env** (required when `base_url` is set)
+    :   Name of a host env var holding the API key. Forward it via **--agent-env**
+        or the workflow `env:` field — the named var must be on the forwarded
+        allowlist, or it is a permanent config error. The literal key never appears
+        in the workflow; droid expands a `${NAME}` placeholder from its own process
+        env at runtime.
+
+    **with: provider** (optional, default `generic-chat-completion-api`)
+    :   Selects the wire protocol the endpoint speaks. One of:
+        `generic-chat-completion-api` (OpenAI Chat Completions — e.g.
+        LiteLLM/OpenRouter/Ollama), `openai` (OpenAI Responses API), or `anthropic`
+        (Anthropic Messages API). A mismatched provider fails the call.
+
+    **with: tls_insecure** (optional, boolean)
+    :   When `true`, skip TLS certificate verification for the droid process (sets
+        `NODE_TLS_REJECT_UNAUTHORIZED=0`). Default `false`. Use only for internal or
+        self-signed endpoints — disabling verification exposes the connection to
+        interception. Prefer the secure alternative: trust the gateway's CA via
+        `NODE_EXTRA_CA_CERTS` (or `NODE_USE_SYSTEM_CA=1`), forwarded with the
+        workflow `env:` field on native or baked into the image on docker. (droid is
+        Bun-compiled, so CA-bundle support can be version-dependent.)
+
+    `model` stays a plain identifier in both modes; it must be a non-empty,
+    whitespace-free string.
 
 **GOOSE_PROVIDER**, **GOOSE_MODEL**
 :   Select the provider and model for the `block/goose` agent runtime. **awf**

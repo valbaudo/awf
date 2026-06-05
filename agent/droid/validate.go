@@ -4,15 +4,43 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/ir"
 )
 
+// with-config key names — the single source of truth for droid's `with:` schema,
+// shared by ValidateConfig (this file) and assembleCommand/byokSettingsJSON
+// (launch.go, byok.go) so the validator and the command builder can never
+// disagree about a key string. The BYOK names (base_url/api_key_env/tls_insecure)
+// match agent/awfllm for cross-adapter consistency.
+const (
+	keyPrompt          = "prompt"
+	keyModel           = "model"
+	keyReasoningEffort = "reasoning_effort"
+	keyAutonomy        = "autonomy"
+	keySystemPrompt    = "system_prompt"
+	keyEnabledTools    = "enabled_tools"
+	keyDisabledTools   = "disabled_tools"
+	keyBaseURL         = "base_url"
+	keyAPIKeyEnv       = "api_key_env"
+	keyProvider        = "provider"
+	keyTLSInsecure     = "tls_insecure"
+)
+
 var allowedKeys = map[string]struct{}{
-	"prompt": {}, "model": {}, "reasoning_effort": {}, "autonomy": {},
-	"system_prompt": {}, "enabled_tools": {}, "disabled_tools": {},
+	keyPrompt: {}, keyModel: {}, keyReasoningEffort: {}, keyAutonomy: {},
+	keySystemPrompt: {}, keyEnabledTools: {}, keyDisabledTools: {},
+	// BYOK (custom OpenAI-compatible endpoint). `base_url` set ⇒ BYOK mode;
+	// see the BYOK branch in ValidateConfig.
+	keyBaseURL: {}, keyAPIKeyEnv: {}, keyProvider: {}, keyTLSInsecure: {},
 }
+
+// rejectedKeys never belong in `with:` — `api_key` would inline a secret into
+// the durable definition; name the host env var with `api_key_env` instead.
+var rejectedKeys = []string{"api_key"}
 
 // sessionKeysList — with-keys that would reuse/continue a prior droid session,
 // breaking gate independence. Note `fork` is droid-specific (the claude sibling
@@ -29,13 +57,18 @@ func wrapInvalidConfig(reason string, key string) error {
 	return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: key, Reason: reason}
 }
 
-// ValidateConfig enforces droid's with-schema (same 5-step order as claude:
-// session-reject → unknown-key → required-prompt → per-key types → API-key
-// policy). Deterministic (sorted keys) — runs twice per node.
+// ValidateConfig enforces droid's with-schema (same deterministic order as
+// claude: reject-inline/session → unknown-key → required-prompt → per-key types
+// → BYOK-or-API-key policy). Deterministic (sorted keys) — runs twice per node.
 func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 	for _, key := range sessionKeysList {
 		if _, present := with[key]; present {
 			return &ErrSessionReuseAttempted{Key: key}
+		}
+	}
+	for _, k := range rejectedKeys {
+		if _, present := with[k]; present {
+			return wrapInvalidConfig("not supported (use api_key_env to name a host env var)", k)
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(with)) {
@@ -46,46 +79,46 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			}
 		}
 	}
-	prompt, ok := with["prompt"]
+	prompt, ok := with[keyPrompt]
 	if !ok {
-		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "prompt", Reason: "required"}
+		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyPrompt, Reason: "required"}
 	}
 	ps, ok := prompt.(string)
 	if !ok {
-		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "prompt", Reason: fmt.Sprintf("must be string, got %T", prompt)}
+		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyPrompt, Reason: fmt.Sprintf("must be string, got %T", prompt)}
 	}
 	if ps == "" {
-		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "prompt", Reason: "must not be empty"}
+		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyPrompt, Reason: "must not be empty"}
 	}
-	if v, ok := with["model"]; ok {
+	if v, ok := with[keyModel]; ok {
 		if _, ok := v.(string); !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), "model")
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyModel)
 		}
 	}
-	if v, ok := with["system_prompt"]; ok {
+	if v, ok := with[keySystemPrompt]; ok {
 		if _, ok := v.(string); !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), "system_prompt")
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keySystemPrompt)
 		}
 	}
-	if v, ok := with["reasoning_effort"]; ok {
+	if v, ok := with[keyReasoningEffort]; ok {
 		s, ok := v.(string)
 		if !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), "reasoning_effort")
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyReasoningEffort)
 		}
 		if !slices.Contains(reasoningEffortValues, s) {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", reasoningEffortValues, s), "reasoning_effort")
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", reasoningEffortValues, s), keyReasoningEffort)
 		}
 	}
-	if v, ok := with["autonomy"]; ok {
+	if v, ok := with[keyAutonomy]; ok {
 		s, ok := v.(string)
 		if !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), "autonomy")
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyAutonomy)
 		}
 		if _, ok := autonomyFlags[s]; !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", slices.Sorted(maps.Keys(autonomyFlags)), s), "autonomy")
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", slices.Sorted(maps.Keys(autonomyFlags)), s), keyAutonomy)
 		}
 	}
-	for _, key := range []string{"enabled_tools", "disabled_tools"} {
+	for _, key := range []string{keyEnabledTools, keyDisabledTools} {
 		if v, ok := with[key]; ok {
 			arr, ok := v.([]any)
 			if !ok {
@@ -98,8 +131,48 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			}
 		}
 	}
+	for _, key := range []string{keyBaseURL, keyAPIKeyEnv, keyProvider} {
+		if v, ok := with[key]; ok {
+			if _, ok := v.(string); !ok {
+				return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), key)
+			}
+		}
+	}
+	if v, ok := with[keyTLSInsecure]; ok {
+		if _, ok := v.(bool); !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyTLSInsecure)
+		}
+	}
+	// BYOK mode is triggered by a non-empty base_url (custom OpenAI-compatible
+	// endpoint). Pure BYOK needs no Factory account, so the FACTORY_API_KEY
+	// requirement is dropped here — the named api_key_env var carries auth.
+	if baseURL, _ := with[keyBaseURL].(string); baseURL != "" {
+		return a.validateBYOK(with)
+	}
 	if _, ok := a.env["FACTORY_API_KEY"]; !ok {
 		return &ErrMissingAPIKey{AvailableKeys: slices.Sorted(maps.Keys(a.env))}
+	}
+	return nil
+}
+
+// validateBYOK enforces the extra rules that only apply when base_url is set:
+// model must be a non-empty whitespace-free string (it becomes a `custom:<model>`
+// CLI ref and a gateway model name) and api_key_env must name a host env var
+// present in the forwarded allowlist (a.env). Type checks already ran above.
+func (a *Adapter) validateBYOK(with ir.RawConfig) error {
+	model, ok := with[keyModel].(string)
+	if !ok || model == "" {
+		return wrapInvalidConfig("required (a non-empty model is the custom:<model> reference) when base_url is set", keyModel)
+	}
+	if strings.ContainsFunc(model, unicode.IsSpace) {
+		return wrapInvalidConfig(fmt.Sprintf("must not contain whitespace when base_url is set, got %q", model), keyModel)
+	}
+	keyName, ok := with[keyAPIKeyEnv].(string)
+	if !ok || keyName == "" {
+		return wrapInvalidConfig("required (names the host env var holding the API key) when base_url is set", keyAPIKeyEnv)
+	}
+	if _, present := a.env[keyName]; !present {
+		return wrapInvalidConfig(fmt.Sprintf("env var %q not present in the forwarded allowlist (available: %v)", keyName, slices.Sorted(maps.Keys(a.env))), keyAPIKeyEnv)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package droid_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -308,5 +309,221 @@ func TestLaunch_FeedbackAndSchema_Compose(t *testing.T) {
 func TestShellQuote_EscapesSingleQuotes(t *testing.T) {
 	if got, want := droid.ShellQuoteForTest("it's"), `'it'\''s'`; got != want {
 		t.Errorf("shellQuote = %q, want %q", got, want)
+	}
+}
+
+// --- BYOK (custom OpenAI-compatible endpoint) ---
+
+// byokAdapter builds an adapter whose env forwards a secret VALUE under the
+// named api_key_env var (so the security test can assert the value never
+// reaches the assembled Cmd.Run — only the ${NAME} placeholder does).
+func byokAdapter(t *testing.T, f *container.Fake, apiKeyEnv, secret string) *droid.Adapter {
+	t.Helper()
+	a, err := droid.New(droid.WithBackend(f), droid.WithEnv(map[string]string{apiKeyEnv: secret}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return a
+}
+
+func TestLaunch_BYOK_SettingsFileAndModelRef(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
+	a := byokAdapter(t, f, "LITELLM_API_KEY", "sk-secret-value")
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: droid.AdapterRef,
+		With: ir.RawConfig{
+			"prompt":   "do it",
+			"model":    "claude-sonnet-4-6",
+			"base_url": "https://gw.example/v1",
+			// api_key_env names the host var holding the key.
+			"api_key_env": "LITELLM_API_KEY",
+			"provider":    "anthropic-claude",
+		},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	cmd := f.Calls[0].Run
+	for _, want := range []string{
+		"printf '%s' ",
+		" > /tmp/awf-droid-settings.json &&",
+		`"apiKey":"${LITELLM_API_KEY}"`,
+		`"baseUrl":"https://gw.example/v1"`,
+		`"provider":"anthropic-claude"`,
+		`"model":"claude-sonnet-4-6"`,
+		`"displayName":"claude-sonnet-4-6"`,
+		"--settings /tmp/awf-droid-settings.json",
+		"--model 'custom:claude-sonnet-4-6'",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("BYOK command missing %q\nfull: %s", want, cmd)
+		}
+	}
+	if strings.Contains(cmd, "maxOutputTokens") {
+		t.Errorf("BYOK settings must OMIT maxOutputTokens (droid defaults it): %s", cmd)
+	}
+	// The prelude must be PREPENDED with && (so a printf failure short-circuits
+	// and droid never runs) — the droid command must come AFTER the prelude.
+	if pi, di := strings.Index(cmd, "printf '%s'"), strings.Index(cmd, "droid exec"); pi < 0 || di < 0 || pi > di {
+		t.Errorf("prelude must be prepended before `droid exec`: printf@%d droid@%d\n%s", pi, di, cmd)
+	}
+}
+
+// SECURITY: the resolved secret value must NEVER appear in the command string.
+func TestLaunch_BYOK_SecretNotInCommandString(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
+	const secret = "sk-super-secret-DO-NOT-LEAK"
+	a := byokAdapter(t, f, "LITELLM_API_KEY", secret)
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: droid.AdapterRef,
+		With: ir.RawConfig{
+			"prompt": "x", "model": "m", "base_url": "https://gw.example/v1", "api_key_env": "LITELLM_API_KEY",
+		},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if strings.Contains(f.Calls[0].Run, secret) {
+		t.Fatalf("SECURITY: resolved secret value leaked into Cmd.Run: %s", f.Calls[0].Run)
+	}
+	if !strings.Contains(f.Calls[0].Run, `"apiKey":"${LITELLM_API_KEY}"`) {
+		t.Errorf("expected the literal ${NAME} placeholder in the settings JSON: %s", f.Calls[0].Run)
+	}
+}
+
+func TestLaunch_BYOK_TLSInsecureEnv(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
+	a := byokAdapter(t, f, "LITELLM_API_KEY", "sk-secret")
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: droid.AdapterRef,
+		With: ir.RawConfig{
+			"prompt": "x", "model": "m", "base_url": "https://gw.example/v1",
+			"api_key_env": "LITELLM_API_KEY", "tls_insecure": true,
+		},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	env := f.Calls[0].Env
+	if env["NODE_TLS_REJECT_UNAUTHORIZED"] != "0" {
+		t.Errorf("tls_insecure=true must set NODE_TLS_REJECT_UNAUTHORIZED=0: %v", env)
+	}
+	// The api_key_env-named var is forwarded because Launch copies a.env.
+	if env["LITELLM_API_KEY"] != "sk-secret" {
+		t.Errorf("api_key_env-named var must be forwarded from a.env: %v", env)
+	}
+}
+
+func TestLaunch_BYOK_TLSInsecureAbsentByDefault(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
+	a := byokAdapter(t, f, "LITELLM_API_KEY", "sk-secret")
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: droid.AdapterRef,
+		With: ir.RawConfig{
+			"prompt": "x", "model": "m", "base_url": "https://gw.example/v1", "api_key_env": "LITELLM_API_KEY",
+		},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if _, present := f.Calls[0].Env["NODE_TLS_REJECT_UNAUTHORIZED"]; present {
+		t.Errorf("NODE_TLS_REJECT_UNAUTHORIZED must be absent when tls_insecure is unset: %v", f.Calls[0].Env)
+	}
+}
+
+// Adversarial base_url containing %, $, a single quote, and a space must
+// round-trip intact inside the settings JSON in Cmd.Run (no shell breakage,
+// ${NAME} stays literal).
+func TestLaunch_BYOK_AdversarialBaseURLQuoting(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
+	a := byokAdapter(t, f, "LITELLM_API_KEY", "sk-secret")
+	const nastyURL = `https://gw.example/v1?x=%s&y=$z 'q'`
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: droid.AdapterRef,
+		With: ir.RawConfig{
+			"prompt": "x", "model": "m", "base_url": nastyURL, "api_key_env": "LITELLM_API_KEY",
+		},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	cmd := f.Calls[0].Run
+	// Build the expected fragment via the SAME encoder the implementation uses
+	// (json.Marshal), then shell-quote it the SAME way (shellQuote escapes the
+	// embedded single quote as '\''). This tracks real JSON encoding — incl.
+	// json.Marshal's HTML-safe escaping of & — instead of hand-typing escapes.
+	urlBytes, err := json.Marshal(nastyURL) // -> "https://...&..." (quoted JSON string)
+	if err != nil {
+		t.Fatalf("marshal nastyURL: %v", err)
+	}
+	wantJSON := `"baseUrl":` + string(urlBytes)
+	wantInCmd := strings.ReplaceAll(wantJSON, "'", `'\''`)
+	if !strings.Contains(cmd, wantInCmd) {
+		t.Errorf("adversarial base_url did not round-trip in the settings JSON\nwant fragment (shell-quoted): %q\nfull: %s", wantInCmd, cmd)
+	}
+	if !strings.Contains(cmd, `"apiKey":"${LITELLM_API_KEY}"`) {
+		t.Errorf("${NAME} placeholder must stay literal even with an adversarial base_url: %s", cmd)
+	}
+}
+
+func TestLaunch_BYOK_ProviderDefault(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
+	a := byokAdapter(t, f, "LITELLM_API_KEY", "sk-secret")
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: droid.AdapterRef,
+		With: ir.RawConfig{
+			// provider omitted → default.
+			"prompt": "x", "model": "m", "base_url": "https://gw.example/v1", "api_key_env": "LITELLM_API_KEY",
+		},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if !strings.Contains(f.Calls[0].Run, `"provider":"generic-chat-completion-api"`) {
+		t.Errorf("omitted provider must default to generic-chat-completion-api: %s", f.Calls[0].Run)
+	}
+}
+
+// Non-BYOK (no base_url) must be byte-identical to today: plain --model, no
+// custom: prefix, no --settings, no prelude.
+func TestLaunch_NonBYOK_Unchanged(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(sysLine()), chunk(completionLine("ok"))})
+	a := droidAdapter(t, f)
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: droid.AdapterRef,
+		With: ir.RawConfig{"prompt": "x", "model": "claude-opus-4-8"},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	cmd := f.Calls[0].Run
+	if !strings.Contains(cmd, "--model 'claude-opus-4-8'") {
+		t.Errorf("non-BYOK must emit plain --model 'claude-opus-4-8': %s", cmd)
+	}
+	for _, forbidden := range []string{"custom:", "--settings", "printf '%s'", "awf-droid-settings.json"} {
+		if strings.Contains(cmd, forbidden) {
+			t.Errorf("non-BYOK command must NOT contain %q: %s", forbidden, cmd)
+		}
 	}
 }

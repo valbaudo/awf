@@ -1,21 +1,25 @@
 workflow: droid-byok
 version: 1
 
-# Asks one question of a droid agent that is wired to a BYOK (bring-your-own-key)
-# model — any provider. The workflow is provider-agnostic: nothing here names a
-# provider. The endpoint lives entirely in the image's ~/.factory/settings.json
-# (see runner.Dockerfile); this file only selects the custom model by id and
-# captures a typed answer, proving typed outputs survive over BYOK.
+# Asks one question of a droid agent wired to a BYOK (bring-your-own-key) model.
+# The step declares the endpoint entirely in `with:` (no baked
+# ~/.factory/settings.json): the adapter writes a per-invocation `--settings`
+# file from those keys, so the same image works for every provider and you change
+# only the workflow. Typed outputs survive over BYOK — the downstream `show` step
+# binds the validated `answer` field, not raw text.
 #
 # Run (the image must be built and pushed so its digest can be pinned below):
-#   awf run --agent-env FACTORY_API_KEY,BYOK_API_KEY \
-#     --input '{"question":"Say PONG and nothing else."}' ./byok.yaml
+#   export LITELLM_API_KEY=...   # first; only the NAME enters the workflow
+#   awf run --input '{"question":"Say PONG and nothing else."}' ./byok.yaml
 #
-# FACTORY_API_KEY only needs to be PRESENT — the AWF adapter errors at run start
-# if it is absent — but for pure BYOK its value is unused, so a dummy is fine
-# (e.g. FACTORY_API_KEY=unused). Verified: droid runs BYOK inference without
-# contacting Factory. BYOK_API_KEY is your provider key (settings.json expands
-# ${BYOK_API_KEY} at runtime).
+# The provider key is named, never inlined: `api_key_env: LITELLM_API_KEY` points
+# at a host env var, and the top-level `env:` field forwards that name into the
+# agent step (the in-workflow equivalent of `--agent-env`). The literal key never
+# enters the workflow file; droid expands a ${LITELLM_API_KEY} placeholder from
+# its own process env at runtime. No FACTORY_API_KEY is needed in BYOK mode.
+
+# Forward the host env var that holds the provider API key into the agent step.
+env: [LITELLM_API_KEY]
 
 input:
   type: object
@@ -31,12 +35,18 @@ containers:
     image: oci://registry.example.com/droid-byok-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 graph:
+  # base_url is illustrative — substitute your own OpenAI-compatible (or Anthropic)
+  # endpoint. `model` stays a plain id (the adapter turns it into a custom:<model>
+  # reference internally).
+  # Tip: with several BYOK droid steps, define these keys once as a YAML anchor (x-byok: &byok ...) and merge with '<<: *byok' to avoid repeating them.
   - id: ask
     container: runner
     uses: factory/droid
     with:
-      # custom:<sanitized-displayName>-<index>. displayName "BYOK" at index 0.
-      model: "custom:BYOK-0"
+      base_url: https://litellm.internal/v1   # illustrative — replace with yours
+      api_key_env: LITELLM_API_KEY            # host var name; forwarded via env: above
+      provider: generic-chat-completion-api   # OpenAI Chat Completions wire protocol
+      model: claude-sonnet-4                  # a plain model id served by your gateway
       prompt: "{{ input.question }}"
     output_schema:
       type: object

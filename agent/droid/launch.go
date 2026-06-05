@@ -44,6 +44,12 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 	if inv.IdempotencyKey != "" {
 		env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
 	}
+	// BYOK with tls_insecure: droid is Bun/Node-based, so NODE_TLS_REJECT_UNAUTHORIZED=0
+	// is the only TLS-skip lever. The api_key_env-named var is already forwarded (copied
+	// from a.env above; validation guaranteed its presence).
+	if insecure, _ := inv.With[keyTLSInsecure].(bool); insecure {
+		env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+	}
 
 	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, container.Cmd{Run: cmdString, Env: env})
 	if execErr != nil {
@@ -190,7 +196,7 @@ var autonomyFlags = map[string][]string{
 }
 
 func assembleCommand(inv agent.AgentInvocation) (string, error) {
-	prompt, ok := inv.With["prompt"].(string)
+	prompt, ok := inv.With[keyPrompt].(string)
 	if !ok {
 		return "", fmt.Errorf("agent/droid: assembleCommand: with.prompt missing or non-string")
 	}
@@ -209,29 +215,52 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 		prompt = prompt + schemaDirective + string(schemaBytes)
 	}
 
-	parts := []string{"droid", "exec", "-o", "stream-json"}
-	if model, ok := inv.With["model"].(string); ok && model != "" {
-		parts = append(parts, "--model", shellQuote(model))
+	// BYOK (custom OpenAI-compatible endpoint): base_url set ⇒ write a one-entry
+	// customModels settings file to the container (printf prelude, mirroring codex)
+	// and reference the entry as `custom:<model>`. The prelude is PREPENDED with &&
+	// so a printf failure short-circuits (droid never runs → no terminal event →
+	// retryable, identical to codex). validateBYOK guarantees model+api_key_env are
+	// non-empty strings here.
+	var prelude string
+	byok, _ := inv.With[keyBaseURL].(string)
+	if byok != "" {
+		settingsJSON, serr := byokSettingsJSON(inv)
+		if serr != nil {
+			return "", serr
+		}
+		prelude = "printf '%s' " + shellQuote(settingsJSON) + " > " + droidSettingsPath + " && "
 	}
-	if re, ok := inv.With["reasoning_effort"].(string); ok && re != "" {
+
+	parts := []string{"droid", "exec", "-o", "stream-json"}
+	if byok != "" {
+		parts = append(parts, "--settings", droidSettingsPath)
+	}
+	if model, ok := inv.With[keyModel].(string); ok && model != "" {
+		ref := model
+		if byok != "" {
+			ref = "custom:" + model // the custom: prefix resolves the customModels entry
+		}
+		parts = append(parts, "--model", shellQuote(ref))
+	}
+	if re, ok := inv.With[keyReasoningEffort].(string); ok && re != "" {
 		parts = append(parts, "--reasoning-effort", re) // value validated against a fixed enum
 	}
 	autonomy := "skip" // default: --skip-permissions-unsafe (isolated container)
-	if v, ok := inv.With["autonomy"].(string); ok && v != "" {
+	if v, ok := inv.With[keyAutonomy].(string); ok && v != "" {
 		autonomy = v
 	}
 	parts = append(parts, autonomyFlags[autonomy]...) // read-only → nil → no-op
-	if sp, ok := inv.With["system_prompt"].(string); ok && sp != "" {
+	if sp, ok := inv.With[keySystemPrompt].(string); ok && sp != "" {
 		parts = append(parts, "--append-system-prompt", shellQuote(sp))
 	}
-	if tools := toStringSlice(inv.With["enabled_tools"]); len(tools) > 0 {
+	if tools := toStringSlice(inv.With[keyEnabledTools]); len(tools) > 0 {
 		parts = append(parts, "--enabled-tools", shellQuote(strings.Join(tools, ",")))
 	}
-	if tools := toStringSlice(inv.With["disabled_tools"]); len(tools) > 0 {
+	if tools := toStringSlice(inv.With[keyDisabledTools]); len(tools) > 0 {
 		parts = append(parts, "--disabled-tools", shellQuote(strings.Join(tools, ",")))
 	}
 	parts = append(parts, shellQuote(prompt)) // positional prompt LAST
-	return strings.Join(parts, " "), nil
+	return prelude + strings.Join(parts, " "), nil
 }
 
 func toStringSlice(v any) []string {

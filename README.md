@@ -184,13 +184,13 @@ launch with droid's available-models list in the error — run `droid exec --mod
 your installed droid accepts.
 
 droid's **bring-your-own-key (BYOK)** models work too — any provider (OpenRouter, Fireworks, a
-self-hosted LiteLLM/vLLM gateway, local Ollama, or a native Anthropic/OpenAI endpoint). BYOK is a
-`customModels[]` entry (`baseUrl` + `apiKey` + `provider`) in the image's `~/.factory/settings.json`;
-you select it with `model: custom:<id>`. The adapter is provider-blind — it only passes `--model` and
-forwards env — so this needs **no** adapter config: provision the image, forward your key via
-`--agent-env`, and an unknown custom id is still a clean permanent `Invalid model:` failure. (For pure
-BYOK, `FACTORY_API_KEY` only has to be *present*, not valid.) See
-[`examples/droid-byok/`](examples/droid-byok/) for a runnable, provider-agnostic bundle.
+self-hosted LiteLLM/vLLM gateway, local Ollama, or a native Anthropic/OpenAI endpoint). You declare
+the endpoint in the step's `with:` (`base_url` / `api_key_env` / `provider`, plus a `tls_insecure`
+escape hatch); the adapter writes a per-invocation `--settings` file from those keys, so one image
+serves every provider with **no** baked config. The literal key never enters the workflow —
+`api_key_env` names a host var (forward it via the workflow `env:` field or `--agent-env`). No
+`FACTORY_API_KEY` is needed in BYOK mode. See the `awf(1)` ENVIRONMENT section for the full key
+reference and [`examples/droid-byok/`](examples/droid-byok/) for a runnable, provider-agnostic bundle.
 
 All four launch one fresh invocation per step (so the gate's evaluator stays structurally
 independent — no session reuse), stream their events live, validate `with:` strictly, and bind

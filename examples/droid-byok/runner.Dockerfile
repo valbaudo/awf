@@ -2,20 +2,15 @@
 # an OpenAI-compatible gateway (OpenRouter, Fireworks, Together, a self-hosted
 # LiteLLM/vLLM proxy), a local Ollama, or a native Anthropic/OpenAI endpoint.
 #
-# droid's BYOK is nothing more than a settings.json triple — baseUrl + apiKey +
-# provider. The AWF droid adapter never reads that triple (it only passes
-# `--model` and forwards env), so this one image works for every provider; you
-# change only the build args. There is no per-provider code anywhere.
+# The endpoint is NOT baked into this image. The AWF droid adapter writes a
+# per-invocation `--settings` file from the workflow's `with:` keys
+# (base_url/api_key_env/provider/model), so one image works for every provider
+# and every model — see ./byok.yaml. This Dockerfile only installs droid and sets
+# two image-level opsec preconditions (below).
 #
-# Build (example: an OpenAI-compatible gateway such as OpenRouter):
-#   docker build -f runner.Dockerfile \
-#     --build-arg BYOK_MODEL='meta-llama/llama-3.1-8b-instruct' \
-#     --build-arg BYOK_BASE_URL='https://openrouter.ai/api/v1/' \
-#     --build-arg BYOK_PROVIDER='generic-chat-completion-api' \
-#     -t droid-byok-runner .
-#
-# The API key is NOT baked into the image. It is read at runtime from
-# $BYOK_API_KEY, which AWF forwards with `--agent-env BYOK_API_KEY`.
+# Build:
+#   docker build -f runner.Dockerfile -t registry.example.com/droid-byok-runner .
+#   docker push registry.example.com/droid-byok-runner
 
 # Pin this to a digest (FROM debian:stable-slim@sha256:...) for reproducibility.
 FROM debian:stable-slim
@@ -29,32 +24,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://app.factory.ai/cli | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
-# --- BYOK custom model: the only provider-specific part ----------------------
-ARG BYOK_MODEL
-ARG BYOK_BASE_URL
-ARG BYOK_PROVIDER=generic-chat-completion-api
-ARG BYOK_DISPLAY_NAME=BYOK
-
-# droid loads custom models from ~/.factory/settings.json. The apiKey field uses
-# ${VAR} expansion, so the secret stays out of the image and arrives at runtime.
-# cloudSessionSync:false stops droid mirroring sessions to Factory's web app
-# (the AWF adapter already disables OTEL via container env).
+# --- Opsec preconditions (BYOK keys never persist; sessions can still leak) ----
 #
-# The model id you pass to AWF (`with.model`) is derived from displayName +
-# index: displayName "BYOK" at index 0 => "custom:BYOK-0". droid also accepts the
-# raw `model` field value and `custom:<model-field>`. Run `droid exec --model x`
-# to print the exact ids your settings produce.
-RUN mkdir -p /root/.factory && cat > /root/.factory/settings.json <<EOF
+# The resolved API key is never written to disk: the adapter writes only the
+# literal ${LITELLM_API_KEY} placeholder into the per-invocation settings file,
+# and droid expands it from process env at runtime.
+#
+# Telemetry: the adapter sets OTEL_SDK_DISABLED / OTEL_CUSTOMER_ENABLED in the
+# container env. We also set OTEL_SDK_DISABLED here for defense in depth.
+ENV OTEL_SDK_DISABLED=true
+#
+# cloudSessionSync has NO env knob and is ON by default — droid would mirror
+# session transcripts (gateway URL + tool I/O) to Factory's web app. Disable it
+# at the image level for metadata hygiene. This is the only thing this file must
+# write to ~/.factory/settings.json; the BYOK endpoint config lives in the
+# workflow, not here.
+RUN mkdir -p /root/.factory && cat > /root/.factory/settings.json <<'EOF'
 {
-  "customModels": [
-    {
-      "model": "${BYOK_MODEL}",
-      "displayName": "${BYOK_DISPLAY_NAME}",
-      "baseUrl": "${BYOK_BASE_URL}",
-      "apiKey": "\${BYOK_API_KEY}",
-      "provider": "${BYOK_PROVIDER}"
-    }
-  ],
-  "cloudSessionSync": false
+  "general": { "cloudSessionSync": false }
 }
 EOF
