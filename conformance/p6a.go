@@ -50,7 +50,9 @@ graph:
 // realistic published-image refs + their resolved content digests — modeling
 // "tag in the worklist, digest captured at boot" so the conformance contract is
 // forward-compatible with the docker follow-up's RepoDigests capture.
-func p6aDigest(c byte) string { return "registry.example.com/app@sha256:" + strings.Repeat(string(c), 64) }
+func p6aDigest(c byte) string {
+	return "registry.example.com/app@sha256:" + strings.Repeat(string(c), 64)
+}
 
 const (
 	p6aImgA = "registry.example.com/app:1.2.3"
