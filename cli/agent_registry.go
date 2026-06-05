@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/awfllm"
 	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/agent/codex"
 	"github.com/valbaudo/awf/agent/droid"
@@ -20,8 +21,10 @@ var defaultAgentEnv = func() []string {
 	out = append(out, droid.DefaultEnvAllowlist...)
 	out = append(out, goose.DefaultEnvAllowlist...)
 	out = append(out, codex.DefaultEnvAllowlist...)
-	// Dedup: goose's ANTHROPIC_API_KEY overlaps claude's; keep first occurrence,
-	// preserve order (don't surface a duplicate in the --agent-env default).
+	out = append(out, awfllm.DefaultEnvAllowlist...)
+	// Dedup: goose's ANTHROPIC_API_KEY overlaps claude's; OPENAI_API_KEY overlaps
+	// goose/codex/awfllm — keep first occurrence, preserve order (don't surface a
+	// duplicate in the --agent-env default).
 	seen := make(map[string]struct{}, len(out))
 	deduped := out[:0]
 	for _, k := range out {
@@ -101,6 +104,20 @@ func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agen
 	}
 	if err := reg.Register(cadapter); err != nil {
 		return nil, fmt.Errorf("cli: buildAgentRegistry: register codex adapter: %w", err)
+	}
+
+	// awf/llm is containerless (direct HTTP) — it takes NO backend; it needs an
+	// *http.Client. Production uses the default client: Go's http.DefaultTransport
+	// already honors HTTP(S)_PROXY/NO_PROXY (http.ProxyFromEnvironment), so proxying
+	// works with no knob; TLS-insecure is a per-step `tls_insecure` with-key the
+	// adapter handles internally (clientFor). The adapter's own tests inject a fake
+	// RoundTripper via WithHTTPClient. The shared env carries OPENAI_API_KEY.
+	lladapter, err := awfllm.New(awfllm.WithEnv(env))
+	if err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: construct awf/llm adapter: %w", err)
+	}
+	if err := reg.Register(lladapter); err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: register awf/llm adapter: %w", err)
 	}
 	return &reg, nil
 }

@@ -152,3 +152,26 @@ func TestDefaultAgentEnv_IncludesCodexVars(t *testing.T) {
 		t.Errorf("OPENAI_API_KEY appears %d times, want 1", n)
 	}
 }
+
+func TestBuildAgentRegistry_RegistersAWFLLM(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	reg, err := buildAgentRegistry([]string{"OPENAI_API_KEY"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	if _, ok := reg.Lookup("awf/llm"); !ok {
+		t.Error("awf/llm not registered")
+	}
+}
+
+func TestDefaultAgentEnv_NoDuplicateOpenAIKey(t *testing.T) {
+	seen := 0
+	for _, k := range defaultAgentEnv {
+		if k == "OPENAI_API_KEY" {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Errorf("OPENAI_API_KEY appears %d times in defaultAgentEnv, want 1 (dedup)", seen)
+	}
+}
