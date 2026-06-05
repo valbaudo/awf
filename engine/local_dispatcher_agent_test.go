@@ -12,6 +12,42 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
+// TestRunAgent_EmptyContainer_PassesZeroHandle verifies that an AgentStep with
+// an empty Container field does not trigger a "no handle" error. The dispatcher
+// must pass container.Handle{} to the adapter when the container ref is empty;
+// a Containerless fake adapter ignores the handle and returns typed output.
+func TestRunAgent_EmptyContainer_PassesZeroHandle(t *testing.T) {
+	ctx := context.Background()
+
+	fk := agentfake.New("awf/llm").WithCaps(agent.Caps{Containerless: true}).
+		Script(0, agentfake.Result{Output: map[string]any{"answer": "42"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// No handles — containerless steps must not consult d.Handles at all.
+	d := &engine.LocalDispatcher{
+		Resolver: &reg,
+		Handles:  map[string]container.Handle{},
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.AgentStep{ID: "ask", Uses: "awf/llm", Container: ""},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "awf/llm", With: ir.RawConfig{"model": "m", "prompt": "hi"}},
+	}
+
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+}
+
 // TestDispatcherCapturesSnapshotOnEligibleAgentStep is the agent-step counterpart
 // to TestDispatcherCapturesSnapshotOnEligibleOkStep (in local_dispatcher_test.go):
 // it exercises runAgent's snapshot:workspace capture block. An eligible agent step

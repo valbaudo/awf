@@ -47,14 +47,21 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		return DispatchResult{}, nil, &agent.ErrAdapterNotFound{Ref: intent.ResolvedInputs.Uses}
 	}
 
-	// Resolve container handle (same lookup runCode does).
+	// Resolve container handle (same lookup runCode does). A containerless
+	// agent step (empty ref — permitted for Containerless adapters, gated at
+	// run-start in cli/runtimes.go) gets the zero Handle; the adapter ignores
+	// it (e.g. awf/llm issues a direct HTTP call).
 	bare, svcOverride := SplitContainerRef(as.Container)
-	h, ok := d.Handles[bare]
-	if !ok {
-		return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher.runAgent: no handle for container %q (bare %q) at path %q", as.Container, bare, intent.Path)
-	}
-	if svcOverride != "" {
-		h.Service = svcOverride
+	var h container.Handle
+	if bare != "" {
+		var ok bool
+		h, ok = d.Handles[bare]
+		if !ok {
+			return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher.runAgent: no handle for container %q (bare %q) at path %q", as.Container, bare, intent.Path)
+		}
+		if svcOverride != "" {
+			h.Service = svcOverride
+		}
 	}
 
 	// Apply step timeout to ctx (mirrors runCode).
