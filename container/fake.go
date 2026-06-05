@@ -80,6 +80,12 @@ type Fake struct {
 	// RestoreCalls records every Restore invocation, in order (test assertion
 	// aid — mirrors Calls for Exec).
 	RestoreCalls []RestoreCall
+
+	// P6a — programmable spec.Image → resolved-digest table; Create returns the
+	// looked-up digest on the Handle ("" if unprogrammed). failCreate models an
+	// unavailable runtime image (Create errors).
+	imageDigests map[string]string
+	failCreate   map[string]bool
 }
 
 // fakeHandle is the per-Create internal state: an in-mem fs map.
@@ -92,6 +98,29 @@ type fakeHandle struct {
 // Backend interface deliberately doesn't expose.
 func NewFake() *Fake {
 	return &Fake{handles: map[string]*fakeHandle{}}
+}
+
+// ProgramImageDigest maps a spec.Image value to the resolved content digest the
+// next Create against it returns on Handle.ResolvedImageDigest (P6a test helper;
+// not on the Backend interface). Lazily allocates the table.
+func (f *Fake) ProgramImageDigest(image, digest string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.imageDigests == nil {
+		f.imageDigests = map[string]string{}
+	}
+	f.imageDigests[image] = digest
+}
+
+// FailCreateForImage makes Create error for a spec.Image — models an
+// unavailable runtime image (P6a test helper). Lazily allocates the set.
+func (f *Fake) FailCreateForImage(image string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failCreate == nil {
+		f.failCreate = map[string]bool{}
+	}
+	f.failCreate[image] = true
 }
 
 // WithBlobs wires a CAS store so the fake can serialize a container's in-mem
@@ -110,21 +139,24 @@ func (f *Fake) WithBlobs(b blobStore) *Fake {
 func (f *Fake) Capabilities() Caps {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	// Without an injected CAS store the fake cannot persist a snapshot across
-	// the run→resume fake recreation, so it advertises no snapshot facility.
+	// The fake resolves runtime images via its programmable digest table, so it
+	// advertises RuntimeImage (P6a). Snapshot still depends on an injected CAS.
 	if f.blobs != nil {
-		return Caps{Snapshot: SnapshotFSCoW}
+		return Caps{Snapshot: SnapshotFSCoW, RuntimeImage: true}
 	}
-	return Caps{Snapshot: SnapshotNone}
+	return Caps{Snapshot: SnapshotNone, RuntimeImage: true}
 }
 
 func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failCreate[spec.Image] {
+		return Handle{}, fmt.Errorf("container/fake: Create: image %q programmed unavailable", spec.Image)
+	}
 	f.nextID++
 	id := fmt.Sprintf("fake-%d", f.nextID)
 	f.handles[id] = &fakeHandle{files: map[string][]byte{}}
-	return Handle{Name: spec.Name, ID: id}, nil
+	return Handle{Name: spec.Name, ID: id, ResolvedImageDigest: f.imageDigests[spec.Image]}, nil
 }
 
 // Exec returns the ExecResult programmed for cmd.Run (via ProgramExec). The

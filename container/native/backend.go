@@ -73,7 +73,10 @@ func New(workdirRoot string) (*Backend, error) {
 // Snapshot/Restore. Workflows with snapshot:workspace containers
 // must use --backend docker.
 func (*Backend) Capabilities() container.Caps {
-	return container.Caps{Snapshot: container.SnapshotNone}
+	// RuntimeImage is false: native ignores spec.Image and runs on the host, so
+	// a map's runtime image cannot be honored. The CLI guard rejects such a
+	// workflow on native (P6a) — fail closed.
+	return container.Caps{Snapshot: container.SnapshotNone, RuntimeImage: false}
 }
 
 // Create rejects compose-mode (no service-routing on host), ignores

@@ -145,6 +145,14 @@ type Backend interface {
 // advertising "no snapshot."
 type Caps struct {
 	Snapshot SnapshotMode
+
+	// RuntimeImage reports whether the backend can honor a map's runtime-
+	// resolved per-element image: (P6a) — i.e. actually boot the rendered
+	// image and report its content digest. Zero-value false FAILS CLOSED:
+	// a backend that ignores image: (native) advertises false, and the CLI
+	// guard rejects a runtime-image workflow on it rather than silently
+	// running bodies on the host.
+	RuntimeImage bool
 }
 
 // SnapshotMode is the snapshot capability a backend supports.
@@ -209,6 +217,13 @@ type Handle struct {
 	Name    string
 	ID      string
 	Service string
+
+	// ResolvedImageDigest is the content digest of the image that actually
+	// booted (P6a) — set by Create when the image was runtime-resolved (a map's
+	// per-element image:). Empty for statically-pinned containers and backends
+	// that don't resolve a digest (native). The engine records it on the
+	// element's map.item commit so resume has a durable record of what booted.
+	ResolvedImageDigest string
 }
 
 // Cmd describes a command to Exec. Run is the shell command (from CodeStep.Run

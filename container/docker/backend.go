@@ -146,8 +146,12 @@ func New(cli *client.Client, runID string, blobs state.Blobs, opts ...Option) (*
 
 // Capabilities advertises SnapshotFSCoW per Phase 4 design decision 4. The
 // real Snapshot + Restore implementations live in snapshot.go (slice 4.4).
+// RuntimeImage is false for now: docker cannot yet honor a map's runtime-
+// resolved image: (the first-boot pull + RepoDigests capture is a P6a
+// follow-up), so the CLI guard cleanly rejects a runtime-image workflow on
+// docker rather than crashing at run-start. The follow-up flips this to true.
 func (*Backend) Capabilities() container.Caps {
-	return container.Caps{Snapshot: container.SnapshotFSCoW}
+	return container.Caps{Snapshot: container.SnapshotFSCoW, RuntimeImage: false}
 }
 
 // Create materialises a container from the digest-pinned image in spec.Image,
