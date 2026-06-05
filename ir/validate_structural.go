@@ -84,7 +84,7 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
-			checkContainerRef(v.Container, path, wf, c, true /* required */)
+			checkContainerRef(v.Container, path, wf, c, false /* optional: containerless adapters (awf/llm) need no container; run-start guard enforces it */)
 		case *SignalStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)

@@ -69,8 +69,10 @@ func TestStructuralContainerRefMustResolve(t *testing.T) {
 }
 
 func TestStructuralCodeStepEmptyContainerRejected(t *testing.T) {
-	// I1: empty container ref on CodeStep / AgentStep is AWF1009 (missing). Only
-	// SignalStep is container-less per AWF §4.3.
+	// I1: empty container ref on a CodeStep is AWF1009 (missing). SignalStep is
+	// container-less per AWF §4.3. AgentStep may also omit container when the
+	// resolved adapter is Containerless (e.g. awf/llm) — see
+	// TestStructuralAgentStepAllowsNoContainer; the run-start guard enforces it.
 	ld := makeLD(&Workflow{
 		ID: "empty-ctr", Version: 1,
 		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
@@ -403,6 +405,38 @@ func TestStructuralSignalStepAwaitCharset(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStructuralAgentStepAllowsNoContainer(t *testing.T) {
+	// Part A: an AgentStep may omit `container:` (the runtime may be a
+	// containerless adapter, e.g. awf/llm). No AWF1009 should fire for the
+	// empty ref. (The run-start guard in cli/runtimes.go enforces that the
+	// resolved adapter is actually Containerless — validation is registry-free.)
+	ld := makeLD(&Workflow{
+		ID: "llm-no-ctr", Version: 1,
+		Containers: map[string]Container{},
+		Graph: NodeList{
+			&AgentStep{ID: "ask", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "hi"}},
+		},
+	})
+	for _, d := range Validate(ld) {
+		if d.Code == "AWF1009" {
+			t.Errorf("AgentStep with empty container must not emit AWF1009: %v", d)
+		}
+	}
+}
+
+func TestStructuralAgentStepPresentButUnresolvedContainerStillErrors(t *testing.T) {
+	// A NON-EMPTY container that doesn't resolve is still AWF1009 — only the
+	// empty case is newly permitted.
+	ld := makeLD(&Workflow{
+		ID: "llm-bad-ctr", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&AgentStep{ID: "ask", Uses: "awf/llm", Container: "undeclared", With: RawConfig{"model": "m", "prompt": "hi"}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1009", "ask")
 }
 
 // TestValidateSnapshotField exercises the snapshot-field structural rules:
