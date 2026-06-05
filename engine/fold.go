@@ -228,9 +228,11 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			// ItemValue stays nil — Design Q3: the runtime re-evaluates `over` on
 			// re-entry and fills via UpdateMapItemValue before body re-exec.
 			rs.MapItems[e.Path] = append(rs.MapItems[e.Path], MapItemRecord{
-				N:      d.N,
-				Status: d.Status,
-				// ItemValue: nil (zero-value)
+				N:           d.N,
+				Status:      d.Status,
+				ImageDigest: d.ImageDigest,
+				Reason:      d.Reason,
+				// ItemValue: nil (zero-value) — re-derived from `over` on re-entry.
 			})
 
 		case EventSignalReceived:

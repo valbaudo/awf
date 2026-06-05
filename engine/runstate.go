@@ -84,6 +84,11 @@ type MapItemRecord struct {
 	N         int
 	ItemValue any
 	Status    string
+	// ImageDigest / Reason are folded from the map.item event (P6a) — the
+	// durable record of what this committed element booted and, on failure, why.
+	// Read-back, never re-derived (run state; ItemValue is re-derived from `over`).
+	ImageDigest string
+	Reason      string
 }
 
 // SignalEntry is one element of RunState.Signals[name]. Records a delivered

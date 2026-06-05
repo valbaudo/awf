@@ -74,6 +74,17 @@ const (
 type MapItemData struct {
 	N      int    `json:"n"`
 	Status string `json:"status"`
+	// ImageDigest is the content digest of the runtime-resolved image this
+	// element booted (P6a) — empty for a statically-imaged map. omitempty keeps
+	// pre-P6a logs and static maps byte-identical (additive, like SnapshotRef).
+	ImageDigest string `json:"image_digest,omitempty"`
+	// Reason is a machine-readable cause for a non-trivial item_failed (P6a) —
+	// e.g. "image_unavailable" / "image_render_failed". Empty for item_passed
+	// and for a plain body failure. Lets the log distinguish "couldn't boot this
+	// element" from "this element ran and produced a negative result" (the
+	// Tekton/Temporal infra-vs-result distinction) WITHOUT a new status — the
+	// two-value Status tally and MinSuccess math are untouched.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Gate attempt outcomes — the AttemptOutcome field on GateAttemptData. NOT
