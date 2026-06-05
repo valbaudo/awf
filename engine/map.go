@@ -206,32 +206,38 @@ func dispatchItem(
 ) (string, error) {
 	itemPath := ItemPath(mapPath, itemN) // "map[0].item-3"
 
-	// Provision the per-item container handle.
-	//
-	// C2 (per-item container naming): ContainerSpec.Name is the BARE declared
-	// container name (n.Container, e.g. "workspace"). The Fake's Create gives
-	// each call a unique Handle.ID (`f.nextID` counter; container/fake.go:67),
-	// so per-item isolation is satisfied even with a shared spec.Name. Phase 4
-	// Docker must compute a Docker-safe per-item name (Docker name charset
-	// rejects "/" and "["); the contract there is "Backend yields distinct
-	// Handles for distinct Create calls regardless of spec.Name." Phase 4
-	// implementation can derive `<container>-item-<N>` internally or extend
-	// ContainerSpec with an `Instance` field — Phase 3 does NOT pre-empt that
-	// choice.
-	itemHandle, err := ld.Backend.Create(ctx, ContainerSpecFor(wf, ld.ComposeFiles, n.Container))
+	spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Container)
+
+	// P6a: runtime-resolved per-element image. Render map.image against THIS
+	// item's scope — the pending MapItemRecord (recorded by runMap before this
+	// goroutine fired) lets {{ <as>.field }} resolve — then boot that image. A
+	// per-item image problem (render failure, or an unavailable image) fails
+	// THIS item only (item_failed + a machine-readable reason, counted against
+	// min_success), never the whole map. A STATIC container's Create failure
+	// stays an internal hard error (below) — that is infra for a definition-
+	// pinned image, not a per-item result.
+	if n.Image != "" {
+		rendered, rErr := template.Substitute(string(n.Image), NewScope(runstate, wf, itemPath))
+		if rErr != nil {
+			return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", "image_render_failed")
+		}
+		spec.Image = rendered
+	}
+
+	itemHandle, err := ld.Backend.Create(ctx, spec)
 	if err != nil {
+		if n.Image != "" {
+			return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", "image_unavailable")
+		}
 		return "", fmt.Errorf("create item-%d container: %w", itemN, err)
 	}
+	imageDigest := itemHandle.ResolvedImageDigest
 	defer func() {
-		// Destroy errors at item end are not fatal — the item is terminated;
-		// Destroy is cleanup. Use context.Background() so a parent-ctx cancel
-		// still tears down the container (cleanup-on-cancel semantic).
-		//
-		// L14 NOTE for Phase 4: Phase 4 Docker should wrap with
-		// context.WithTimeout(context.Background(), teardownGrace) — same
-		// pattern as cli/run.go's existing teardown — to prevent indefinite
-		// hang on shutdown. Fake.Destroy is in-memory + instant, so no
-		// timeout needed here.
+		// Destroy errors at item end are not fatal — the item is terminated and
+		// Destroy is cleanup. context.Background() so a parent-ctx cancel still
+		// tears the container down. L14 (Phase 4): the Docker backend should wrap
+		// this with context.WithTimeout(context.Background(), teardownGrace) to
+		// avoid an indefinite hang on shutdown (Fake.Destroy is instant).
 		_ = ld.Backend.Destroy(context.Background(), itemHandle)
 	}()
 
@@ -254,8 +260,16 @@ func dispatchItem(
 		status = ItemFailed
 	}
 
-	// Commit the map.item event.
-	data, mErr := json.Marshal(MapItemData{N: itemN, Status: status})
+	return commitMapItem(log, runstate, mapPath, itemN, status, imageDigest, "")
+}
+
+// commitMapItem appends the map.item commit (with the optional captured runtime
+// image digest and failure reason), fsyncs, mirrors the in-memory status, and
+// returns the item's terminal status. Extracted (P6a) so the normal end and the
+// per-item image-failure paths share one commit point and preserve commit-
+// atomicity (digest+reason are in the payload BEFORE Append+Sync).
+func commitMapItem(log state.Log, runstate *RunState, mapPath string, itemN int, status, imageDigest, reason string) (string, error) {
+	data, mErr := json.Marshal(MapItemData{N: itemN, Status: status, ImageDigest: imageDigest, Reason: reason})
 	if mErr != nil {
 		return "", fmt.Errorf("marshal map.item for item-%d: %w", itemN, mErr)
 	}
@@ -269,12 +283,7 @@ func dispatchItem(
 	if err := log.Sync(); err != nil {
 		return "", fmt.Errorf("sync log after map.item for item-%d: %w", itemN, err)
 	}
-
-	// Update the in-memory MapItemRecord's Status. The pending record was
-	// inserted by runMap before this goroutine fired; replace its Status slot
-	// with the terminal value.
 	updateMapItemStatus(runstate, mapPath, itemN, status)
-
 	return status, nil
 }
 
