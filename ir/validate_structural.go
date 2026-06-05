@@ -20,6 +20,18 @@ const maxExpressionBytes = 64 * 1024
 func validateStructural(ld *LoadedDefinition, c *collector) {
 	wf := ld.Workflow
 
+	// (P6a) Containers named by a map's `image:` receive their image per-element
+	// at runtime; such a container may declare resources alone (no static
+	// image/compose), so it is exempt from the "exactly one of image/compose"
+	// requirement below. NOTE (known limitation): the exemption is NOT path-
+	// aware — if the same resources-only container were also referenced by a
+	// non-map-body step, that step would Create it with an empty image and fail
+	// on docker. Tightening that needs path-aware "is this ref inside the
+	// targeting map's body" validation; tracked as a Follow-up (the naive
+	// "referenced only by map.image" check would wrongly reject the map's OWN
+	// body steps, which legitimately reference this container).
+	mapImageTargets := MapImageTargets(wf)
+
 	// (a) Workflow-level: only version 1 is defined (AWF §2 "Current: 1").
 	if wf.Version != 1 {
 		c.errf("", "AWF1017", fmt.Sprintf("%s (got %d)", catalog["AWF1017"], wf.Version))
@@ -33,7 +45,9 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 		case ctr.Image != "" && ctr.Compose != "":
 			c.errf(ContainerPath(name, ""), "AWF1005", catalog["AWF1005"])
 		case ctr.Image == "" && ctr.Compose == "":
-			c.errf(ContainerPath(name, ""), "AWF1006", catalog["AWF1006"])
+			if !mapImageTargets[name] {
+				c.errf(ContainerPath(name, ""), "AWF1006", catalog["AWF1006"])
+			}
 		}
 		if ctr.Image != "" && !strings.Contains(ctr.Image, "@sha256:") {
 			c.errf(ContainerPath(name, "image"), "AWF1007", catalog["AWF1007"])
@@ -162,6 +176,9 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			}
 			if v.Over != "" {
 				checkFieldSize(string(v.Over), path, c)
+			}
+			if v.Image != "" {
+				checkFieldSize(string(v.Image), path, c)
 			}
 			// Map.Container is a static container name (AWF §5.7) — must resolve, no `{{ }}`.
 			if v.Container != "" {
@@ -342,5 +359,46 @@ func nodeHasOutputSchema(n Node) bool {
 func checkFieldSize(src, path string, c *collector) {
 	if len(src) > maxExpressionBytes {
 		c.errf(path, "AWF1016", fmt.Sprintf("%s (got %d bytes)", catalog["AWF1016"], len(src)))
+	}
+}
+
+// MapImageTargets returns the bare container name of every `map` whose `image:`
+// supplies a runtime per-element image (P6a). Such a container may declare
+// resources alone — its image arrives per-element at dispatch. The runtime's
+// capability guard (cli) also uses this to detect a runtime-image workflow.
+// Recurses through every step-bearing control kind.
+func MapImageTargets(wf *Workflow) map[string]bool {
+	set := map[string]bool{}
+	collectMapImageTargets(wf.Graph, set)
+	return set
+}
+
+func collectMapImageTargets(nodes NodeList, set map[string]bool) {
+	for _, n := range nodes {
+		switch v := n.(type) {
+		case *Map:
+			if v.Image != "" && v.Container != "" {
+				bare := v.Container
+				if i := strings.Index(bare, ":"); i >= 0 {
+					bare = bare[:i]
+				}
+				set[bare] = true
+			}
+			collectMapImageTargets(v.Body, set)
+		case *If:
+			collectMapImageTargets(v.Then, set)
+			collectMapImageTargets(v.Else, set)
+		case *Loop:
+			collectMapImageTargets(v.Body, set)
+		case *Try:
+			collectMapImageTargets(v.Do, set)
+			collectMapImageTargets(v.Catch, set)
+			collectMapImageTargets(v.Finally, set)
+		case *Parallel:
+			collectMapImageTargets(v.Children, set)
+		case *Gate:
+			collectMapImageTargets(v.Generate, set)
+			collectMapImageTargets(v.Evaluate, set)
+		}
 	}
 }

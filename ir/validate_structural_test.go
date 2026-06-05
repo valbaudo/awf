@@ -470,6 +470,61 @@ func TestStructuralAgentStepPresentButUnresolvedContainerStillErrors(t *testing.
 //   - AWF1022: snapshot:workspace on a compose-mode container (image-mode only).
 //   - AWF1023: snapshot:workspace on a container a map fans out (temporary guard —
 //     per-item snapshots land in a later slice).
+func TestStructuralMapImageTargetMayOmitImage(t *testing.T) {
+	// A container declared SOLELY to receive a map's runtime image: (resources-
+	// only, no image/compose) is legal — and the templated map.image is not an
+	// AWF1019 violation. (P6a.)
+	ld := makeLD(&Workflow{
+		ID: "p6a-ok", Version: 1,
+		Input: &JSONSchema{"type": "object", "properties": map[string]any{
+			"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		}},
+		Containers: map[string]Container{
+			"version_lab": {Resources: &Resources{CPU: "1", Mem: "1Gi"}},
+		},
+		Graph: NodeList{
+			&Map{
+				Over: "{{ input.items }}", As: "v", Container: "version_lab",
+				Image: "{{ v.image }}", Concurrency: 2,
+				Body: NodeList{&CodeStep{ID: "probe", Container: "version_lab", Run: "true"}},
+			},
+		},
+	})
+	diags := Validate(ld)
+	assertNoError(t, diags)
+	// The templated map.image must NOT trip AWF1019 ("{{ }}" in a static-name
+	// field) — that ban applies to map.container, not the runtime image. Make
+	// the invariant explicit so a future AWF1019-on-map.image regression fails here.
+	assertNoCode(t, diags, "AWF1019")
+}
+
+func TestStructuralResourcesOnlyContainerStillErrorsWhenNotMapImageTarget(t *testing.T) {
+	// A resources-only container that is NOT a map.image target still trips
+	// AWF1006 — the exemption is scoped to map.image targets only.
+	ld := makeLD(&Workflow{
+		ID: "p6a-bad", Version: 1,
+		Containers: map[string]Container{"c": {Resources: &Resources{CPU: "1"}}},
+		Graph:      NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1006", "containers.c")
+}
+
+func TestMapImageTargetsCollectsTargets(t *testing.T) {
+	wf := &Workflow{
+		Graph: NodeList{
+			&Map{Container: "vl", Image: "{{ v.image }}"},
+			&Map{Container: "static"}, // no Image → not a target
+			&Loop{Body: NodeList{ // recursion: a map nested in a control kind is still collected
+				&Map{Container: "nested", Image: "{{ v.image }}"},
+			}},
+		},
+	}
+	got := MapImageTargets(wf)
+	if !got["vl"] || !got["nested"] || got["static"] {
+		t.Errorf("MapImageTargets = %v, want {vl, nested} true and static absent", got)
+	}
+}
+
 func TestValidateSnapshotField(t *testing.T) {
 	img := "oci://example.com/x@sha256:" + strings.Repeat("0", 64)
 	cases := []struct {

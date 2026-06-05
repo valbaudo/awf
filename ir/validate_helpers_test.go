@@ -58,6 +58,16 @@ func assertNoErrorCode(t *testing.T, diags []Diagnostic, code string) {
 	}
 }
 
+// assertNoError asserts diags contains no Error-severity diagnostics at all.
+func assertNoError(t *testing.T, diags []Diagnostic) {
+	t.Helper()
+	for _, d := range diags {
+		if d.Severity == Error {
+			t.Errorf("unexpected error diagnostic: %+v", d)
+		}
+	}
+}
+
 // assertNoCode asserts diags contains NO diagnostic (of any severity) with the given code.
 // Use when the test must confirm a rule fires for neither errors nor warnings.
 func assertNoCode(t *testing.T, diags []Diagnostic, code string) {
