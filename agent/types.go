@@ -19,6 +19,15 @@ import (
 // distinguishing capabilities (e.g. SupportsThinking, SupportsTools).
 type Caps struct {
 	NativeSchema bool `json:"native_schema"`
+
+	// Containerless reports that this adapter performs its work WITHOUT a
+	// container (e.g. a direct network call). When true, an agent step may
+	// omit `container:` (ir/validate_structural.go allows the empty ref; the
+	// run-start guard in cli/runtimes.go permits it only for these adapters).
+	// Zero value false → every CLI-wrapping adapter keeps requiring a
+	// container, unchanged. The engine does not otherwise branch on Caps
+	// (Phase 5 decision 16).
+	Containerless bool `json:"containerless"`
 }
 
 // SecretEnv is the type used for env-passthrough values that contain secrets
