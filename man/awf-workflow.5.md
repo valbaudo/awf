@@ -89,7 +89,12 @@ A container is backed by either a single digest-pinned image or a Compose projec
 
 **image**
 :   One of `image`/`compose`. A single OCI image, content-addressed by digest. A
-    mutable tag is rejected, because it would break resume.
+    mutable tag is rejected, because it would break resume. The sole exception is
+    a `map`'s per-element `image:` (see CONTROL FLOW, map): it is resolved and
+    digest-captured at each element's first boot and recorded in the journal,
+    so a resumed element is bound to what it booted, not to a re-resolved
+    reference. A container declared solely to receive a `map`'s `image:` may carry
+    `resources:` with no `image:`/`compose:`.
 
 **compose**
 :   One of `image`/`compose`. A Compose file for a multi-service lab. Every
@@ -373,6 +378,7 @@ not `break`: it ends the current iteration/branch, not a whole loop.
         over: <expr>                 # a typed array, size known only at runtime
         as: <name>                   # each element bound as {{ <name>.<...> }} and {{ <name>.index }}
         container: <name>            # per-item container/compose instance (one per element)
+        image: <template>            # optional; the per-element container's image, resolved at runtime
         concurrency: <n>             # max elements in flight at once
         min_success: <ratio|n>       # optional; fan-in succeeds if at least this many do (default: all)
         body: [<node>...]
@@ -384,6 +390,31 @@ container instance (the distinct-container rule applied per element), up to
 instead of cancelling every sibling on the first one. Use `parallel` for a
 static, author-known set of distinct branches; use `map` for a runtime-sized set
 of identical ones.
+
+`image` supplies the per-element container's image from the worklist instead of
+a static `containers:` declaration. Unlike a top-level image it MAY be a template
+(e.g. `{{ <as>.image }}`) that the map learns only from `over` — the one place an
+image is not known before the run. At first boot of each element the runtime
+records the content digest of the image that booted into that element's journal
+entry; on resume, committed elements are replayed from the journal (their bodies
+do not re-execute and their containers are not re-created), so a reference that
+has since moved cannot change a resumed element. An element whose runtime image
+cannot be resolved fails that element only — committed as `item_failed` with a
+`reason` of `image_unavailable`, counted against `min_success` — never the whole
+map. The template source text folds into the definition digest like every other
+field; the resolved digest is run state, not definition. The container named by
+`container:` supplies the per-element handle and any resources; with `image:` it
+may declare resources alone (no static `image:`).
+
+A `map`'s `image:` is rendered from worklist data a previous step produced —
+which may be agent-authored. The rendered reference is therefore not part of the
+trusted, validator-pinned definition: the runtime will boot whatever it resolves
+to. Treat the producing step as the trust boundary. Production hardening —
+requiring the rendered reference to resolve to an `@sha256:` content digest at
+first boot (so a fabricated or mistyped reference fails to resolve rather than
+pulling an arbitrary mutable tag), and an optional allowlist of permitted
+registries — is enforced by the docker backend's first-boot resolve-then-pin (see
+the runtime docs); it is **not** a static-validation guarantee.
 
 A later step reads a `map`'s per-item results in aggregate with a `step.<id>`
 reference to a step inside the body, evaluated from outside the map: it lifts that
@@ -533,6 +564,11 @@ content-addressed artifact, never a live container's process state.
     resolved agent-runtime identity and version are recorded at run start. Resume
     against a changed definition or runtime is a hard error: a changed definition
     shifts step addressing; a changed runtime changes behavior.
+    A `map`'s runtime-resolved element image is recorded not at run start but at
+    each element's first boot (the earliest point it is known) and folded into
+    that element's journal entry; the definition still pins the template *text*,
+    so a changed workflow is still a hard error, while the resolved per-element
+    digest is run state.
 
 **Pause**
 :   Halts dispatch at the next commit boundary, marks the run `paused`
