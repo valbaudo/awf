@@ -165,6 +165,13 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
+	// P6a capability guard (parallels the snapshot guard above): a runtime-
+	// resolved map image: on a backend that ignores image: (native) would run
+	// bodies on the host — fail-fast here rather than silently mis-execute.
+	if err := checkRuntimeImageCapability(ld.Workflow, backend); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
 
 	// Slice 5.3: if Resolver isn't test-injected, build the production
 	// *agent.Registry from --agent-env + the resolved backend. Tests that

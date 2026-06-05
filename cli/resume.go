@@ -267,6 +267,12 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
+	// P6a capability guard (parallels the snapshot guard above): a runtime-image
+	// map on a backend that ignores image: (native) cannot be honored.
+	if err := checkRuntimeImageCapability(ld.Workflow, backend); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
 
 	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
 	skipTeardown := false
