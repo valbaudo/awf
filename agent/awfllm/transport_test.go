@@ -124,3 +124,53 @@ func TestStream_OpenAICompat_NoDoubleCallOn429(t *testing.T) {
 		t.Errorf("transport calls = %d, want 1 (AWF owns retries: WithMaxRetries(0))", calls)
 	}
 }
+
+// Ollama /api/chat streams NDJSON: per-line message.content deltas, terminal done.
+const ollamaNDJSON = `{"message":{"role":"assistant","content":"{\"ans"},"done":false}
+{"message":{"role":"assistant","content":"wer\":4}"},"done":false}
+{"message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":11,"eval_count":7}
+`
+
+func TestStream_OllamaNative_AccumulatesAndFormat(t *testing.T) {
+	var gotURL, gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			Body:       io.NopCloser(strings.NewReader(ollamaNDJSON)),
+		}, nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL: "http://host.docker.internal:11434", APIKey: "ollama", Model: "llama3",
+		StructuredOutput: "ollama_format",
+	}
+	var deltas []string
+	full, usage, _, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "integer"}}},
+		func(d string, _ []byte) { deltas = append(deltas, d) })
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if full != `{"answer":4}` {
+		t.Errorf("full = %q", full)
+	}
+	if len(deltas) != 2 {
+		t.Errorf("emitted %d deltas, want 2", len(deltas))
+	}
+	if usage.Input != 11 || usage.Output != 7 {
+		t.Errorf("usage = %+v, want In:11 Out:7", usage)
+	}
+	if !strings.HasSuffix(gotURL, "/api/chat") {
+		t.Errorf("URL = %q, want .../api/chat (no /v1)", gotURL)
+	}
+	if !strings.Contains(gotBody, `"format"`) || !strings.Contains(gotBody, `"stream":true`) {
+		t.Errorf("body missing format/stream: %s", gotBody)
+	}
+	// The schema rides the `format` field (Ollama-native constraint). Prompt
+	// restatement is centralized in assemblePrompt (N2) and verified by
+	// TestAssemblePrompt_* — NOT here: StreamForTest receives the prompt verbatim,
+	// so this transport-level test must not assert prompt content.
+}

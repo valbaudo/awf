@@ -1,9 +1,13 @@
 package awfllm
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -162,8 +166,114 @@ func classifyOpenAIErr(err error) error {
 	return err
 }
 
-// streamOllama is a TEMPORARY stub — replaced by the native /api/chat path in
-// Task B6.
-func (a *Adapter) streamOllama(_ context.Context, _ reqConfig, _ string, _ *ir.JSONSchema, _ func(string, []byte)) (string, usageRec, string, error) {
-	return "", usageRec{}, "", errors.New("agent/awfllm: ollama_format not yet implemented")
+// streamOllama hits Ollama's NATIVE /api/chat (NOT the OpenAI-compat /v1 path,
+// which ignores json_schema). The schema rides the `format` field. Streams
+// NDJSON: one object per line, terminal {done:true}.
+//
+// Token cap → options.num_predict (Ollama's field; NOT max_tokens).
+// Temperature → options.temperature. The options map is only attached when
+// at least one option is set.
+//
+// Do NOT prepend the schema to the prompt here — schema restatement is
+// centralized in assemblePrompt (Task B7) for ALL modes. Send prompt as-is.
+func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, emit func(delta string, raw []byte)) (string, usageRec, string, error) {
+	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/api/chat"
+
+	type msg struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	messages := []msg{}
+	if cfg.SystemPrompt != "" {
+		messages = append(messages, msg{Role: "system", Content: cfg.SystemPrompt})
+	}
+	messages = append(messages, msg{Role: "user", Content: prompt})
+
+	body := map[string]any{"model": cfg.Model, "messages": messages, "stream": true}
+	if schema != nil {
+		body["format"] = map[string]any(*schema)
+	}
+	opts := map[string]any{}
+	if cfg.HasTemperature {
+		opts["temperature"] = cfg.Temperature
+	}
+	if cfg.HasMaxTokens {
+		opts["num_predict"] = cfg.MaxTokens // Ollama's token-cap field (NOT max_tokens / max_completion_tokens)
+	}
+	if len(opts) > 0 {
+		body["options"] = opts
+	}
+	reqBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
+	if err != nil {
+		return "", usageRec{}, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cfg.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	}
+	if cfg.IdempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", cfg.IdempotencyKey)
+	}
+
+	resp, err := a.clientFor(cfg.TLSInsecure).Do(req)
+	if err != nil {
+		return "", usageRec{}, "", err // transport → retryable
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		tail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", usageRec{}, "", &apiError{Status: resp.StatusCode, Type: ollamaErrType(tail), Body: string(tail)}
+	}
+
+	var full strings.Builder
+	var usage usageRec
+	var finish string
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(strings.TrimSpace(string(line))) == 0 {
+			continue
+		}
+		var ev struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Done            bool   `json:"done"`
+			DoneReason      string `json:"done_reason"`
+			PromptEvalCount int    `json:"prompt_eval_count"`
+			EvalCount       int    `json:"eval_count"`
+		}
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue // tolerate a stray non-JSON line
+		}
+		if ev.Message.Content != "" {
+			full.WriteString(ev.Message.Content)
+			emit(ev.Message.Content, append([]byte(nil), line...))
+		}
+		if ev.Done {
+			usage.Input = ev.PromptEvalCount
+			usage.Output = ev.EvalCount
+			finish = ev.DoneReason
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return full.String(), usage, finish, err // mid-stream drop → retryable
+	}
+	return full.String(), usage, finish, nil
+}
+
+// ollamaErrType extracts an error type hint from an Ollama error body
+// (best-effort). Returns "invalid_request_error" only if the body's `error`
+// field contains "invalid"; else "ollama_error".
+func ollamaErrType(body []byte) string {
+	var probe struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &probe) == nil && strings.Contains(probe.Error, "invalid") {
+		return "invalid_request_error"
+	}
+	return "ollama_error"
 }
