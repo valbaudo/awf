@@ -36,6 +36,15 @@
 //     REPLAYED, not re-executed (map_resume_skips_committed_items); skip
 //     inside an item commits item_passed (map_skip_in_item_records_passed —
 //     pins design §E step 5).
+//   - P6a runtime-image map (Bucket 18): a map whose per-element image: is
+//     runtime-resolved captures each element's content digest into its map.item
+//     commit at first boot (captures_digest_on_first_boot); committed elements
+//     replay from the journal on resume against a BARE fake and the captured
+//     digest survives the re-fold into run-state
+//     (resume_replays_committed_items_with_digest); an unavailable runtime image
+//     fails that element only — item_failed + reason image_unavailable, tolerated
+//     by min_success — not the whole map (unavailable_image_is_item_failed_with_reason).
+//     Pins the P6a scoped pin-before-run exception in awf-workflow(5).
 //   - Signal (Bucket 8): a signal written before the run starts is
 //     consumed at the await on first poll (signal_await_delivers); a
 //     committed signal.received + node.completed pair replays cleanly
@@ -97,6 +106,7 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("layer2_contract", func(t *testing.T) { testLayer2Contract(t, factory) })
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
+	t.Run("p6a", func(t *testing.T) { testP6a(t, factory) })
 	t.Run("aggregation", func(t *testing.T) { testAggregation(t, factory) })
 	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })
 	t.Run("obs", func(t *testing.T) { testObs(t, factory) })
