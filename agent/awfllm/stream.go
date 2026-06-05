@@ -68,8 +68,6 @@ func buildResult(full string, usage usageRec, inv agent.AgentInvocation) (agent.
 }
 
 // tokenSummary is the DisplayFinal text (used by launch.go — B7).
-//
-//nolint:unused
 func tokenSummary(u usageRec) string {
 	return fmt.Sprintf("%d in / %d out tokens", u.Input, u.Output)
 }
@@ -102,7 +100,7 @@ func extractJSONObject(s string) (map[string]any, error) {
 	if found {
 		return last, nil
 	}
-	return nil, fmt.Errorf("agent/goose: no JSON object found in result")
+	return nil, fmt.Errorf("agent/awfllm: no JSON object found in result")
 }
 
 // stripJSONFence removes a single leading ```json / ``` fence line and a

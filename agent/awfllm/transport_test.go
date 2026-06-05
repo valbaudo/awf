@@ -125,6 +125,51 @@ func TestStream_OpenAICompat_NoDoubleCallOn429(t *testing.T) {
 	}
 }
 
+// TestStream_OpenAICompat_TempAndCap verifies that when HasTemperature and HasMaxTokens
+// are set, the wire body contains "temperature" and "max_completion_tokens" (and
+// "strict":true for response_format), and does NOT contain the deprecated bare
+// "max_tokens" key. This guards the reasoning-model safety invariant: callers must
+// never send max_tokens to a completion endpoint.
+func TestStream_OpenAICompat_TempAndCap(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(openAISSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL:          "https://api.example.com/v1",
+		APIKey:           "sk-test",
+		Model:            "gpt-x",
+		StructuredOutput: "response_format",
+		HasTemperature:   true,
+		Temperature:      0.2,
+		HasMaxTokens:     true,
+		MaxTokens:        256,
+	}
+	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hello", &ir.JSONSchema{"type": "object"}, func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if !strings.Contains(gotBody, `"temperature"`) {
+		t.Errorf("body missing temperature: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"max_completion_tokens"`) {
+		t.Errorf("body missing max_completion_tokens: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"strict":true`) {
+		t.Errorf("body missing strict:true: %s", gotBody)
+	}
+	// The deprecated "max_tokens" key must not appear. Note: "max_completion_tokens"
+	// contains the substring max_tokens, so we check the quoted key form to avoid
+	// false positives.
+	if strings.Contains(gotBody, `"max_tokens"`) {
+		t.Errorf(`body must not contain deprecated "max_tokens" key (reasoning models reject it), got: %s`, gotBody)
+	}
+}
+
 // Ollama /api/chat streams NDJSON: per-line message.content deltas, terminal done.
 const ollamaNDJSON = `{"message":{"role":"assistant","content":"{\"ans"},"done":false}
 {"message":{"role":"assistant","content":"wer\":4}"},"done":false}

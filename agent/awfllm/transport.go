@@ -125,6 +125,7 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 	}
 
 	streamResp := client.Chat.Completions.NewStreaming(ctx, params, opts...)
+	defer func() { _ = streamResp.Close() }()
 
 	var full strings.Builder
 	var usage usageRec
