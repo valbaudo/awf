@@ -311,6 +311,36 @@ func TestCheckRuntimesDrift_RuntimeAdded(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimes_ContainerlessAdapter_NoHandleNeeded(t *testing.T) {
+	fk := fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true}).WithVersion("awf-llm/1")
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	refs := []agentRef{{Uses: "awf/llm", Container: ""}}
+	got, err := resolveRuntimes(context.Background(), refs, &reg, map[string]container.Handle{}) // no handles
+	if err != nil {
+		t.Fatalf("resolveRuntimes: %v", err)
+	}
+	if len(got) != 1 || got[0].Ref != "awf/llm" || got[0].Version != "awf-llm/1" || got[0].Container != "" {
+		t.Fatalf("got %+v, want one {awf/llm, awf-llm/1, \"\"}", got)
+	}
+}
+
+func TestResolveRuntimes_NonContainerlessAdapter_NoContainer_Errors(t *testing.T) {
+	fk := fake.New("anthropic/claude-code") // default Caps: Containerless false
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	refs := []agentRef{{Uses: "anthropic/claude-code", Container: ""}}
+	_, err := resolveRuntimes(context.Background(), refs, &reg, map[string]container.Handle{})
+	var want *ErrContainerRequired
+	if !errors.As(err, &want) || want.Ref != "anthropic/claude-code" {
+		t.Fatalf("err = %v, want *ErrContainerRequired{Ref:anthropic/claude-code}", err)
+	}
+}
+
 func TestCheckRuntimesDrift_RuntimeRemoved(t *testing.T) {
 	recorded := []engine.ResolvedRuntime{
 		{Ref: "x", Version: "v1", Container: "lab"},

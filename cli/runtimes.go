@@ -162,6 +162,20 @@ func resolveRuntimes(ctx context.Context, refs []agentRef, resolver agent.Resolv
 		if !ok {
 			return nil, &agent.ErrAdapterNotFound{Ref: ref.Uses}
 		}
+		// Containerless agent step (empty ref): permitted only when the adapter
+		// declares Caps.Containerless; resolve Version with the zero Handle (no
+		// binary to probe — e.g. awf/llm returns a static version).
+		if ref.Container == "" {
+			if !adapter.Capabilities().Containerless {
+				return nil, &ErrContainerRequired{Ref: ref.Uses}
+			}
+			ver, err := adapter.Version(ctx, container.Handle{})
+			if err != nil {
+				return nil, fmt.Errorf("cli: adapter %q version resolution (containerless): %w", ref.Uses, err)
+			}
+			out = append(out, engine.ResolvedRuntime{Ref: ref.Uses, Version: ver, Container: ""})
+			continue
+		}
 		handle, ok := handles[ref.Container]
 		if !ok {
 			return nil, fmt.Errorf("cli: no handle for container %q (resolveRuntimes wiring bug — Create the container before calling)", ref.Container)
