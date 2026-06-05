@@ -80,17 +80,16 @@ func walkAgentRefs(wf *ir.Workflow) []agentRef {
 // to seen.
 //
 // MAP NODES — AgentSteps inside `map.body` are intentionally SKIPPED at
-// run-start version pinning. Rationale (Phase 5 slice 5.1 design decision):
-// Map's per-item containers are created at dispatch time (spec §5.7 — "each
-// element runs body in its own container instance"). They don't exist at
-// run-start; we have no handle to pass to Adapter.Version(). The deeper
-// reason this is SAFE rather than a coverage gap: every per-item container
-// is reconstructed from the IR-declared container's `image:` digest, which
-// Phase 1.4's validator ALREADY pins (spec §3 — every image must be content-
-// addressed). The `claude` binary baked into a digest-pinned image cannot
-// drift across resumes — the image digest IS the version pin. So
-// Adapter.Version() would add no protection beyond what the digest pin
-// already provides; skipping is correct, not lazy.
+// run-start version pinning. Map's per-item containers are created at dispatch
+// time (spec §5.7), so there is no handle to pass to Adapter.Version() at run
+// start. For a statically-imaged map the per-item container is reconstructed
+// from the IR-declared `image:` digest (validator-pinned), so the baked binary
+// cannot drift. For a P6a runtime-resolved `map` image: that static-pin premise
+// does NOT hold — the image is learned per element at dispatch and digest-
+// captured at first boot, not validator-pinned. This is still SAFE for the
+// current consumers because a runtime-image map body runs code steps (item4),
+// not agent steps; if a runtime-image map body ever runs an `agent` step,
+// per-item agent-version capture must be revisited (tracked as a P6a follow-up).
 //
 // UNKNOWN NODE — PANIC, but the default arm is UNREACHABLE from outside
 // the ir package. ir.Node is `interface{ isNode() }` (see ir/node.go:17) —
@@ -128,9 +127,10 @@ func walkAgentRefsNodes(nodes ir.NodeList, seen map[agentRef]bool) {
 			walkAgentRefsNodes(v.Generate, seen)
 			walkAgentRefsNodes(v.Evaluate, seen)
 		case *ir.Map:
-			// Map body intentionally NOT traversed — per-item containers are
-			// dispatch-time, version-pinned via image digest (Phase 1.4).
-			// See doc-comment above for the safety argument.
+			// Map body intentionally NOT traversed for run-start agent-version
+			// pinning — per-item containers are dispatch-time (static maps:
+			// image-digest-pinned; P6a runtime-image maps: digest-captured at
+			// first boot). See the doc-comment above for the safety argument.
 		default:
 			// Unreachable from outside ir/ (ir.Node is closed sum type with
 			// unexported isNode() marker). Defensive documentation only.
