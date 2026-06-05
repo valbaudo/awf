@@ -328,3 +328,85 @@ func TestAssembleCommand_EscapesAdversarialInput(t *testing.T) {
 		t.Errorf("command must end with the </dev/null redirect:\n%s", cmd)
 	}
 }
+
+// A bare terminal `error` event (codex's "unrecoverable error emitted directly by
+// the event stream") with NO turn.failed/turn.completed classifies via
+// isPermanentCodexError, exactly like a turn.failed.
+
+func TestLaunch_BareTerminalError_Permanent(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{chunk(nl(errorEvent(apiErr400)))})
+	a := codexLaunchAdapter(t, f)
+	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: codex.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
+	var bad *agent.ErrInvalidConfig
+	if !errors.As(outcome.Err, &bad) {
+		t.Fatalf("bare terminal error (400) = %v, want *agent.ErrInvalidConfig (permanent)", outcome.Err)
+	}
+}
+
+func TestLaunch_BareTerminalError_Retryable(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	// 429 body embeds "invalid_request_error" as a decoy → must stay retryable.
+	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{chunk(nl(errorEvent(apiErr429)))})
+	a := codexLaunchAdapter(t, f)
+	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: codex.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
+	var launch *agent.ErrAgentLaunch
+	if !errors.As(outcome.Err, &launch) {
+		t.Fatalf("bare terminal error (429) = %v, want *agent.ErrAgentLaunch (retryable)", outcome.Err)
+	}
+}
+
+func TestLaunch_SchemaUnparseable_ThroughLaunch(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	// turn.completed + a non-JSON agent_message UNDER a schema → strict unmarshal
+	// fails end-to-end through Launch → ErrUnparseableOutput (retryable → gate repair).
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{
+		chunk(nl(itemMsg("not json at all"))),
+		chunk(nl(turnCompleted(0, 0, 0))),
+	})
+	a := codexLaunchAdapter(t, f)
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: codex.AdapterRef,
+		With:         ir.RawConfig{"prompt": "x"},
+		OutputSchema: &ir.JSONSchema{"type": "object"},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	var unp *agent.ErrUnparseableOutput
+	if !errors.As(outcome.Err, &unp) {
+		t.Fatalf("non-JSON agent_message under schema = %v, want *agent.ErrUnparseableOutput", outcome.Err)
+	}
+}
+
+func TestLaunch_TurnFailedEmptyMessage_FallsBackToErrorEvent(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	// codex's wire pattern is error→turn.failed; when turn.failed carries an EMPTY
+	// message, classification must fall back to the preceding `error` event text.
+	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{
+		chunk(nl(errorEvent(apiErr400))),
+		chunk(nl(turnFailed(""))),
+	})
+	a := codexLaunchAdapter(t, f)
+	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: codex.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
+	var bad *agent.ErrInvalidConfig
+	if !errors.As(outcome.Err, &bad) {
+		t.Fatalf("turn.failed(empty)+error(400) = %v, want *agent.ErrInvalidConfig (fallback to error event)", outcome.Err)
+	}
+}
+
+func TestLaunch_TurnFailedNoMessage_UnexpectedExit(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	// turn.failed with no message AND no preceding error event → ErrUnexpectedExit
+	// (carries the exit code) rather than a content-free "codex turn failed:".
+	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{chunk(nl(turnFailed("")))})
+	a := codexLaunchAdapter(t, f)
+	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: codex.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
+	var unexp *codex.ErrUnexpectedExit
+	if !errors.As(outcome.Err, &unexp) {
+		t.Fatalf("turn.failed(empty, no error event) = %v, want *codex.ErrUnexpectedExit", outcome.Err)
+	}
+}

@@ -193,11 +193,22 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			if msg == "" {
 				msg = lastErrorMsg
 			}
-			if isPermanentCodexError(msg) {
+			switch {
+			case msg == "":
+				// turn.failed with no message AND no preceding error event: surface the
+				// exit code + any stdout/stderr diagnostic instead of a content-free
+				// "codex turn failed:". Retryable (no permanent signal present).
+				outcomeCh <- agent.AgentOutcome{Err: &ErrUnexpectedExit{ExitCode: execResult.ExitCode, Output: diagLine}}
+			case isPermanentCodexError(msg):
 				// HTTP 400 + invalid_request_error (bad model / schema codex rejects): permanent.
 				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrInvalidConfig{Ref: AdapterRef, Reason: firstNonEmptyLine([]byte(msg))}}
-			} else {
-				// auth, rate-limit, 5xx, provider/transport fault: retryable.
+			default:
+				// auth, rate-limit, 5xx, provider/transport fault: retryable. (A
+				// codex-LOCAL config-load rejection — e.g. a bad provisioned config.toml —
+				// also lands retryable here or in the default branch, not permanent: the
+				// adapter enum-validates the knobs it sets, and a bad output_schema
+				// surfaces as an API 400 above; the residual edge is bounded by the gate
+				// attempt budget.)
 				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: fmt.Errorf("agent/codex: codex turn failed: %s", msg)}}
 			}
 
