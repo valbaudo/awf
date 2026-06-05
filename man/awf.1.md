@@ -23,7 +23,7 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **ls** [**--state-dir** _dir_] [**--output** _text_|_json_]
 
-**awf** **inspect** _run-id_ [**--state-dir** _dir_] [**--fold** _statuses_] [**--depth** _n_] [**--output** _text_|_json_]
+**awf** **inspect** _run-id_ [**--state-dir** _dir_] [**--fold** _statuses_] [**--depth** _n_] [**--output** _text_|_json_] [**--tokens**]
 
 **awf** **trace** _run-id_ [**--state-dir** _dir_] [**--otlp** _endpoint_] [**--capture-content**] [**--output** _otel_|_json_]
 
@@ -194,6 +194,10 @@ failing branch stands out. This reads the journal offline and executes nothing.
 **--output** _text_|_json_
 :   _text_ (default) is the folded tree; _json_ emits the underlying span
     projection.
+
+**--tokens**
+:   Annotate each step with its input/output token counts, wherever the journal
+    recorded them.
 
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).
