@@ -173,7 +173,7 @@ carries an opaque `with:` map whose schema the runtime owns and validates, so th
 format never hard-codes one harness's options.
 
     - id: <id>
-      container: <name>
+      container: <name>             # optional; required unless the runtime is containerless
       uses: <agent-runtime-ref>      # e.g. anthropic/claude-code, factory/droid, or block/goose
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
@@ -185,6 +185,14 @@ format never hard-codes one harness's options.
 **uses**
 :   Required. The runtime ref. Resolution is runtime-defined; the identity *and
     version* are pinned at run start.
+
+**container**
+:   Optional for agent steps. A runtime whose adapter is *containerless* — it
+    performs its work without a container, for example via a direct network call
+    — may omit `container:`; the runtime is then resolved and pinned with no
+    container. A `container:` that is present must still resolve to a declared
+    container. Code (`run:`) steps and non-containerless agent runtimes still
+    require a container.
 
 **with**
 :   Required. Opaque runtime config (one runtime takes `{model, prompt, tools,
