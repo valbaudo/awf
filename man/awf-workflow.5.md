@@ -399,9 +399,10 @@ records the content digest of the image that booted into that element's journal
 entry; on resume, committed elements are replayed from the journal (their bodies
 do not re-execute and their containers are not re-created), so a reference that
 has since moved cannot change a resumed element. An element whose runtime image
-cannot be resolved fails that element only — committed as `item_failed` with a
-`reason` of `image_unavailable`, counted against `min_success` — never the whole
-map. The template source text folds into the definition digest like every other
+cannot be booted fails that element only — committed as `item_failed`, counted
+against `min_success`, never the whole map — with a `reason` recording the cause:
+`image_render_failed` if the `image:` template itself failed to render, or
+`image_unavailable` if the rendered reference could not be booted. The template source text folds into the definition digest like every other
 field; the resolved digest is run state, not definition. The container named by
 `container:` supplies the per-element handle and any resources; with `image:` it
 may declare resources alone (no static `image:`).
