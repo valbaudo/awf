@@ -22,9 +22,8 @@ func wrapInvalidConfig(reason, key string) error {
 
 // ErrMissingAPIKey — the env var named by `api_key_env` (default OPENAI_API_KEY)
 // is not present in the forwarded allowlist. Permanent: a missing credential
-// won't appear on retry. (errors.As-mapped to permanent via *agent.ErrInvalidConfig
-// is NOT used here — the engine classifies unknown adapter errors as retryable, so
-// this type wraps to permanent explicitly; see Is below.)
+// won't appear on retry. The dispatch path classifies ValidateConfig errors as
+// permanent_failure via *agent.ErrInvalidConfig (engine/local_dispatcher_agent.go).
 type ErrMissingAPIKey struct {
 	RequiredKey   string
 	AvailableKeys []string

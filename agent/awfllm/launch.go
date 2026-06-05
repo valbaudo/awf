@@ -50,6 +50,15 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 
 		full, usage, finish, serr := a.stream(ctx, cfg, prompt, inv.OutputSchema, emit)
 		if serr != nil {
+			// spec §B.7 step 4: emit a terminal DisplayError event before the
+			// outcome so the live renderer can terminate the in-progress delta
+			// line and display the error prominently. The ctx-aware send mirrors
+			// the emit helper above — if the context is already done we skip the
+			// event but still send the outcome below.
+			select {
+			case events <- agent.AgentEvent{Kind: "error", Stream: "stderr", Display: agent.EventDisplay{Class: agent.DisplayError, IsError: true, Text: serr.Error()}}:
+			case <-ctx.Done():
+			}
 			outcomeCh <- agent.AgentOutcome{Err: classifyLaunchErr(serr)}
 			return
 		}

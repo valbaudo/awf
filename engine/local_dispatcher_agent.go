@@ -52,6 +52,20 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// run-start in cli/runtimes.go) gets the zero Handle; the adapter ignores
 	// it (e.g. awf/llm issues a direct HTTP call).
 	bare, svcOverride := SplitContainerRef(as.Container)
+
+	// Defense-in-depth: the run-start walk in cli/runtimes.go intentionally
+	// skips map.body steps, so a non-containerless adapter inside a map body
+	// with an empty container: slips past that guard. Catch it here — the
+	// single chokepoint every agent dispatch passes through — before the zero
+	// Handle reaches Backend.Exec, where the failure would be misclassified as
+	// retryable and burn the retry budget.
+	if bare == "" && !adapter.Capabilities().Containerless {
+		return DispatchResult{
+			Outcome: OutcomePermanentFailure,
+			Err:     &agent.ErrInvalidConfig{Ref: intent.ResolvedInputs.Uses, Reason: "agent runtime requires a container, but the step declares none"},
+		}, closedChunks(), nil
+	}
+
 	var h container.Handle
 	if bare != "" {
 		var ok bool

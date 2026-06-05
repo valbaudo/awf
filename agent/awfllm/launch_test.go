@@ -167,10 +167,23 @@ func TestLaunch_400Permanent(t *testing.T) {
 			Body: io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"bad model"}}`))}, nil
 	})
 	a := launchAdapter(t, rt)
-	_, outcome := drainLaunch(t, a, okInv())
+	// spec §B.7 step 4: a mid-stream error must emit a DisplayError event before
+	// the outcome, so the live renderer can terminate the in-progress delta line
+	// and display the error prominently.
+	evs, outcome := drainLaunch(t, a, okInv())
 	var bad *agent.ErrInvalidConfig
 	if outcome.Err == nil || !errorsAs(outcome.Err, &bad) {
 		t.Fatalf("outcome.Err = %v, want *agent.ErrInvalidConfig (permanent)", outcome.Err)
+	}
+	var hasDisplayError bool
+	for _, ev := range evs {
+		if ev.Display.Class == agent.DisplayError && ev.Display.IsError {
+			hasDisplayError = true
+			break
+		}
+	}
+	if !hasDisplayError {
+		t.Errorf("stream error must emit a DisplayError event before outcome; events: %v", evs)
 	}
 }
 

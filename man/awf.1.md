@@ -347,7 +347,7 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     **with: api_key_env** (optional)
     :   Name of the env var holding the API key (default `OPENAI_API_KEY`). The
         named var must be present in **--agent-env**; an absent key is a
-        permanent config error at run start.
+        a permanent config error.
 
     **with: system_prompt** (optional)
     :   Text prepended as a system message before the user prompt.
@@ -393,10 +393,6 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
 
     **Streaming.** The adapter always streams token-by-token deltas (one event
     per chunk). Backends without streaming support are unsupported in v1.
-
-    **Anthropic-direct.** Calling Anthropic's API directly requires a
-    gateway that presents an OpenAI-compatible interface; native Anthropic
-    support is a v2 item.
 
 **DOCKER_HOST**, **DOCKER_TLS_VERIFY**, **DOCKER_CERT_PATH**
 :   Honored by the _docker_ backend through the standard Docker client

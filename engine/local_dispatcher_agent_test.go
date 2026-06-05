@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -45,6 +46,54 @@ func TestRunAgent_EmptyContainer_PassesZeroHandle(t *testing.T) {
 	}
 	if dr.Outcome != engine.OutcomeOK {
 		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+}
+
+// TestRunAgent_EmptyContainer_NonContainerless_Permanent verifies the
+// defense-in-depth guard added in runAgent: a non-containerless adapter
+// (Containerless=false, the default) paired with an empty container: ref must
+// return OutcomePermanentFailure with *agent.ErrInvalidConfig — NOT propagate
+// to Backend.Exec (where the zero Handle causes a deep, mis-classified error).
+// This covers map-body steps and any path that bypasses the run-start
+// cli/runtimes.go walk.
+func TestRunAgent_EmptyContainer_NonContainerless_Permanent(t *testing.T) {
+	ctx := context.Background()
+
+	// Default Caps: NativeSchema:true, Containerless:false — this adapter
+	// requires a container. Pair it with an empty Container field to trigger
+	// the guard. Script slot 0 so Launch would succeed IF the guard were absent.
+	fk := agentfake.New("anthropic/claude-code").
+		Script(0, agentfake.Result{Output: map[string]any{"answer": "42"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	d := &engine.LocalDispatcher{
+		Resolver: &reg,
+		Handles:  map[string]container.Handle{},
+	}
+	intent := engine.NodeIntent{
+		Path: "map[0].body[0]",
+		Node: &ir.AgentStep{ID: "gen", Uses: "anthropic/claude-code", Container: ""},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses: "anthropic/claude-code",
+			With: ir.RawConfig{"prompt": "hello"},
+		},
+	}
+
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned engine-level error: %v (want nil — guard must surface via dr.Outcome)", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q (empty container + non-containerless adapter must be permanent)", dr.Outcome, engine.OutcomePermanentFailure)
+	}
+	var configErr *agent.ErrInvalidConfig
+	if !errors.As(dr.Err, &configErr) {
+		t.Fatalf("dr.Err = %v (%T), want *agent.ErrInvalidConfig", dr.Err, dr.Err)
 	}
 }
 
