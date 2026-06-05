@@ -101,7 +101,7 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN,FACTORY_API_KEY,GOOSE_PROVIDER,GOOSE_MODEL,OPENAI_API_KEY,CODEX_HOME`).
     The same allowlist applies to every registered adapter, including
     `uses: anthropic/claude-code`, `uses: factory/droid`, `uses: block/goose`,
-    and `uses: openai/codex`.
+    `uses: openai/codex`, and `uses: awf/llm`.
     Names not on the list are not passed through. See **ENVIRONMENT**.
 
 ## awf resume _run-id_ _path_
@@ -309,6 +309,94 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     --json` emits no token deltas; its streaming JSON-RPC interface is not
     reachable through AWF's exec seam. The typed output is functionally identical;
     only the live terminal UX differs.
+
+**OPENAI_API_KEY** (awf/llm)
+:   API key for the `awf/llm` adapter — the first non-CLI, containerless
+    adapter. **awf** does not read this itself; it forwards the name when it
+    appears in **--agent-env** (included in the default allowlist, deduplicated
+    with the goose/codex entries). For a local model such as Ollama, set
+    `OPENAI_API_KEY` to any non-empty placeholder (e.g. `ollama`); the value is
+    sent as an `Authorization: Bearer` header, which Ollama ignores.
+
+    The `awf/llm` adapter issues a single streaming HTTP call against any
+    OpenAI-compatible Chat Completions endpoint. It is containerless: no
+    `container:` block is needed in the workflow. Config lives entirely in the
+    `with:` map:
+
+    **with: model** (required)
+    :   Model identifier (e.g. `gpt-4o`, `llama3.1`, `mistral`). Passed
+        verbatim to the endpoint.
+
+    **with: prompt** (required)
+    :   The user message. Template references (`{{ step.X.field }}`) are
+        resolved before the call. The adapter prepends any gate feedback as a
+        `<previous verdict>` block on repair attempts, and appends the
+        `output_schema` directive when one is declared.
+
+    **with: base_url** (optional)
+    :   The base URL of the endpoint (default `https://api.openai.com/v1`).
+        **Footgun:** omitting `base_url` silently routes the call to OpenAI
+        with the configured key. Set it explicitly when targeting a local or
+        private endpoint. For Ollama's OpenAI-compat path use
+        `http://localhost:11434/v1` (or `http://host.docker.internal:11434/v1`
+        from inside a container). For the Ollama native path use
+        `http://localhost:11434` (or `http://host.docker.internal:11434`) and
+        set `structured_output: ollama_format`. vLLM, llama.cpp, LM Studio, and
+        LiteLLM/Bifrost gateways all work with the OpenAI-compat path.
+
+    **with: api_key_env** (optional)
+    :   Name of the env var holding the API key (default `OPENAI_API_KEY`). The
+        named var must be present in **--agent-env**; an absent key is a
+        permanent config error at run start.
+
+    **with: system_prompt** (optional)
+    :   Text prepended as a system message before the user prompt.
+
+    **with: temperature** (optional)
+    :   Sampling temperature (a number). Sent to the endpoint only when
+        explicitly set. **Omit for reasoning models** (o1/o3/gpt-5 and
+        derivatives) — they reject `temperature` with a 400 error (permanent
+        failure). For local backends using `structured_output: ollama_format`,
+        `temperature: 0` is recommended for reproducible grammar-constrained
+        output.
+
+    **with: max_tokens** (optional)
+    :   Maximum tokens to generate (an integer). Maps to
+        `max_completion_tokens` for OpenAI-compatible endpoints and to
+        `options.num_predict` for the Ollama native path. Sent only when set.
+
+    **with: structured_output** (optional)
+    :   How the adapter signals the output schema to the model. One of:
+        `response_format` (default) — uses the OpenAI `response_format`
+        JSON-schema parameter; `ollama_format` — uses Ollama's native
+        `/api/chat` `format` field (requires an Ollama-native `base_url` such
+        as `http://host.docker.internal:11434`); `off` — sends no schema
+        signal (the schema is still injected into the prompt, and the adapter
+        parses the model's final message).
+
+        **Strict-schema floor.** When `structured_output: response_format` is
+        set against OpenAI, the schema must be `additionalProperties: false`
+        with all properties listed under `required` (recursively), or OpenAI
+        rejects it. **awf validate** emits **AWF2002** for under-constrained
+        schemas (a warning today). Treat **AWF2002** as **blocking** for
+        `awf/llm` steps using `response_format`.
+
+    **with: tls_insecure** (optional, boolean)
+    :   When `true`, skip TLS certificate verification for the endpoint.
+        Default `false`. Use only for internal or self-signed endpoints —
+        disabling verification exposes the connection to interception.
+
+    **Network stance.** Proxies need no adapter config: Go's default HTTP
+    transport honors `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`
+    automatically. Anthropic-direct (Claude API) requires a gateway that
+    presents an OpenAI-compatible interface in v1.
+
+    **Streaming.** The adapter always streams token-by-token deltas (one event
+    per chunk). Backends without streaming support are unsupported in v1.
+
+    **Anthropic-direct.** Calling Anthropic's API directly requires a
+    gateway that presents an OpenAI-compatible interface; native Anthropic
+    support is a v2 item.
 
 **DOCKER_HOST**, **DOCKER_TLS_VERIFY**, **DOCKER_CERT_PATH**
 :   Honored by the _docker_ backend through the standard Docker client

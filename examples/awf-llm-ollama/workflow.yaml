@@ -1,0 +1,17 @@
+workflow: awf-llm-ollama-demo
+version: 1
+graph:
+  - id: classify
+    uses: awf/llm
+    with:
+      base_url: http://host.docker.internal:11434
+      structured_output: ollama_format
+      model: llama3.1
+      api_key_env: OPENAI_API_KEY
+      prompt: "Classify the sentiment of: 'I love this product'."
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [sentiment]
+      properties:
+        sentiment: { type: string, enum: [positive, negative, neutral] }

@@ -168,6 +168,14 @@ have a *different* model judge it, which makes the gate's independence stronger:
   structured output), so the adapter never parses free text for the answer. Live output is
   **event-granular** — tool calls and reasoning steps appear as they happen, but the final answer text
   arrives in one block (see the `awf(1)` streaming note). Conforms to conformance Bucket 14.
+- **`awf/llm`** — The first non-CLI, **containerless** adapter. Instead of wrapping a black-box
+  CLI in a container, it issues a single streaming HTTP call directly against any OpenAI-compatible
+  Chat Completions endpoint — OpenAI, Ollama, vLLM, llama.cpp, LM Studio, LiteLLM/Bifrost gateways
+  — by config alone, with no `containers:` block needed. OpenAI-compatible HTTP is the lingua franca:
+  the same `with:` surface reaches cloud models and local models (e.g. `ollama_format` for
+  Ollama-native, `response_format` for OpenAI-compat). Token deltas stream live, character-by-character,
+  like every other adapter. See [`examples/awf-llm-ollama/`](examples/awf-llm-ollama/) for a runnable
+  local-model bundle and the `awf(1)` ENVIRONMENT section for the full `with:` reference.
 
 droid `model` IDs are provider-prefixed and versioned per family — e.g. `claude-sonnet-4-6` (Claude
 uses dashes), `gpt-5.5` (GPT/Gemini use dots), `gemini-3.5-flash`; the default is `claude-opus-4-8`.
@@ -184,27 +192,29 @@ forwards env — so this needs **no** adapter config: provision the image, forwa
 BYOK, `FACTORY_API_KEY` only has to be *present*, not valid.) See
 [`examples/droid-byok/`](examples/droid-byok/) for a runnable, provider-agnostic bundle.
 
-All three launch one fresh, non-resumable invocation per step (so the gate's evaluator stays
-structurally independent — no `--continue`/`--resume`/session reuse), stream their events live,
-validate `with:` strictly, and bind typed outputs to the step's `output_schema`.
+All four launch one fresh invocation per step (so the gate's evaluator stays structurally
+independent — no session reuse), stream their events live, validate `with:` strictly, and bind
+typed outputs to the step's `output_schema`.
 
-| Capability | `anthropic/claude-code` | `factory/droid` | `openai/codex` |
-| --- | --- | --- | --- |
-| Maturity | reference adapter | supported | supported |
-| Live streaming (realtime events) | ✅ | ✅ | ✅ event-granular <sup>4</sup> |
-| Typed outputs (`output_schema`) | ✅ native (`--json-schema`) | ✅ layer-2 <sup>1</sup> | ✅ native (`--output-schema`) <sup>5</sup> |
-| Gate repair (critique fed back) | ✅ | ✅ | ✅ |
-| Session independence (no reuse) | ✅ | ✅ | ✅ (`--ephemeral`) |
-| Token-usage metrics | ✅ | ✅ | ✅ |
-| Cost (USD) reporting | ✅ (`total_cost_usd`) | ❌ tokens only <sup>2</sup> | ❌ tokens only |
-| Model selection | ✅ `model` | ✅ `model` | ✅ `model` |
-| Reasoning effort | ➖ | ✅ `reasoning_effort` | ✅ `reasoning_effort` |
-| Autonomy / sandbox level | ➖ | ✅ `autonomy` | ✅ `sandbox` |
-| System-prompt append | ✅ `system_prompt` | ✅ `system_prompt` | ➖ |
-| Tool gating | ✅ `allowed_tools` | ✅ `enabled_tools` / `disabled_tools` | ➖ |
-| Budget cap | ✅ `max_budget_usd` | ➖ | ➖ |
-| Real-binary conformance | ✅ native + Docker (14a + gate-e2e 14c) | ⚠️ native (14a verified e2e); compose gate-e2e (14c) deferred <sup>3</sup> | ✅ native (14a, `AWF_CODEX_LIVE`) |
-| Auth env var(s) | `ANTHROPIC_API_KEY` · `ANTHROPIC_AUTH_TOKEN` · `CLAUDE_CODE_OAUTH_TOKEN` | `FACTORY_API_KEY` | `OPENAI_API_KEY` · `CODEX_HOME` |
+| Capability | `anthropic/claude-code` | `factory/droid` | `openai/codex` | `awf/llm` |
+| --- | --- | --- | --- | --- |
+| Maturity | reference adapter | supported | supported | supported |
+| Containerless (no `container:` needed) | ❌ | ❌ | ❌ | ✅ |
+| Live streaming (realtime events) | ✅ | ✅ | ✅ event-granular <sup>4</sup> | ✅ token-by-token |
+| Typed outputs (`output_schema`) | ✅ native (`--json-schema`) | ✅ layer-2 <sup>1</sup> | ✅ native (`--output-schema`) <sup>5</sup> | ✅ layer-2 <sup>6</sup> |
+| Gate repair (critique fed back) | ✅ | ✅ | ✅ | ✅ |
+| Session independence (no reuse) | ✅ | ✅ | ✅ (`--ephemeral`) | ✅ (stateless HTTP) |
+| Token-usage metrics | ✅ | ✅ | ✅ | ✅ |
+| Cost (USD) reporting | ✅ (`total_cost_usd`) | ❌ tokens only <sup>2</sup> | ❌ tokens only | ❌ tokens only |
+| Model selection | ✅ `model` | ✅ `model` | ✅ `model` | ✅ `model` |
+| Reasoning effort | ➖ | ✅ `reasoning_effort` | ✅ `reasoning_effort` | ➖ |
+| Autonomy / sandbox level | ➖ | ✅ `autonomy` | ✅ `sandbox` | ➖ |
+| System-prompt append | ✅ `system_prompt` | ✅ `system_prompt` | ➖ | ✅ `system_prompt` |
+| Tool gating | ✅ `allowed_tools` | ✅ `enabled_tools` / `disabled_tools` | ➖ | ➖ |
+| Budget cap | ✅ `max_budget_usd` | ➖ | ➖ | ➖ |
+| Local model support | ➖ | ✅ BYOK | ➖ | ✅ Ollama/vLLM/llama.cpp/LM Studio |
+| Real-binary conformance | ✅ native + Docker (14a + gate-e2e 14c) | ⚠️ native (14a verified e2e); compose gate-e2e (14c) deferred <sup>3</sup> | ✅ native (14a, `AWF_CODEX_LIVE`) | fake transport (fake-RoundTripper; no network required) |
+| Auth env var(s) | `ANTHROPIC_API_KEY` · `ANTHROPIC_AUTH_TOKEN` · `CLAUDE_CODE_OAUTH_TOKEN` | `FACTORY_API_KEY` | `OPENAI_API_KEY` · `CODEX_HOME` | `OPENAI_API_KEY` (or custom via `api_key_env`) |
 
 Legend: ✅ full · ⚠️ partial · ➖ not applicable · ❌ not supported.
 
@@ -225,6 +235,12 @@ Legend: ✅ full · ⚠️ partial · ➖ not applicable · ❌ not supported.
    free-text parsing. An `output_schema` for a codex step must be `additionalProperties: false` with
    all properties `required` (recursively), or codex fails it permanently — treat `awf validate`'s
    **AWF2002** warning as blocking for codex steps.
+6. `awf/llm` uses `structured_output: response_format` (OpenAI strict JSON schema) as the default
+   optimization and `ollama_format` (Ollama native `/api/chat` `format` field) for Ollama-native
+   endpoints. Layer-2 parsing is the fallback and the final contract: the engine always re-validates
+   the parsed output against `output_schema`. An `output_schema` for `awf/llm` with
+   `structured_output: response_format` against OpenAI must be `additionalProperties: false` with all
+   properties `required` (recursively) — treat **AWF2002** as blocking for those steps.
 
 During a run, agent steps stream a readable live view to stderr: assistant text
 in full, reasoning dimmed, tool calls as one-liners, and tool results collapsed
@@ -244,6 +260,13 @@ under `NO_COLOR`.
 > non-interactive run). A `sandbox:` `with:` key opts into codex's internal sandbox and removes the
 > bypass flag. The adapter enables no MCP servers. See the `awf(1)` ENVIRONMENT section for the
 > `output_schema` structured-output floor and the MCP/tool caveat.
+
+> **awf/llm network stance.** Omitting `base_url` silently routes to `https://api.openai.com/v1`
+> — set it explicitly when targeting a local or private endpoint. `tls_insecure: true` skips TLS
+> certificate verification; use only for internal/self-signed endpoints and accept the interception
+> risk. Proxies need no config: Go's HTTP transport honors `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+> automatically. The API key is sent as an `Authorization: Bearer` header and never written to the
+> journal.
 
 ## Documentation
 
