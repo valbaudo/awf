@@ -17,21 +17,6 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
-// reqConfig is the per-call request shape built in Launch from validated `with:`.
-type reqConfig struct {
-	BaseURL          string
-	APIKey           string
-	Model            string
-	SystemPrompt     string
-	Temperature      float64
-	HasTemperature   bool
-	MaxTokens        int
-	HasMaxTokens     bool
-	StructuredOutput string // response_format | ollama_format | off
-	IdempotencyKey   string
-	TLSInsecure      bool // opt-in: skip TLS verification (self-signed/internal endpoints — offensive use)
-}
-
 // clientFor returns the HTTP client for a call. Normally the injected client.
 // When tls_insecure is set, it derives a client that skips TLS verification — for
 // reaching self-signed / internal LLM endpoints (a legitimate pentest need). It
@@ -66,7 +51,7 @@ func (a *Adapter) clientFor(insecure bool) *http.Client {
 // classified error (apiError for HTTP faults). Switches on StructuredOutput:
 // ollama_format → the native /api/chat path (Task B6); else → OpenAI-compat.
 func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, emit func(delta string, raw []byte)) (string, usageRec, string, error) {
-	if cfg.StructuredOutput == "ollama_format" {
+	if cfg.StructuredOutput == soOllamaFormat {
 		return a.streamOllama(ctx, cfg, prompt, schema, emit)
 	}
 	return a.streamOpenAI(ctx, cfg, prompt, schema, emit)
@@ -107,7 +92,7 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 		// max_tokens). Works for non-reasoning models too on Chat Completions.
 		params.MaxCompletionTokens = openai.Int(int64(cfg.MaxTokens))
 	}
-	if cfg.StructuredOutput == "response_format" && schema != nil {
+	if cfg.StructuredOutput == soResponseFormat && schema != nil {
 		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
 				JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
@@ -267,14 +252,14 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 }
 
 // ollamaErrType extracts an error type hint from an Ollama error body
-// (best-effort). Returns "invalid_request_error" only if the body's `error`
+// (best-effort). Returns errTypeInvalidRequest only if the body's `error`
 // field contains "invalid"; else "ollama_error".
 func ollamaErrType(body []byte) string {
 	var probe struct {
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &probe) == nil && strings.Contains(probe.Error, "invalid") {
-		return "invalid_request_error"
+		return errTypeInvalidRequest
 	}
 	return "ollama_error"
 }

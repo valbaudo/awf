@@ -37,7 +37,7 @@ var rejectedKeys = []string{"api_key", "session_id", "messages", "tools", "strea
 // structuredOutputValues — the strategy enum (no `auto`: sniffing base_url is
 // fragile). response_format = OpenAI-compat strict; ollama_format = native
 // /api/chat format; off = prompt-only + tolerant parse.
-var structuredOutputValues = []string{"response_format", "ollama_format", "off"}
+var structuredOutputValues = []string{soResponseFormat, soOllamaFormat, soOff}
 
 const defaultAPIKeyEnv = "OPENAI_API_KEY"
 
@@ -94,7 +94,7 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		keyName = v
 	}
 	if _, present := a.env[keyName]; !present {
-		return &ErrMissingAPIKey{RequiredKey: keyName, AvailableKeys: slices.Sorted(maps.Keys(a.env))}
+		return wrapInvalidConfig(fmt.Sprintf("env var %q not present in the forwarded allowlist (available: %v)", keyName, slices.Sorted(maps.Keys(a.env))), keyAPIKeyEnv)
 	}
 	return nil
 }

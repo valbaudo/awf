@@ -74,8 +74,5 @@ func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{NativeSchema: false, Containerless: true}
 }
 
-// compile-time interface assertion (Launch/Version/ValidateConfig added in later tasks).
-var _ interface {
-	Ref() string
-	Capabilities() agent.Caps
-} = (*Adapter)(nil)
+// compile-time interface assertion: Adapter satisfies the full agent.Adapter contract.
+var _ agent.Adapter = (*Adapter)(nil)

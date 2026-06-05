@@ -2,6 +2,7 @@ package awfllm
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/valbaudo/awf/ir"
 )
@@ -29,3 +30,6 @@ func (a *Adapter) StreamForTest(ctx context.Context, cfg ReqConfigForTest, promp
 type ReqConfigForTest = reqConfig
 
 var AssemblePromptForTest = assemblePrompt
+
+// ClientForTest exposes clientFor for white-box tests (tls_insecure behavior).
+func (a *Adapter) ClientForTest(insecure bool) *http.Client { return a.clientFor(insecure) }

@@ -82,9 +82,13 @@ func TestValidate_TLSInsecureBool(t *testing.T) {
 
 func TestValidate_MissingAPIKey(t *testing.T) {
 	a := llmAdapter(t, map[string]string{}) // no OPENAI_API_KEY forwarded
-	var miss *awfllm.ErrMissingAPIKey
-	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi"}); !errors.As(err, &miss) {
-		t.Fatalf("want ErrMissingAPIKey, got %v", err)
+	var inv *agent.ErrInvalidConfig
+	err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi"})
+	if !errors.As(err, &inv) {
+		t.Fatalf("want *agent.ErrInvalidConfig, got %T: %v", err, err)
+	}
+	if inv.Key != "api_key_env" {
+		t.Errorf("ErrInvalidConfig.Key = %q, want %q", inv.Key, "api_key_env")
 	}
 }
 

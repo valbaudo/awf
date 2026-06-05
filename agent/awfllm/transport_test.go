@@ -170,6 +170,45 @@ func TestStream_OpenAICompat_TempAndCap(t *testing.T) {
 	}
 }
 
+// TestClientFor verifies the tls_insecure composition rules of clientFor:
+//   - insecure=false   → returns the injected client unchanged (identity)
+//   - insecure=true, fake RoundTripper (non-*http.Transport) → same client (can't clone; left as-is)
+//   - insecure=true, default transport (nil Transport in injected client, i.e. New() default) →
+//     returns a DIFFERENT client whose Transport has InsecureSkipVerify==true
+func TestClientFor(t *testing.T) {
+	t.Run("insecure=false returns injected client", func(t *testing.T) {
+		injected := &http.Client{}
+		a, _ := awfllm.New(awfllm.WithHTTPClient(injected))
+		if got := a.ClientForTest(false); got != injected {
+			t.Errorf("ClientForTest(false) != injected client; got %p, want %p", got, injected)
+		}
+	})
+
+	t.Run("insecure=true with fake RoundTripper returns same client", func(t *testing.T) {
+		fake := roundTripFunc(func(r *http.Request) (*http.Response, error) { return nil, nil })
+		injected := &http.Client{Transport: fake}
+		a, _ := awfllm.New(awfllm.WithHTTPClient(injected))
+		got := a.ClientForTest(true)
+		if got != injected {
+			t.Errorf("ClientForTest(true) with fake transport must return same client (can't clone non-*http.Transport)")
+		}
+	})
+
+	t.Run("insecure=true with default transport returns new client with InsecureSkipVerify", func(t *testing.T) {
+		// New() with no WithHTTPClient → httpClient has nil Transport (uses http.DefaultTransport).
+		a, _ := awfllm.New()
+		got := a.ClientForTest(true)
+		// Confirm the returned client has InsecureSkipVerify set.
+		tr, ok := got.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("Transport type = %T, want *http.Transport", got.Transport)
+		}
+		if tr.TLSClientConfig == nil || !tr.TLSClientConfig.InsecureSkipVerify {
+			t.Errorf("InsecureSkipVerify = false (or TLSClientConfig nil), want true")
+		}
+	})
+}
+
 // Ollama /api/chat streams NDJSON: per-line message.content deltas, terminal done.
 const ollamaNDJSON = `{"message":{"role":"assistant","content":"{\"ans"},"done":false}
 {"message":{"role":"assistant","content":"wer\":4}"},"done":false}

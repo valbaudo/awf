@@ -31,6 +31,10 @@ func (e *apiError) Error() string {
 	return fmt.Sprintf("agent/awfllm: HTTP %d (%s): %s", e.Status, e.Type, e.Body)
 }
 
+// errTypeInvalidRequest is the OpenAI/Ollama error type string for a permanent
+// client-side request fault (bad model, unsupported parameter, schema rejection).
+const errTypeInvalidRequest = "invalid_request_error"
+
 // isPermanentLLMError reports a permanent client-side config fault: HTTP 400 AND
 // type invalid_request_error (bad model, or a schema the backend rejects under
 // strict mode). Everything else — including non-apiError transport failures —
@@ -38,7 +42,7 @@ func (e *apiError) Error() string {
 func isPermanentLLMError(err error) bool {
 	var ae *apiError
 	if errors.As(err, &ae) {
-		return ae.Status == 400 && ae.Type == "invalid_request_error"
+		return ae.Status == 400 && ae.Type == errTypeInvalidRequest
 	}
 	return false
 }
