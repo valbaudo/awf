@@ -38,6 +38,3 @@ func (e *ErrMissingAPIKey) Error() string {
 var _ = []error{
 	(*ErrMissingAPIKey)(nil),
 }
-
-// silence unused until validate.go lands (Task B3 removes this).
-var _ = wrapInvalidConfig
