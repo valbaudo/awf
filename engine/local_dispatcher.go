@@ -336,6 +336,16 @@ func ContainerSpecFor(wf *ir.Workflow, composeFiles map[string][]byte, name stri
 				spec.Compose = b
 			}
 		}
+		return spec
+	}
+	// Resources-only (P6a): a container declared solely to receive a map's
+	// `image:` carries no static image/compose; the per-element image is set by
+	// dispatchItem. Copy any declared resources so the runtime image inherits them.
+	if c.Resources != nil {
+		spec.Resources = &container.ContainerResources{
+			CPU: c.Resources.CPU,
+			Mem: c.Resources.Mem,
+		}
 	}
 	return spec
 }
