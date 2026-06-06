@@ -102,6 +102,15 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 			return // a non-dominating target can't be assembled; later rules are moot.
 		}
 
+		// A.3.6 — single loop scope (addressability). The TARGET's static path may contain
+		// at most one loop[ segment. engine/scope.go stepRuntimePath rejects loopCount > 1;
+		// this mirrors that check so "validation = addressability" is exact. The dominator
+		// rule (AWF1027) counts enclosing scopes but not loop depth, so a target inside two
+		// nested loops can pass AWF1027 yet be unresolvable at runtime — AWF1031 closes that gap.
+		if strings.Count(paths[as.Continues], "loop[") > 1 {
+			c.errf(srcPath, "AWF1031", fmt.Sprintf("%s (target %q)", catalog["AWF1031"], as.Continues))
+		}
+
 		// A.3.4 — same-uses. S and T must declare the same agent runtime identifier.
 		// (Same-model is intentionally not enforced; that is adapter-level config in with:.)
 		if as.Uses != tgt.Uses {

@@ -301,3 +301,52 @@ func TestContinuesInGenerateAllowed(t *testing.T) {
 	})
 	assertNoCode(t, Validate(ld), "AWF1030")
 }
+
+// --- AWF1031: single-loop-scope rule (A.3.6) ---
+
+// A target inside TWO nested loops is unaddressable at runtime (engine/scope.go
+// stepRuntimePath rejects loopCount > 1). Both target and source are inside the SAME
+// inner-loop body, so the dominator rule (AWF1027) passes — proving AWF1031 closes a
+// gap that AWF1027 alone leaves open.
+func TestContinuesNestedLoopTargetRejected(t *testing.T) {
+	// Doubly-nested loop: outer loop body → inner loop body → [inner_draft, inner_revise].
+	// inner_revise continues: inner_draft. The target "inner_draft" is at static path
+	// "loop[0].body.loop[0].body.inner_draft" (two loop[ segments) → AWF1031.
+	// AWF1027 passes because inner_draft precedes inner_revise inside the same scope.
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&Loop{
+				MaxIters: intPtr(3),
+				Body: NodeList{
+					&Loop{
+						MaxIters: intPtr(3),
+						Body: NodeList{
+							&AgentStep{ID: "inner_draft", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}},
+							&AgentStep{ID: "inner_revise", Uses: "awf/llm", Continues: "inner_draft", With: RawConfig{"model": "m", "prompt": "p"}},
+						},
+					},
+				},
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1031", "loop[0].body.loop[0].body.inner_revise")
+}
+
+// A target inside ONE loop body is addressable → no AWF1031.
+// intra-iteration link: both steps live in the same single-loop body.
+func TestContinuesSingleLoopTargetClean(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&Loop{
+				MaxIters: intPtr(3),
+				Body: NodeList{
+					&AgentStep{ID: "loop_draft", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}},
+					&AgentStep{ID: "loop_revise", Uses: "awf/llm", Continues: "loop_draft", With: RawConfig{"model": "m", "prompt": "p"}},
+				},
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF1031")
+}

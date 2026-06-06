@@ -1,0 +1,16 @@
+workflow: continues-nested-loop
+version: 1
+graph:
+  - loop:
+      max_iters: 3
+      body:
+        - loop:
+            max_iters: 3
+            body:
+              - id: inner_draft
+                uses: awf/llm
+                with: { model: m, prompt: p }
+              - id: inner_revise
+                uses: awf/llm
+                continues: inner_draft
+                with: { model: m, prompt: p }
