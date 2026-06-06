@@ -3,7 +3,9 @@ package conformance
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -32,6 +34,59 @@ func testSignal(t *testing.T, factory BackendFactory) {
 	t.Run("signal_resume_replays", func(t *testing.T) { testSignalResumeReplays(t, factory) })
 	t.Run("signal_pause_halts", func(t *testing.T) { testSignalPauseHalts(t, factory) })
 	t.Run("signal_cancel_terminal", func(t *testing.T) { testSignalCancelTerminal(t, factory) })
+	t.Run("signal_keyed_match", func(t *testing.T) { testSignalKeyedMatch(t, factory) })
+}
+
+// testSignalKeyedMatch is the SP4 keyed-signals (await where:) conformance.
+// A map over two hypotheses ({id:a}, {id:b}) each await `oob-hit` WHERE
+// candidate_id matches the item's own id. Two signals are pre-written in an
+// order that does NOT match item order (b first, a second) so a plain
+// earliest-first consume would give item "a" the "b" payload (and item "b"
+// would then time out). Both items committing ok — with two signal.received
+// events — proves each item consumed its OWN correlated signal.
+func testSignalKeyedMatch(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	h := newHarnessWithInput(t, factory, signalWhereWorkflow, map[string]any{
+		"hyps": []any{
+			map[string]any{"id": "a"},
+			map[string]any{"id": "b"},
+		},
+	})
+	// newHarnessWithInput does not wire a broker; derive controlDir from the
+	// shared baseDir exactly like newHarnessWithBroker (M13 layout).
+	controlDir := filepath.Join(h.baseDir, "control")
+	h.broker = signal.NewBroker(controlDir, signal.WithPollInterval(time.Millisecond))
+
+	// Pre-write TWO signals in an order that does NOT match item order: the
+	// "b" hit arrives first (seq 1), "a" second (seq 2). Keyed where: must
+	// correlate each to the right item regardless of seq.
+	if _, err := h.broker.WriteSignal("oob-hit", []byte(`{"candidate_id":"b","hit":true}`)); err != nil {
+		t.Fatalf("WriteSignal b: %v", err)
+	}
+	if _, err := h.broker.WriteSignal("oob-hit", []byte(`{"candidate_id":"a","hit":true}`)); err != nil {
+		t.Fatalf("WriteSignal a: %v", err)
+	}
+
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("signal_keyed_match: err = %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Errorf("outcome = %q, want ok", oc)
+	}
+	// Both signals were consumed (two signal.received events) and the run
+	// committed ok — proving each item matched its OWN candidate_id, not the
+	// earliest-seq signal.
+	events := mustFoldEvents(t, h)
+	var sigReceived int
+	for _, e := range events {
+		if e.Type == engine.EventSignalReceived {
+			sigReceived++
+		}
+	}
+	if sigReceived != 2 {
+		t.Errorf("signal.received events = %d, want 2 (one per correlated item)", sigReceived)
+	}
 }
 
 func testSignalAwaitDelivers(t *testing.T, factory BackendFactory) {

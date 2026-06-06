@@ -792,6 +792,47 @@ graph:
     run: echo "{{ step.approve.approved }}"
 `, fakeImageDigest)
 
+// signalWhereWorkflow — SP4 keyed-signal conformance. A map over two hypotheses;
+// each item's body awaits `oob-hit` WHERE candidate_id matches the item's id, so
+// two buffered signals are correlated to the right item regardless of seq order.
+// The await step needs no container; the map needs a container for its body scope.
+var signalWhereWorkflow = fmt.Sprintf(`workflow: signal-where
+version: 1
+input:
+  type: object
+  required: [hyps]
+  additionalProperties: false
+  properties:
+    hyps:
+      type: array
+      items:
+        type: object
+        required: [id]
+        additionalProperties: false
+        properties:
+          id: { type: string }
+containers:
+  c:
+    image: %s
+graph:
+  - map:
+      over: input.hyps
+      as: hyp
+      container: c
+      concurrency: 2
+      body:
+        - id: wait_oob
+          await: oob-hit
+          where: 'candidate_id == "{{ hyp.id }}"'
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [candidate_id, hit]
+            properties:
+              candidate_id: { type: string }
+              hit: { type: boolean }
+`, fakeImageDigest)
+
 // signalPauseWorkflow — Bucket 8 signal_pause_halts + signal_cancel_terminal.
 // Three simple sequential echo steps; the signal subsystem halts the run
 // before all steps complete (pause) or terminally (cancel).
