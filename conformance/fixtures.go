@@ -678,6 +678,55 @@ graph:
       max_attempts: 2
 `, fakeImageDigest, phase5VerdictSchemaYAML)
 
+// gateAgentThreadSubConversationWorkflow — T2 (continues:). A sub-conversation
+// INSIDE one gate's generate: [ask, refine continues: ask]. The evaluator
+// rejects attempt 1, passes attempt 2, so ask runs twice (A1 then A2). refine's
+// assembled Thread in the passing attempt must carry ATTEMPT-2's ask transcript
+// (A2) and NOT attempt-1's (A1) — stepRuntimePath resolves the continues
+// predecessor to refine's OWN attempt. Rejected attempts still commit; they are
+// excluded by ADDRESSING (same-attempt resolution), not by skipping the write.
+//
+// refine declares an output_schema only so the bucket has a typed generate
+// output to point at; nothing references refine.draft, so AWF3002 emits a
+// (harmless) warning — identical to the gen1 fixtures above. The gate's verdict
+// comes from the LAST evaluate node (judge / test/oracle), not from the
+// generate steps.
+var gateAgentThreadSubConversationWorkflow = fmt.Sprintf(`workflow: conformance-gate-agent-thread
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - gate:
+      generate:
+        - id: ask
+          container: lab
+          uses: test/llm
+          with:
+            prompt: "ask"
+        - id: refine
+          container: lab
+          uses: test/llm
+          continues: ask
+          with:
+            prompt: "refine"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [draft]
+            properties:
+              draft: { type: string }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: test/oracle
+          with:
+            prompt: "judge"
+          %s
+      until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
+      max_attempts: 3
+`, fakeImageDigest, phase5VerdictSchemaYAML)
+
 // signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
 // A single `await: human_review` step followed by an echo step that references
 // the signal payload. No containers entry for the await itself; the after step
