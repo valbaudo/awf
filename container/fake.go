@@ -283,6 +283,26 @@ func (f *Fake) CaptureFiles(ctx context.Context, h Handle, paths []string) ([]Ca
 	return out, nil
 }
 
+// CopyTo writes each InputFile into the handle's in-mem fs, defensive-copying
+// content. Unknown handle is a hard error; len==0 is a no-op. Thread-safe.
+func (f *Fake) CopyTo(ctx context.Context, h Handle, files []InputFile) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fh, ok := f.handles[h.ID]
+	if !ok {
+		return fmt.Errorf("container/fake: CopyTo: unknown handle %q", h.ID)
+	}
+	for _, in := range files {
+		dup := make([]byte, len(in.Content))
+		copy(dup, in.Content)
+		fh.files[in.Path] = dup
+	}
+	return nil
+}
+
 // Snapshot serializes the handle's in-mem files to JSON and Puts them to the
 // injected Blobs store, returning the CAS ref. Without an injected store
 // (WithBlobs not called) returns ErrUnsupported — the Phase 2 default.

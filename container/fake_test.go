@@ -20,6 +20,11 @@ func TestFakeRunBasicContract(t *testing.T) {
 	backendtest.RunBasicContract(t, container.NewFake())
 }
 
+// CopyTo round-trip via the shared contract helper.
+func TestFakeCopyToContract(t *testing.T) {
+	backendtest.RunCopyToContract(t, container.NewFake())
+}
+
 // Behavior tests below are fake-specific (they use ProgramExec / WriteFile,
 // which aren't on the Backend interface). Phase 4 Docker will have its own
 // equivalents (sentinel commands / docker cp) in docker_test.go.

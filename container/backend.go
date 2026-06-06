@@ -94,6 +94,12 @@ type Backend interface {
 	// the commit boundary (this method never touches state.Blobs; see pkg doc).
 	CaptureFiles(ctx context.Context, h Handle, paths []string) ([]CapturedFile, error)
 
+	// CopyTo writes each InputFile's bytes to its in-container path BEFORE the
+	// step's Exec/Launch — the symmetric inverse of CaptureFiles. Overwrites an
+	// existing path. len(files)==0 is a no-op returning nil. Unknown handle is a
+	// hard error. Never touches state.Blobs.
+	CopyTo(ctx context.Context, h Handle, files []InputFile) error
+
 	// Snapshot captures the handle's filesystem as a CoW diff. Only meaningful
 	// for snapshot:workspace containers (spec §3). Phase 2 fake: returns
 	// ("", ErrUnsupported). Phase 4 Docker (slice 4.4): streaming gzip-tar
@@ -303,6 +309,15 @@ type IOChunk struct {
 // Blobs at the commit boundary and records Path → ref in
 // engine.NodeCompletedData.Files.
 type CapturedFile struct {
+	Path    string
+	Content []byte
+}
+
+// InputFile is one in-container destination path + the bytes to write there,
+// the symmetric input to CopyTo. The engine (the only Blobs reader) resolves an
+// input_files ref to a CAS blob, Blobs.Get's the bytes, and passes them here.
+// This method never touches state.Blobs (see pkg doc).
+type InputFile struct {
 	Path    string
 	Content []byte
 }

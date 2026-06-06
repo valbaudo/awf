@@ -38,6 +38,36 @@ func RunBasicContract(t *testing.T, b container.Backend) {
 	t.Run("CaptureFilesHonorsContextCancel", func(t *testing.T) { testCaptureFilesCtxCancel(t, b) })
 }
 
+// RunCopyToContract verifies CopyTo stages bytes that a subsequent CaptureFiles
+// reads back (the artifact round-trip). Uses a NESTED destination path so the
+// Docker impl exercises parent-directory creation. Caller passes a configured
+// Backend; the helper Creates/Destroys its own container.
+func RunCopyToContract(t *testing.T, b container.Backend) {
+	t.Helper()
+	ctx := context.Background()
+	h, err := b.Create(ctx, container.ContainerSpec{Name: "copyto"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = b.Destroy(ctx, h) }()
+
+	want := []byte("hello-artifact\n")
+	dst := "/work/sub/in.txt" // nested: ancestors must be created on real docker
+	if err := b.CopyTo(ctx, h, []container.InputFile{{Path: dst, Content: want}}); err != nil {
+		t.Fatalf("CopyTo: %v", err)
+	}
+	got, err := b.CaptureFiles(ctx, h, []string{dst})
+	if err != nil {
+		t.Fatalf("CaptureFiles after CopyTo: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Content) != string(want) {
+		t.Errorf("round-trip mismatch: got %v, want %q", got, want)
+	}
+	if err := b.CopyTo(ctx, h, nil); err != nil {
+		t.Errorf("CopyTo(nil): got %v, want nil", err)
+	}
+}
+
 func testCapsKnownMode(t *testing.T, b container.Backend) {
 	switch m := b.Capabilities().Snapshot; m {
 	case container.SnapshotNone, container.SnapshotFSCoW:
