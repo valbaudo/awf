@@ -888,3 +888,48 @@ graph:
     run: "./after.sh"
     retry: { attempts: 1 }
 `, fakeImageDigest)
+
+// threadBranchedWorkflow — T9 runtime half. draft → critique → if/else.
+// BOTH forks continue: critique (a valid, dominating link: critique precedes
+// the if and encloses neither fork). cond is static-true so the `then` fork is
+// taken deterministically; the taken fork's turn must receive critique's
+// thread = [draft-pair, critique-pair]. system_prompt is shared so the run is
+// realistic, but T9 asserts the THREAD, not byte-identity (that is T10).
+var threadBranchedWorkflow = fmt.Sprintf(`workflow: conformance-thread-branched
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - id: draft
+    container: lab
+    uses: test/chat
+    with:
+      system_prompt: "you are a helpful assistant"
+      prompt: "draft a plan"
+  - id: critique
+    container: lab
+    uses: test/chat
+    continues: draft
+    with:
+      system_prompt: "you are a helpful assistant"
+      prompt: "critique the draft"
+  - if:
+      cond: "{{ 1 == 1 }}"
+      then:
+        - id: revise_then
+          container: lab
+          uses: test/chat
+          continues: critique
+          with:
+            system_prompt: "you are a helpful assistant"
+            prompt: "revise per the critique (then-fork)"
+      else:
+        - id: revise_else
+          container: lab
+          uses: test/chat
+          continues: critique
+          with:
+            system_prompt: "you are a helpful assistant"
+            prompt: "revise per the critique (else-fork)"
+`, fakeImageDigest)

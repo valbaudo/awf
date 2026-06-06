@@ -115,4 +115,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("snapshot", func(t *testing.T) { testSnapshot(t, factory) })
 	t.Run("continues_crash", func(t *testing.T) { testContinuesCrash(t, factory) })
 	t.Run("continues_resume", func(t *testing.T) { testContinuesResume(t, factory) })
+	t.Run("thread", func(t *testing.T) { testThread(t, factory) })
 }
