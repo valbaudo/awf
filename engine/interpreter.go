@@ -269,7 +269,7 @@ func runCodeStep(
 	resolved := ResolvedInputs{
 		Command:               command,
 		Env:                   map[string]string{},
-		OutputFiles:           cs.OutputFiles,
+		OutputFiles:           cs.OutputFiles.Paths(),
 		OutputSchema:          cs.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,

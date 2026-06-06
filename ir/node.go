@@ -24,7 +24,7 @@ type CodeStep struct {
 	Run            string       `json:"run"`
 	Timeout        *Duration    `json:"timeout,omitempty"`
 	OutputSchema   *JSONSchema  `json:"output_schema,omitempty"`
-	OutputFiles    []string     `json:"output_files,omitempty"`
+	OutputFiles    OutputFiles  `json:"output_files,omitempty"`
 	IdempotencyKey *Template    `json:"idempotency_key,omitempty"`
 	Retry          *RetryPolicy `json:"retry,omitempty"`
 }
@@ -36,7 +36,7 @@ type AgentStep struct {
 	With           RawConfig    `json:"with,omitempty"`
 	Continues      string       `json:"continues,omitempty"` // id of the prior agent turn to continue (engine-owned thread)
 	OutputSchema   *JSONSchema  `json:"output_schema,omitempty"`
-	OutputFiles    []string     `json:"output_files,omitempty"`
+	OutputFiles    OutputFiles  `json:"output_files,omitempty"`
 	Timeout        *Duration    `json:"timeout,omitempty"`
 	IdempotencyKey *Template    `json:"idempotency_key,omitempty"`
 	Retry          *RetryPolicy `json:"retry,omitempty"`
