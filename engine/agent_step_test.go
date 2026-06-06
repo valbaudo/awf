@@ -275,6 +275,141 @@ graph:
 	}
 }
 
+// TestRunAgentStep_AssemblesThreadRootToCurrent pins the 3-turn root→current
+// ordering invariant (Task 5.2). A linear chain:
+//
+//	t1 (no continues) → t2 continues:t1 → t3 continues:t2
+//
+// All three share the same adapter so a single fake handles them in call
+// order 0→1→2. After a clean engine.Run:
+//   - calls[0].Thread (t1) is empty (no predecessor).
+//   - calls[1].Thread (t2) is exactly [{u1,a1}] — t1's committed pair only.
+//   - calls[2].Thread (t3) is exactly [{u1,a1},{u2,a2}] — t1 BEFORE t2
+//     (root→current, oldest first).
+//
+// This test PINS assembly order — if the order is reversed or a turn is
+// missing, that is a real assembly bug; do not weaken the assertion.
+func TestRunAgentStep_AssemblesThreadRootToCurrent(t *testing.T) {
+	const yaml = `workflow: continues-3turn
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: t1
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: "p1"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [x]
+      properties:
+        x: { type: string }
+  - id: t2
+    container: lab
+    uses: anthropic/claude-code
+    continues: t1
+    with:
+      prompt: "p2"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [x]
+      properties:
+        x: { type: string }
+  - id: t3
+    container: lab
+    uses: anthropic/claude-code
+    continues: t2
+    with:
+      prompt: "p3"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [x]
+      properties:
+        x: { type: string }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").
+		Script(0, fake.Result{
+			Output:     map[string]any{"x": "v1"},
+			Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"},
+		}).
+		Script(1, fake.Result{
+			Output:     map[string]any{"x": "v2"},
+			Transcript: agent.ThreadTurn{User: "u2", Assistant: "a2"},
+		}).
+		Script(2, fake.Result{
+			Output:     map[string]any{"x": "v3"},
+			Transcript: agent.ThreadTurn{User: "u3", Assistant: "a3"},
+		})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	calls := fk.Calls()
+	if len(calls) != 3 {
+		t.Fatalf("len(calls) = %d, want 3", len(calls))
+	}
+
+	// t1: no continues → Thread must be empty.
+	if len(calls[0].Thread) != 0 {
+		t.Errorf("t1 Thread = %+v, want empty (no predecessor)", calls[0].Thread)
+	}
+
+	// t2: continues:t1 → Thread is exactly [t1 pair] (single entry).
+	want2 := []agent.ThreadTurn{{User: "u1", Assistant: "a1"}}
+	if len(calls[1].Thread) != 1 {
+		t.Fatalf("t2 Thread len = %d, want 1; got %+v", len(calls[1].Thread), calls[1].Thread)
+	}
+	if calls[1].Thread[0] != want2[0] {
+		t.Errorf("t2 Thread[0] = %+v, want %+v", calls[1].Thread[0], want2[0])
+	}
+
+	// t3: continues:t2 → Thread is [t1 pair, t2 pair] in ROOT→CURRENT order.
+	// t1 must be Thread[0] (oldest/root) and t2 must be Thread[1] (immediate predecessor).
+	// Do NOT reverse this assertion: root→current is the invariant.
+	want3 := []agent.ThreadTurn{
+		{User: "u1", Assistant: "a1"}, // t1 — root, oldest
+		{User: "u2", Assistant: "a2"}, // t2 — immediate predecessor
+	}
+	if len(calls[2].Thread) != 2 {
+		t.Fatalf("t3 Thread len = %d, want 2; got %+v", len(calls[2].Thread), calls[2].Thread)
+	}
+	if calls[2].Thread[0] != want3[0] {
+		t.Errorf("t3 Thread[0] = %+v, want %+v (root turn t1 must be FIRST)", calls[2].Thread[0], want3[0])
+	}
+	if calls[2].Thread[1] != want3[1] {
+		t.Errorf("t3 Thread[1] = %+v, want %+v (predecessor t2 must be SECOND)", calls[2].Thread[1], want3[1])
+	}
+}
+
 // mustJSON is a per-package test helper. Task 2 defined an identical body
 // in engine/events_test.go (package engine — internal); this file is
 // package engine_test (external), a separate scope, so we declare it
