@@ -431,6 +431,10 @@ Children run concurrently; the node completes when all do. A child failing after
 its retries cancels its siblings, then propagates. Branches that run steps must
 target distinct containers / Compose projects — the validator enforces this.
 
+`parallel` does not accept a `reduce:` key (its wire-form is a bare node array):
+fan-in is supported on `map` only. A fixed cohort that needs a fan-in verdict is
+expressible as a one-item-per-role `map` with `reduce: {quorum}`.
+
 ## gate
 
 The flagship — TDD applied to a black-box step. A gate runs a *generator*, then an
@@ -522,6 +526,14 @@ not `break`: it ends the current iteration/branch, not a whole loop.
         concurrency: <n>             # max elements in flight at once
         min_success: <ratio|n>       # optional; fan-in succeeds if at least this many do (default: all)
         body: [<node>...]
+        reduce:                      # optional; fan-IN — collapse the N branch outputs to one
+          quorum: <n|ratio>          #   built-in: succeeds iff at least this many branches pass `over`
+          over: <field>              #   the per-branch boolean output field quorum counts
+          # — OR an author reducer (declare exactly one of quorum: or run:) —
+          run: <command>             #   a shell reducer (a CODE step)
+          container: <name>          #   REQUIRED on a run: reducer — the declared container it runs in
+          output_schema: <json-schema>     #   the reduced node's typed output
+          output_files: { <name>: <path> } #   the reduced node's artifacts
 
 Data-driven expansion when the worklist size is known only at runtime — a crawl
 finds N pages, a query returns N records. Each element runs `body` in its *own*
@@ -571,6 +583,38 @@ reference to a step inside the body, evaluated from outside the map: it lifts th
 step's typed output to an index-ordered array (see TEMPLATING AND TYPED OUTPUTS).
 That array is legal only as a second `map`'s `over:`, which gives the map→map
 chaining shown in EXAMPLE.
+
+`reduce:` collapses the N fanned-out branch results into ONE. The reduced output
+*replaces* the node's per-item array: a downstream `step.<bodyId>.<field>` then
+resolves to the reducer's typed output, and `step.<bodyId>.files.<name>` to its
+artifacts. The aggregate stays engine-internal — with `reduce:` it never escapes
+as an array, so the array-only-in-`over:` rule (AWF5004) is unaffected. Declare
+**exactly one** of `quorum:` or `run:` (**AWF1035**). `reduce:` is supported on
+`map` only (parallel does not accept it — see *parallel*).
+
+`quorum: k` (the debate / cohort case) succeeds iff at least `k` branches produced
+a true `over` field; the reduced output is `{passed, votes, agree}`. `quorum`
+generalizes `min_success`: `min_success` is quorum over the mechanical success
+predicate (`any` = quorum(1), `unanimous` = quorum(N), `majority` = quorum(⌈N/2⌉)
+are author sugar over `k`). A `quorum` ratio reuses the `min_success` int-or-
+fraction form. Declaring both `min_success` and `reduce: {quorum}` on one node is
+rejected (**AWF5006**), as is a `quorum` whose `over:` names a field no body step
+declares in its `output_schema` (**AWF5006**). A `quorum` reduce that is not met
+ends the node as `retryable_failure`, exactly like an unmet `min_success`.
+
+An author `run:` reducer (the merge / dedupe case) is a code step, so it runs in
+its **required `container:`** — a `run:` reducer with no `container:` is rejected
+(**AWF1035**), and a `container:` that resolves to no declared container is
+**AWF1009**, the same rule every code step obeys. (The reference design's §3.2a
+`run:` example omits `container:` for brevity; that is shorthand, not the format
+contract — a `run:` reducer always declares one.) Before it runs, the engine
+stages into that container every branch's named `output_files` artifact (under
+`/work/.awf/branch-<N>/<name>`) plus a canonical-JSON manifest of all branches'
+typed outputs at `/work/.awf/aggregate.json` — deterministic, index-ordered, and
+committed-branches-only — via the same content-addressed delivery the artifact
+channel uses (see *Artifact channel*). The reducer reads them and writes its
+declared `output_files` and `$AWF_OUTPUT`, which become the reduced node's
+artifacts and typed output.
 
 # OUTCOMES, RETRY, AND REPAIR
 
