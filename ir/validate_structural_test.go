@@ -525,6 +525,46 @@ func TestMapImageTargetsCollectsTargets(t *testing.T) {
 	}
 }
 
+func TestStructuralMapImageTargetWithStaticImageConflicts(t *testing.T) {
+	// A container that is a map.image target AND declares a static (pinned) image
+	// trips AWF1025 — the static pin would be silently overwritten at dispatch.
+	img := "oci://example.com/x@sha256:" + strings.Repeat("0", 64)
+	ld := makeLD(&Workflow{
+		ID: "p6a-conflict", Version: 1,
+		Input: &JSONSchema{"type": "object", "properties": map[string]any{
+			"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		}},
+		Containers: map[string]Container{"vl": {Image: img}},
+		Graph: NodeList{
+			&Map{
+				Over: "{{ input.items }}", As: "v", Container: "vl",
+				Image: "{{ v.image }}", Concurrency: 1,
+				Body: NodeList{&CodeStep{ID: "probe", Container: "vl", Run: "true"}},
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1025", "containers.vl")
+}
+
+func TestStructuralResourcesOnlyMapImageTargetNoConflict(t *testing.T) {
+	// A resources-only map.image target (the intended shape) does NOT trip AWF1025.
+	ld := makeLD(&Workflow{
+		ID: "p6a-ok2", Version: 1,
+		Input: &JSONSchema{"type": "object", "properties": map[string]any{
+			"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		}},
+		Containers: map[string]Container{"vl": {Resources: &Resources{CPU: "1"}}},
+		Graph: NodeList{
+			&Map{
+				Over: "{{ input.items }}", As: "v", Container: "vl",
+				Image: "{{ v.image }}", Concurrency: 1,
+				Body: NodeList{&CodeStep{ID: "probe", Container: "vl", Run: "true"}},
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF1025")
+}
+
 func TestValidateSnapshotField(t *testing.T) {
 	img := "oci://example.com/x@sha256:" + strings.Repeat("0", 64)
 	cases := []struct {

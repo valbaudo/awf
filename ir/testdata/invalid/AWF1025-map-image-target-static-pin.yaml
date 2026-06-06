@@ -1,0 +1,23 @@
+workflow: map-image-target-static-pin
+version: 1
+input:
+  type: object
+  properties:
+    items:
+      type: array
+      items:
+        type: object
+containers:
+  vl:
+    image: oci://example.com/x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: v
+      container: vl
+      image: "{{ v.image }}"
+      concurrency: 1
+      body:
+        - id: probe
+          container: vl
+          run: "true"

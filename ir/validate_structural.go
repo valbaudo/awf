@@ -67,6 +67,14 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 		if ctr.Snapshot == "workspace" && ctr.Compose != "" {
 			c.errf(ContainerPath(name, "snapshot"), "AWF1022", catalog["AWF1022"])
 		}
+		// AWF1025 (P6a): a map.image target supplies the per-element image at
+		// dispatch, which unconditionally overwrites any static image/compose on
+		// this container — so a static pin here is silently discarded. Fire ONLY
+		// when both are present (a resources-only target is the intended shape and
+		// is exempt from AWF1006 above). ConflictsWith semantics.
+		if mapImageTargets[name] && (ctr.Image != "" || ctr.Compose != "") {
+			c.errf(ContainerPath(name, ""), "AWF1025", catalog["AWF1025"])
+		}
 	}
 
 	// (c) Workflow-level env: a list of host env-var NAMES forwarded into agent steps

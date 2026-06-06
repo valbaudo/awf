@@ -145,6 +145,7 @@ var catalog = map[string]string{
 	"AWF1022": "snapshot: workspace is only supported on image-mode containers, not compose",
 	"AWF1023": "snapshot: workspace inside a map body is not yet supported (per-item snapshots land with the map slice); remove snapshot from this container or move it out of the map",
 	"AWF1024": "env entry is not a valid environment-variable name (must match [A-Za-z_][A-Za-z0-9_]*)",
+	"AWF1025": "container is a map `image:` target and also declares a static image/compose; the static pin is silently overwritten per-element at dispatch — remove the static image/compose, or do not target it with a map `image:`",
 	"AWF2001": "JSON Schema does not compile per the JSON Schema 2020-12 metaschema",
 	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",
