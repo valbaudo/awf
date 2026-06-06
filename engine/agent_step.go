@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -136,6 +137,30 @@ func runAgentStep(
 		}
 	}
 
+	// input_files (SP1 artifact channel) requires a container. A containerless
+	// agent step (one whose runtime omits container:) has nowhere to stage into,
+	// so reject it here — BEFORE resolution — as a permanent_failure (the format
+	// contract per man/awf-workflow.5.md "input_files requires a container").
+	// The run-start guard in cli/runtimes.go ensures only Containerless adapters
+	// reach here with an empty container:.
+	if as.Container == "" && len(as.InputFiles) > 0 {
+		return failStep(log, path, OutcomePermanentFailure,
+			fmt.Errorf("engine.runAgentStep: input_files requires a container; agent step %q is containerless", as.ID))
+	}
+
+	// Resolve input_files to staged bytes (SP1). Same errArtifactFetch
+	// classification as runCodeStep: a ref error (parse/undeclared/not-committed)
+	// is an author bug → permanent_failure; a Blobs.Get failure of a committed,
+	// content-addressed artifact is corruption/IO → internal halt ("" outcome),
+	// so resume re-runs the uncommitted step and re-fetches.
+	inputFiles, err := resolveInputFiles(as.InputFiles, scope, wf, blobs)
+	if err != nil {
+		if errors.Is(err, errArtifactFetch) {
+			return "", fmt.Errorf("engine.runAgentStep: stage input_files at %q: %w", path, err)
+		}
+		return failStep(log, path, OutcomePermanentFailure, err)
+	}
+
 	// 4. Build ResolvedInputs. Timeout cast follows the runCodeStep idiom
 	// (engine/interpreter.go:283): ir.AgentStep.Timeout is *ir.Duration where
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
@@ -146,8 +171,9 @@ func runAgentStep(
 		OutputSchema:          as.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,
-		Feedback:              feedback, // slice 5.3
-		Thread:                thread,   // Task 4.5
+		Feedback:              feedback,   // slice 5.3
+		Thread:                thread,     // Task 4.5
+		InputFiles:            inputFiles, // SP1 artifact channel
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)

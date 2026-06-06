@@ -93,6 +93,28 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}
 	}
 
+	// Stage input_files into the container before Launch (SP1 artifact channel),
+	// OUTSIDE the step timeout (staging is setup, not the agent's work) — mirrors
+	// runCode. The interpreter already rejects input_files on a containerless step
+	// (engine/agent_step.go); the empty-container guard here is defense-in-depth
+	// (an engine.Run caller bypassing the interpreter guard, or a map-body step).
+	// Failure → retryable (the bytes exist in Blobs; the container may be
+	// transiently unwritable). Staged on every attempt; CopyTo overwrites idempotently.
+	if len(intent.ResolvedInputs.InputFiles) > 0 {
+		if bare == "" {
+			return DispatchResult{
+				Outcome: OutcomePermanentFailure,
+				Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: input_files requires a container at %q", intent.Path),
+			}, closedChunks(), nil
+		}
+		if err := d.Backend.CopyTo(ctx, h, intent.ResolvedInputs.InputFiles); err != nil {
+			return DispatchResult{
+				Outcome: OutcomeRetryableFailure,
+				Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: stage input_files at %q: %w", intent.Path, err),
+			}, closedChunks(), nil
+		}
+	}
+
 	// Apply step timeout to ctx (mirrors runCode).
 	if intent.ResolvedInputs.Timeout > 0 {
 		var cancel context.CancelFunc

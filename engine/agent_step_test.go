@@ -521,6 +521,140 @@ graph:
 	}
 }
 
+// TestRunAgentStep_ContainerlessInputFilesRejected pins the SP1 containerless
+// guard (Task 7b): an agent step whose runtime omits container: (Container == "")
+// declaring input_files is rejected at runtime as a permanent_failure, exactly
+// as the man page promises ("input_files requires a container ... rejected on a
+// containerless agent step"). The guard fires in the interpreter BEFORE
+// resolution, so no producer needs to have committed.
+func TestRunAgentStep_ContainerlessInputFilesRejected(t *testing.T) {
+	var reg agent.Registry
+	// A containerless adapter — the only kind permitted to carry an empty
+	// container: at run start (cli/runtimes.go). The fake's Containerless cap
+	// lets the dispatcher's own guard pass; we are pinning the interpreter guard.
+	fk := fake.New("awf/llm").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true}).
+		Script(0, fake.Result{Output: map[string]any{"k": "v"}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Graph: ir.NodeList{
+			&ir.AgentStep{
+				ID:         "hunt",
+				Uses:       "awf/llm",
+				With:       ir.RawConfig{"prompt": "go"},
+				InputFiles: map[string]string{"/work/report.md": "step.recon.files.report"},
+			},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	dispatcher := &engine.LocalDispatcher{Backend: container.NewFake(), Resolver: &reg}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), def, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	if oc != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q (containerless input_files must be rejected)", oc, engine.OutcomePermanentFailure)
+	}
+	if err == nil || !strings.Contains(err.Error(), "input_files requires a container") {
+		t.Errorf("err = %v, want one mentioning 'input_files requires a container'", err)
+	}
+	// The adapter must never be launched — the guard short-circuits before dispatch.
+	if len(fk.Calls()) != 0 {
+		t.Errorf("fake.Calls len = %d, want 0 (guard must fire before Launch)", len(fk.Calls()))
+	}
+}
+
+// TestRunAgentStep_StagesInputFiles pins the SP1 agent-step staging wiring
+// (Task 7b): a CODE producer (certified named output_files) hands an artifact to
+// a containerized AGENT consumer via input_files. The interpreter resolves the
+// committed CAS ref, Blobs.Get's the bytes, and the dispatcher CopyTo's them into
+// the agent's container BEFORE Launch. Mirrors the code-step cross-container test.
+func TestRunAgentStep_StagesInputFiles(t *testing.T) {
+	be := container.NewFake()
+	labH, err := be.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create lab: %v", err)
+	}
+	boxH, err := be.Create(context.Background(), container.ContainerSpec{Name: "box"})
+	if err != nil {
+		t.Fatalf("Create box: %v", err)
+	}
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{Output: map[string]any{"k": "v"}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// The code producer's exec produces /out/report.md (seeded onto lab's handle).
+	sentinel := []byte("recon findings\n")
+	be.ProgramExec("./recon.sh", container.ExecResult{ExitCode: 0}, nil)
+	if err := be.WriteFile(labH, "/out/report.md", sentinel); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	disp := &engine.LocalDispatcher{
+		Backend:  be,
+		Handles:  map[string]container.Handle{"lab": labH, "box": boxH},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]ir.Container{"lab": {}, "box": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "recon", Container: "lab", Run: "./recon.sh",
+				OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.md"}},
+			},
+			&ir.AgentStep{
+				ID: "hunt", Container: "box", Uses: "anthropic/claude-code",
+				With:         ir.RawConfig{"prompt": "go"},
+				OutputSchema: &ir.JSONSchema{"type": "object", "additionalProperties": false, "required": []any{"k"}, "properties": map[string]any{"k": map[string]any{"type": "string"}}},
+				InputFiles:   map[string]string{"/work/report.md": "step.recon.files.report"},
+			},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+	if _, ok := rs.LookupCompleted("hunt"); !ok {
+		t.Fatal("RunState.Completed missing 'hunt'")
+	}
+	// The sentinel was seeded ONLY into lab; hunt runs in box. The staged bytes
+	// landing in box at /work/report.md proves resolve→Get→CopyTo-before-Launch.
+	got, err := be.CaptureFiles(context.Background(), boxH, []string{"/work/report.md"})
+	if err != nil {
+		t.Fatalf("CaptureFiles box /work/report.md: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Content) != string(sentinel) {
+		t.Errorf("staged into box = %+v, want one file with content %q", got, sentinel)
+	}
+}
+
 // mustJSON is a per-package test helper. Task 2 defined an identical body
 // in engine/events_test.go (package engine — internal); this file is
 // package engine_test (external), a separate scope, so we declare it
