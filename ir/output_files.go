@@ -33,7 +33,7 @@ func (o *OutputFiles) UnmarshalJSON(b []byte) error {
 	}
 	var m map[string]string
 	if err := json.Unmarshal(b, &m); err != nil {
-		return fmt.Errorf("output_files must be a list of paths or a name→path map")
+		return fmt.Errorf("output_files must be a list of paths or a name→path map: %w", err)
 	}
 	names := make([]string, 0, len(m))
 	for k := range m {

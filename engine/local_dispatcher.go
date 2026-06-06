@@ -87,6 +87,23 @@ func (d *LocalDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchR
 	}
 }
 
+// stageInputFiles copies resolved input_files into the container before
+// exec/launch (the SP1 artifact channel), OUTSIDE the step timeout (staging is
+// setup, not the step's work). Returns nil when there are none or on success;
+// a wrapped error otherwise — the caller maps it to a RETRYABLE failure (the
+// bytes already exist in Blobs; the container may be transiently unwritable).
+// Staged on every attempt (retry = identical inputs); CopyTo overwrites
+// idempotently. Shared by runCode and runAgent.
+func (d *LocalDispatcher) stageInputFiles(ctx context.Context, h container.Handle, files []container.InputFile, path string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	if err := d.Backend.CopyTo(ctx, h, files); err != nil {
+		return fmt.Errorf("engine.LocalDispatcher: stage input_files at %q: %w", path, err)
+	}
+	return nil
+}
+
 func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir.CodeStep) (DispatchResult, <-chan container.IOChunk, error) {
 	bare, svcOverride := SplitContainerRef(cs.Container)
 	h, ok := d.Handles[bare]
@@ -97,17 +114,10 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		h.Service = svcOverride // shallow clone — h is a Handle value type; no aliasing of d.Handles
 	}
 
-	// Stage input_files into the container before exec (artifact channel), OUTSIDE
-	// the step timeout (staging is setup, not the step's work). Failure → retryable
-	// (the bytes exist in Blobs; the container may be transiently unwritable).
-	// Staged on every attempt (retry = identical inputs); CopyTo overwrites idempotently.
-	if len(intent.ResolvedInputs.InputFiles) > 0 {
-		if err := d.Backend.CopyTo(ctx, h, intent.ResolvedInputs.InputFiles); err != nil {
-			return DispatchResult{
-				Outcome: OutcomeRetryableFailure,
-				Err:     fmt.Errorf("engine.LocalDispatcher: stage input_files at %q: %w", intent.Path, err),
-			}, nil, nil
-		}
+	// Code steps require a container (validated at load time), so no containerless
+	// guard is needed here (cf. runAgent). Stage input_files before exec.
+	if err := d.stageInputFiles(ctx, h, intent.ResolvedInputs.InputFiles, intent.Path); err != nil {
+		return DispatchResult{Outcome: OutcomeRetryableFailure, Err: err}, nil, nil
 	}
 
 	// Apply step timeout to ctx (if any). On expiry the Backend.Exec call

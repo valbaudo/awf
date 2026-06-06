@@ -223,7 +223,8 @@ func interpNode(
 var errArtifactFetch = errors.New("engine: input_files artifact fetch failed")
 
 // resolveInputFiles maps a step's input_files (container-path → artifact ref)
-// to staged bytes. Builds the name→path index ONCE (ir.OutputFilesByStepID).
+// to staged bytes. Builds the name→path index once per call (one graph walk via
+// ir.OutputFilesByStepID), avoiding a re-walk per ref within the call.
 // Ref errors (parse/undeclared/not-committed) return a plain error (caller →
 // permanent_failure); a Blobs.Get failure is wrapped with errArtifactFetch
 // (caller → internal halt). Sorted by dst for determinism.

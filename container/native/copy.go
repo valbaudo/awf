@@ -10,6 +10,11 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
+const (
+	inputFileMode os.FileMode = 0o644 // staged file mode (regular, user-readable; cf. docker/copy.go)
+	inputDirMode  os.FileMode = 0o755 // mode for created parent directories
+)
+
 // CopyTo writes each InputFile to the host filesystem — the symmetric inverse
 // of CaptureFiles. Path resolution matches CaptureFiles: absolute paths are
 // used literally on the host (no chroot — the no-isolation design, decision
@@ -36,10 +41,10 @@ func (b *Backend) CopyTo(ctx context.Context, h container.Handle, files []contai
 		if !filepath.IsAbs(in.Path) {
 			resolved = filepath.Join(r.workdir, in.Path)
 		}
-		if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(resolved), inputDirMode); err != nil {
 			return fmt.Errorf("container/native: CopyTo: mkdir for %q: %w", in.Path, err)
 		}
-		if err := os.WriteFile(resolved, in.Content, 0o644); err != nil {
+		if err := os.WriteFile(resolved, in.Content, inputFileMode); err != nil {
 			return fmt.Errorf("container/native: CopyTo: %q: %w", in.Path, err)
 		}
 	}

@@ -12,6 +12,10 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
+// inputFileMode is the tar entry mode for staged input_files: a regular,
+// user-readable file. The step's Cmd controls executability, not the channel.
+const inputFileMode int64 = 0o644
+
 // CopyTo writes each InputFile via one CopyToContainer call rooted at "/". The
 // tar is built in a goroutine and piped to the SDK in lockstep (the io.Pipe +
 // CloseWithError pattern from Restore, snapshot.go). Entry names are the dest
@@ -38,7 +42,7 @@ func (b *Backend) CopyTo(ctx context.Context, h container.Handle, files []contai
 		for _, in := range files {
 			hdr := &tar.Header{
 				Name:     strings.TrimPrefix(in.Path, "/"),
-				Mode:     0o644,
+				Mode:     inputFileMode,
 				Size:     int64(len(in.Content)),
 				Typeflag: tar.TypeReg,
 			}

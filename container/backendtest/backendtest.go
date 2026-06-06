@@ -66,6 +66,19 @@ func RunCopyToContract(t *testing.T, b container.Backend) {
 	if err := b.CopyTo(ctx, h, nil); err != nil {
 		t.Errorf("CopyTo(nil): got %v, want nil", err)
 	}
+
+	// Cancelled context ⇒ non-nil error wrapping context.Canceled (contract,
+	// mirrors Exec / CaptureFiles).
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := b.CopyTo(cancelCtx, h, []container.InputFile{{Path: "/work/c.txt", Content: []byte("x")}}); !errors.Is(err, context.Canceled) {
+		t.Errorf("CopyTo with cancelled ctx: err = %v, want errors.Is(_, context.Canceled)", err)
+	}
+
+	// Unknown handle ⇒ hard error.
+	if err := b.CopyTo(ctx, container.Handle{Name: "ghost", ID: "ghost-nonexistent"}, []container.InputFile{{Path: "/work/c.txt", Content: []byte("x")}}); err == nil {
+		t.Errorf("CopyTo with unknown handle: got nil, want error")
+	}
 }
 
 func testCapsKnownMode(t *testing.T, b container.Backend) {
