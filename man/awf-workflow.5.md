@@ -380,6 +380,7 @@ streaming is out of scope; route big payloads as a single artifact, not many.
 
     - id: approve
       await: <signal-name>
+      where: 'candidate_id == "{{ <ref> }}"'   # optional; consume the signal whose payload matches
       timeout: <dur>                 # optional; on expiry -> retryable_failure (no payload)
       output_schema: { ... }         # optional; validates the delivered payload
 
@@ -388,6 +389,44 @@ before opening a PR). Signals are durable and buffered: journaled on receipt eve
 before the `await` is reached, consumed earliest-first per name, and never lost
 across a restart. No container is needed. Deliver one with **awf signal** (see
 **awf**(1)).
+
+**where**
+:   Optional. A **bounded boolean** expression selecting *which* buffered signal
+    of that name to consume. Without `where:`, signals are consumed
+    earliest-first per name (the default above). With `where:`, the engine
+    consumes the **earliest-seq** buffered signal whose **payload satisfies the
+    expression**; non-matching signals stay buffered for other awaits. This
+    correlates an async/out-of-band signal to the right work item — for instance,
+    a `map` body that awaits the `oob-hit` whose `candidate_id` equals its own
+    item, regardless of arrival order.
+
+    The expression is the same bounded boolean form as `if`/`loop`/`gate`
+    conditions: comparisons plus `&&` / `||` / `!`, **no arithmetic**. `{{ … }}`
+    slots inside it substitute from the surrounding scope (e.g. `{{ hyp.id }}`
+    for a `map` item's `as` binding) **before** matching; **bare identifiers
+    resolve against the delivered signal's JSON payload** (e.g. `candidate_id` is
+    `payload.candidate_id`).
+
+    **Quoting (required for string correlation values).** A `{{ … }}` slot
+    substitutes its *rendered text* into the expression before the expression is
+    parsed. To compare against a **string** value you MUST wrap the slot in
+    literal double-quotes: `where: 'candidate_id == "{{ hyp.id }}"'`. With a
+    string `hyp.id` of `a`, the unquoted form `candidate_id == {{ hyp.id }}`
+    renders to `candidate_id == a`, where the bare `a` parses as a *payload
+    reference* (an identifier), not the string literal `"a"` — so it never
+    matches (and typically fails to resolve). The quoted form renders to
+    `candidate_id == "a"`, a string-literal comparison, which is what you want.
+    Numeric correlation values (e.g. `count == {{ n }}`) need no quotes — a bare
+    number parses as a number literal. (This mirrors how any bounded-boolean
+    field treats a bare identifier as a reference; see **TEMPLATING AND TYPED
+    OUTPUTS**.)
+
+    A signal whose payload is not a JSON object is skipped by the matcher (never
+    consumed by a `where:`). If no buffered signal matches before `timeout`, the
+    await is a `retryable_failure` exactly as if no signal had arrived. Because
+    matching reads payload fields, pair `where:` with `output_schema:` when the
+    payload shape matters. A `where:` clause that is not a valid bounded boolean
+    expression is rejected at validation (**AWF1036**).
 
 # CONTROL FLOW AND THE GATE
 
