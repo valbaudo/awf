@@ -238,6 +238,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 			fprintf(stderr, "awf resume: build agent registry: %v\n", err)
 			return ExitUsage
 		}
+		// C3: re-register the agents: roles on resume so `uses: <role>` resolves
+		// and the role's pinned runtime is re-resolved for the drift check. The
+		// definition digest already pinned the role bindings (a changed agents:
+		// has hard-errored at the digest mismatch above), so re-registration is
+		// the same deterministic resolution as run-start.
+		if err := registerRoles(reg, ld.Workflow); err != nil {
+			fprintf(stderr, "awf resume: register agent roles: %v\n", err)
+			return ExitUsage
+		}
 		r.Resolver = reg
 	}
 

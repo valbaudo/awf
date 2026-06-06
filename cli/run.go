@@ -186,6 +186,13 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 			fprintf(stderr, "awf run: build agent registry: %v\n", err)
 			return ExitUsage
 		}
+		// C3: register one DerivedAdapter per declared agents: role on top of the
+		// base adapters, so `uses: <role>` resolves and the role is pinned as a
+		// first-class runtime. Same fail-loud path as an unknown adapter.
+		if err := registerRoles(reg, ld.Workflow); err != nil {
+			fprintf(stderr, "awf run: register agent roles: %v\n", err)
+			return ExitUsage
+		}
 		r.Resolver = reg
 	}
 

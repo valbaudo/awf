@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/awfllm"
@@ -11,6 +12,7 @@ import (
 	"github.com/valbaudo/awf/agent/droid"
 	"github.com/valbaudo/awf/agent/goose"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/ir"
 )
 
 // defaultAgentEnv is the union of every registered adapter's DefaultEnvAllowlist.
@@ -155,4 +157,68 @@ func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agen
 		return nil, fmt.Errorf("cli: buildAgentRegistry: register awf/llm adapter: %w", err)
 	}
 	return &reg, nil
+}
+
+// registerRoles registers one DerivedAdapter per declared agents: role, AFTER
+// the base adapters are in reg. Each role's model/system_prompt/output_schema
+// fold into the role with: as opaque keys (the base adapter reads them); the
+// derived adapter then overlays the step's own with: ON TOP of that at dispatch
+// time. Registering under the role name makes the role a first-class pinned
+// runtime (run.started.Runtimes), so resume drift-checks its resolved base
+// version (cli/runtimes.go's resolveRuntimes Lookup is unchanged).
+//
+// A role whose uses: base is unregistered → *agent.ErrAdapterNotFound; a role
+// name colliding with a registered ref → *agent.ErrAdapterAlreadyRegistered
+// (defense — AWF1033 already rejects '/' role names statically, but a bare
+// collision must still fail loud rather than silently overwrite a base adapter).
+func registerRoles(reg *agent.Registry, wf *ir.Workflow) error {
+	if wf == nil || len(wf.Agents) == 0 {
+		return nil
+	}
+	// Deterministic order: sort role names so a duplicate/lookup error is stable.
+	names := make([]string, 0, len(wf.Agents))
+	for n := range wf.Agents {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		role := wf.Agents[name]
+		base, ok := reg.Lookup(role.Uses)
+		if !ok {
+			return &agent.ErrAdapterNotFound{Ref: role.Uses}
+		}
+		if err := reg.Register(agent.NewDerivedAdapter(name, base, roleWithFor(role))); err != nil {
+			return fmt.Errorf("cli: register role %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// roleWithFor folds the role's convenience fields (model, system_prompt,
+// output_schema) into the role with: as opaque keys — the canonical place the
+// engine deposits them so the base adapter reads them uniformly with a step's
+// own with:. Never reads an existing with: key for its decision (only sets the
+// three convenience keys when non-empty and ABSENT, so an explicit role with:
+// value still wins). The result is a fresh map (it never aliases role.With).
+func roleWithFor(role ir.AgentRole) ir.RawConfig {
+	out := make(ir.RawConfig, len(role.With)+3)
+	for k, v := range role.With {
+		out[k] = v
+	}
+	if role.Model != "" {
+		if _, set := out["model"]; !set {
+			out["model"] = role.Model
+		}
+	}
+	if role.SystemPrompt != "" {
+		if _, set := out["system_prompt"]; !set {
+			out["system_prompt"] = role.SystemPrompt
+		}
+	}
+	if role.OutputSchema != nil {
+		if _, set := out["output_schema"]; !set {
+			out["output_schema"] = map[string]any(*role.OutputSchema)
+		}
+	}
+	return out
 }

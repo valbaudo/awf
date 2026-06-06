@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"testing"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/agent/droid"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/ir"
 )
 
 func TestMergeWorkflowEnv(t *testing.T) {
@@ -209,6 +212,129 @@ func TestBuildAgentRegistry_RegistersAWFLLM(t *testing.T) {
 	}
 	if _, ok := reg.Lookup("awf/llm"); !ok {
 		t.Error("awf/llm not registered")
+	}
+}
+
+func TestRegisterRoles_RegistersDerivedAdapter(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	reg, err := buildAgentRegistry([]string{"ANTHROPIC_API_KEY"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	wf := &ir.Workflow{
+		Agents: map[string]ir.AgentRole{
+			"auditor": {
+				Uses:  claude.AdapterRef,
+				Model: "opus",
+				With:  ir.RawConfig{"mcp_servers": []any{"m"}},
+			},
+		},
+	}
+	if err := registerRoles(reg, wf); err != nil {
+		t.Fatalf("registerRoles: %v", err)
+	}
+	a, ok := reg.Lookup("auditor")
+	if !ok {
+		t.Fatal("Lookup missed the auditor role")
+	}
+	if _, isDerived := a.(*agent.DerivedAdapter); !isDerived {
+		t.Errorf("auditor adapter type = %T, want *agent.DerivedAdapter", a)
+	}
+	if a.Ref() != "auditor" {
+		t.Errorf("Ref = %q, want %q", a.Ref(), "auditor")
+	}
+}
+
+func TestRegisterRoles_NilOrEmptyAgents_NoOp(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	reg, err := buildAgentRegistry([]string{"ANTHROPIC_API_KEY"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	if err := registerRoles(reg, nil); err != nil {
+		t.Errorf("registerRoles(nil) = %v, want nil", err)
+	}
+	if err := registerRoles(reg, &ir.Workflow{}); err != nil {
+		t.Errorf("registerRoles(empty agents) = %v, want nil", err)
+	}
+}
+
+func TestRegisterRoles_UnregisteredBase_ErrAdapterNotFound(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	reg, err := buildAgentRegistry([]string{"ANTHROPIC_API_KEY"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	wf := &ir.Workflow{
+		Agents: map[string]ir.AgentRole{
+			"ghost": {Uses: "vendor/never-registered"},
+		},
+	}
+	err = registerRoles(reg, wf)
+	var notFound *agent.ErrAdapterNotFound
+	if !errors.As(err, &notFound) {
+		t.Fatalf("registerRoles error = %v, want *agent.ErrAdapterNotFound", err)
+	}
+	if notFound.Ref != "vendor/never-registered" {
+		t.Errorf("ErrAdapterNotFound.Ref = %q, want %q", notFound.Ref, "vendor/never-registered")
+	}
+}
+
+func TestRegisterRoles_NameCollidesWithRegisteredRef_ErrAlreadyRegistered(t *testing.T) {
+	// AWF1033 already rejects '/' in role names statically, but a defensive
+	// run-start collision (a role whose name equals a registered ref) must still
+	// surface *ErrAdapterAlreadyRegistered from Registry.Register.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	reg, err := buildAgentRegistry([]string{"ANTHROPIC_API_KEY"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	wf := &ir.Workflow{
+		Agents: map[string]ir.AgentRole{
+			claude.AdapterRef: {Uses: claude.AdapterRef},
+		},
+	}
+	err = registerRoles(reg, wf)
+	var dup *agent.ErrAdapterAlreadyRegistered
+	if !errors.As(err, &dup) {
+		t.Fatalf("registerRoles error = %v, want *agent.ErrAdapterAlreadyRegistered", err)
+	}
+}
+
+func TestRoleWithFor_FoldsConvenienceKeys(t *testing.T) {
+	schema := ir.JSONSchema{"type": "object"}
+	role := ir.AgentRole{
+		Uses:         claude.AdapterRef,
+		Model:        "opus",
+		SystemPrompt: "audit",
+		OutputSchema: &schema,
+		With:         ir.RawConfig{"mcp_servers": []any{"m"}},
+	}
+	got := roleWithFor(role)
+	if got["model"] != "opus" {
+		t.Errorf("model = %v, want opus", got["model"])
+	}
+	if got["system_prompt"] != "audit" {
+		t.Errorf("system_prompt = %v, want audit", got["system_prompt"])
+	}
+	if got["output_schema"] == nil {
+		t.Errorf("output_schema absent, want folded")
+	}
+	if got["mcp_servers"] == nil {
+		t.Errorf("mcp_servers dropped, want preserved from role with:")
+	}
+}
+
+func TestRoleWithFor_ExplicitWithKeyWins(t *testing.T) {
+	// An explicit with:.model must NOT be clobbered by the convenience Model field.
+	role := ir.AgentRole{
+		Uses:  claude.AdapterRef,
+		Model: "opus",
+		With:  ir.RawConfig{"model": "sonnet"},
+	}
+	got := roleWithFor(role)
+	if got["model"] != "sonnet" {
+		t.Errorf("model = %v, want sonnet (explicit with: wins over convenience field)", got["model"])
 	}
 }
 
