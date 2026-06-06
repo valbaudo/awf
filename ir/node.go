@@ -109,6 +109,7 @@ type Map struct {
 	Concurrency int      `json:"concurrency"`
 	MinSuccess  *Ratio   `json:"min_success,omitempty"`
 	Body        NodeList `json:"body"`
+	Reduce      *Reduce  `json:"reduce,omitempty"`
 }
 
 func (*If) isNode()       {}

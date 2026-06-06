@@ -178,6 +178,35 @@ func TestDigestFoldsAgents(t *testing.T) {
 	}
 }
 
+func TestDigestFoldsReduce(t *testing.T) {
+	// A reduce: clause on a map is part of the definition: declaring it changes
+	// the digest (so resume hard-errors on a changed reducer), while a nil
+	// Reduce leaves the digest byte-identical (omitempty backwards-compat).
+	quorum := Ratio("2")
+	withReduce := sampleWorkflow()
+	withReduce.Graph = append(withReduce.Graph,
+		&Map{Over: "input.items", As: "item", Container: "lab",
+			Body:   NodeList{&CodeStep{ID: "b", Run: "x"}},
+			Reduce: &Reduce{Quorum: &quorum, Over: "vulnerable"}},
+	)
+	dReduce, err := withReduce.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noReduce := sampleWorkflow()
+	noReduce.Graph = append(noReduce.Graph,
+		&Map{Over: "input.items", As: "item", Container: "lab",
+			Body: NodeList{&CodeStep{ID: "b", Run: "x"}}},
+	)
+	dNo, err := noReduce.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dReduce == dNo {
+		t.Fatalf("reduce: did not change the digest (got %s for both)", dReduce)
+	}
+}
+
 func TestDigestStableAcrossRoundTrip(t *testing.T) {
 	wf := sampleWorkflow()
 	d1, err := wf.ComputeDigest(nil)
