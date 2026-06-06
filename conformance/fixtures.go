@@ -982,3 +982,30 @@ graph:
             system_prompt: "you are a helpful assistant"
             prompt: "revise per the critique (else-fork)"
 `, fakeImageDigest)
+
+// artifactChannelWorkflow is the SP1 artifact-channel fixture (Bucket: artifacts).
+// A producer `recon` in container `lab` declares a NAMED output_files artifact
+// `report`; a consumer `hunt` in a DISTINCT container `box` stages it via
+// input_files at a different in-container path. This pins the cross-container
+// handoff (content-addressed, resume-safe) the man page's "Artifact channel"
+// section promises. retry: { attempts: 1 } on both so the run is deterministic
+// against the one-shot fake.
+var artifactChannelWorkflow = fmt.Sprintf(`workflow: conformance-artifacts
+version: 1
+containers:
+  lab:
+    image: %[1]s
+  box:
+    image: %[1]s
+graph:
+  - id: recon
+    container: lab
+    run: "./recon.sh"
+    retry: { attempts: 1 }
+    output_files: { report: /out/report.md }
+  - id: hunt
+    container: box
+    run: "./hunt.sh"
+    retry: { attempts: 1 }
+    input_files: { /work/report.md: step.recon.files.report }
+`, fakeImageDigest)

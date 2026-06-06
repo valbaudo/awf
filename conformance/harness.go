@@ -256,10 +256,16 @@ func (e *digestMismatchError) Error() string {
 type execProgram struct {
 	cmd string
 	res container.ExecResult
+	// files, when non-nil, are the files the command WRITES into the executing
+	// handle's fs when it runs (SP1 artifact channel — output_files production on
+	// the scripted fake). nil → a plain ProgramExec (no produced files).
+	files map[string][]byte
 }
 
 // preProgramFake wraps factory so every *container.Fake it returns is
-// pre-programmed. Non-fake backends pass through unchanged.
+// pre-programmed. A program with non-nil files uses ProgramExecWithFiles so the
+// command produces those artifacts on exec (SP1). Non-fake backends pass through
+// unchanged.
 func preProgramFake(t *testing.T, factory BackendFactory, programs []execProgram) BackendFactory {
 	t.Helper()
 	return func() container.Backend {
@@ -269,7 +275,11 @@ func preProgramFake(t *testing.T, factory BackendFactory, programs []execProgram
 			return b
 		}
 		for _, p := range programs {
-			fake.ProgramExec(p.cmd, p.res, nil)
+			if p.files != nil {
+				fake.ProgramExecWithFiles(p.cmd, p.res, nil, p.files)
+			} else {
+				fake.ProgramExec(p.cmd, p.res, nil)
+			}
 		}
 		return fake
 	}

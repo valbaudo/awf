@@ -36,6 +36,14 @@
 //     REPLAYED, not re-executed (map_resume_skips_committed_items); skip
 //     inside an item commits item_passed (map_skip_in_item_records_passed —
 //     pins design §E step 5).
+//   - Artifacts (SP1 artifact channel): a producer step's NAMED output_files
+//     artifact is staged into a LATER step's DISTINCT container via input_files
+//     (cross_container_handoff_and_resume). The producer commits a
+//     content-addressed artifact blob; the consumer in another container
+//     resolves→Blobs.Get→CopyTo and commits ok. A run-1 crash of the consumer
+//     (after the producer committed) proves resume folds+skips the producer and
+//     RE-STAGES the consumer from the committed CAS ref in the surviving Blobs
+//     store — content-addressed, resume-safe handoff.
 //   - P6a runtime-image map (Bucket 18): a map whose per-element image: is
 //     runtime-resolved captures each element's content digest into its map.item
 //     commit at first boot (captures_digest_on_first_boot); committed elements
@@ -108,6 +116,7 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("layer2_contract", func(t *testing.T) { testLayer2Contract(t, factory) })
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
+	t.Run("artifacts", func(t *testing.T) { testArtifacts(t, factory) })
 	t.Run("p6a", func(t *testing.T) { testP6a(t, factory) })
 	t.Run("aggregation", func(t *testing.T) { testAggregation(t, factory) })
 	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })
