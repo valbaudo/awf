@@ -135,6 +135,49 @@ func TestDigestFoldsContinues(t *testing.T) {
 	}
 }
 
+func TestDigestFoldsAgents(t *testing.T) {
+	// A top-level agents: role is part of the definition: declaring it changes
+	// the digest (so resume hard-errors on a changed role), while a nil agents:
+	// leaves the digest byte-identical (omitempty backwards-compat).
+	base, err := sampleWorkflow().ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withRole := sampleWorkflow()
+	withRole.Agents = map[string]AgentRole{
+		"auditor": {Uses: "anthropic/claude-code", Model: "opus"},
+	}
+	dRole, err := withRole.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base == dRole {
+		t.Fatalf("declaring agents: did not change the digest (got %s for both)", base)
+	}
+	// A nil agents: must NOT change the digest vs. pre-SP2 workflows.
+	empty := sampleWorkflow()
+	empty.Agents = nil
+	dEmpty, err := empty.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dEmpty != base {
+		t.Fatalf("nil agents: changed the digest: %s vs %s", dEmpty, base)
+	}
+	// A different role uses:/model yields a different digest.
+	other := sampleWorkflow()
+	other.Agents = map[string]AgentRole{
+		"auditor": {Uses: "openai/codex", Model: "gpt-5"},
+	}
+	dOther, err := other.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dOther == dRole {
+		t.Fatalf("different role uses:/model hashed equal: %s", dRole)
+	}
+}
+
 func TestDigestStableAcrossRoundTrip(t *testing.T) {
 	wf := sampleWorkflow()
 	d1, err := wf.ComputeDigest(nil)
