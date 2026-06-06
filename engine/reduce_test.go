@@ -1,0 +1,231 @@
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/valbaudo/awf/clock"
+	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/state"
+)
+
+// reduceRig bundles the dependencies runReduce takes. Mirrors mapRig but is
+// reduce-focused: the run: form needs a programmable fake + a handle for the
+// reducer's declared container.
+type reduceRig struct {
+	ld    *LocalDispatcher
+	fake  *container.Fake
+	clk   *clock.Fake
+	lg    *state.InMemoryLog
+	blobs *state.InMemoryBlobs
+	rs    *RunState
+}
+
+const reduceContainer = "agg"
+
+// newReduceRig builds a rig with a single reducer container (agg) handle and an
+// empty RunState. The quorum form ignores the container; the run form uses it.
+func newReduceRig(t *testing.T) *reduceRig {
+	t.Helper()
+	fake := container.NewFake()
+	h, err := fake.Create(context.Background(), container.ContainerSpec{Name: reduceContainer})
+	if err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+	clk := &clock.Fake{T: testClockEpoch}
+	return &reduceRig{
+		ld:    &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{reduceContainer: h}},
+		fake:  fake,
+		clk:   clk,
+		lg:    state.NewInMemoryLog(clk),
+		blobs: state.NewInMemoryBlobs(),
+		rs:    NewRunState(testRunID, testDigest, nil),
+	}
+}
+
+// minimalReduceWorkflow builds a workflow with one map declaring `reduce` over
+// a container so runCommandReduce's ContainerSpecFor resolves.
+func minimalReduceWorkflow() *ir.Workflow {
+	return &ir.Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]ir.Container{
+			reduceContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
+		},
+		Graph: ir.NodeList{},
+	}
+}
+
+func TestRunReduceQuorumMet(t *testing.T) {
+	rig := newReduceRig(t)
+	branches := []reduceBranch{
+		{N: 0, Outputs: map[string]any{"vulnerable": true}},
+		{N: 1, Outputs: map[string]any{"vulnerable": true}},
+		{N: 2, Outputs: map[string]any{"vulnerable": false}},
+	}
+	q := ir.Ratio("2")
+	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want ok", oc)
+	}
+	nr, ok := rig.rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("no NodeResult committed at %q", testMapPath)
+	}
+	if nr.Outputs["passed"] != true {
+		t.Errorf("passed = %v, want true", nr.Outputs["passed"])
+	}
+	if nr.Outputs["votes"] != 3 {
+		t.Errorf("votes = %v, want 3", nr.Outputs["votes"])
+	}
+	if nr.Outputs["agree"] != 2 {
+		t.Errorf("agree = %v, want 2", nr.Outputs["agree"])
+	}
+}
+
+func TestRunReduceQuorumNotMet(t *testing.T) {
+	rig := newReduceRig(t)
+	branches := []reduceBranch{
+		{N: 0, Outputs: map[string]any{"vulnerable": true}},
+		{N: 1, Outputs: map[string]any{"vulnerable": true}},
+		{N: 2, Outputs: map[string]any{"vulnerable": false}},
+	}
+	q := ir.Ratio("3")
+	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	if oc != OutcomeRetryableFailure {
+		t.Fatalf("Outcome = %q (err=%v), want retryable_failure", oc, err)
+	}
+	if err == nil {
+		t.Fatalf("want a non-nil error explaining the missed quorum")
+	}
+	if _, ok := rig.rs.LookupCompleted(testMapPath); ok {
+		t.Errorf("a not-met quorum must NOT commit a NodeResult at %q (mirrors min_success)", testMapPath)
+	}
+}
+
+func TestRunReduceResumeReplays(t *testing.T) {
+	rig := newReduceRig(t)
+	// Pre-seed a committed reduced result at the node path.
+	rig.rs.RecordCompleted(testMapPath, NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"passed": true}})
+	q := ir.Ratio("2")
+	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+
+	oc, err := runReduce(context.Background(), r, testMapPath, nil, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	if err != nil {
+		t.Fatalf("runReduce (resume): %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want ok (committed reduce replays)", oc)
+	}
+	// No new node.completed event should have been appended (the seed was
+	// in-memory only; the log is empty, so any commit would show up).
+	events, ferr := rig.lg.Fold()
+	if ferr != nil {
+		t.Fatalf("Fold: %v", ferr)
+	}
+	for _, e := range events {
+		if e.Type == EventNodeCompleted {
+			t.Errorf("resume re-committed at %q (found a node.completed) — must replay, not recompute", e.Path)
+		}
+	}
+}
+
+func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
+	rig := newReduceRig(t)
+	mapPath := testMapPath
+
+	// Two branches, each with a committed artifact already in Blobs.
+	row0, err := rig.blobs.Put([]byte("row-zero"))
+	if err != nil {
+		t.Fatalf("Put row0: %v", err)
+	}
+	row1, err := rig.blobs.Put([]byte("row-one"))
+	if err != nil {
+		t.Fatalf("Put row1: %v", err)
+	}
+	branches := []reduceBranch{
+		{N: 0, Outputs: map[string]any{"k": "a"}, Files: map[string]string{"/out/row.csv": row0}},
+		{N: 1, Outputs: map[string]any{"k": "b"}, Files: map[string]string{"/out/row.csv": row1}},
+	}
+
+	// Program the reducer command to produce a typed output + one artifact.
+	rig.fake.ProgramExecWithFiles("./merge.sh", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"csv_rows":2}`),
+	}, nil, map[string][]byte{"/out/versions.csv": []byte("merged-bytes")})
+
+	schema := ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"csv_rows"},
+		"properties":           map[string]any{"csv_rows": map[string]any{"type": "integer"}},
+	}
+	r := &ir.Reduce{
+		Run:          "./merge.sh",
+		Container:    reduceContainer,
+		OutputSchema: &schema,
+		OutputFiles:  ir.OutputFiles{{Name: "csv", Path: "/out/versions.csv"}},
+	}
+
+	oc, err := runReduce(context.Background(), r, mapPath, branches, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	if err != nil {
+		t.Fatalf("runReduce (run): %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want ok", oc)
+	}
+
+	// The reducer's container received the manifest + each branch's artifact.
+	h := rig.ld.Handles[reduceContainer]
+	captured, cerr := rig.fake.CaptureFiles(context.Background(), h, []string{
+		reduceManifestPath,
+		"/work/.awf/branch-0/out/row.csv",
+		"/work/.awf/branch-1/out/row.csv",
+	})
+	if cerr != nil {
+		t.Fatalf("CaptureFiles: %v", cerr)
+	}
+	// Manifest is canonical JSON of the index-ordered branch outputs.
+	var manifest []map[string]any
+	if jerr := json.Unmarshal(captured[0].Content, &manifest); jerr != nil {
+		t.Fatalf("manifest unmarshal: %v (raw=%s)", jerr, captured[0].Content)
+	}
+	if len(manifest) != 2 || manifest[0]["k"] != "a" || manifest[1]["k"] != "b" {
+		t.Errorf("manifest = %v, want index-ordered [{k:a},{k:b}]", manifest)
+	}
+	if string(captured[1].Content) != "row-zero" {
+		t.Errorf("branch-0 artifact = %q, want row-zero", captured[1].Content)
+	}
+	if string(captured[2].Content) != "row-one" {
+		t.Errorf("branch-1 artifact = %q, want row-one", captured[2].Content)
+	}
+
+	// The node committed the reducer's typed output + artifact at the node path.
+	nr, ok := rig.rs.LookupCompleted(mapPath)
+	if !ok {
+		t.Fatalf("no NodeResult committed at %q", mapPath)
+	}
+	if nr.Outputs["csv_rows"] != float64(2) {
+		t.Errorf("csv_rows = %v, want 2", nr.Outputs["csv_rows"])
+	}
+	ref, ok := nr.Files["/out/versions.csv"]
+	if !ok {
+		t.Fatalf("no committed artifact at /out/versions.csv")
+	}
+	got, gerr := rig.blobs.Get(ref)
+	if gerr != nil {
+		t.Fatalf("Get reducer artifact: %v", gerr)
+	}
+	if string(got) != "merged-bytes" {
+		t.Errorf("reducer artifact bytes = %q, want merged-bytes", got)
+	}
+}
