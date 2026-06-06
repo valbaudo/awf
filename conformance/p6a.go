@@ -119,6 +119,8 @@ func testP6a(t *testing.T, factory BackendFactory) {
 	t.Run("captures_digest_on_first_boot", func(t *testing.T) { testP6aCaptureOnFirstBoot(t, factory) })
 	t.Run("resume_replays_committed_items_with_digest", func(t *testing.T) { testP6aResumeReplays(t, factory) })
 	t.Run("unavailable_image_is_item_failed_with_reason", func(t *testing.T) { testP6aUnavailableItemFailed(t, factory) })
+	t.Run("empty_runtime_image_is_hard_error", func(t *testing.T) { testP6aEmptyRuntimeImageIsHardError(t, factory) })
+	t.Run("mixed_tally_distinguishes_causes", func(t *testing.T) { testP6aMixedTallyDistinguishesCauses(t, factory) })
 }
 
 // (1) The runtime-resolved digest is captured into each element's map.item
@@ -237,10 +239,159 @@ func testP6aUnavailableItemFailed(t *testing.T, factory BackendFactory) {
 	if count != 3 {
 		t.Fatalf("map.item count = %d, want 3", count)
 	}
-	if items[1].status != engine.ItemFailed || items[1].reason != "image_unavailable" {
-		t.Errorf("item N=1 = {status:%q reason:%q}, want {item_failed image_unavailable}", items[1].status, items[1].reason)
+	if items[1].status != engine.ItemFailed || items[1].reason != engine.ReasonImageUnavailable {
+		t.Errorf("item N=1 = {status:%q reason:%q}, want {item_failed %q}", items[1].status, items[1].reason, engine.ReasonImageUnavailable)
 	}
 	if items[0].status != engine.ItemPassed || items[2].status != engine.ItemPassed {
 		t.Errorf("items 0/2 statuses = %q/%q, want item_passed", items[0].status, items[2].status)
+	}
+}
+
+// (4) An empty-rendered map.image is a DETERMINISTIC DEFINITION error — it must
+// fail the whole map as permanent_failure (like an unrenderable `over`), NOT as
+// a tolerated item_failed. Worklist has two elements: item0's image renders to
+// a real ref, item1's image field is empty (renders to "").
+func testP6aEmptyRuntimeImageIsHardError(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	// 2-item worklist where item0's image renders to "" (a deterministic
+	// definition error). Even though min_success: 0.5 would tolerate one failed
+	// item, an empty/render fault is a HARD permanent_failure for the whole map —
+	// it must surface regardless of min_success.
+	f := preProgramFakeP6a(t, factory,
+		nil,
+		nil,
+		nil)
+	// item0 has image:"" — the template "{{ v.image }}" renders to "".
+	h := newHarnessWithInput(t, f, p6aRuntimeImageWorkflow,
+		p6aItems([2]string{"", "n0"}, [2]string{p6aImgA, "n1"}))
+	oc, err := h.runWorkflow(t)
+	// A render-to-empty is a deterministic definition error: the whole map must
+	// fail as permanent_failure, not succeed (even partially).
+	if oc == engine.OutcomeOK {
+		t.Fatalf("outcome = %q, want permanent_failure (empty image is a hard definition error)", oc)
+	}
+	if oc != engine.OutcomePermanentFailure {
+		t.Errorf("outcome = %q, want %q", oc, engine.OutcomePermanentFailure)
+	}
+	if err == nil {
+		t.Error("runWorkflow returned nil error, want non-nil for a permanent_failure")
+	}
+	// A node.failed event must be present at the map path, with permanent_failure.
+	events := mustFoldEvents(t, h)
+	foundNodeFailed := false
+	for _, e := range events {
+		if e.Type == engine.EventNodeFailed && e.Path == "map[0]" {
+			var d engine.NodeFailedData
+			if jsonErr := json.Unmarshal(e.Data, &d); jsonErr != nil {
+				t.Fatalf("unmarshal node.failed: %v", jsonErr)
+			}
+			if d.Outcome == string(engine.OutcomePermanentFailure) {
+				foundNodeFailed = true
+			}
+		}
+	}
+	if !foundNodeFailed {
+		t.Error("no node.failed/permanent_failure at path map[0] — empty-image render must fail the whole map hard")
+	}
+	// The map must NOT have committed any item_passed (the failure is pre-boot).
+	for _, e := range events {
+		if e.Type == engine.EventMapItem {
+			var d engine.MapItemData
+			if jsonErr := json.Unmarshal(e.Data, &d); jsonErr == nil {
+				if d.Status == engine.ItemPassed {
+					t.Errorf("found item_passed for item N=%d — empty-image render must abort the map before any item commits", d.N)
+				}
+			}
+		}
+	}
+}
+
+// (5) A 4-item map with min_success 0.5 where items fail for different reasons:
+// body-pass, image_unavailable, body-fail (non-zero exit), body-pass.
+// Assert: map succeeds (2/4 ≥ 0.5); per-item reason distinguishes infra from
+// body failures (image_unavailable reason ONLY for the Create-failed item).
+func testP6aMixedTallyDistinguishesCauses(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	// 4-item workflow with min_success 0.5.
+	const wf4 = `workflow: conformance-p6a-mixed
+version: 1
+input:
+  type: object
+  additionalProperties: false
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required: [image, name]
+        properties:
+          image: { type: string }
+          name:  { type: string }
+containers:
+  version_lab:
+    resources: { cpu: "1", mem: 1Gi }
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: v
+      container: version_lab
+      image: "{{ v.image }}"
+      concurrency: 4
+      min_success: 0.5
+      body:
+        - id: probe
+          container: version_lab
+          run: "./probe.sh {{ v.name }}"
+          retry: { attempts: 1 }
+`
+	f := preProgramFakeP6a(t, factory,
+		[]execProgram{
+			{cmd: "./probe.sh n0", res: container.ExecResult{ExitCode: 0}},
+			// item1 → image_unavailable (FailCreateForImage), no exec needed
+			{cmd: "./probe.sh n2", res: container.ExecResult{ExitCode: 1}}, // body fail
+			{cmd: "./probe.sh n3", res: container.ExecResult{ExitCode: 0}},
+		},
+		map[string]string{
+			p6aImgA: p6aDigest('a'),
+			p6aImgC: p6aDigest('c'),
+			p6aImgB: p6aDigest('b'),
+		},
+		[]string{p6aGone}, // item1 image is unavailable
+	)
+	h := newHarnessWithInput(t, f, wf4,
+		p6aItems(
+			[2]string{p6aImgA, "n0"}, // 0: boots+passes
+			[2]string{p6aGone, "n1"}, // 1: image_unavailable
+			[2]string{p6aImgC, "n2"}, // 2: boots+body-fails
+			[2]string{p6aImgB, "n3"}, // 3: boots+passes
+		))
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("outcome = %q, want ok (2/4 ≥ 0.5)", oc)
+	}
+	items, count := p6aMapItems(t, h)
+	if count != 4 {
+		t.Fatalf("map.item count = %d, want 4", count)
+	}
+	// item0: boots+passes → item_passed, no reason
+	if items[0].status != engine.ItemPassed || items[0].reason != "" {
+		t.Errorf("item0 = {status:%q reason:%q}, want {item_passed \"\"}", items[0].status, items[0].reason)
+	}
+	// item1: image_unavailable → item_failed + reason
+	if items[1].status != engine.ItemFailed || items[1].reason != engine.ReasonImageUnavailable {
+		t.Errorf("item1 = {status:%q reason:%q}, want {item_failed %q}", items[1].status, items[1].reason, engine.ReasonImageUnavailable)
+	}
+	// item2: boots+body-fails → item_failed, EMPTY reason (body failure, not infra)
+	if items[2].status != engine.ItemFailed || items[2].reason != "" {
+		t.Errorf("item2 = {status:%q reason:%q}, want {item_failed \"\"} (body failure has no infra reason)", items[2].status, items[2].reason)
+	}
+	// item3: boots+passes → item_passed, no reason
+	if items[3].status != engine.ItemPassed || items[3].reason != "" {
+		t.Errorf("item3 = {status:%q reason:%q}, want {item_passed \"\"}", items[3].status, items[3].reason)
 	}
 }

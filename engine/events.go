@@ -63,6 +63,12 @@ const (
 	ItemFailed = "item_failed"
 )
 
+// ReasonImageUnavailable is the sole tolerated per-item failure cause on a
+// map.item's Reason field (P6a): a non-empty runtime image reference that could
+// not be booted. A deterministic render/definition fault is NOT a reason — it
+// fails the whole map as permanent_failure (see engine/map.go).
+const ReasonImageUnavailable = "image_unavailable"
+
 // MapItemData is the payload of a map.item event (Phase 3 slice 3.4).
 // N is 0-based (per engine.ItemPath + spec §5.7). Status is one of
 // ItemPassed / ItemFailed.
@@ -78,12 +84,16 @@ type MapItemData struct {
 	// element booted (P6a) — empty for a statically-imaged map. omitempty keeps
 	// pre-P6a logs and static maps byte-identical (additive, like SnapshotRef).
 	ImageDigest string `json:"image_digest,omitempty"`
-	// Reason is a machine-readable cause for a non-trivial item_failed (P6a) —
-	// e.g. "image_unavailable" / "image_render_failed". Empty for item_passed
-	// and for a plain body failure. Lets the log distinguish "couldn't boot this
-	// element" from "this element ran and produced a negative result" (the
-	// Tekton/Temporal infra-vs-result distinction) WITHOUT a new status — the
-	// two-value Status tally and MinSuccess math are untouched.
+	// Reason is a machine-readable INFRA cause for a tolerated item_failed (P6a):
+	// currently only ReasonImageUnavailable (a non-empty runtime image ref that
+	// could not be booted). Empty for item_passed and for a plain body failure.
+	// It distinguishes "couldn't boot this element" from "this element ran and
+	// produced a negative result" (the Tekton/Temporal infra-vs-result split)
+	// WITHOUT a new status — the two-value Status tally and MinSuccess math are
+	// untouched; it is NOT a quality/result verdict (that is the gate's job). A
+	// deterministic render/definition fault is NOT a reason — it fails the whole
+	// map as permanent_failure. Audit/forensic field: no production reader today
+	// (consumers are the docker RepoDigests follow-up + a future obs projection).
 	Reason string `json:"reason,omitempty"`
 }
 

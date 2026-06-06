@@ -84,9 +84,13 @@ type MapItemRecord struct {
 	N         int
 	ItemValue any
 	Status    string
-	// ImageDigest / Reason are folded from the map.item event (P6a) — the
-	// durable record of what this committed element booted and, on failure, why.
-	// Read-back, never re-derived (run state; ItemValue is re-derived from `over`).
+	// ImageDigest / Reason are folded from the map.item event (P6a) — the durable
+	// record of what this committed element booted and, on failure, why. Read-back,
+	// never re-derived (run state; ItemValue is re-derived from `over`).
+	// Audit/forensic only: NO production reader today — committed map items are
+	// replayed-as-skipped on resume and never re-boot, so the digest is not a
+	// re-pin input. Consumers are the docker RepoDigests follow-up + a future obs
+	// projection.
 	ImageDigest string
 	Reason      string
 }

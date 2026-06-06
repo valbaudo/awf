@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/semaphore"
@@ -166,9 +167,16 @@ func runMap(
 	}
 	wg.Wait()
 
-	// 4. Internal dispatch error (Backend.Create failure, log append failure,
-	//    ctx cancel) is a hard error — distinct from a body-failure outcome.
+	// 4. Internal dispatch error. A per-item runtime-image RENDER fault (bad
+	//    image: template or an empty-rendered image) is a deterministic DEFINITION
+	//    error: fail the whole map LOUD as permanent_failure (like an unrenderable
+	//    `over`), never laundered into a tolerated item_failed. Other internal
+	//    errors (static Create failure, log append, ctx cancel) propagate raw.
 	if statusErr != nil {
+		var rie *renderImageError
+		if errors.As(statusErr, &rie) {
+			return failStep(log, mapPath, OutcomePermanentFailure, statusErr)
+		}
 		return "", statusErr
 	}
 
@@ -181,6 +189,24 @@ func runMap(
 	return OutcomeRetryableFailure, fmt.Errorf("engine.runMap: map %q: %d items passed, %d failed; min_success requires %d",
 		mapPath, pass, fail, minSuccess)
 }
+
+// renderImageError marks a per-item map.image render fault (the image: template
+// failed to substitute, or rendered to an empty/whitespace string) — a
+// DETERMINISTIC definition/data error, not per-item infra. dispatchItem returns
+// it so runMap converts it to a hard permanent_failure for the whole map (fail
+// loud, like an unrenderable `over`) instead of laundering a template bug into a
+// tolerated item_failed under min_success. (image_unavailable — a non-empty ref
+// that won't boot — stays a tolerated per-item failure.)
+type renderImageError struct {
+	itemN int
+	err   error
+}
+
+func (e *renderImageError) Error() string {
+	return fmt.Sprintf("map item-%d: runtime image: failed to render: %v", e.itemN, e.err)
+}
+
+func (e *renderImageError) Unwrap() error { return e.err }
 
 // dispatchItem runs body for one item. Provisions a per-item container handle,
 // builds a per-item dispatcher, recursively walks body, commits the map.item
@@ -210,16 +236,23 @@ func dispatchItem(
 
 	// P6a: runtime-resolved per-element image. Render map.image against THIS
 	// item's scope — the pending MapItemRecord (recorded by runMap before this
-	// goroutine fired) lets {{ <as>.field }} resolve — then boot that image. A
-	// per-item image problem (render failure, or an unavailable image) fails
-	// THIS item only (item_failed + a machine-readable reason, counted against
-	// min_success), never the whole map. A STATIC container's Create failure
-	// stays an internal hard error (below) — that is infra for a definition-
-	// pinned image, not a per-item result.
+	// goroutine fired) lets {{ <as>.field }} resolve — then boot that image.
+	// A render fault (bad template or an empty result) is a deterministic
+	// definition/data error: return a *renderImageError sentinel so runMap fails
+	// the WHOLE map as permanent_failure (fail loud, like an unrenderable `over`).
+	// An unavailable image (a non-empty ref that won't boot) is a per-item
+	// tolerated failure only (item_failed + ReasonImageUnavailable, counted
+	// against min_success). A STATIC container's Create failure stays an internal
+	// hard error (below) — that is infra for a definition-pinned image.
 	if n.Image != "" {
 		rendered, rErr := template.Substitute(string(n.Image), NewScope(runstate, wf, itemPath))
 		if rErr != nil {
-			return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", "image_render_failed")
+			// A render fault is a deterministic definition/data error → fail the
+			// whole map (runMap converts this sentinel to permanent_failure).
+			return "", &renderImageError{itemN: itemN, err: rErr}
+		}
+		if strings.TrimSpace(rendered) == "" {
+			return "", &renderImageError{itemN: itemN, err: fmt.Errorf("map.image %q rendered to an empty string", n.Image)}
 		}
 		spec.Image = rendered
 	}
@@ -227,7 +260,7 @@ func dispatchItem(
 	itemHandle, err := ld.Backend.Create(ctx, spec)
 	if err != nil {
 		if n.Image != "" {
-			return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", "image_unavailable")
+			return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable)
 		}
 		return "", fmt.Errorf("create item-%d container: %w", itemN, err)
 	}
