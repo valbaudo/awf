@@ -42,6 +42,16 @@ type harness struct {
 	input   map[string]any
 	broker  *signal.Broker // slice 3.5 — nil for non-signal fixtures (most buckets)
 
+	// runtimes is written into the FIRST-run run.started event's Runtimes field
+	// (the agent-version pinning slice cli/runtimes.go populates on the real CLI
+	// path). nil for every non-role bucket — `omitempty` then keeps run.started
+	// byte-identical to those buckets. The roles bucket (testRoles) sets it to
+	// the (ref, version, container) pairs it resolved through the registry, the
+	// conformance equivalent of the CLI's resolveRuntimes walk, so it can assert
+	// the role is a first-class pinned runtime. Consulted only on the first-run
+	// branch (resume reads Runtimes back from the log via Fold).
+	runtimes []engine.ResolvedRuntime
+
 	// agentRegistry is ALWAYS non-nil. newHarness initializes it to an empty
 	// *agent.Registry{} so the dispatcher's Resolver field never receives a
 	// typed-nil interface (the Go nil-interface gotcha:
@@ -195,6 +205,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 		}
 		runStartedData, _ := json.Marshal(engine.RunStartedData{
 			RunID: h.runID, WorkflowDigest: digest, InputRef: inputRef,
+			Runtimes: h.runtimes, // nil for non-role buckets (omitempty → byte-identical)
 		})
 		if err := h.log.Append(state.Event{
 			Type: engine.EventRunStarted, Data: runStartedData,

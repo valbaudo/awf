@@ -76,6 +76,13 @@
 //     gate.attempt projects a gen_ai.evaluation.result event (gate_evaluation_result);
 //     a parallel of agent steps rolls up awf.run.cost.usd over leaves only, never
 //     scope spans (cost_rollup_scope_not_summed).
+//   - Roles (SP2 C3): an agents: role `auditor` wraps a fake base adapter; an
+//     agent step `uses: auditor` with a step-local with: resolves the role,
+//     commits its typed verdict (roles), and the fake BASE adapter sees the role
+//     with: overlaid by the step with: (step wins) — model:sonnet (step),
+//     system_prompt:audit (role), mcp_servers:[memclaw] (role — the fleet memory
+//     MCP handle). run.started.Runtimes records (ref=auditor, container=lab), so
+//     the role is a first-class pinned runtime drift-checked on resume.
 //
 // Phase 2 calls RunSuite with container.NewFake (conformance_fake_test.go).
 // Slice 4.6 added RunDockerSuite + conformance_docker_test.go for Buckets
@@ -126,4 +133,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("continues_resume", func(t *testing.T) { testContinuesResume(t, factory) })
 	t.Run("continues_loop_map", func(t *testing.T) { testContinuesLoopMap(t, factory) })
 	t.Run("thread", func(t *testing.T) { testThread(t, factory) })
+	t.Run("roles", func(t *testing.T) { testRoles(t, factory) })
 }
