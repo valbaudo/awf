@@ -889,6 +889,55 @@ graph:
     retry: { attempts: 1 }
 `, fakeImageDigest)
 
+// threadFanOutWorkflow — T10. A common pre-fork ancestor `seed` lives OUTSIDE
+// the parallel; all three branches continues: seed AND share the identical
+// system_prompt. Per E.2.a the assembled cached region (system_prompt + thread)
+// is byte-identical across branches; only with.prompt (the tail) differs. The
+// fake does not cache — this asserts the byte-identity PRECONDITION, not a hit.
+// A per-branch system_prompt would diverge the prefix at byte 0; that negative
+// is a documented caveat (E.2.a/§6), not asserted (the fake cannot model it).
+var threadFanOutWorkflow = fmt.Sprintf(`workflow: conformance-thread-fanout
+version: 1
+containers:
+  seed_c:
+    image: %[1]s
+  c_a:
+    image: %[1]s
+  c_b:
+    image: %[1]s
+  c_c:
+    image: %[1]s
+graph:
+  - id: seed
+    container: seed_c
+    uses: test/chat
+    with:
+      system_prompt: "SHARED-SYSTEM-PROMPT"
+      prompt: "establish shared context"
+  - parallel:
+      - id: branch_a
+        container: c_a
+        uses: test/chat
+        continues: seed
+        with:
+          system_prompt: "SHARED-SYSTEM-PROMPT"
+          prompt: "branch A tail"
+      - id: branch_b
+        container: c_b
+        uses: test/chat
+        continues: seed
+        with:
+          system_prompt: "SHARED-SYSTEM-PROMPT"
+          prompt: "branch B tail"
+      - id: branch_c
+        container: c_c
+        uses: test/chat
+        continues: seed
+        with:
+          system_prompt: "SHARED-SYSTEM-PROMPT"
+          prompt: "branch C tail"
+`, fakeImageDigest)
+
 // threadBranchedWorkflow — T9 runtime half. draft → critique → if/else.
 // BOTH forks continue: critique (a valid, dominating link: critique precedes
 // the if and encloses neither fork). cond is static-true so the `then` fork is
