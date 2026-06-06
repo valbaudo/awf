@@ -90,6 +90,26 @@ func TestOutputFilesGarbageRejected(t *testing.T) {
 	}
 }
 
+// input_files unmarshals as a map of in-container destination path → a static
+// artifact reference (step.<id>.files.<name>), on both code and agent steps.
+func TestInputFilesUnmarshal(t *testing.T) {
+	var cs CodeStep
+	if err := json.Unmarshal([]byte(`{"id":"hunt","run":"x","input_files":{"/work/report.md":"step.recon.files.report"}}`), &cs); err != nil {
+		t.Fatalf("unmarshal code step: %v", err)
+	}
+	if got := cs.InputFiles["/work/report.md"]; got != "step.recon.files.report" {
+		t.Fatalf("code InputFiles[/work/report.md] = %q, want step.recon.files.report", got)
+	}
+
+	var as AgentStep
+	if err := json.Unmarshal([]byte(`{"id":"hunt","uses":"anthropic/claude","input_files":{"/work/report.md":"step.recon.files.report"}}`), &as); err != nil {
+		t.Fatalf("unmarshal agent step: %v", err)
+	}
+	if got := as.InputFiles["/work/report.md"]; got != "step.recon.files.report" {
+		t.Fatalf("agent InputFiles[/work/report.md] = %q, want step.recon.files.report", got)
+	}
+}
+
 // OutputFilesByStepID indexes every code/agent step's output_files in one walk.
 func TestOutputFilesByStepID(t *testing.T) {
 	wf := &Workflow{

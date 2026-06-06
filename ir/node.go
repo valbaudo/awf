@@ -19,27 +19,39 @@ type Node interface{ isNode() }
 // --- Step nodes (flat objects discriminated by run/uses/await) ---
 
 type CodeStep struct {
-	ID             string       `json:"id"`
-	Container      string       `json:"container,omitempty"`
-	Run            string       `json:"run"`
-	Timeout        *Duration    `json:"timeout,omitempty"`
-	OutputSchema   *JSONSchema  `json:"output_schema,omitempty"`
-	OutputFiles    OutputFiles  `json:"output_files,omitempty"`
-	IdempotencyKey *Template    `json:"idempotency_key,omitempty"`
-	Retry          *RetryPolicy `json:"retry,omitempty"`
+	ID           string      `json:"id"`
+	Container    string      `json:"container,omitempty"`
+	Run          string      `json:"run"`
+	Timeout      *Duration   `json:"timeout,omitempty"`
+	OutputSchema *JSONSchema `json:"output_schema,omitempty"`
+	OutputFiles  OutputFiles `json:"output_files,omitempty"`
+	// InputFiles maps an in-container destination path → a static artifact
+	// reference (step.<id>.files.<name>) from a prior step's named output_files.
+	// The engine resolves each to a CAS blob and stages the bytes via
+	// Backend.CopyTo BEFORE this step runs. Static, not a {{ }} template (AWF3007).
+	// Requires a container (rejected on containerless agent steps at runtime).
+	InputFiles     map[string]string `json:"input_files,omitempty"`
+	IdempotencyKey *Template         `json:"idempotency_key,omitempty"`
+	Retry          *RetryPolicy      `json:"retry,omitempty"`
 }
 
 type AgentStep struct {
-	ID             string       `json:"id"`
-	Container      string       `json:"container,omitempty"`
-	Uses           string       `json:"uses"`
-	With           RawConfig    `json:"with,omitempty"`
-	Continues      string       `json:"continues,omitempty"` // id of the prior agent turn to continue (engine-owned thread)
-	OutputSchema   *JSONSchema  `json:"output_schema,omitempty"`
-	OutputFiles    OutputFiles  `json:"output_files,omitempty"`
-	Timeout        *Duration    `json:"timeout,omitempty"`
-	IdempotencyKey *Template    `json:"idempotency_key,omitempty"`
-	Retry          *RetryPolicy `json:"retry,omitempty"`
+	ID           string      `json:"id"`
+	Container    string      `json:"container,omitempty"`
+	Uses         string      `json:"uses"`
+	With         RawConfig   `json:"with,omitempty"`
+	Continues    string      `json:"continues,omitempty"` // id of the prior agent turn to continue (engine-owned thread)
+	OutputSchema *JSONSchema `json:"output_schema,omitempty"`
+	OutputFiles  OutputFiles `json:"output_files,omitempty"`
+	// InputFiles maps an in-container destination path → a static artifact
+	// reference (step.<id>.files.<name>) from a prior step's named output_files.
+	// The engine resolves each to a CAS blob and stages the bytes via
+	// Backend.CopyTo BEFORE this step runs. Static, not a {{ }} template (AWF3007).
+	// Requires a container (rejected on containerless agent steps at runtime).
+	InputFiles     map[string]string `json:"input_files,omitempty"`
+	Timeout        *Duration         `json:"timeout,omitempty"`
+	IdempotencyKey *Template         `json:"idempotency_key,omitempty"`
+	Retry          *RetryPolicy      `json:"retry,omitempty"`
 }
 
 type SignalStep struct {
