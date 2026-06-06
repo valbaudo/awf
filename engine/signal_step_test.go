@@ -250,6 +250,143 @@ func TestRunSignalStep_HalfCommitResume(t *testing.T) {
 	}
 }
 
+// whereSchema accepts {candidate_id: string} objects — used by the keyed-await
+// (where:) tests so the matched payload validates and commits.
+func whereSchema() *ir.JSONSchema {
+	return &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"candidate_id"},
+		"properties":           map[string]any{"candidate_id": map[string]any{"type": "string"}},
+	}
+}
+
+func TestRunSignalStep_WhereMatchesByPayload(t *testing.T) {
+	// Two buffered signals; the where: clause selects seq 2 (candidate_id == "b").
+	// The non-matching seq 1 must stay buffered for another await.
+	b := tempBroker(t)
+	rs := NewRunState("r", "d", nil)
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	blobs := state.NewInMemoryBlobs()
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"a"}`)); err != nil {
+		t.Fatalf("WriteSignal a: %v", err)
+	}
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"b"}`)); err != nil {
+		t.Fatalf("WriteSignal b: %v", err)
+	}
+	ss := &ir.SignalStep{
+		ID:           "wait_oob",
+		Await:        "oob",
+		Where:        `candidate_id == "b"`,
+		OutputSchema: whereSchema(),
+	}
+	// wf.Graph must be non-nil: NewScope→StepPathIndex→WalkNodes dereferences it.
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
+	oc, err := runSignalStep(context.Background(), ss, "wait_oob", wf, rs, nil, log, blobs, &clock.Fake{}, nil, b)
+	if err != nil {
+		t.Fatalf("runSignalStep: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Errorf("outcome = %q, want ok", oc)
+	}
+	nr, ok := rs.LookupCompleted("wait_oob")
+	if !ok {
+		t.Fatal("Completed[wait_oob] not set")
+	}
+	if nr.Outputs["candidate_id"] != "b" {
+		t.Errorf("Outputs[candidate_id] = %v, want b (the where-matched payload)", nr.Outputs["candidate_id"])
+	}
+	// The non-matching seq 1 must still be buffered (consumable plainly).
+	d1, err := b.Receive(context.Background(), "oob", 0)
+	if err != nil {
+		t.Fatalf("Receive remaining: %v", err)
+	}
+	if d1.Seq != 1 {
+		t.Errorf("remaining signal seq=%d, want 1 (non-match must stay buffered)", d1.Seq)
+	}
+}
+
+func TestRunSignalStep_WhereSlotSubstitutes(t *testing.T) {
+	// The {{ run.id }} slot substitutes against the engine scope (run.id == "r")
+	// THEN string-matches the payload. The inner "" quotes are required: run.id
+	// is a string, so the rendered expr is `candidate_id == "r"`.
+	b := tempBroker(t)
+	rs := NewRunState("r", "d", nil)
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	blobs := state.NewInMemoryBlobs()
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"nope"}`)); err != nil {
+		t.Fatalf("WriteSignal nope: %v", err)
+	}
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"r"}`)); err != nil {
+		t.Fatalf("WriteSignal r: %v", err)
+	}
+	ss := &ir.SignalStep{
+		ID:           "wait_oob",
+		Await:        "oob",
+		Where:        `candidate_id == "{{ run.id }}"`,
+		OutputSchema: whereSchema(),
+	}
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
+	oc, err := runSignalStep(context.Background(), ss, "wait_oob", wf, rs, nil, log, blobs, &clock.Fake{}, nil, b)
+	if err != nil {
+		t.Fatalf("runSignalStep: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Errorf("outcome = %q, want ok", oc)
+	}
+	nr, _ := rs.LookupCompleted("wait_oob")
+	if nr.Outputs["candidate_id"] != "r" {
+		t.Errorf("Outputs[candidate_id] = %v, want r (slot-substituted match)", nr.Outputs["candidate_id"])
+	}
+}
+
+func TestRunSignalStep_WhereNoMatchTimesOut(t *testing.T) {
+	// One buffered signal that never matches → blocks → timeout → retryable.
+	b := tempBroker(t)
+	rs := NewRunState("r", "d", nil)
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"a"}`)); err != nil {
+		t.Fatalf("WriteSignal a: %v", err)
+	}
+	timeout := ir.Duration(5 * time.Millisecond)
+	ss := &ir.SignalStep{ID: "wait_oob", Await: "oob", Where: `candidate_id == "zzz"`, Timeout: &timeout}
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
+	oc, err := runSignalStep(context.Background(), ss, "wait_oob", wf, rs, nil, log, state.NewInMemoryBlobs(), &clock.Fake{}, nil, b)
+	if err == nil {
+		t.Fatal("err = nil, want timeout")
+	}
+	if oc != OutcomeRetryableFailure {
+		t.Errorf("outcome = %q, want retryable_failure", oc)
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("err = %v, want 'timeout'", err)
+	}
+}
+
+func TestRunSignalStep_WhereBadSlotIsPermanent(t *testing.T) {
+	// A where: whose {{ }} slot is an unresolved engine ref (step.ghost.x — ghost
+	// is not in wf.Graph) → substitution fails at runtime → permanent_failure
+	// (author bug; re-running is identical, so not retryable).
+	b := tempBroker(t)
+	rs := NewRunState("r", "d", nil)
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"a"}`)); err != nil {
+		t.Fatalf("WriteSignal a: %v", err)
+	}
+	ss := &ir.SignalStep{ID: "wait_oob", Await: "oob", Where: `candidate_id == {{ step.ghost.x }}`}
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
+	oc, err := runSignalStep(context.Background(), ss, "wait_oob", wf, rs, nil, log, state.NewInMemoryBlobs(), &clock.Fake{}, nil, b)
+	if err == nil {
+		t.Fatal("err = nil, want permanent_failure")
+	}
+	if oc != OutcomePermanentFailure {
+		t.Errorf("outcome = %q, want permanent_failure", oc)
+	}
+	if !strings.Contains(err.Error(), "where") {
+		t.Errorf("err = %v, want 'where'", err)
+	}
+}
+
 func TestRunSignalStep_CtxCancelledByPollerSkipsFailStep(t *testing.T) {
 	// M7 fix: when pollControls cancels root ctx + sets runstate.IsCancelled(),
 	// the handler returns ctx.Err() WITHOUT emitting node.failed (which would

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
+	"github.com/valbaudo/awf/template"
 )
 
 // runSignalStep is the await-step handler (spec §4.3 + Phase 3 design §F).
@@ -39,7 +41,7 @@ func runSignalStep(
 	ctx context.Context,
 	ss *ir.SignalStep,
 	path string,
-	_ *ir.Workflow,
+	wf *ir.Workflow,
 	runstate *RunState,
 	_ Dispatcher,
 	log state.Log,
@@ -97,7 +99,30 @@ func runSignalStep(
 		if ss.Timeout != nil {
 			timeout = time.Duration(*ss.Timeout)
 		}
-		d, rerr := broker.Receive(ctx, ss.Await, timeout)
+		// Keyed consumption (spec §3.5 C5). With ss.Where, build a payload
+		// predicate: substitute {{ … }} slots against the ENGINE scope ONCE
+		// (the correlation value, e.g. {{ hyp.id }}, is constant across
+		// candidates), parse the rendered string as a bounded boolean Expr,
+		// then match each candidate payload via a payloadScope. The earliest
+		// matching signal is consumed; non-matching signals stay buffered.
+		var (
+			d    signal.Delivery
+			rerr error
+		)
+		if ss.Where != "" {
+			match, perr := buildWherePredicate(ss.Where, runstate, wf, path)
+			if perr != nil {
+				// Slot substitution / expr parse failed at runtime — an author
+				// bug the validator should have caught, but a {{ }} ref that
+				// resolves to a composite (AWF4004) or an unresolved engine ref
+				// (AWF4002) only surfaces here. Permanent: re-running is identical.
+				return failStep(log, path, OutcomePermanentFailure,
+					fmt.Errorf("signal %q where: %w", ss.Await, perr))
+			}
+			d, rerr = broker.ReceiveMatching(ctx, ss.Await, timeout, match)
+		} else {
+			d, rerr = broker.Receive(ctx, ss.Await, timeout)
+		}
 		if rerr != nil {
 			if errors.Is(rerr, context.DeadlineExceeded) {
 				return failStep(log, path, OutcomeRetryableFailure,
@@ -205,4 +230,33 @@ func runSignalStep(
 		OutputsRef: payloadRef,
 	})
 	return OutcomeOK, nil
+}
+
+// buildWherePredicate compiles a signal step's where: clause into a payload
+// matcher. The {{ … }} slots substitute ONCE against the engine scope (the
+// correlation value is constant across candidate signals); the rendered string
+// parses as a bounded boolean Expr (reusing the SAME evaluator as if/loop/gate —
+// no arithmetic). The returned MatchFunc parses each candidate payload as JSON
+// and evaluates the expr against a payloadScope. A candidate whose payload is
+// not a JSON object → (false, err) so tryConsumeMatching SKIPS it (leaves it
+// buffered) rather than consuming it.
+func buildWherePredicate(where string, runstate *RunState, wf *ir.Workflow, path string) (signal.MatchFunc, error) {
+	engineScope := NewScope(runstate, wf, path)
+	rendered, err := template.Substitute(where, engineScope)
+	if err != nil {
+		return nil, fmt.Errorf("substitute where slots: %w", err)
+	}
+	expr, err := template.ParseExpr(template.UnwrapEnvelope(rendered))
+	if err != nil {
+		return nil, fmt.Errorf("parse where expression %q: %w", rendered, err)
+	}
+	return func(payload []byte) (bool, error) {
+		var obj map[string]any
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber() // keep numbers as json.Number — the evaluator's toFloat handles it
+		if derr := dec.Decode(&obj); derr != nil {
+			return false, fmt.Errorf("where: signal payload is not a JSON object: %w", derr)
+		}
+		return template.EvalBool(expr, newPayloadScope(obj))
+	}, nil
 }
