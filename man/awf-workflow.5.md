@@ -199,6 +199,7 @@ format never hard-codes one harness's options.
     - id: <id>
       container: <name>             # optional; required unless the runtime is containerless
       uses: <agent-runtime-ref>      # e.g. anthropic/claude-code, factory/droid, or block/goose
+      continues: <id>                # optional; id of a prior agent turn this turn continues
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
       output_files: [<path>, ...]    # optional
@@ -222,6 +223,20 @@ format never hard-codes one harness's options.
 :   Required. Opaque runtime config (one runtime takes `{model, prompt, tools,
     max_turns}`; another takes `{models, budget}`). The core never reads its
     keys.
+
+**continues**
+:   Optional (`continues:` field). The `id` of an agent step that **dominates** this turn (an earlier
+    step guaranteed to have run on every path reaching this one) and uses the
+    **same** agent runtime. The engine prepends that step's conversation (its
+    prior turns, verbatim) before this turn's prompt, so the model continues one
+    thread. You may **not** inline `messages:` in `with:` — the conversation is
+    engine-owned and durable. A target inside a `gate`/`map` this turn is
+    *outside* of, or reachable only through **nested loops**, is rejected (it is
+    not addressable); to gate a conversation, gate its **leaf** turn or place a
+    whole sub-conversation inside one gate's `generate`. A step inside a gate's
+    `evaluate:` block may not use `continues` (the evaluator judges in a fresh
+    context). For map/parallel fan-out caching, branches must share
+    `system_prompt` (the prefix cache matches from the start).
 
 **output_schema**
 :   Required iff a `step.<id>.<field>` of this step is referenced elsewhere.
