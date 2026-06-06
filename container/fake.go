@@ -64,6 +64,13 @@ type Fake struct {
 	// shipped no mechanism; this is the recording slot.
 	Calls []Cmd
 
+	// CreateSpecs records every ContainerSpec passed to Create, in order
+	// (test assertion aid — mirrors Calls for Exec). The P6a wiring test reads
+	// PullIfAbsent / Image off it to verify the engine flags a map's
+	// runtime-resolved image spec for the backend to pull. Shallow copies: the
+	// recorded scalars (Name/Image/PullIfAbsent) are what tests assert on.
+	CreateSpecs []ContainerSpec
+
 	// "Any" programmed response (slice 5.3 Task 16). Used by tests where
 	// the Cmd.Run is built by the caller (the test's SUBJECT), not the
 	// key to look up. nil = unset; takes effect only as a fall-through
@@ -150,6 +157,9 @@ func (f *Fake) Capabilities() Caps {
 func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Record BEFORE the fault check (mirrors Exec/Calls): a Create was requested
+	// with this spec, so a test observes it even if the lookup fails it.
+	f.CreateSpecs = append(f.CreateSpecs, spec)
 	if f.failCreate[spec.Image] {
 		return Handle{}, fmt.Errorf("container/fake: Create: image %q programmed unavailable", spec.Image)
 	}

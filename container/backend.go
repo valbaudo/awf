@@ -192,6 +192,21 @@ type ContainerSpec struct {
 	// declarations would.
 	Cmd []string
 
+	// PullIfAbsent requests that Create ensure Image is present in the local
+	// cache before starting it — image-mode only (P6a). The engine sets it
+	// solely for a map's runtime-resolved per-element image: (engine/map.go),
+	// where the image is learned at dispatch and is generally not pre-pulled.
+	// Statically-declared containers leave it false: they are pre-provisioned
+	// from a validator-pinned (digest) image, so the run-start pre-pull suffices.
+	//
+	// Because a runtime-resolved image cannot be validator-pinned, a backend
+	// honoring this flag MUST require Image to be digest-pinned (name@sha256:…)
+	// so the booted bytes are content-addressed and resume-reproducible, and
+	// MUST report the booted digest on Handle.ResolvedImageDigest. The Docker
+	// backend implements this; backends that ignore image: (native) advertise
+	// Caps.RuntimeImage=false and are rejected by the CLI guard before dispatch.
+	PullIfAbsent bool
+
 	// Compose-mode fields (slice 4.3).
 	Compose     []byte
 	ComposePath string

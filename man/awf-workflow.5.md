@@ -90,10 +90,11 @@ A container is backed by either a single digest-pinned image or a Compose projec
 **image**
 :   One of `image`/`compose`. A single OCI image, content-addressed by digest. A
     mutable tag is rejected, because it would break resume. The sole exception is
-    a `map`'s per-element `image:` (see CONTROL FLOW, map): it is resolved and
-    digest-captured at each element's first boot and recorded in the journal; a
-    committed element is replayed-as-skipped on resume and never re-boots or
-    re-resolves the reference. A container declared solely to receive a `map`'s
+    a `map`'s per-element `image:` (see CONTROL FLOW, map): it is rendered from the
+    worklist at each element's first boot, where it must itself be a `@sha256:`
+    digest (a mutable tag fails that element), then pulled and digest-captured in
+    the journal; a committed element is replayed-as-skipped on resume and never
+    re-boots or re-resolves the reference. A container declared solely to receive a `map`'s
     `image:` carries `resources:` with no `image:`/`compose:`; it MUST NOT also
     declare a static `image:`/`compose:` (it would be silently overwritten —
     validator AWF1025).
@@ -427,23 +428,21 @@ per-element handle and any resources; with `image:` it carries `resources:`
 alone and MUST NOT also declare a static `image:`/`compose:` (a static pin would
 be silently overwritten per-element — rejected by the validator, AWF1025).
 
-NOTE: no shipping backend boots a `map` `image:` yet — `awf validate` accepts
-such a workflow but `awf run`/`resume` rejects it at run start (the native and
-docker backends advertise no runtime-image capability). Runtime-image support on
-docker is a tracked follow-up; the field is documented here as the stable format
-contract.
+NOTE: the docker backend boots a `map` `image:`; the native backend does not (it
+advertises no runtime-image capability, so `awf run`/`resume` rejects such a
+workflow at run start on native). On docker the rendered reference MUST be a
+`@sha256:` content digest — a mutable tag is rejected — because the booted bytes
+must be content-addressed for resume to be reproducible.
 
 A `map`'s `image:` is rendered from worklist data a previous step produced —
 which may be agent-authored. The rendered reference is therefore not part of the
-trusted, validator-pinned definition: the runtime will boot whatever it resolves
-to. Treat the producing step as the trust boundary — until the planned hardening
-lands, the runtime boots whatever the reference resolves to, including a mutable
-tag, so do not feed unvalidated agent output into `image:`. Planned hardening
-(**not** yet implemented) — requiring the rendered reference to resolve to an
-`@sha256:` content digest at first boot (so a fabricated or mistyped reference
-fails to resolve rather than pulling an arbitrary mutable tag), plus an optional
-allowlist of permitted registries — will land with the docker backend's
-first-boot resolve-then-pin; it is **not** a static-validation guarantee.
+trusted, validator-pinned definition: the runtime boots whatever it resolves to.
+Treat the producing step as the trust boundary. The docker backend requires the
+rendered reference to be an `@sha256:` content digest, so a fabricated or mistyped
+mutable tag is rejected before any pull — failing that element rather than pulling
+arbitrary moving bytes. This is enforced at first boot (the earliest the reference
+is known), **not** as a static-validation guarantee; an optional allowlist of
+permitted registries remains planned.
 
 A later step reads a `map`'s per-item results in aggregate with a `step.<id>`
 reference to a step inside the body, evaluated from outside the map: it lifts that

@@ -209,7 +209,15 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 			_ = backend.Destroy(teardownCtx, h)
 		}
 	}()
+	// A map's runtime-resolved image: target (P6a) is NOT pre-provisioned here:
+	// it carries no declared image (AWF1025), and its per-element image is
+	// learned + Created at dispatch time (engine/map.go). Pre-Creating it would
+	// fail (empty image). Skip it; the map handler owns its lifecycle.
+	mapImageTargets := ir.MapImageTargets(ld.Workflow)
 	for name := range ld.Workflow.Containers {
+		if mapImageTargets[name] {
+			continue
+		}
 		h, err := backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
 		if err != nil {
 			fprintf(stderr, "awf run: create container %q: %v\n", name, err)

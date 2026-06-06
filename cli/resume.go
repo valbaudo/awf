@@ -291,7 +291,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// is replayed, not recomputed). Every other container — and a
 	// snapshot:workspace one with NO ref (crashed before its first commit) —
 	// takes the Create path: infra rebuilt from its image/compose recipe.
+	// A map's runtime-resolved image: target (P6a) is NOT pre-provisioned here
+	// (nor restored): it carries no declared image, and its per-element image is
+	// learned + Created at dispatch time (engine/map.go). Skip it on resume too —
+	// the map handler re-creates per-item handles for the uncommitted frontier.
+	mapImageTargets := ir.MapImageTargets(ld.Workflow)
 	for name, c := range ld.Workflow.Containers {
+		if mapImageTargets[name] {
+			continue
+		}
 		var h container.Handle
 		var err error
 		if c.Snapshot == "workspace" && rs.SnapshotRefs[name] != "" {

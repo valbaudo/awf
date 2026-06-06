@@ -255,6 +255,11 @@ func dispatchItem(
 			return "", &renderImageError{itemN: itemN, err: fmt.Errorf("map.image %q rendered to an empty string", n.Image)}
 		}
 		spec.Image = rendered
+		// Runtime-resolved image: it was learned just now, so it cannot have
+		// been pre-provisioned — the backend must pull it (and, for a real
+		// backend, require a digest pin + capture the booted digest). The fake
+		// ignores the flag; its digest comes from the programmed table.
+		spec.PullIfAbsent = true
 	}
 
 	itemHandle, err := ld.Backend.Create(ctx, spec)

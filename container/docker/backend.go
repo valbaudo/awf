@@ -2,15 +2,19 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v2/pkg/api"
 	dockerContainer "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	units "github.com/docker/go-units"
 
@@ -146,12 +150,11 @@ func New(cli *client.Client, runID string, blobs state.Blobs, opts ...Option) (*
 
 // Capabilities advertises SnapshotFSCoW per Phase 4 design decision 4. The
 // real Snapshot + Restore implementations live in snapshot.go (slice 4.4).
-// RuntimeImage is false for now: docker cannot yet honor a map's runtime-
-// resolved image: (the first-boot pull + RepoDigests capture is a P6a
-// follow-up), so the CLI guard cleanly rejects a runtime-image workflow on
-// docker rather than crashing at run-start. The follow-up flips this to true.
+// RuntimeImage is true: Create honors a map's runtime-resolved image: by
+// pulling the digest-pinned ref at dispatch and reporting it on
+// Handle.ResolvedImageDigest (the PullIfAbsent path below).
 func (*Backend) Capabilities() container.Caps {
-	return container.Caps{Snapshot: container.SnapshotFSCoW, RuntimeImage: false}
+	return container.Caps{Snapshot: container.SnapshotFSCoW, RuntimeImage: true}
 }
 
 // Create materialises a container from the digest-pinned image in spec.Image,
@@ -165,6 +168,13 @@ func (*Backend) Capabilities() container.Caps {
 // cli/run.go onward) are responsible for pre-pulling via client.ImagePull
 // before invoking Create. The integ tests demonstrate the pattern via
 // the pullImage helper.
+//
+// Exception (P6a): when spec.PullIfAbsent is set — a map's runtime-resolved
+// per-element image: — Create itself pulls the image first (it cannot have
+// been pre-provisioned, since the ref is learned at dispatch). That ref MUST
+// be digest-pinned (name@sha256:…) so the booted bytes are content-addressed
+// and resume-reproducible; a mutable tag is rejected. The booted digest is
+// reported on Handle.ResolvedImageDigest.
 func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (container.Handle, error) {
 	if err := ctx.Err(); err != nil {
 		return container.Handle{}, err
@@ -178,6 +188,18 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	// Image-mode (existing slice 4.1 path).
 	if spec.Image == "" {
 		return container.Handle{}, fmt.Errorf("container/docker: Create: spec.Image is required for image-mode (or set spec.Compose for compose-mode)")
+	}
+
+	// P6a runtime-resolved image: require a digest pin and pull it ourselves.
+	// The reproducibility gate is `@sha256:` — a mutable tag could boot
+	// different bytes on a re-run/resume, breaking the pin-before-run invariant.
+	if spec.PullIfAbsent {
+		if !strings.Contains(spec.Image, "@sha256:") {
+			return container.Handle{}, fmt.Errorf("container/docker: Create: runtime-resolved map image %q must be digest-pinned (name@sha256:…); a mutable tag is not resume-reproducible", spec.Image)
+		}
+		if err := b.pullByDigest(ctx, spec.Image); err != nil {
+			return container.Handle{}, err
+		}
 	}
 
 	name := containerName(b.runID, spec.Name)
@@ -230,7 +252,50 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	b.handles[resp.ID] = registeredContainer{kind: kindImage, dockerID: resp.ID}
 	b.mu.Unlock()
 
-	return container.Handle{Name: spec.Name, ID: resp.ID}, nil
+	h := container.Handle{Name: spec.Name, ID: resp.ID}
+	if spec.PullIfAbsent {
+		// The ref is digest-pinned (checked above), so it IS the content
+		// digest of the image that booted — record it for the map.item commit.
+		h.ResolvedImageDigest = spec.Image
+	}
+	return h, nil
+}
+
+// pullByDigest pulls a digest-pinned image ref into the local cache, draining
+// the streamed JSON status messages and surfacing any mid-stream error
+// (errorDetail.message / top-level error). A plain io.Copy(io.Discard) would
+// silently swallow those, so we decode the stream — same discipline as the
+// integ-test pullImage helper. Already-cached layers are not re-downloaded;
+// the call is idempotent for a given digest.
+func (b *Backend) pullByDigest(ctx context.Context, ref string) error {
+	reader, err := b.cli.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("container/docker: Create: ImagePull %q: %w", ref, err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	type pullStatus struct {
+		Error       string `json:"error,omitempty"`
+		ErrorDetail struct {
+			Message string `json:"message"`
+		} `json:"errorDetail,omitempty"`
+	}
+	dec := json.NewDecoder(reader)
+	for {
+		var s pullStatus
+		if err := dec.Decode(&s); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("container/docker: Create: ImagePull %q stream decode: %w", ref, err)
+		}
+		if s.ErrorDetail.Message != "" {
+			return fmt.Errorf("container/docker: Create: ImagePull %q: %s", ref, s.ErrorDetail.Message)
+		}
+		if s.Error != "" {
+			return fmt.Errorf("container/docker: Create: ImagePull %q: %s", ref, s.Error)
+		}
+	}
 }
 
 // Destroy force-removes the container associated with h. Returns an error if h

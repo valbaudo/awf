@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/template"
 )
@@ -34,5 +36,53 @@ func TestMapImageRendersAtItemScope(t *testing.T) {
 	}
 	if got != ref {
 		t.Errorf("rendered = %q, want %q", got, ref)
+	}
+}
+
+// The engine must flag a map's runtime-resolved per-element image with
+// PullIfAbsent so a real backend (docker) pulls it + requires a digest pin +
+// captures the booted digest. The fake ignores the flag, so we assert the
+// engine SET it on the spec it handed to Backend.Create (the wiring seam to the
+// docker integ test, which proves docker honors it). Regression guard: dropping
+// the flag would silently make every map.image run fail at dispatch on docker
+// ("no such image" — docker.Create does not pull on the normal path).
+func TestMapImageDispatchSetsPullIfAbsent(t *testing.T) {
+	digestRef := "registry.example.com/app@sha256:" + strings.Repeat("a", 64)
+	rig := newMapRig(t, ok("probe"))
+
+	mapNode := &ir.Map{
+		Over: "{{ input.items }}", As: "v", Container: testMapContainer,
+		Image: "{{ v.image }}", Concurrency: 1,
+		Body: ir.NodeList{&ir.CodeStep{ID: "p", Container: testMapContainer, Run: "probe"}},
+	}
+	wf := &ir.Workflow{
+		ID: "p6a", Version: 1,
+		// No declared image: the container is a runtime-resolved map.image target.
+		Containers: map[string]ir.Container{testMapContainer: {}},
+		Input: &ir.JSONSchema{
+			"type":       "object",
+			"properties": map[string]any{"items": map[string]any{"type": "array"}},
+		},
+		Graph: ir.NodeList{mapNode},
+	}
+	rs := NewRunState(testRunID, testDigest, runOverItems(map[string]any{"image": digestRef}))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("runMap: got (%q, %v), want (ok, nil)", oc, err)
+	}
+
+	var found *container.ContainerSpec
+	for i := range rig.fake.CreateSpecs {
+		if rig.fake.CreateSpecs[i].Image == digestRef {
+			found = &rig.fake.CreateSpecs[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no Backend.Create with the rendered image %q; specs=%+v", digestRef, rig.fake.CreateSpecs)
+	}
+	if !found.PullIfAbsent {
+		t.Errorf("map.image Create spec PullIfAbsent = false, want true")
 	}
 }
