@@ -9,6 +9,9 @@ package ir
 //
 //   - structural (AWF1xxx)  — §4 step shape, §5 control-flow field requirements, §3
 //     container shape, parallel/map distinct-container rule
+//   - agents     (AWF1033/4) — top-level agents: role-definition shape (non-empty
+//     uses:, role name not in the <vendor>/<name> adapter-ref form) and every
+//     uses: ref resolving to a declared role OR a syntactically-valid base ref
 //   - refs       (AWF3001/2) — output_schema-iff-referenced cross-walk via the template
 //     package (Slots → ParseRef per Template; ParseExpr → References per Expr)
 //   - input_files (AWF3007) — every input_files value is a static step.<id>.files.<name>
@@ -33,6 +36,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 	}
 	c := &collector{}
 	validateStructural(ld, c)
+	validateAgents(ld, c)
 	validateContinues(ld, c)
 	validateRefs(ld, c)
 	validateInputFiles(ld, c)

@@ -153,6 +153,8 @@ var catalog = map[string]string{
 	"AWF1030": "a step inside a gate's evaluate: block may not use continues (the evaluator must judge in a fresh context)",
 	"AWF1031": "continues target is unaddressable: it lies inside nested loops (a target's path may cross at most one loop)",
 	"AWF1032": "continues target is a concurrent parallel sibling (not guaranteed to have run before this turn); continue a step outside the parallel instead",
+	"AWF1033": "agents: role definition is invalid (missing uses:, or the role name collides with the <vendor>/<name> adapter-ref form)",
+	"AWF1034": "uses references a name that is neither a declared agents: role nor a valid <vendor>/<name> adapter ref",
 	"AWF2001": "JSON Schema does not compile per the JSON Schema 2020-12 metaschema",
 	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",
