@@ -335,6 +335,14 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
+	// Part D: same Threaded guard as run-start (continues: against a
+	// non-Threaded adapter). Run before appending run.resumed so a rejected
+	// resume is a no-op on the log.
+	if err := checkThreadedAdapters(ld.Workflow, r.resolverOrEmpty()); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+
 	// Step 10: append run.resumed{epoch: rs.Epoch+1}. Slice 2.6 Design
 	// question 6: the new epoch lives in the EVENT PAYLOAD (the resume
 	// counter), distinct from FileLog's per-event Epoch field (which got

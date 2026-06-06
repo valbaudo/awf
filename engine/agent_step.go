@@ -106,6 +106,36 @@ func runAgentStep(
 		}
 	}
 
+	// continues: threading — assemble the prior turns from the committed log.
+	// Pure over the committed log: stepPathIndex is a deterministic whole-graph
+	// walk (memoized once per run via sync.Once on RunState); stepRuntimePath
+	// resolves each predecessor to THIS consumer's own attempt/item/iter
+	// (ctxPath == path), which is why rejected gate attempts and foreign map
+	// items are excluded by addressing, not special-casing. One Scope is reused
+	// across the walk. Walked root->current (prepend), so the oldest turn is
+	// Thread[0] and the immediate predecessor is last.
+	var thread []agent.ThreadTurn
+	idx := runstate.stepPathIndex(wf)
+	byID := runstate.agentStepByID(wf)
+	for cur := as.Continues; cur != ""; {
+		predRuntime, perr := scope.stepRuntimePath(idx[cur])
+		if perr != nil { // impossible after validation (AWF1027/AWF1031); defensive.
+			return failStep(log, path, OutcomePermanentFailure,
+				fmt.Errorf("engine.runAgentStep: resolve continues target %q at %q: %w", cur, path, perr))
+		}
+		predNR, ok := runstate.LookupCompleted(predRuntime)
+		if !ok { // ok guaranteed by dominance (AWF1027); defensive.
+			return failStep(log, path, OutcomePermanentFailure,
+				fmt.Errorf("engine.runAgentStep: continues target %q not committed (runtime %q)", cur, predRuntime))
+		}
+		thread = append([]agent.ThreadTurn{{User: predNR.Transcript.User, Assistant: predNR.Transcript.Assistant}}, thread...)
+		if tgt, ok2 := byID[cur]; ok2 {
+			cur = tgt.Continues
+		} else {
+			cur = ""
+		}
+	}
+
 	// 4. Build ResolvedInputs. Timeout cast follows the runCodeStep idiom
 	// (engine/interpreter.go:283): ir.AgentStep.Timeout is *ir.Duration where
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
@@ -117,6 +147,7 @@ func runAgentStep(
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,
 		Feedback:              feedback, // slice 5.3
+		Thread:                thread,   // Task 4.5
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)
@@ -165,8 +196,15 @@ func runAgentStep(
 
 	// 6. Happy path: commit via the canonical engine.Commit. Commit owns the
 	// content-address-then-pointer-swap invariant (CLAUDE.md "Commit"); we
-	// reuse it verbatim. Then mirror the result into runstate.
-	nr, commitErr := Commit(log, blobs, path, dr)
+	// reuse it verbatim. Then mirror the result into runstate. A step
+	// participates in a conversation (so its transcript blob must be committed)
+	// iff it is continued-from by some other step (i.e. it is a thread target).
+	// A leaf turn (continues: someone, but nobody continues IT) NEVER needs its
+	// transcript committed: the thread-assembly loop only reads transcripts of
+	// targets, never of the consumer itself. Committing a leaf transcript wastes
+	// Blobs storage with data nothing ever reads.
+	participates := runstate.threadTargets(wf)[as.ID]
+	nr, commitErr := Commit(log, blobs, path, dr, participates)
 	if commitErr != nil {
 		return "", fmt.Errorf("engine.runAgentStep: commit at %q: %w", path, commitErr)
 	}

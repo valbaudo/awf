@@ -45,7 +45,7 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 			}
 		}
 
-		full, usage, finish, serr := a.stream(ctx, cfg, prompt, inv.OutputSchema, emit)
+		full, usage, finish, serr := a.stream(ctx, cfg, prompt, inv.OutputSchema, inv.Thread, emit)
 		if serr != nil {
 			// spec §B.7 step 4: emit a terminal DisplayError event before the
 			// outcome so the live renderer can terminate the in-progress delta

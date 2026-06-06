@@ -2,8 +2,12 @@ package engine
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
+
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/ir"
 )
 
 func TestParseOutcome(t *testing.T) {
@@ -565,6 +569,119 @@ func TestRunStateConcurrentSignals(t *testing.T) {
 			rs.AppendSignal(fmt.Sprintf("name-%d", i), SignalEntry{Seq: 1, PayloadRef: "sha256:test"})
 			if got := rs.LookupSignals(fmt.Sprintf("name-%d", i)); len(got) != 1 {
 				t.Errorf("concurrent path: got %v", got)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestNodeResultTranscriptByValue(t *testing.T) {
+	// ThreadTurn is a scalar-pair struct (two strings) — copying NodeResult copies
+	// Transcript by value, giving independent storage. This is DISTINCT from the
+	// shared-map fields (Outputs/Files) and shared-slice field (Stdout) pinned by
+	// TestNodeResultCopyIsShallow. Mutations through the copy do NOT affect the
+	// original — document that contract here so future readers know it's intentional.
+	original := NodeResult{
+		Outcome:    OutcomeOK,
+		Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"},
+	}
+	cp := original
+	// ThreadTurn is two strings — copy is fully independent (unlike Outputs/Files maps).
+	cp.Transcript.User = "mutated"
+	if original.Transcript.User != "u1" {
+		t.Errorf("Transcript.User unexpectedly shared: original=%q cp=%q",
+			original.Transcript.User, cp.Transcript.User)
+	}
+	if original.Transcript.Assistant != "a1" {
+		t.Errorf("Transcript.Assistant = %q, want a1", original.Transcript.Assistant)
+	}
+}
+
+func TestRunStateThreadIndexesMemoizedOncePerRun(t *testing.T) {
+	t.Parallel()
+	wf := &ir.Workflow{
+		Graph: ir.NodeList{
+			&ir.AgentStep{ID: "a", Uses: "u"},
+			&ir.AgentStep{ID: "b", Uses: "u", Continues: "a"},
+			&ir.AgentStep{ID: "c", Uses: "u", Continues: "b"},
+		},
+	}
+	rs := NewRunState("r", "d", nil)
+
+	// stepPathIndex: must match StepPathIndex(wf) and be stable across calls.
+	// Top-level steps are addressed by ID directly (no parent prefix).
+	idx1 := rs.stepPathIndex(wf)
+	if idx1["b"] != "b" {
+		t.Errorf("stepPathIndex[b] = %q, want %q", idx1["b"], "b")
+	}
+	if !reflect.DeepEqual(idx1, StepPathIndex(wf)) {
+		t.Errorf("stepPathIndex does not match StepPathIndex: got %v", idx1)
+	}
+	idx2 := rs.stepPathIndex(wf)
+	if reflect.ValueOf(idx1).Pointer() != reflect.ValueOf(idx2).Pointer() {
+		t.Errorf("stepPathIndex: two calls returned different map instances (not memoized)")
+	}
+
+	// agentStepByID: must return the same *AgentStep pointers as wf.Graph.
+	byID := rs.agentStepByID(wf)
+	if byID["b"] == nil || byID["b"].Continues != "a" {
+		t.Errorf("agentStepByID[b].Continues = %q, want \"a\"", byID["b"].Continues)
+	}
+	if byID["a"] != wf.Graph[0].(*ir.AgentStep) {
+		t.Errorf("agentStepByID[a] is not the same pointer as wf.Graph[0]")
+	}
+	// Memoization: second call returns same map instance.
+	byID2 := rs.agentStepByID(wf)
+	if reflect.ValueOf(byID).Pointer() != reflect.ValueOf(byID2).Pointer() {
+		t.Errorf("agentStepByID: two calls returned different map instances (not memoized)")
+	}
+
+	// threadTargets: a is continued-from by b; b is continued-from by c; c is a leaf.
+	want := map[string]bool{"a": true, "b": true}
+	tt := rs.threadTargets(wf)
+	if !reflect.DeepEqual(tt, want) {
+		t.Errorf("threadTargets = %v, want %v", tt, want)
+	}
+	// Memoization: second call returns same map instance.
+	tt2 := rs.threadTargets(wf)
+	if reflect.ValueOf(tt).Pointer() != reflect.ValueOf(tt2).Pointer() {
+		t.Errorf("threadTargets: two calls returned different map instances (not memoized)")
+	}
+}
+
+func TestRunStateThreadIndexesConcurrentAccess(t *testing.T) {
+	// Confirm the sync.Once-guarded indexes are race-free: N goroutines call all
+	// three accessors concurrently. Run under `go test -race ./engine/`.
+	wf := &ir.Workflow{
+		Graph: ir.NodeList{
+			&ir.AgentStep{ID: "x", Uses: "u"},
+			&ir.AgentStep{ID: "y", Uses: "u", Continues: "x"},
+		},
+	}
+	rs := NewRunState("r", "d", nil)
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(3 * N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			idx := rs.stepPathIndex(wf)
+			if idx["x"] != "x" {
+				t.Errorf("concurrent stepPathIndex[x] = %q, want %q", idx["x"], "x")
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			byID := rs.agentStepByID(wf)
+			if byID["y"] == nil || byID["y"].Continues != "x" {
+				t.Errorf("concurrent agentStepByID[y].Continues = %q, want \"x\"", byID["y"].Continues)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			tt := rs.threadTargets(wf)
+			if !tt["x"] {
+				t.Errorf("concurrent threadTargets[x] = false, want true")
 			}
 		}()
 	}

@@ -1,0 +1,11 @@
+workflow: continues-cycle
+version: 1
+graph:
+  - id: a
+    uses: awf/llm
+    continues: b
+    with: { model: m, prompt: p }
+  - id: b
+    uses: awf/llm
+    continues: a
+    with: { model: m, prompt: p }

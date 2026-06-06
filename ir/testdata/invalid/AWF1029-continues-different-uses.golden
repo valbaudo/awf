@@ -1,0 +1,8 @@
+[
+  {
+    "Severity": "error",
+    "Path": "second",
+    "Code": "AWF1029",
+    "Message": "continues target must use the same agent runtime (uses) as this step (this step uses \"awf/llm\", target uses \"anthropic/claude-code\")"
+  }
+]

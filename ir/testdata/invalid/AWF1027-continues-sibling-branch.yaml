@@ -1,0 +1,22 @@
+workflow: continues-sibling-branch
+version: 1
+input:
+  type: object
+  properties:
+    go: { type: boolean }
+graph:
+  - id: draft
+    uses: awf/llm
+    with: { model: m, prompt: p }
+  - if:
+      cond: "{{ input.go }}"
+      then:
+        - id: rethink
+          uses: awf/llm
+          continues: draft
+          with: { model: m, prompt: p }
+      else:
+        - id: revise
+          uses: awf/llm
+          continues: rethink
+          with: { model: m, prompt: p }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
+	agentfake "github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -1547,4 +1548,122 @@ graph:
 		t.Fatalf("write workflow: %v", err)
 	}
 	return path
+}
+
+// newRegistryWith builds an *agent.Registry containing fk; fails the test on
+// Register error. Used by T8 tests below.
+func newRegistryWith(t *testing.T, fk *agentfake.Fake) *agent.Registry {
+	t.Helper()
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return &reg
+}
+
+// writeContinuesWorkflow writes a 2-step agent workflow where the second step
+// declares continues: the first, using the given adapter ref. Both steps
+// share the same container "lab" (needed for non-containerless adapters).
+func writeContinuesWorkflow(t *testing.T, dir, adapterRef string) string {
+	t.Helper()
+	path := filepath.Join(dir, "continues-wf.yaml")
+	content := `workflow: continues-test
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    uses: ` + adapterRef + `
+    container: lab
+  - id: refine
+    uses: ` + adapterRef + `
+    container: lab
+    continues: draft
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write continues workflow: %v", err)
+	}
+	return path
+}
+
+// writeContinuesWorkflowContainerless writes a 2-step agent workflow where
+// both steps are containerless (no container: field) and declare continues:.
+// For use with a Containerless+Threaded adapter such as awf/llm.
+func writeContinuesWorkflowContainerless(t *testing.T, dir, adapterRef string) string {
+	t.Helper()
+	path := filepath.Join(dir, "continues-containerless-wf.yaml")
+	content := `workflow: continues-containerless-test
+version: 1
+graph:
+  - id: draft
+    uses: ` + adapterRef + `
+  - id: refine
+    uses: ` + adapterRef + `
+    continues: draft
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write containerless continues workflow: %v", err)
+	}
+	return path
+}
+
+// TestRun_ContinuesAgainstNonThreadedAdapter_FailsFast is the T8 end-to-end:
+// `awf run` rejects a continues: step whose adapter is NOT Threaded, exits
+// ExitUsage, and writes the ErrThreadedRequired message to stderr — before
+// any log file is created on disk.
+func TestRun_ContinuesAgainstNonThreadedAdapter_FailsFast(t *testing.T) {
+	t.Parallel()
+	fk := agentfake.New("anthropic/claude-code") // default Caps: Threaded false
+	reg := newRegistryWith(t, fk)
+
+	tmp := t.TempDir()
+	wfPath := writeContinuesWorkflow(t, tmp, "anthropic/claude-code")
+	stateDir := t.TempDir()
+
+	r := &cli.Runner{
+		Backend:  container.NewFake(),
+		IDGen:    &clock.Fake{IDs: []string{"test-threaded-guard-run"}},
+		Resolver: reg,
+	}
+	var stdout, stderr bytes.Buffer
+	rc := r.Run([]string{"run", "--backend", "fake", "--state-dir", stateDir, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage (%d); stderr: %s", rc, cli.ExitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does not support engine-threaded conversations") {
+		t.Fatalf("stderr = %q, want ErrThreadedRequired message containing 'does not support engine-threaded conversations'", stderr.String())
+	}
+	// Guard fires BEFORE the log is opened: no state should be on disk.
+	if _, err := os.Stat(filepath.Join(stateDir, "runs", "test-threaded-guard-run", "log")); !os.IsNotExist(err) {
+		t.Errorf("orphan log exists after threaded-guard rejection; err = %v, want ErrNotExist", err)
+	}
+}
+
+// TestRun_ContinuesAgainstThreadedAdapter_OK confirms that a continues: step
+// whose adapter IS Threaded (awf/llm) passes the guard and at least reaches
+// engine dispatch (the fake has no agent programmed so it will fail later,
+// but the guard itself must NOT fire).
+func TestRun_ContinuesAgainstThreadedAdapter_OK(t *testing.T) {
+	t.Parallel()
+	fk := agentfake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true})
+	reg := newRegistryWith(t, fk)
+
+	tmp := t.TempDir()
+	wfPath := writeContinuesWorkflowContainerless(t, tmp, "awf/llm")
+	stateDir := t.TempDir()
+
+	r := &cli.Runner{
+		Backend:  container.NewFake(),
+		IDGen:    &clock.Fake{IDs: []string{"test-threaded-ok-run"}},
+		Resolver: reg,
+	}
+	var stdout, stderr bytes.Buffer
+	rc := r.Run([]string{"run", "--backend", "fake", "--state-dir", stateDir, wfPath}, &stdout, &stderr)
+	// The guard passes — run proceeds. The fake adapter will eventually fail
+	// because no agent step is programmed, so we allow any non-ExitUsage
+	// code. The important assertion is that the guard did NOT fire.
+	if rc == cli.ExitUsage && strings.Contains(stderr.String(), "does not support engine-threaded conversations") {
+		t.Fatalf("Threaded adapter incorrectly rejected by guard; stderr: %s", stderr.String())
+	}
 }

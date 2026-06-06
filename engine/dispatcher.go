@@ -85,6 +85,11 @@ type ResolvedInputs struct {
 	// template substitution `{{ evaluate.<field> }}` that lands in With.prompt
 	// before the dispatcher runs (Phase 3.3 wiring, unchanged).
 	Feedback ir.RawConfig
+
+	// Thread mirrors Feedback's plumbing: assembled by engine/agent_step.go from the
+	// committed log via stepRuntimePath, copied into AgentInvocation.Thread by runAgent.
+	// The dispatcher has no RunState access, so assembly happens interpreter-side.
+	Thread []agent.ThreadTurn
 }
 
 // DispatchResult is the pre-commit shape returned by Dispatcher.Run. The
@@ -119,6 +124,11 @@ type DispatchResult struct {
 	// Commit persists it VERBATIM on node.completed; the engine never
 	// interprets it. obs (Phase 6) projects it into awf.cost.* / gen_ai.usage.*.
 	Metrics *agent.MetricSet
+
+	// Transcript is the adapter-provided verbatim {user, assistant} pair. Commit
+	// content-addresses it when the step participates in a conversation. The engine
+	// never holds a with:-derived prompt — closes the opacity gap.
+	Transcript agent.ThreadTurn
 
 	// SnapshotRef is the CoW workspace diff captured by the dispatcher after a
 	// successful exec, for a snapshot:workspace container (empty otherwise).

@@ -1,0 +1,11 @@
+workflow: continues-parallel-sibling
+version: 1
+graph:
+  - parallel:
+      - id: branch_a
+        uses: awf/llm
+        with: { model: m, prompt: p }
+      - id: branch_b
+        uses: awf/llm
+        continues: branch_a
+        with: { model: m, prompt: p }

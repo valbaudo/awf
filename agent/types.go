@@ -28,6 +28,13 @@ type Caps struct {
 	// container, unchanged. The engine does not otherwise branch on Caps
 	// (Phase 5 decision 16).
 	Containerless bool `json:"containerless"`
+
+	// Threaded reports that this adapter prepends an engine-supplied
+	// AgentInvocation.Thread to its request (continues: threading). The engine
+	// does not branch on Caps at runtime (decision 16); this drives conformance
+	// routing and a run-start guard (a continues: step against a non-Threaded
+	// adapter fails fast). Direct Containerless precedent.
+	Threaded bool `json:"threaded,omitempty"`
 }
 
 // SecretEnv is the type used for env-passthrough values that contain secrets
@@ -62,6 +69,15 @@ func (e SecretEnv) String() string {
 // leak secrets.
 func (e SecretEnv) GoString() string { return e.String() }
 
+// ThreadTurn is one prior (user, assistant) exchange in an engine-owned
+// conversation. The engine assembles a slice of these from the durable log
+// (continues: threading) and feeds it to the generating turn only; it is
+// never a bindable reference and never visible to until/templates.
+type ThreadTurn struct {
+	User      string `json:"user"`
+	Assistant string `json:"assistant"`
+}
+
 // AgentInvocation is the per-call input handed to Adapter.Launch. Slice 5.2
 // wiring (engine/local_dispatcher.go runAgentStep) constructs one of these
 // per AgentStep, resolves the templated With through template.Evaluator,
@@ -80,6 +96,7 @@ type AgentInvocation struct {
 	Env            SecretEnv      `json:"-"`                         // env vars forwarded into the harness exec (slice 5.3 reads ANTHROPIC_API_KEY etc.); never JSON-marshaled so secrets cannot reach the state log
 	IdempotencyKey string         `json:"idempotency_key,omitempty"` // resolved-template; passed to harness env per spec §10
 	Feedback       ir.RawConfig   `json:"feedback,omitempty"`        // prior gate verdict on repair attempts > 1 (nil on attempt 1)
+	Thread         []ThreadTurn   `json:"thread,omitempty"`          // engine-assembled prior turns (separate channel from Feedback); generator-only
 }
 
 // AgentResult is the synchronous return of Adapter.Launch. Output is the
@@ -96,6 +113,13 @@ type AgentResult struct {
 	ExitCode int               `json:"exit_code"`
 	Metrics  MetricSet         `json:"metrics"`
 	Files    map[string][]byte `json:"files,omitempty"`
+	// Transcript is the adapter-provided verbatim {clean user prompt, verbatim
+	// final assistant message} pair for continues: threading. The engine reads
+	// no with: key — the ADAPTER supplies both halves (reading its own with:
+	// legitimately). json:"-": never journaled raw (Phase 4 Commit content-
+	// addresses it as a blob ref when the step participates in a conversation),
+	// matching the Env SecretEnv json:"-" precedent.
+	Transcript ThreadTurn `json:"-"`
 }
 
 // AgentEvent is one slice of progress emitted live on the channel returned

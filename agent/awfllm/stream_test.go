@@ -67,6 +67,46 @@ func TestBuildResult_Unparseable(t *testing.T) {
 	}
 }
 
+// TestBuildResult_Transcript_D13_FreeText verifies that buildResult stamps the
+// Transcript pair: User = clean with["prompt"], Assistant = verbatim full (prose).
+func TestBuildResult_Transcript_D13_FreeText(t *testing.T) {
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]",
+		With:     ir.RawConfig{"prompt": "write a draft"},
+	}
+	res, err := awfllm.BuildResultForTest("the draft text", awfllm.NewUsageForTest(10, 5, 0), inv)
+	if err != nil {
+		t.Fatalf("buildResult: %v", err)
+	}
+	want := agent.ThreadTurn{User: "write a draft", Assistant: "the draft text"}
+	if res.Transcript != want {
+		t.Errorf("Transcript = %+v, want %+v", res.Transcript, want)
+	}
+}
+
+// TestBuildResult_Transcript_D13_Typed verifies that for a typed turn (output_schema
+// set) Transcript.Assistant is the verbatim full JSON string — NOT extracted/parsed —
+// and Transcript.User is the clean prompt.
+func TestBuildResult_Transcript_D13_Typed(t *testing.T) {
+	schema := &ir.JSONSchema{"type": "object"}
+	inv := agent.AgentInvocation{
+		NodePath:     "graph[0]",
+		OutputSchema: schema,
+		With:         ir.RawConfig{"prompt": "generate data"},
+	}
+	full := `{"draft":"x"}`
+	res, err := awfllm.BuildResultForTest(full, awfllm.NewUsageForTest(10, 5, 0), inv)
+	if err != nil {
+		t.Fatalf("buildResult: %v", err)
+	}
+	if res.Transcript.User != "generate data" {
+		t.Errorf("Transcript.User = %q, want %q", res.Transcript.User, "generate data")
+	}
+	if res.Transcript.Assistant != full {
+		t.Errorf("Transcript.Assistant = %q, want verbatim %q", res.Transcript.Assistant, full)
+	}
+}
+
 func TestIsPermanentLLMError(t *testing.T) {
 	if !awfllm.IsPermanentLLMErrorForTest(awfllm.NewAPIErrorForTest(400, "invalid_request_error", "bad model")) {
 		t.Error("400 + invalid_request_error should be permanent")

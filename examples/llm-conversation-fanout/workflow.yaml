@@ -1,0 +1,44 @@
+workflow: llm-conversation-fanout
+version: 1
+graph:
+  - id: seed
+    uses: awf/llm
+    with:
+      model: llama3.1
+      api_key_env: OPENAI_API_KEY
+      base_url: http://localhost:11434/v1
+      # Shared system_prompt + common ancestor: all branches re-send a
+      # byte-identical prefix, so one cached region serves the whole fan-out.
+      system_prompt: "You are a release-notes assistant."
+      prompt: "Here is a CLI change: a new --json flag adds machine-readable output."
+
+  - parallel:
+      - id: tweet
+        uses: awf/llm
+        continues: seed
+        with:
+          model: llama3.1
+          api_key_env: OPENAI_API_KEY
+          base_url: http://localhost:11434/v1
+          system_prompt: "You are a release-notes assistant."
+          prompt: "Write a one-line social post about the change above."
+
+      - id: changelog
+        uses: awf/llm
+        continues: seed
+        with:
+          model: llama3.1
+          api_key_env: OPENAI_API_KEY
+          base_url: http://localhost:11434/v1
+          system_prompt: "You are a release-notes assistant."
+          prompt: "Write a one-paragraph CHANGELOG entry for the change above."
+
+      - id: docs
+        uses: awf/llm
+        continues: seed
+        with:
+          model: llama3.1
+          api_key_env: OPENAI_API_KEY
+          base_url: http://localhost:11434/v1
+          system_prompt: "You are a release-notes assistant."
+          prompt: "Write a docs sentence describing the change above."

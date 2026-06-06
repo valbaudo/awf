@@ -678,6 +678,97 @@ graph:
       max_attempts: 2
 `, fakeImageDigest, phase5VerdictSchemaYAML)
 
+// gateAgentThreadSubConversationWorkflow — T2 (continues:). A sub-conversation
+// INSIDE one gate's generate: [ask, refine continues: ask]. The evaluator
+// rejects attempt 1, passes attempt 2, so ask runs twice (A1 then A2). refine's
+// assembled Thread in the passing attempt must carry ATTEMPT-2's ask transcript
+// (A2) and NOT attempt-1's (A1) — stepRuntimePath resolves the continues
+// predecessor to refine's OWN attempt. Rejected attempts still commit; they are
+// excluded by ADDRESSING (same-attempt resolution), not by skipping the write.
+//
+// refine declares an output_schema only so the bucket has a typed generate
+// output to point at; nothing references refine.draft, so AWF3002 emits a
+// (harmless) warning — identical to the gen1 fixtures above. The gate's verdict
+// comes from the LAST evaluate node (judge / test/oracle), not from the
+// generate steps.
+var gateAgentThreadSubConversationWorkflow = fmt.Sprintf(`workflow: conformance-gate-agent-thread
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - gate:
+      generate:
+        - id: ask
+          container: lab
+          uses: test/llm
+          with:
+            prompt: "ask"
+        - id: refine
+          container: lab
+          uses: test/llm
+          continues: ask
+          with:
+            prompt: "refine"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [draft]
+            properties:
+              draft: { type: string }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: test/oracle
+          with:
+            prompt: "judge"
+          %s
+      until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
+      max_attempts: 3
+`, fakeImageDigest, phase5VerdictSchemaYAML)
+
+// gatedLeafThreadWorkflow — T4 (evaluator independence). draft + critique are
+// plain prior turns; revise (the gate's generate leaf) continues critique;
+// judge (the evaluator) has NO continues. Asserts judge's invocation Thread
+// is empty — the evaluator judges in a fresh context (D8, gate integrity).
+var gatedLeafThreadWorkflow = fmt.Sprintf(`workflow: conformance-gated-leaf-thread
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - id: draft
+    container: lab
+    uses: test/llm
+    with: { prompt: "draft" }
+  - id: critique
+    container: lab
+    uses: test/llm
+    continues: draft
+    with: { prompt: "critique" }
+  - gate:
+      generate:
+        - id: revise
+          container: lab
+          uses: test/llm
+          continues: critique
+          with: { prompt: "revise" }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [draft]
+            properties:
+              draft: { type: string }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: test/oracle
+          with: { prompt: "judge" }
+          %s
+      until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
+      max_attempts: 2
+`, fakeImageDigest, phase5VerdictSchemaYAML)
+
 // signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
 // A single `await: human_review` step followed by an echo step that references
 // the signal payload. No containers entry for the await itself; the after step
@@ -796,4 +887,98 @@ graph:
     container: c0
     run: "./after.sh"
     retry: { attempts: 1 }
+`, fakeImageDigest)
+
+// threadFanOutWorkflow — T10. A common pre-fork ancestor `seed` lives OUTSIDE
+// the parallel; all three branches continues: seed AND share the identical
+// system_prompt. Per E.2.a the assembled cached region (system_prompt + thread)
+// is byte-identical across branches; only with.prompt (the tail) differs. The
+// fake does not cache — this asserts the byte-identity PRECONDITION, not a hit.
+// A per-branch system_prompt would diverge the prefix at byte 0; that negative
+// is a documented caveat (E.2.a/§6), not asserted (the fake cannot model it).
+var threadFanOutWorkflow = fmt.Sprintf(`workflow: conformance-thread-fanout
+version: 1
+containers:
+  seed_c:
+    image: %[1]s
+  c_a:
+    image: %[1]s
+  c_b:
+    image: %[1]s
+  c_c:
+    image: %[1]s
+graph:
+  - id: seed
+    container: seed_c
+    uses: test/chat
+    with:
+      system_prompt: "SHARED-SYSTEM-PROMPT"
+      prompt: "establish shared context"
+  - parallel:
+      - id: branch_a
+        container: c_a
+        uses: test/chat
+        continues: seed
+        with:
+          system_prompt: "SHARED-SYSTEM-PROMPT"
+          prompt: "branch A tail"
+      - id: branch_b
+        container: c_b
+        uses: test/chat
+        continues: seed
+        with:
+          system_prompt: "SHARED-SYSTEM-PROMPT"
+          prompt: "branch B tail"
+      - id: branch_c
+        container: c_c
+        uses: test/chat
+        continues: seed
+        with:
+          system_prompt: "SHARED-SYSTEM-PROMPT"
+          prompt: "branch C tail"
+`, fakeImageDigest)
+
+// threadBranchedWorkflow — T9 runtime half. draft → critique → if/else.
+// BOTH forks continue: critique (a valid, dominating link: critique precedes
+// the if and encloses neither fork). cond is static-true so the `then` fork is
+// taken deterministically; the taken fork's turn must receive critique's
+// thread = [draft-pair, critique-pair]. system_prompt is shared so the run is
+// realistic, but T9 asserts the THREAD, not byte-identity (that is T10).
+var threadBranchedWorkflow = fmt.Sprintf(`workflow: conformance-thread-branched
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - id: draft
+    container: lab
+    uses: test/chat
+    with:
+      system_prompt: "you are a helpful assistant"
+      prompt: "draft a plan"
+  - id: critique
+    container: lab
+    uses: test/chat
+    continues: draft
+    with:
+      system_prompt: "you are a helpful assistant"
+      prompt: "critique the draft"
+  - if:
+      cond: "{{ 1 == 1 }}"
+      then:
+        - id: revise_then
+          container: lab
+          uses: test/chat
+          continues: critique
+          with:
+            system_prompt: "you are a helpful assistant"
+            prompt: "revise per the critique (then-fork)"
+      else:
+        - id: revise_else
+          container: lab
+          uses: test/chat
+          continues: critique
+          with:
+            system_prompt: "you are a helpful assistant"
+            prompt: "revise per the critique (else-fork)"
 `, fakeImageDigest)

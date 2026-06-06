@@ -21,6 +21,9 @@ func TestRefAndCapabilities(t *testing.T) {
 	if !caps.Containerless {
 		t.Error("Containerless = false, want true (direct HTTP, no container)")
 	}
+	if !caps.Threaded {
+		t.Error("Threaded = false, want true (adapter supports engine-supplied continues: threads)")
+	}
 }
 
 func TestWithEnv_EmptyOK(t *testing.T) {

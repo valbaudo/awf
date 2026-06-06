@@ -97,6 +97,99 @@ func TestRunAgent_EmptyContainer_NonContainerless_Permanent(t *testing.T) {
 	}
 }
 
+// TestRunAgent_Thread_NonThreaded_Permanent is the defense-in-depth guard for
+// engine-threaded conversations (continues:). If inv.Thread is non-empty but the
+// adapter's Caps.Threaded == false, the dispatcher must return
+// OutcomePermanentFailure with *agent.ErrInvalidConfig — never silently drop the
+// thread and call Launch. Mirrors the Containerless guard in the same function.
+func TestRunAgent_Thread_NonThreaded_Permanent(t *testing.T) {
+	ctx := context.Background()
+
+	// Default fake caps: NativeSchema:true, Containerless:false, Threaded:false.
+	// Pairing it with a non-empty Thread must trigger the guard.
+	fk := agentfake.New("anthropic/claude-code").
+		Script(0, agentfake.Result{Output: map[string]any{"answer": "42"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	cfake := container.NewFake()
+	h, err := cfake.Create(ctx, container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	d := &engine.LocalDispatcher{
+		Backend:  cfake,
+		Resolver: &reg,
+		Handles:  map[string]container.Handle{"ws": h},
+	}
+	intent := engine.NodeIntent{
+		Path: "turn2",
+		Node: &ir.AgentStep{ID: "turn2", Uses: "anthropic/claude-code", Container: "ws"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:   "anthropic/claude-code",
+			With:   ir.RawConfig{"prompt": "hi"},
+			Thread: []agent.ThreadTurn{{User: "u1", Assistant: "a1"}}, // non-empty
+		},
+	}
+
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned engine-level error: %v (want nil — guard must surface via dr.Outcome)", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q (non-empty Thread + non-Threaded adapter must be permanent)", dr.Outcome, engine.OutcomePermanentFailure)
+	}
+	var configErr *agent.ErrInvalidConfig
+	if !errors.As(dr.Err, &configErr) {
+		t.Fatalf("dr.Err = %v (%T), want *agent.ErrInvalidConfig", dr.Err, dr.Err)
+	}
+}
+
+// TestRunAgent_Thread_ThreadedAdapter_OK verifies the positive path: a non-empty
+// Thread paired with a Threaded adapter must pass through the guard cleanly and
+// return OutcomeOK (the guard must NOT fire when Caps.Threaded == true).
+func TestRunAgent_Thread_ThreadedAdapter_OK(t *testing.T) {
+	ctx := context.Background()
+
+	// Explicitly set Threaded:true — the guard must let this through.
+	fk := agentfake.New("awf/llm").
+		WithCaps(agent.Caps{NativeSchema: false, Containerless: true, Threaded: true}).
+		Script(0, agentfake.Result{Output: map[string]any{"answer": "42"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	d := &engine.LocalDispatcher{
+		Resolver: &reg,
+		Handles:  map[string]container.Handle{},
+	}
+	intent := engine.NodeIntent{
+		Path: "turn2",
+		Node: &ir.AgentStep{ID: "turn2", Uses: "awf/llm", Container: ""},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:   "awf/llm",
+			With:   ir.RawConfig{"model": "m", "prompt": "hi"},
+			Thread: []agent.ThreadTurn{{User: "u1", Assistant: "a1"}}, // non-empty
+		},
+	}
+
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Thread + Threaded adapter must pass guard)", dr.Outcome, engine.OutcomeOK)
+	}
+}
+
 // TestDispatcherCapturesSnapshotOnEligibleAgentStep is the agent-step counterpart
 // to TestDispatcherCapturesSnapshotOnEligibleOkStep (in local_dispatcher_test.go):
 // it exercises runAgent's snapshot:workspace capture block. An eligible agent step

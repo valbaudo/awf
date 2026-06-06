@@ -173,6 +173,17 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				}
 				nr.Stdout = raw
 			}
+			if d.TranscriptRef != "" {
+				raw, err := blobs.Get(d.TranscriptRef)
+				if err != nil {
+					return nil, fmt.Errorf("engine.Fold: read transcript ref %q at path=%q: %w",
+						d.TranscriptRef, e.Path, err)
+				}
+				if err := json.Unmarshal(raw, &nr.Transcript); err != nil {
+					return nil, fmt.Errorf("engine.Fold: parse transcript blob %q at path=%q: %w",
+						d.TranscriptRef, e.Path, err)
+				}
+			}
 			rs.Completed[e.Path] = nr
 			if d.SnapshotRef != "" && d.Container != "" {
 				rs.SnapshotRefs[d.Container] = d.SnapshotRef // last write wins = latest commit

@@ -68,6 +68,14 @@ func buildResult(full string, usage usageRec, inv agent.AgentInvocation) (agent.
 			Tokens: agent.MetricTokens{Input: usage.Input, Output: usage.Output, CacheReadInput: usage.CacheRead},
 			Turns:  1,
 		},
+		// Transcript.User is the CLEAN authored prompt (with["prompt"]), deliberately NOT the
+		// assembled prompt the model saw (assemblePrompt adds the schema directive and, on a gate
+		// repair attempt, the prior verdict). Rationale: a successor's thread should show the logical
+		// turn, not repair/schema plumbing. Tradeoff: a gated continues-target that repaired threads a
+		// user-half that omits the verdict which shaped the accepted answer — accepted as benign (the
+		// alternative would pollute EVERY typed target's thread with the schema directive). Assistant
+		// is the verbatim final message (prose, or the JSON object for a typed turn — D13).
+		Transcript: agent.ThreadTurn{User: stringOr(inv.With, keyPrompt, ""), Assistant: full},
 	}, nil
 }
 

@@ -1,0 +1,37 @@
+workflow: llm-conversation-linear
+version: 1
+graph:
+  - id: draft
+    uses: awf/llm
+    with:
+      model: llama3.1
+      api_key_env: OPENAI_API_KEY
+      base_url: http://localhost:11434/v1
+      system_prompt: "You are a concise technical writer."
+      prompt: "Draft a three-sentence release note for a CLI flag --json that adds JSON output."
+
+  - id: critique
+    uses: awf/llm
+    continues: draft
+    with:
+      model: llama3.1
+      api_key_env: OPENAI_API_KEY
+      base_url: http://localhost:11434/v1
+      system_prompt: "You are a concise technical writer."
+      prompt: "Critique the draft above: is it accurate and concise? List concrete fixes."
+
+  - id: revise
+    uses: awf/llm
+    continues: critique
+    with:
+      model: llama3.1
+      api_key_env: OPENAI_API_KEY
+      base_url: http://localhost:11434/v1
+      system_prompt: "You are a concise technical writer."
+      prompt: "Apply your critique and produce the final release note."
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [release_note]
+      properties:
+        release_note: { type: string }

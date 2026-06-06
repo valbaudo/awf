@@ -1,0 +1,47 @@
+workflow: llm-conversation-gated-leaf
+version: 1
+graph:
+  - id: draft
+    uses: awf/llm
+    with:
+      model: llama3.1
+      api_key_env: OPENAI_API_KEY
+      base_url: http://localhost:11434/v1
+      system_prompt: "You are a concise technical writer."
+      prompt: "Draft a three-sentence release note for a CLI flag --json."
+
+  - gate:
+      generate:
+        - id: revise
+          uses: awf/llm
+          continues: draft
+          with:
+            model: llama3.1
+            api_key_env: OPENAI_API_KEY
+            base_url: http://localhost:11434/v1
+            system_prompt: "You are a concise technical writer."
+            prompt: "Produce the final release note. {{ evaluate.feedback }}"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [release_note]
+            properties:
+              release_note: { type: string }
+      evaluate:
+        - id: judge
+          uses: awf/llm
+          with:
+            model: llama3.1
+            api_key_env: OPENAI_API_KEY
+            base_url: http://localhost:11434/v1
+            system_prompt: "You are a strict release-note reviewer."
+            prompt: "Review the candidate release note. Is it accurate and exactly three sentences?"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [approved, feedback]
+            properties:
+              approved: { type: boolean }
+              feedback: { type: string }
+      until: "{{ evaluate.approved }}"
+      max_attempts: 3

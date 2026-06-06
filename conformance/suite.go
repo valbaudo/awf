@@ -103,6 +103,8 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("gate", func(t *testing.T) { testGate(t, factory) })
 	t.Run("agent_step", func(t *testing.T) { testAgentStep(t, factory) })
 	t.Run("gate_agent", func(t *testing.T) { testGateAgent(t, factory) })
+	t.Run("gate_agent_thread", func(t *testing.T) { testGateAgentThread(t, factory) })
+	t.Run("gate_evaluator_independence", func(t *testing.T) { testGateAgentEvaluatorIndependence(t, factory) })
 	t.Run("layer2_contract", func(t *testing.T) { testLayer2Contract(t, factory) })
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
@@ -111,4 +113,8 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })
 	t.Run("obs", func(t *testing.T) { testObs(t, factory) })
 	t.Run("snapshot", func(t *testing.T) { testSnapshot(t, factory) })
+	t.Run("continues_crash", func(t *testing.T) { testContinuesCrash(t, factory) })
+	t.Run("continues_resume", func(t *testing.T) { testContinuesResume(t, factory) })
+	t.Run("continues_loop_map", func(t *testing.T) { testContinuesLoopMap(t, factory) })
+	t.Run("thread", func(t *testing.T) { testThread(t, factory) })
 }

@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"io/fs"
+	"sync"
 
 	"github.com/valbaudo/awf/clock"
 )
@@ -97,9 +98,10 @@ func (*InMemoryLog) Close() error { return nil }
 // InMemoryBlobs is the Blobs fake: a map from hex-hash to content. Matches FSBlobs'
 // error contract (ErrBadRef for malformed, wrapped fs.ErrNotExist for missing,
 // ErrCorruption never fires in-memory because content can't be tampered with).
-// Not safe for concurrent Put/Get from multiple goroutines (matches the single-writer
-// assumption the engine relies on, same as InMemoryLog).
+// Safe for concurrent Put/Get — a mutex serializes store access so parallel
+// branch goroutines (e.g. T10 fan-out) can commit concurrently without racing.
 type InMemoryBlobs struct {
+	mu    sync.Mutex
 	store map[string][]byte // key: hex(sha256(content)); value: a copy of the content
 
 	// Fault hooks for slice 2.4 / 2.6 commit-atomicity tests. nil = no fault.
@@ -115,6 +117,8 @@ func NewInMemoryBlobs() *InMemoryBlobs {
 }
 
 func (b *InMemoryBlobs) Put(content []byte) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.failPutAt != nil && b.putCalls == *b.failPutAt {
 		n := b.putCalls
 		b.putCalls++
@@ -140,6 +144,8 @@ func (b *InMemoryBlobs) ClearFault() {
 }
 
 func (b *InMemoryBlobs) Get(ref string) ([]byte, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	hashHex, err := parseRef(ref)
 	if err != nil {
 		return nil, err

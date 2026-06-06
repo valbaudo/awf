@@ -155,3 +155,45 @@ func TestAgentOutcome_FailurePath(t *testing.T) {
 		t.Errorf("Cause not preserved")
 	}
 }
+
+func TestAgentResult_TranscriptFieldNotJSONed(t *testing.T) {
+	r := agent.AgentResult{
+		Output:     map[string]any{"final": "x"},
+		ExitCode:   0,
+		Transcript: agent.ThreadTurn{User: "clean-prompt", Assistant: "verbatim-final"},
+	}
+	// Field is addressable verbatim...
+	if r.Transcript.User != "clean-prompt" || r.Transcript.Assistant != "verbatim-final" {
+		t.Fatalf("Transcript = %+v, want {clean-prompt verbatim-final}", r.Transcript)
+	}
+	// ...but json:"-" keeps it out of the journal (like Env SecretEnv).
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(b), "transcript") ||
+		strings.Contains(string(b), "verbatim-final") ||
+		strings.Contains(string(b), "clean-prompt") {
+		t.Errorf("AgentResult JSON %q leaked Transcript; want json:\"-\"", b)
+	}
+}
+
+func TestCaps_ThreadedZeroValueAndTag(t *testing.T) {
+	var c agent.Caps // zero value
+	if c.Threaded {
+		t.Errorf("zero-value Caps.Threaded = true, want false")
+	}
+	c.Threaded = true
+	b, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"threaded":true`) {
+		t.Errorf("Caps JSON %q missing `\"threaded\":true`", b)
+	}
+	// omitempty: false Threaded is omitted.
+	b2, _ := json.Marshal(agent.Caps{})
+	if strings.Contains(string(b2), "threaded") {
+		t.Errorf("zero Caps serialized %q, want threaded omitted (omitempty)", b2)
+	}
+}

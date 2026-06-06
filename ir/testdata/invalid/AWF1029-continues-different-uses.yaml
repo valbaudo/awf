@@ -1,0 +1,10 @@
+workflow: continues-different-uses
+version: 1
+graph:
+  - id: first
+    uses: anthropic/claude-code
+    with: { prompt: p }
+  - id: second
+    uses: awf/llm
+    continues: first
+    with: { model: m, prompt: p }

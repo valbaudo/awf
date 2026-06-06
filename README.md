@@ -153,6 +153,29 @@ compose through typed outputs and the shared workspace, the approved reply is po
 a retry never double-sends, and each committed stage is checkpointed so a crash never re-pays for
 finished agent work.
 
+### Two ways turns share data
+
+AWF gives an agent step two distinct channels for what a later turn sees:
+
+- **Typed references** — `output_schema` makes a step's result a validated,
+  structured value; a later step binds a field with `{{ step.draft.summary }}`.
+  References are inspectable, type-checked, and the only thing a gate's `until:`
+  can read. Use them for facts that flow forward.
+- **Engine-owned conversation threads** — `continues: <prior-step-id>` re-sends
+  the prior turns' verbatim `(user, assistant)` exchanges to the model. The
+  thread is assembled by the engine from each prior turn's committed transcript;
+  the author never inlines a `messages:` array, and `with:` stays opaque. The
+  thread is generator-only: it is **not** a bindable reference and is invisible
+  to `until:` and templates. Use it when the model needs the actual prior
+  dialogue, not just extracted fields.
+
+The two compose: a gated turn can both `continues:` a prior turn and read the
+evaluator's typed feedback. See `examples/llm-conversation*` for linear, gated,
+and fan-out chains. (Branches that fan out and share a `system_prompt` re-send a
+byte-identical prefix, which server-side prefix caching reuses.) `continues:` is
+`awf/llm`-first; each thread is committed to the content-addressed log and
+replayed verbatim on resume.
+
 ## Supported agents
 
 An agent step names its runtime with `uses:`; that runtime's per-step config lives in the opaque

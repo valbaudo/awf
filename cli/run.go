@@ -238,6 +238,14 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
+	// Part D: fail fast if any `continues:` step's adapter is not Threaded
+	// (mirrors the Containerless guard inside resolveRuntimes). Runs before
+	// the log is opened, so a rejected run leaves no state on disk.
+	if err := checkThreadedAdapters(ld.Workflow, r.resolverOrEmpty()); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
+
 	// Step 8: put input into Blobs (after validation, before log creation).
 	var inputRef string
 	if *inputJSON != "" {

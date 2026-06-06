@@ -1,0 +1,24 @@
+workflow: continues-in-evaluate
+version: 1
+graph:
+  - id: draft
+    uses: awf/llm
+    with: { model: m, prompt: p }
+  - gate:
+      generate:
+        - id: gen
+          uses: awf/llm
+          with: { model: m, prompt: p }
+      evaluate:
+        - id: judge
+          uses: awf/llm
+          continues: draft
+          with: { model: m, prompt: p }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties:
+              ok: { type: boolean }
+      until: "{{ step.judge.ok }}"
+      max_attempts: 3
