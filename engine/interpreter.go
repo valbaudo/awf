@@ -314,7 +314,7 @@ func runCodeStep(
 		return failStep(log, path, dr.Outcome, errors.New("step did not commit (no underlying error reported)"))
 	}
 
-	nr, err := Commit(log, blobs, path, dr)
+	nr, err := Commit(log, blobs, path, dr, false) // code steps never participate in conversations
 	if err != nil {
 		return "", fmt.Errorf("engine.Run: commit at path %q: %w", path, err)
 	}

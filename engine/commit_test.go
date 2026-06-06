@@ -35,7 +35,7 @@ func TestCommitHappyPath(t *testing.T) {
 		t.Fatalf("seed run.started: %v", err)
 	}
 
-	nr, err := engine.Commit(log, blobs, "triage", dr)
+	nr, err := engine.Commit(log, blobs, "triage", dr, false)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestCommitRejectsNonOkOutcome(t *testing.T) {
 	log := state.NewInMemoryLog(clock.System{})
 	blobs := state.NewInMemoryBlobs()
 	dr := engine.DispatchResult{Outcome: engine.OutcomeRetryableFailure}
-	_, err := engine.Commit(log, blobs, "x", dr)
+	_, err := engine.Commit(log, blobs, "x", dr, false)
 	if err == nil {
 		t.Fatal("Commit with non-ok outcome should error, got nil")
 	}
@@ -161,7 +161,7 @@ func TestCommitAtomicityInvariant(t *testing.T) {
 					{Path: "/out/b.json", Content: []byte(`{"b":2}`)},
 				},
 			}
-			_, err := engine.Commit(log, blobs, "x", dr)
+			_, err := engine.Commit(log, blobs, "x", dr, false)
 			if err == nil {
 				t.Fatal("Commit should have errored, got nil")
 			}
@@ -211,7 +211,7 @@ func TestCommitPersistsMetrics(t *testing.T) {
 	blobs := state.NewInMemoryBlobs()
 
 	ms := &agent.MetricSet{Cost: agent.MetricCost{USD: 0.5, Source: agent.CostSourceReported}, Tokens: agent.MetricTokens{Input: 10, Output: 20}, Turns: 1}
-	if _, err := engine.Commit(log, blobs, "triage", engine.DispatchResult{Outcome: engine.OutcomeOK, Outputs: map[string]any{"x": 1}, Metrics: ms}); err != nil {
+	if _, err := engine.Commit(log, blobs, "triage", engine.DispatchResult{Outcome: engine.OutcomeOK, Outputs: map[string]any{"x": 1}, Metrics: ms}, false); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestCommitCodeStepOmitsMetrics(t *testing.T) {
 	log := state.NewInMemoryLog(clock.System{})
 	blobs := state.NewInMemoryBlobs()
 
-	if _, err := engine.Commit(log, blobs, "build", engine.DispatchResult{Outcome: engine.OutcomeOK, Stdout: []byte("done")}); err != nil {
+	if _, err := engine.Commit(log, blobs, "build", engine.DispatchResult{Outcome: engine.OutcomeOK, Stdout: []byte("done")}, false); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	events, err := log.Fold()
@@ -251,7 +251,7 @@ func TestCommitRecordsSnapshotRefAndContainer(t *testing.T) {
 	log := state.NewInMemoryLog(clock.System{})
 	blobs := state.NewInMemoryBlobs()
 	dr := engine.DispatchResult{Outcome: engine.OutcomeOK, SnapshotRef: "snap-ref", Container: "ws"}
-	if _, err := engine.Commit(log, blobs, "s1", dr); err != nil {
+	if _, err := engine.Commit(log, blobs, "s1", dr, false); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	events, _ := log.Fold()
@@ -263,6 +263,63 @@ func TestCommitRecordsSnapshotRefAndContainer(t *testing.T) {
 	}
 	if last.SnapshotRef != "snap-ref" || last.Container != "ws" {
 		t.Errorf("NodeCompletedData = {%q,%q}, want {snap-ref,ws}", last.SnapshotRef, last.Container)
+	}
+}
+
+func TestCommitPutsTranscriptWhenParticipating(t *testing.T) {
+	log := state.NewInMemoryLog(clock.System{})
+	blobs := state.NewInMemoryBlobs()
+	dr := engine.DispatchResult{
+		Outcome:    engine.OutcomeOK,
+		Outputs:    map[string]any{"k": "v"},
+		Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"},
+	}
+	nr, err := engine.Commit(log, blobs, "turn1", dr, true)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	// nr carries the materialized pair verbatim.
+	if nr.Transcript.User != "u1" || nr.Transcript.Assistant != "a1" {
+		t.Errorf("nr.Transcript = %+v, want {u1,a1}", nr.Transcript)
+	}
+	// node.completed carries a non-empty TranscriptRef pointing at a present blob.
+	events, _ := log.Fold()
+	var d engine.NodeCompletedData
+	if err := json.Unmarshal(events[len(events)-1].Data, &d); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if d.TranscriptRef == "" {
+		t.Fatal("TranscriptRef empty for participating step")
+	}
+	raw, err := blobs.Get(d.TranscriptRef)
+	if err != nil {
+		t.Fatalf("Get(TranscriptRef): %v", err)
+	}
+	var got agent.ThreadTurn
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal transcript blob: %v", err)
+	}
+	if got.User != "u1" || got.Assistant != "a1" {
+		t.Errorf("transcript blob = %+v, want {u1,a1}", got)
+	}
+}
+
+func TestCommitOmitsTranscriptWhenNotParticipating(t *testing.T) {
+	log := state.NewInMemoryLog(clock.System{})
+	blobs := state.NewInMemoryBlobs()
+	dr := engine.DispatchResult{
+		Outcome:    engine.OutcomeOK,
+		Outputs:    map[string]any{"k": "v"},
+		Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"}, // present but must be ignored
+	}
+	if _, err := engine.Commit(log, blobs, "step", dr, false); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	events, _ := log.Fold()
+	last := events[len(events)-1]
+	// omitempty keeps non-conversation logs byte-identical: no transcript_ref key.
+	if bytes.Contains(last.Data, []byte("transcript_ref")) {
+		t.Errorf("non-participating node.completed must omit transcript_ref; got %s", last.Data)
 	}
 }
 

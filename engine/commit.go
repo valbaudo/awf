@@ -21,10 +21,16 @@ import (
 // node.failed event is the interpreter's responsibility, slice 2.5; Commit
 // returns an error to surface the caller bug).
 //
+// participates is the continues:-threading gate: when true, the adapter-provided
+// verbatim {user, assistant} pair (dr.Transcript) is content-addressed alongside
+// the other artifacts (before the node.completed append) and recorded as
+// TranscriptRef. When false the transcript is ignored entirely (code/signal steps
+// and non-conversation agent steps), keeping their logs byte-identical.
+//
 // Errors at any step propagate. The log is left in a consistent state in all
 // failure modes: either the node.completed landed (full success) or it didn't
 // (any partial blob writes are orphans, GC-deferred per spec §11.5).
-func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult) (NodeResult, error) {
+func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, participates bool) (NodeResult, error) {
 	if dr.Outcome != OutcomeOK {
 		return NodeResult{}, fmt.Errorf("engine.Commit: refusing to commit non-ok outcome %q at path %q (only ok-steps commit per spec §8)", dr.Outcome, path)
 	}
@@ -71,6 +77,25 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult) (N
 		}
 	}
 
+	// continues: threading — when this step participates in a conversation, the
+	// adapter-provided verbatim {user, assistant} pair is content-addressed BEFORE
+	// the node.completed append, preserving the Put→Append→Sync ordering. Commit
+	// reads NO with: key and never sees `as` — the pair is supplied by the adapter
+	// (DispatchResult.Transcript), so with:-opacity is intact.
+	var transcriptRef string
+	if participates {
+		tBytes, err := json.Marshal(dr.Transcript)
+		if err != nil {
+			return NodeResult{}, fmt.Errorf("engine.Commit: marshal transcript at path %q: %w", path, err)
+		}
+		ref, err := blobs.Put(tBytes)
+		if err != nil {
+			return NodeResult{}, fmt.Errorf("engine.Commit: put transcript at path %q: %w", path, err)
+		}
+		transcriptRef = ref
+		nr.Transcript = dr.Transcript
+	}
+
 	// 2. Append the node.completed event with all refs. Its existence in the
 	// log IS the completion record; the artifacts it references provably
 	// already exist (we just Put them).
@@ -83,8 +108,9 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult) (N
 		Metrics:    dr.Metrics,
 		// Slice 7.1 — the snapshot blob was already Put to Blobs by the
 		// dispatcher (Backend.Snapshot); Commit records the ref ONLY. No re-Put.
-		SnapshotRef: dr.SnapshotRef,
-		Container:   dr.Container,
+		SnapshotRef:   dr.SnapshotRef,
+		Container:     dr.Container,
+		TranscriptRef: transcriptRef,
 	}
 	dataJSON, err := json.Marshal(data)
 	if err != nil {

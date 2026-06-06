@@ -283,6 +283,10 @@ type NodeCompletedData struct {
 	// separate snapshot map; obs reads them off this event.
 	SnapshotRef string `json:"snapshot_ref,omitempty"` // CoW workspace diff ref (snapshot:workspace only)
 	Container   string `json:"container,omitempty"`    // bare container name (resume snapshot mapping + obs)
+	// TranscriptRef is the CAS pointer for the participating turn's verbatim {user,
+	// assistant} pair (continues: threading). Empty for non-participating steps.
+	// omitempty keeps non-conversation logs byte-identical (additive, like SnapshotRef).
+	TranscriptRef string `json:"transcript_ref,omitempty"`
 }
 
 // BranchTakenData is the if-decision marker (spec §5.1). Fold uses Which to know which

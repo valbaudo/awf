@@ -166,7 +166,8 @@ func runAgentStep(
 	// 6. Happy path: commit via the canonical engine.Commit. Commit owns the
 	// content-address-then-pointer-swap invariant (CLAUDE.md "Commit"); we
 	// reuse it verbatim. Then mirror the result into runstate.
-	nr, commitErr := Commit(log, blobs, path, dr)
+	// TODO(Task 4.5): compute the real participates value at this call site.
+	nr, commitErr := Commit(log, blobs, path, dr, false)
 	if commitErr != nil {
 		return "", fmt.Errorf("engine.runAgentStep: commit at %q: %w", path, commitErr)
 	}
