@@ -225,6 +225,10 @@ graph:
 
 	var reg agent.Registry
 	fk := fake.New("anthropic/claude-code").
+		// Threaded:true — continues: requires a Threaded adapter; the engine
+		// guard (defense-in-depth) will reject a non-Threaded adapter when
+		// inv.Thread is non-empty. The real claude-code adapter sets Threaded:true.
+		WithCaps(agent.Caps{NativeSchema: true, Threaded: true}).
 		Script(0, fake.Result{
 			Output:     map[string]any{"k": "v1"},
 			Transcript: agent.ThreadTurn{User: "prompt-1", Assistant: "answer-1"},
@@ -336,6 +340,10 @@ graph:
 
 	var reg agent.Registry
 	fk := fake.New("anthropic/claude-code").
+		// Threaded:true — continues: requires a Threaded adapter; the engine
+		// guard (defense-in-depth) will reject a non-Threaded adapter when
+		// inv.Thread is non-empty. The real claude-code adapter sets Threaded:true.
+		WithCaps(agent.Caps{NativeSchema: true, Threaded: true}).
 		Script(0, fake.Result{
 			Output:     map[string]any{"x": "v1"},
 			Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"},

@@ -66,6 +66,21 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}, closedChunks(), nil
 	}
 
+	// Defense-in-depth: the run-start guard in cli/checkThreadedAdapters only
+	// walks the top-level step list. An engine.Run caller that bypasses the CLI,
+	// or a continues: step inside a map body, could reach here with a non-empty
+	// Thread against an adapter that doesn't support engine-threaded conversations
+	// (Caps.Threaded == false). Without this guard the thread is silently dropped
+	// and Launch proceeds with no history — corrupting the conversation. Catch it
+	// here before Launch so the failure is classified correctly (permanent, not
+	// retryable) and surfaces the step path.
+	if len(intent.ResolvedInputs.Thread) > 0 && !adapter.Capabilities().Threaded {
+		return DispatchResult{
+			Outcome: OutcomePermanentFailure,
+			Err:     &agent.ErrInvalidConfig{Ref: intent.ResolvedInputs.Uses, Reason: fmt.Sprintf("step %q uses continues: (engine-threaded), but adapter %q does not support Threaded conversations", intent.Path, intent.ResolvedInputs.Uses)},
+		}, closedChunks(), nil
+	}
+
 	var h container.Handle
 	if bare != "" {
 		var ok bool

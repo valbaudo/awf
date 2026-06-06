@@ -37,6 +37,10 @@ func testThreadFanOut(t *testing.T, factory BackendFactory) {
 		// (parallel). Each branch's transcript is distinct, but its assembled
 		// PREFIX (system + thread) must be identical — that is the assertion.
 		chat = fake.New("test/chat").
+			// Threaded:true — the engine guard rejects a non-Threaded adapter when
+			// inv.Thread is non-empty (defense-in-depth). The branches continues:seed,
+			// so the adapter must declare Threaded support.
+			WithCaps(agent.Caps{NativeSchema: true, Threaded: true}).
 			Script(0, fake.Result{
 				Output:     map[string]any{},
 				Transcript: agent.ThreadTurn{User: "establish shared context", Assistant: "SEED-A0"},
@@ -125,6 +129,10 @@ func testThreadBranched(t *testing.T, factory BackendFactory) {
 	register := func(reg *agent.Registry) {
 		// Distinct strings on BOTH halves per turn (B.2): vacuous otherwise.
 		chat = fake.New("test/chat").
+			// Threaded:true — the engine guard rejects a non-Threaded adapter when
+			// inv.Thread is non-empty (defense-in-depth). critique and revise both use
+			// continues:, so the adapter must declare Threaded support.
+			WithCaps(agent.Caps{NativeSchema: true, Threaded: true}).
 			Script(0, fake.Result{
 				Output:     map[string]any{},
 				Transcript: agent.ThreadTurn{User: "draft a plan", Assistant: "DRAFT-A0"},

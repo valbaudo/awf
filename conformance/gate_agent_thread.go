@@ -32,6 +32,10 @@ func testGateAgentEvaluatorIndependence(t *testing.T, factory BackendFactory) {
 	var oracleFake *fake.Fake
 	register := func(reg *agent.Registry) {
 		gen := fake.New("test/llm").
+			// Threaded:true — the engine guard rejects a non-Threaded adapter when
+			// inv.Thread is non-empty (defense-in-depth). These steps use continues:,
+			// so the adapter must declare Threaded support.
+			WithCaps(agent.Caps{NativeSchema: true, Threaded: true}).
 			Script(0, fake.Result{Output: map[string]any{}, Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"}}).            // draft
 			Script(1, fake.Result{Output: map[string]any{}, Transcript: agent.ThreadTurn{User: "u2", Assistant: "a2"}}).            // critique
 			Script(2, fake.Result{Output: map[string]any{"draft": "d"}, Transcript: agent.ThreadTurn{User: "u3", Assistant: "a3"}}) // revise
@@ -92,6 +96,10 @@ func testGateAgentThread(t *testing.T, factory BackendFactory) {
 		// refine's own output carries the typed draft and a transcript that is
 		// never asserted (refine is the consumer, not a predecessor here).
 		llmFake = fake.New("test/llm").
+			// Threaded:true — the engine guard rejects a non-Threaded adapter when
+			// inv.Thread is non-empty (defense-in-depth). refine uses continues:ask,
+			// so the adapter must declare Threaded support.
+			WithCaps(agent.Caps{NativeSchema: true, Threaded: true}).
 			Script(0, fake.Result{Output: map[string]any{}, Transcript: agent.ThreadTurn{User: "Q1", Assistant: "A1"}}).
 			Script(1, fake.Result{Output: map[string]any{"draft": "d1"}, Transcript: agent.ThreadTurn{User: "R1", Assistant: "B1"}}).
 			Script(2, fake.Result{Output: map[string]any{}, Transcript: agent.ThreadTurn{User: "Q2", Assistant: "A2"}}).
