@@ -264,6 +264,106 @@ func (b *Broker) tryConsume(name string) (Delivery, bool) {
 	return Delivery{Name: name, Seq: earliest.seq, Payload: payload}, true
 }
 
+// MatchFunc decides whether a buffered signal's payload satisfies a keyed-await
+// `where:` clause. Returns (true, nil) to consume this candidate, (false, nil)
+// to skip it (leave it buffered for another await), or (false, err) when the
+// payload cannot be predicated (e.g. not JSON) — treated as skip-this-candidate
+// by tryConsumeMatching (the engine builds the predicate; see engine/signal_step.go).
+type MatchFunc func(payload []byte) (bool, error)
+
+// ReceiveMatching is Receive with a payload predicate: it blocks until a signal
+// of name whose payload satisfies match arrives, ctx cancels, or timeout elapses
+// (0 = no timeout). The EARLIEST-seq matching signal is atomic-renamed into
+// consumed/ before returning; non-matching (and unpredicatable) candidates are
+// LEFT in place for other awaits. Same crash-safety contract as Receive (a crash
+// before the engine commits signal.received leaves the file in consumed/; Fold
+// re-derives state from the log, not the broker).
+//
+// ctx-cancel: (Delivery{}, ctx.Err()). timeout: (Delivery{}, DeadlineExceeded) —
+// the engine maps to retryable_failure (spec §4.3), identical to "no signal".
+func (b *Broker) ReceiveMatching(ctx context.Context, name string, timeout time.Duration, match MatchFunc) (Delivery, error) {
+	if err := validateSignalName(name); err != nil {
+		return Delivery{}, err
+	}
+	if match == nil {
+		// Defense: a nil predicate degrades to plain earliest-first Receive.
+		return b.Receive(ctx, name, timeout)
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	ticker := time.NewTicker(b.pollInterval)
+	defer ticker.Stop()
+
+	if d, ok := b.tryConsumeMatching(name, match); ok {
+		return d, nil
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return Delivery{}, ctx.Err()
+		case <-ticker.C:
+			if d, ok := b.tryConsumeMatching(name, match); ok {
+				return d, nil
+			}
+		}
+	}
+}
+
+// tryConsumeMatching scans controlDir for signals of name in ASCENDING seq order
+// and consumes (atomic-renames into consumed/) the FIRST whose payload satisfies
+// match. A candidate whose predicate returns (false, _) — including a predicate
+// ERROR (unpredicatable payload, e.g. non-JSON) — is skipped and left buffered.
+// ok=false if no candidate matches this scan. Mirrors tryConsume's read/rename
+// mechanics exactly; only the selection rule differs.
+func (b *Broker) tryConsumeMatching(name string, match MatchFunc) (Delivery, bool) {
+	entries, err := os.ReadDir(b.controlDir)
+	if err != nil {
+		return Delivery{}, false
+	}
+	type match2 struct {
+		seq      int
+		fileName string
+	}
+	var matches []match2
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n, seq, ok := parseSignalFileName(e.Name())
+		if !ok || n != name {
+			continue
+		}
+		matches = append(matches, match2{seq, e.Name()})
+	}
+	if len(matches) == 0 {
+		return Delivery{}, false
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].seq < matches[j].seq })
+	for _, m := range matches {
+		srcPath := filepath.Join(b.controlDir, m.fileName)
+		payload, rerr := os.ReadFile(srcPath)
+		if rerr != nil {
+			continue // disappeared / unreadable; another consumer or a transient fault
+		}
+		matched, merr := match(payload)
+		if merr != nil || !matched {
+			continue // unpredicatable or non-matching → leave buffered
+		}
+		if err := os.MkdirAll(b.consumedDir, 0o755); err != nil {
+			return Delivery{}, false
+		}
+		dstPath := filepath.Join(b.consumedDir, m.fileName)
+		if err := os.Rename(srcPath, dstPath); err != nil {
+			continue // concurrent consumer claimed it; try the next candidate
+		}
+		return Delivery{Name: name, Seq: m.seq, Payload: payload}, true
+	}
+	return Delivery{}, false
+}
+
 // Drain returns all pending signals (any name) without blocking. Existed
 // in an earlier draft for use by an at-commit-boundary journal — that draft
 // has been superseded by the background pollControls goroutine architecture

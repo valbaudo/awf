@@ -2,9 +2,12 @@ package signal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -281,5 +284,89 @@ func TestBrokerDrainReturnsAll(t *testing.T) {
 	got := b.Drain()
 	if len(got) != 2 {
 		t.Errorf("Drain returned %d, want 2", len(got))
+	}
+}
+
+func TestBrokerReceiveMatchingEarliest(t *testing.T) {
+	b := tempBroker(t)
+	// Two buffered signals; only seq 2 matches the predicate.
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"a"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"b"}`)); err != nil {
+		t.Fatal(err)
+	}
+	match := func(p []byte) (bool, error) {
+		return strings.Contains(string(p), `"candidate_id":"b"`), nil
+	}
+	d, err := b.ReceiveMatching(context.Background(), "oob", 0, match)
+	if err != nil {
+		t.Fatalf("ReceiveMatching: %v", err)
+	}
+	if d.Seq != 2 || !strings.Contains(string(d.Payload), `"b"`) {
+		t.Errorf("consumed wrong signal: seq=%d payload=%s", d.Seq, d.Payload)
+	}
+	// The non-matching seq 1 must still be buffered (consumable plainly).
+	d1, err := b.Receive(context.Background(), "oob", 0)
+	if err != nil {
+		t.Fatalf("Receive remaining: %v", err)
+	}
+	if d1.Seq != 1 {
+		t.Errorf("remaining signal seq=%d, want 1 (non-match must stay buffered)", d1.Seq)
+	}
+}
+
+func TestBrokerReceiveMatchingEarliestWins(t *testing.T) {
+	b := tempBroker(t)
+	// Both match; the EARLIEST seq must win.
+	if _, err := b.WriteSignal("oob", []byte(`{"k":"x"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.WriteSignal("oob", []byte(`{"k":"x"}`)); err != nil {
+		t.Fatal(err)
+	}
+	match := func(p []byte) (bool, error) { return true, nil }
+	d, err := b.ReceiveMatching(context.Background(), "oob", 0, match)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Seq != 1 {
+		t.Errorf("seq=%d, want 1 (earliest match)", d.Seq)
+	}
+}
+
+func TestBrokerReceiveMatchingTimeout(t *testing.T) {
+	b := tempBroker(t)
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"a"}`)); err != nil {
+		t.Fatal(err)
+	}
+	// Predicate never matches → blocks → timeout (the non-match stays buffered).
+	match := func(p []byte) (bool, error) { return false, nil }
+	_, err := b.ReceiveMatching(context.Background(), "oob", 5*time.Millisecond, match)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want DeadlineExceeded", err)
+	}
+}
+
+func TestBrokerReceiveMatchingSkipsMalformedPayload(t *testing.T) {
+	b := tempBroker(t)
+	if _, err := b.WriteSignal("oob", []byte("not json")); err != nil { // seq 1: predicate errors
+		t.Fatal(err)
+	}
+	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"b"}`)); err != nil { // seq 2: matches
+		t.Fatal(err)
+	}
+	match := func(p []byte) (bool, error) {
+		if !json.Valid(p) {
+			return false, fmt.Errorf("payload not JSON")
+		}
+		return strings.Contains(string(p), `"b"`), nil
+	}
+	d, err := b.ReceiveMatching(context.Background(), "oob", 0, match)
+	if err != nil {
+		t.Fatalf("ReceiveMatching: %v", err)
+	}
+	if d.Seq != 2 {
+		t.Errorf("seq=%d, want 2 (malformed seq 1 must be skipped, not consumed)", d.Seq)
 	}
 }
