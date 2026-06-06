@@ -207,6 +207,31 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 	}
 }
 
+// ResolveArtifactPath resolves a producer step id + its declared container path
+// to the committed CAS blob ref (NodeResult.Files[path], which is PATH-keyed).
+// Walk-free: the caller (engine.resolveInputFiles) maps name→path once via
+// ir.OutputFilesByStepID. Reuses stepIndex + stepRuntimePath so map/loop/gate
+// multiplicity is handled identically to scalar refs.
+func (s *Scope) ResolveArtifactPath(id, containerPath string) (string, error) {
+	staticPath, ok := s.stepIndex[id]
+	if !ok {
+		return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step %q not declared", id)
+	}
+	rp, err := s.stepRuntimePath(staticPath)
+	if err != nil {
+		return "", &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: err.Error()}
+	}
+	nr, ok := s.rs.LookupCompleted(rp)
+	if !ok {
+		return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step %q not yet committed (%s)", id, rp)
+	}
+	cas, ok := nr.Files[containerPath]
+	if !ok {
+		return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step %q has no committed artifact at %q", id, containerPath)
+	}
+	return cas, nil
+}
+
 // resolveEvaluate handles `evaluate.<field>` refs. Per Phase 3 slice 3.3
 // design §D + decision 9:
 //

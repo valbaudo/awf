@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -698,5 +699,137 @@ func TestRunMapAggregateChainResume(t *testing.T) {
 	proj, ok := projV.([]any)
 	if !ok || len(proj) != 2 || proj[0] != "FA" || proj[1] != "FC" {
 		t.Fatalf("resume field aggregate = %#v, want []any{\"FA\",\"FC\"}", projV)
+	}
+}
+
+// copyToSpy wraps the fake and records every CopyTo call (handle ID → staged
+// files), so a test can assert the bytes staged into per-item containers that
+// the map executor Destroys before the test can CaptureFiles them. Thread-safe
+// (map items dispatch concurrently).
+type copyToSpy struct {
+	*container.Fake
+	mu     sync.Mutex
+	staged map[string][]container.InputFile // handle ID → files staged into it
+}
+
+func newCopyToSpy(fake *container.Fake) *copyToSpy {
+	return &copyToSpy{Fake: fake, staged: map[string][]container.InputFile{}}
+}
+
+func (s *copyToSpy) CopyTo(ctx context.Context, h container.Handle, files []container.InputFile) error {
+	if err := s.Fake.CopyTo(ctx, h, files); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]container.InputFile, 0, len(files))
+	for _, f := range files {
+		dup := make([]byte, len(f.Content))
+		copy(dup, f.Content)
+		cp = append(cp, container.InputFile{Path: f.Path, Content: dup})
+	}
+	s.staged[h.ID] = append(s.staged[h.ID], cp...)
+	return nil
+}
+
+func TestRunInputFilesMapBodyConsumesTopLevelProducer(t *testing.T) {
+	// SP1 C5 ("one recon doc → N hunters"): a TOP-LEVEL producer `recon` with a
+	// named artifact, then a `map` over N items whose body step input_files the
+	// recon artifact into the per-item container. Proves ResolveArtifactPath
+	// resolves a top-level producer from INSIDE a map body (stepRuntimePath
+	// returns the producer's path unchanged) and WithItemHandle routes CopyTo to
+	// the per-item container.
+	clk := &clock.Fake{T: testClockEpoch}
+	fake := container.NewFake()
+	spy := newCopyToSpy(fake)
+	reconH, err := fake.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create lab: %v", err)
+	}
+	// Base handle for the map's container name (per-item handles are minted on
+	// top via WithItemHandle; the map dispatch path still expects an entry).
+	boxBase, err := fake.Create(context.Background(), container.ContainerSpec{Name: "box"})
+	if err != nil {
+		t.Fatalf("Create box: %v", err)
+	}
+	disp := &LocalDispatcher{
+		Backend: spy,
+		Handles: map[string]container.Handle{"lab": reconH, "box": boxBase},
+	}
+	lg := state.NewInMemoryLog(clk)
+	blobs := state.NewInMemoryBlobs()
+
+	sentinel := []byte("recon doc\n")
+	fake.ProgramExec("./recon.sh", container.ExecResult{ExitCode: 0}, nil)
+	if err := fake.WriteFile(reconH, "/out/report.md", sentinel); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fake.ProgramExec("./hunt.sh a", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("./hunt.sh b", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("./hunt.sh c", container.ExecResult{ExitCode: 0}, nil)
+
+	seedRunStartedWithInput(t, lg, blobs, runOverItems("a", "b", "c"))
+
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]ir.Container{
+			"lab": {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
+			"box": {Image: "oci://example.com/r@sha256:" + strings.Repeat("1", 64)},
+		},
+		Input: &ir.JSONSchema{
+			"type":       "object",
+			"properties": map[string]any{"items": map[string]any{"type": "array"}},
+		},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "recon", Container: "lab", Run: "./recon.sh",
+				OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.md"}},
+			},
+			&ir.Map{
+				Over: ir.Expr("{{ input.items }}"), As: "h", Container: "box", Concurrency: 1,
+				Body: ir.NodeList{
+					&ir.CodeStep{
+						ID: "hunt", Container: "box", Run: "./hunt.sh {{ h }}",
+						InputFiles: map[string]string{"/work/report.md": "step.recon.files.report"},
+					},
+				},
+			},
+		},
+	}
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
+
+	oc, err := Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, lg, blobs, clk, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+	// The map is the SECOND top-level node (index 1) → path "map[1]".
+	items := rs.LookupMapItems("map[1]")
+	if len(items) != 3 {
+		t.Fatalf("MapItems len = %d, want 3", len(items))
+	}
+	for _, mr := range items {
+		if mr.Status != ItemPassed {
+			t.Errorf("item N=%d status=%q, want item_passed", mr.N, mr.Status)
+		}
+	}
+	// Three per-item containers each received the recon doc at /work/report.md.
+	stagedCount := 0
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	for hID, files := range spy.staged {
+		for _, f := range files {
+			if f.Path == "/work/report.md" {
+				stagedCount++
+				if string(f.Content) != string(sentinel) {
+					t.Errorf("handle %s staged %q, want %q", hID, f.Content, sentinel)
+				}
+			}
+		}
+	}
+	if stagedCount != 3 {
+		t.Errorf("recon doc staged into %d item containers, want 3", stagedCount)
 	}
 }

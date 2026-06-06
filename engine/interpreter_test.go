@@ -212,6 +212,80 @@ func TestRunCodeStepFailureAppendsNodeFailed(t *testing.T) {
 	}
 }
 
+func TestRunInputFilesCrossContainerHandoff(t *testing.T) {
+	// SP1 artifact channel end-to-end: step A (in container `lab`) produces a
+	// NAMED output_files artifact; step B (in a DISTINCT container `box`)
+	// input_files it. The interpreter resolves the committed CAS ref, Blobs.Get's
+	// the bytes, and the dispatcher CopyTo's them into B's container before B runs.
+	t.Parallel()
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	fake := container.NewFake()
+	labH, err := fake.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create lab: %v", err)
+	}
+	boxH, err := fake.Create(context.Background(), container.ContainerSpec{Name: "box"})
+	if err != nil {
+		t.Fatalf("Create box: %v", err)
+	}
+	disp := &engine.LocalDispatcher{
+		Backend: fake,
+		Handles: map[string]container.Handle{"lab": labH, "box": boxH},
+	}
+	log := state.NewInMemoryLog(clk)
+	blobs := state.NewInMemoryBlobs()
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: []byte(`{"run_id":"r1","workflow_digest":"d1"}`)}); err != nil {
+		t.Fatalf("seed run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d1", nil)
+
+	// The producer's exec produces /out/report.md (seeded directly on lab's
+	// handle so the post-Exec CaptureFiles finds it — ProgramExecWithFiles is a
+	// later task; WriteFile is the equivalent seed here).
+	sentinel := []byte("recon findings\n")
+	fake.ProgramExec("./recon.sh", container.ExecResult{ExitCode: 0}, nil)
+	if err := fake.WriteFile(labH, "/out/report.md", sentinel); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fake.ProgramExec("./hunt.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]ir.Container{"lab": {}, "box": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "recon", Container: "lab", Run: "./recon.sh",
+				OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.md"}},
+			},
+			&ir.CodeStep{
+				ID: "hunt", Container: "box", Run: "./hunt.sh",
+				InputFiles: map[string]string{"/work/report.md": "step.recon.files.report"},
+			},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+	if _, ok := rs.Completed["hunt"]; !ok {
+		t.Fatal("RunState.Completed missing 'hunt'")
+	}
+	// The sentinel was seeded ONLY into lab; hunt runs in box. The staged bytes
+	// landing in box at /work/report.md proves the full resolve→Get→CopyTo path.
+	got, err := fake.CaptureFiles(context.Background(), boxH, []string{"/work/report.md"})
+	if err != nil {
+		t.Fatalf("CaptureFiles box /work/report.md: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Content) != string(sentinel) {
+		t.Errorf("staged into box = %+v, want one file with content %q", got, sentinel)
+	}
+}
+
 func TestRunCodeStepFailureHaltsSubsequentSteps(t *testing.T) {
 	t.Parallel()
 	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)

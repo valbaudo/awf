@@ -62,6 +62,11 @@ type ResolvedInputs struct {
 	NonRetryableExitCodes []int
 	Timeout               time.Duration
 
+	// InputFiles are the resolved (path → bytes) artifacts to stage via
+	// Backend.CopyTo BEFORE Exec/Launch. The interpreter resolves each ref to a
+	// CAS blob and Blobs.Get's the bytes (the dispatcher never touches Blobs).
+	InputFiles []container.InputFile
+
 	// Snapshot is "workspace" iff the step's container is a snapshot:workspace
 	// container; the dispatcher captures a CoW diff after a successful exec.
 	Snapshot string

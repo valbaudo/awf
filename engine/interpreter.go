@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/valbaudo/awf/clock"
@@ -210,6 +211,55 @@ func interpNode(
 	}
 }
 
+// errArtifactFetch marks a Blobs.Get failure during input_files staging. Unlike
+// a ref-resolution error (author bug → permanent_failure), a fetch failure of a
+// committed, content-addressed artifact is corruption/IO territory — the caller
+// halts as an internal error (matching engine/fold.go + signal_step), so resume
+// re-runs the uncommitted step and re-fetches. (In-run staging retry is a
+// future enhancement; out of scope for SP1's local single-host CAS.) Caveat:
+// this surfaces with the same exit class as an interpreter bug (the "" outcome),
+// consistent with fold.go — a missing/corrupt committed blob is a data/infra
+// fault, not a step outcome; we do not invent a new outcome class for it.
+var errArtifactFetch = errors.New("engine: input_files artifact fetch failed")
+
+// resolveInputFiles maps a step's input_files (container-path → artifact ref)
+// to staged bytes. Builds the name→path index ONCE (ir.OutputFilesByStepID).
+// Ref errors (parse/undeclared/not-committed) return a plain error (caller →
+// permanent_failure); a Blobs.Get failure is wrapped with errArtifactFetch
+// (caller → internal halt). Sorted by dst for determinism.
+func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blobs state.Blobs) ([]container.InputFile, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	idx := ir.OutputFilesByStepID(wf)
+	dsts := make([]string, 0, len(in))
+	for d := range in {
+		dsts = append(dsts, d)
+	}
+	sort.Strings(dsts)
+	out := make([]container.InputFile, 0, len(in))
+	for _, dst := range dsts {
+		id, name, ok := template.ParseArtifactRef(in[dst])
+		if !ok {
+			return nil, fmt.Errorf("input_files[%s]=%q: expected step.<id>.files.<name>", dst, in[dst])
+		}
+		containerPath, ok := idx[id].PathForName(name)
+		if !ok {
+			return nil, fmt.Errorf("input_files[%s]: step %q has no named output_files artifact %q", dst, id, name)
+		}
+		cas, err := scope.ResolveArtifactPath(id, containerPath)
+		if err != nil {
+			return nil, fmt.Errorf("input_files[%s]: %w", dst, err)
+		}
+		b, err := blobs.Get(cas)
+		if err != nil {
+			return nil, fmt.Errorf("input_files[%s]: %w (%v)", dst, errArtifactFetch, err)
+		}
+		out = append(out, container.InputFile{Path: dst, Content: b})
+	}
+	return out, nil
+}
+
 // runCodeStep is the CodeStep handler — composes substitution, retry, dispatch,
 // classify, commit, AND failure-event emission. Each of those primitives is
 // slice 2.4's; this function is the connecting tissue.
@@ -265,6 +315,16 @@ func runCodeStep(
 		return "", fmt.Errorf("engine.Run: build retry policy at path %q: %w", path, err)
 	}
 
+	inputFiles, err := resolveInputFiles(cs.InputFiles, scope, wf, blobs)
+	if err != nil {
+		if errors.Is(err, errArtifactFetch) {
+			// Committed artifact unreadable — internal error (content-address
+			// invariant says it must exist); resume re-runs + re-fetches.
+			return "", fmt.Errorf("engine.Run: stage input_files at %q: %w", path, err)
+		}
+		return failStep(log, path, OutcomePermanentFailure, err)
+	}
+
 	snapBare, _ := SplitContainerRef(cs.Container)
 	resolved := ResolvedInputs{
 		Command:               command,
@@ -273,6 +333,7 @@ func runCodeStep(
 		OutputSchema:          cs.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,
+		InputFiles:            inputFiles,
 	}
 	if cs.Timeout != nil {
 		resolved.Timeout = time.Duration(*cs.Timeout)

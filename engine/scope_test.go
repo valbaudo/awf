@@ -811,6 +811,50 @@ func TestEnclosingGateForEvaluateTable(t *testing.T) {
 	}
 }
 
+func TestScopeResolveArtifactPath(t *testing.T) {
+	// SP1: ResolveArtifactPath(id, containerPath) → the committed CAS blob ref
+	// from NodeResult.Files[containerPath] (PATH-keyed). Walk-free: the caller
+	// has already mapped name→path via ir.OutputFilesByStepID.
+	rs := &RunState{
+		RunID: testRunID,
+		Completed: map[string]NodeResult{
+			"triage": {
+				Outcome: OutcomeOK,
+				Files:   map[string]string{"/out/r.md": "blobref-123"},
+			},
+		},
+	}
+	wf := minimalWorkflow()
+	sc := NewScope(rs, wf, "after")
+
+	cas, err := sc.ResolveArtifactPath("triage", "/out/r.md")
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(triage, /out/r.md): %v", err)
+	}
+	if cas != "blobref-123" {
+		t.Errorf("cas = %q, want %q", cas, "blobref-123")
+	}
+
+	// Undeclared step → AWF4002.
+	_, err = sc.ResolveArtifactPath("nope", "/out/r.md")
+	var ee *template.EvalError
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("undeclared step: err=%v, want AWF4002", err)
+	}
+
+	// Declared but not yet committed → AWF4002.
+	_, err = sc.ResolveArtifactPath("echo", "/out/r.md")
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("not committed: err=%v, want AWF4002", err)
+	}
+
+	// Committed but no artifact at the path → AWF4002.
+	_, err = sc.ResolveArtifactPath("triage", "/out/missing.md")
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("missing path: err=%v, want AWF4002", err)
+	}
+}
+
 func mustParseRef(t *testing.T, src string) *template.Ref {
 	t.Helper()
 	r, err := template.ParseRef(src)

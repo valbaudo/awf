@@ -284,6 +284,38 @@ func TestLocalDispatcherCapturesOutputFiles(t *testing.T) {
 	}
 }
 
+func TestRunCodeStagesInputFiles(t *testing.T) {
+	// SP1 artifact channel: the dispatcher calls Backend.CopyTo to stage
+	// ResolvedInputs.InputFiles into the container BEFORE Exec. This is the
+	// byte-exact staging proof (the conformance bucket proves the wiring).
+	d, fake, h := newDispatcher(t)
+	fake.ProgramExec("./consume.sh", container.ExecResult{ExitCode: 0}, nil)
+	intent := engine.NodeIntent{
+		Path: "consume",
+		Node: &ir.CodeStep{ID: "consume", Container: "lab"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Command: "./consume.sh",
+			InputFiles: []container.InputFile{
+				{Path: "/work/r.md", Content: []byte("R")},
+			},
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Errorf("Outcome = %v, want ok", dr.Outcome)
+	}
+	got, err := fake.CaptureFiles(context.Background(), h, []string{"/work/r.md"})
+	if err != nil {
+		t.Fatalf("CaptureFiles after staging: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Content) != "R" {
+		t.Errorf("staged file = %+v, want one file /work/r.md content %q", got, "R")
+	}
+}
+
 func TestLocalDispatcherMissingOutputFileIsRetryable(t *testing.T) {
 	d, fake, _ := newDispatcher(t)
 	fake.ProgramExec("./forgot.sh", container.ExecResult{ExitCode: 0}, nil)

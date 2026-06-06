@@ -97,6 +97,19 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		h.Service = svcOverride // shallow clone — h is a Handle value type; no aliasing of d.Handles
 	}
 
+	// Stage input_files into the container before exec (artifact channel), OUTSIDE
+	// the step timeout (staging is setup, not the step's work). Failure → retryable
+	// (the bytes exist in Blobs; the container may be transiently unwritable).
+	// Staged on every attempt (retry = identical inputs); CopyTo overwrites idempotently.
+	if len(intent.ResolvedInputs.InputFiles) > 0 {
+		if err := d.Backend.CopyTo(ctx, h, intent.ResolvedInputs.InputFiles); err != nil {
+			return DispatchResult{
+				Outcome: OutcomeRetryableFailure,
+				Err:     fmt.Errorf("engine.LocalDispatcher: stage input_files at %q: %w", intent.Path, err),
+			}, nil, nil
+		}
+	}
+
 	// Apply step timeout to ctx (if any). On expiry the Backend.Exec call
 	// observes ctx cancellation and returns an error; ClassifyOutcome then
 	// routes it to retryable_failure per spec §6.
