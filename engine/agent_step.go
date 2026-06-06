@@ -119,12 +119,12 @@ func runAgentStep(
 	byID := runstate.agentStepByID(wf)
 	for cur := as.Continues; cur != ""; {
 		predRuntime, perr := scope.stepRuntimePath(idx[cur])
-		if perr != nil { // impossible after validation (AWF1026/AWF1030); defensive.
+		if perr != nil { // impossible after validation (AWF1027/AWF1031); defensive.
 			return failStep(log, path, OutcomePermanentFailure,
 				fmt.Errorf("engine.runAgentStep: resolve continues target %q at %q: %w", cur, path, perr))
 		}
 		predNR, ok := runstate.LookupCompleted(predRuntime)
-		if !ok { // ok guaranteed by dominance (AWF1026); defensive.
+		if !ok { // ok guaranteed by dominance (AWF1027); defensive.
 			return failStep(log, path, OutcomePermanentFailure,
 				fmt.Errorf("engine.runAgentStep: continues target %q not committed (runtime %q)", cur, predRuntime))
 		}
@@ -198,8 +198,12 @@ func runAgentStep(
 	// content-address-then-pointer-swap invariant (CLAUDE.md "Commit"); we
 	// reuse it verbatim. Then mirror the result into runstate. A step
 	// participates in a conversation (so its transcript blob must be committed)
-	// iff it continues someone OR is continued-from by some other step.
-	participates := as.Continues != "" || runstate.threadTargets(wf)[as.ID]
+	// iff it is continued-from by some other step (i.e. it is a thread target).
+	// A leaf turn (continues: someone, but nobody continues IT) NEVER needs its
+	// transcript committed: the thread-assembly loop only reads transcripts of
+	// targets, never of the consumer itself. Committing a leaf transcript wastes
+	// Blobs storage with data nothing ever reads.
+	participates := runstate.threadTargets(wf)[as.ID]
 	nr, commitErr := Commit(log, blobs, path, dr, participates)
 	if commitErr != nil {
 		return "", fmt.Errorf("engine.runAgentStep: commit at %q: %w", path, commitErr)

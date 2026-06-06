@@ -32,9 +32,9 @@ func checkThreadedAdapters(wf *ir.Workflow, resolver agent.Resolver) error {
 // structural-node type that can contain steps. Unlike walkAgentRefsNodes
 // (cli/runtimes.go), it DOES descend into map.body: a continues: step inside a
 // map body still resolves an adapter and still needs Threaded. This switch must
-// stay in sync with engine/scope.go's node walker; when ir/ adds a new node
-// type, update both (the default arm is unreachable from outside ir/ — ir.Node
-// is a closed sum type with an unexported isNode() marker).
+// stay in sync with walkAgentRefsNodes (cli/runtimes.go); when ir/ adds a new
+// node type, update both (the default arm is unreachable from outside ir/ —
+// ir.Node is a closed sum type with an unexported isNode() marker).
 func checkThreadedNodes(nodes ir.NodeList, resolver agent.Resolver) error {
 	for _, n := range nodes {
 		switch v := n.(type) {
@@ -91,9 +91,9 @@ func checkThreadedNodes(nodes ir.NodeList, resolver agent.Resolver) error {
 			}
 		default:
 			// Unreachable from outside ir/ (ir.Node is a closed sum type with an
-			// unexported isNode() marker). Defensive: mirror walkAgentRefsNodes /
-			// engine/scope.go when a new node type lands.
-			panic(fmt.Sprintf("checkThreadedAdapters: unhandled ir.Node type %T (extend the switch; mirror cli/runtimes.go walkAgentRefsNodes and engine/scope.go)", n))
+			// unexported isNode() marker). Defensive: keep this switch in sync with
+			// walkAgentRefsNodes (cli/runtimes.go) when a new ir.Node type lands.
+			panic(fmt.Sprintf("checkThreadedAdapters: unhandled ir.Node type %T (extend the switch; mirror walkAgentRefsNodes in cli/runtimes.go)", n))
 		}
 	}
 	return nil

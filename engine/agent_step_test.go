@@ -418,6 +418,109 @@ graph:
 	}
 }
 
+// TestRunAgentStep_LeafTranscriptNotCommitted pins the participates invariant:
+// only a turn that is continued-FROM (a "thread target") commits a transcript
+// blob. A leaf turn — one that continues someone else but nobody continues IT —
+// must NOT commit a transcript (its NodeCompletedData.TranscriptRef is empty).
+//
+// Chain: turn1 (target of turn2) → turn2 (leaf, continues turn1, no successor).
+// Expected: turn1.TranscriptRef != "" ; turn2.TranscriptRef == "".
+func TestRunAgentStep_LeafTranscriptNotCommitted(t *testing.T) {
+	const yaml = `workflow: leaf-no-transcript
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: turn1
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: "p1"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [k]
+      properties:
+        k: { type: string }
+  - id: turn2
+    container: lab
+    uses: anthropic/claude-code
+    continues: turn1
+    with:
+      prompt: "p2"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [k]
+      properties:
+        k: { type: string }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").
+		WithCaps(agent.Caps{NativeSchema: true, Threaded: true}).
+		Script(0, fake.Result{
+			Output:     map[string]any{"k": "v1"},
+			Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"},
+		}).
+		Script(1, fake.Result{
+			Output:     map[string]any{"k": "v2"},
+			Transcript: agent.ThreadTurn{User: "u2", Assistant: "a2"},
+		})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	// Scan the committed node.completed events and check TranscriptRef presence.
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	transcriptRef := map[string]string{} // step path → TranscriptRef (empty means not committed)
+	for _, ev := range events {
+		if ev.Type != engine.EventNodeCompleted {
+			continue
+		}
+		var d engine.NodeCompletedData
+		if uerr := json.Unmarshal(ev.Data, &d); uerr != nil {
+			t.Fatalf("unmarshal NodeCompletedData at %q: %v", ev.Path, uerr)
+		}
+		transcriptRef[ev.Path] = d.TranscriptRef
+	}
+
+	// turn1 is a thread target (turn2 continues it) → its transcript MUST be committed.
+	if transcriptRef["turn1"] == "" {
+		t.Errorf("turn1 (thread target): TranscriptRef is empty, want non-empty")
+	}
+	// turn2 is a leaf (no step continues it) → its transcript must NOT be committed.
+	if transcriptRef["turn2"] != "" {
+		t.Errorf("turn2 (leaf): TranscriptRef = %q, want empty (leaf turns must not commit transcript blobs)", transcriptRef["turn2"])
+	}
+}
+
 // mustJSON is a per-package test helper. Task 2 defined an identical body
 // in engine/events_test.go (package engine — internal); this file is
 // package engine_test (external), a separate scope, so we declare it
