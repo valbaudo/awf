@@ -135,6 +135,28 @@ func TestDigestFoldsContinues(t *testing.T) {
 	}
 }
 
+func TestDigestFoldsWhere(t *testing.T) {
+	withWhere := sampleWorkflow()
+	withWhere.Graph = append(withWhere.Graph,
+		&SignalStep{ID: "s1", Await: "oob-hit", Where: "candidate_id == 1"},
+	)
+	dWhere, err := withWhere.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noWhere := sampleWorkflow()
+	noWhere.Graph = append(noWhere.Graph,
+		&SignalStep{ID: "s1", Await: "oob-hit"},
+	)
+	dNo, err := noWhere.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dWhere == dNo {
+		t.Fatalf("where: did not change the digest (got %s for both)", dWhere)
+	}
+}
+
 func TestDigestFoldsAgents(t *testing.T) {
 	// A top-level agents: role is part of the definition: declaring it changes
 	// the digest (so resume hard-errors on a changed role), while a nil agents:

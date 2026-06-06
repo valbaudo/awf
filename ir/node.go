@@ -55,8 +55,16 @@ type AgentStep struct {
 }
 
 type SignalStep struct {
-	ID           string      `json:"id"`
-	Await        string      `json:"await"`
+	ID    string `json:"id"`
+	Await string `json:"await"`
+	// Where is an optional bounded-boolean clause selecting WHICH buffered signal
+	// of name Await to consume. `{{ … }}` slots substitute from the surrounding
+	// engine scope (e.g. {{ hyp.id }}); bare identifiers resolve against the
+	// delivered signal's JSON payload (e.g. candidate_id == payload.candidate_id).
+	// Empty → earliest-first per name (unchanged). Folds into the digest (omitempty
+	// keeps where-less workflows byte-identical). Reuses the bounded boolean
+	// evaluator — no arithmetic (spec §3.5 / §8 C5).
+	Where        string      `json:"where,omitempty"`
 	Timeout      *Duration   `json:"timeout,omitempty"`
 	OutputSchema *JSONSchema `json:"output_schema,omitempty"`
 }
