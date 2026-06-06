@@ -111,6 +111,30 @@ func TestDigestFoldsEnvDeclaration(t *testing.T) {
 	}
 }
 
+func TestDigestFoldsContinues(t *testing.T) {
+	withCont := sampleWorkflow()
+	withCont.Graph = append(withCont.Graph,
+		&AgentStep{ID: "t1", Uses: "awf/llm"},
+		&AgentStep{ID: "t2", Uses: "awf/llm", Continues: "t1"},
+	)
+	dCont, err := withCont.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noCont := sampleWorkflow()
+	noCont.Graph = append(noCont.Graph,
+		&AgentStep{ID: "t1", Uses: "awf/llm"},
+		&AgentStep{ID: "t2", Uses: "awf/llm"},
+	)
+	dNo, err := noCont.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dCont == dNo {
+		t.Fatalf("continues: did not change the digest (got %s for both)", dCont)
+	}
+}
+
 func TestDigestStableAcrossRoundTrip(t *testing.T) {
 	wf := sampleWorkflow()
 	d1, err := wf.ComputeDigest(nil)
