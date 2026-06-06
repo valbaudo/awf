@@ -83,6 +83,17 @@
 //     system_prompt:audit (role), mcp_servers:[memclaw] (role — the fleet memory
 //     MCP handle). run.started.Runtimes records (ref=auditor, container=lab), so
 //     the role is a first-class pinned runtime drift-checked on resume.
+//   - Reduce (SP2 C2a): a map's reduce: fan-in collapses N branches into ONE
+//     output committed at the map path. quorum_pass — quorum: 2 met over 3 items
+//     commits {passed:true,votes:3,agree:2} and a downstream step.<bodyId>.passed
+//     lifts the REDUCED output (not the per-item array). quorum_fail — quorum: 2
+//     with 1 vote returns retryable_failure, never commits at the map path, halts
+//     the run (mirrors min_success). run_reduce — an author ./merge.sh reducer in
+//     its required container `agg` stages every branch's named artifact + a
+//     canonical-JSON manifest (SP1 CopyTo), commits its typed output + artifact at
+//     the map path; a downstream step.<bodyId>.files.<name> resolves the reducer's
+//     artifact, and a post-completion resume replays the reduced node (no re-exec,
+//     map-path node.completed count unchanged).
 //
 // Phase 2 calls RunSuite with container.NewFake (conformance_fake_test.go).
 // Slice 4.6 added RunDockerSuite + conformance_docker_test.go for Buckets
@@ -134,4 +145,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("continues_loop_map", func(t *testing.T) { testContinuesLoopMap(t, factory) })
 	t.Run("thread", func(t *testing.T) { testThread(t, factory) })
 	t.Run("roles", func(t *testing.T) { testRoles(t, factory) })
+	t.Run("reduce", func(t *testing.T) { testReduce(t, factory) })
 }
