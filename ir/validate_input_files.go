@@ -21,6 +21,10 @@ func validateInputFiles(ld *LoadedDefinition, c *collector) {
 	producers := map[string]producer{}
 	indexProducers(wf.Graph, producers)
 	outFiles := OutputFilesByStepID(wf)
+	// Index maps by static path so a ref into a reduce-declaring map validates against
+	// the REDUCER's output_files (SP2 Task 11, validator half — mirrors
+	// engine/scope.go ResolveArtifactPath's reduce branch).
+	maps := mapsByPath(wf.Graph)
 
 	WalkNodes(wf.Graph, "", func(n Node, nodePath string) {
 		var inputs map[string]string
@@ -54,6 +58,22 @@ func validateInputFiles(ld *LoadedDefinition, c *collector) {
 			if !ok {
 				c.errf(nodePath, "AWF3007", "input_files["+dst+"]: step "+id+" is not a declared step")
 				continue
+			}
+			// Reduce short-circuit: a producer in the v1 single-map shape, referenced
+			// from OUTSIDE the map, whose enclosing map declares a reduce:. The runtime
+			// (engine/scope.go ResolveArtifactPath) resolves such a ref against the
+			// REDUCER's committed artifact, not the per-item body artifact. So the
+			// artifact name must be declared in Reduce.OutputFiles (a run: reducer); a
+			// quorum reducer has no artifacts (empty OutputFiles → name not found →
+			// AWF3007). The body step's output_files and the gate/map-scope reachability
+			// check below do NOT apply — the reducer's output IS reachable from outside.
+			if mapPath, _, isMapBody := SingleMapBodyShape(p.path); isMapBody && !pathWithinScope(nodePath, mapPath) {
+				if m, ok := maps[mapPath]; ok && m.Reduce != nil {
+					if _, ok := m.Reduce.OutputFiles.PathForName(name); !ok {
+						c.errf(nodePath, "AWF3007", "input_files["+dst+"]: reduced map (producer "+id+") reducer has no named output_files artifact "+name)
+					}
+					continue
+				}
 			}
 			if _, ok := outFiles[id].PathForName(name); !ok {
 				c.errf(nodePath, "AWF3007", "input_files["+dst+"]: step "+id+" has no named output_files artifact "+name)
