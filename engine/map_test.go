@@ -702,6 +702,309 @@ func TestRunMapAggregateChainResume(t *testing.T) {
 	}
 }
 
+// okSchema is the output_schema for the reduce-quorum body step: a single
+// required boolean `ok` that quorum counts via reduce.over.
+var okSchema = &ir.JSONSchema{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []any{"ok"},
+	"properties":           map[string]any{"ok": map[string]any{"type": "boolean"}},
+}
+
+func TestRunMapQuorumReducePrefersReducedOutput(t *testing.T) {
+	// Task 11: a map declaring reduce: {quorum: 2, over: ok} over 3 items
+	// (2 true) commits a node.completed at the MAP path (map[0]) with the
+	// reduced {passed:true,...} output and runMap returns ok. A downstream
+	// step.<bodyId> ref from OUTSIDE the map then resolves to the REDUCED
+	// output (not the per-item array).
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
+			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	q := ir.Ratio("2")
+	wf := staticOverWorkflow("x", body, 1, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+
+	rig := newMapRig(t,
+		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote c", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":false}`)}},
+	)
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("quorum reduce: got (%q, %v), want (ok, nil)", oc, err)
+	}
+
+	// The map node itself committed the reduced output at the bare map path.
+	nr, ok := rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("no NodeResult committed at map path %q (reduce must commit there)", testMapPath)
+	}
+	if nr.Outputs["passed"] != true {
+		t.Errorf("reduced passed = %v, want true", nr.Outputs["passed"])
+	}
+	if nr.Outputs["votes"] != 3 || nr.Outputs["agree"] != 2 {
+		t.Errorf("reduced {votes,agree} = {%v,%v}, want {3,2}", nr.Outputs["votes"], nr.Outputs["agree"])
+	}
+
+	// A downstream step.vote.passed ref (from outside the map) lifts the REDUCED
+	// output, not the per-item array.
+	sc := NewScope(rs, wf, "after_map")
+	got, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "vote"}, {Ident: "passed"}}})
+	if err != nil {
+		t.Fatalf("resolve step.vote.passed: %v", err)
+	}
+	if got != true {
+		t.Errorf("step.vote.passed = %v (%T), want true (the reduced output)", got, got)
+	}
+}
+
+func TestRunMapQuorumReduceNotMetIsRetryable(t *testing.T) {
+	// Task 11: a quorum that is not met returns retryable_failure and commits
+	// NO node.completed at the map path (mirrors min_success not met).
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
+			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	q := ir.Ratio("3") // need all 3 true, only 2 are
+	wf := staticOverWorkflow("x", body, 1, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+
+	rig := newMapRig(t,
+		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote c", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":false}`)}},
+	)
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeRetryableFailure {
+		t.Fatalf("quorum not met: outcome = %q (err=%v), want retryable_failure", oc, err)
+	}
+	if err == nil {
+		t.Fatal("quorum not met: err = nil, want non-nil")
+	}
+	if _, ok := rs.LookupCompleted(testMapPath); ok {
+		t.Errorf("a not-met quorum must NOT commit a NodeResult at the map path %q", testMapPath)
+	}
+}
+
+func TestRunMapQuorumReduceThresholdIsCohortWhenBranchCrashes(t *testing.T) {
+	// Task 11 regression (review): the quorum threshold is measured against the
+	// fan-out COHORT, not the survivor count. Map over 3 items where 1 branch
+	// crashes mechanically (item "c" exits nonzero → ItemFailed → absent from
+	// collectReduceBranches) and the 2 survivors agree. quorum: 3 (unanimous over
+	// the cohort) must FAIL — only 2 of the 3-item cohort agree. The old code
+	// measured k against len(branches)=2 and the int-cap silently lowered need to
+	// 2, passing on the survivors.
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
+			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	q := ir.Ratio("3") // unanimous over the 3-item cohort
+	wf := staticOverWorkflow("x", body, 1, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+
+	rig := newMapRig(t,
+		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote c", res: container.ExecResult{ExitCode: 1}}, // crashes → ItemFailed, absent branch
+	)
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeRetryableFailure {
+		t.Fatalf("unanimous quorum over a cohort with one crashed branch: outcome = %q (err=%v), want retryable_failure", oc, err)
+	}
+	if err == nil {
+		t.Fatal("a not-met quorum (cohort threshold) must return a non-nil error")
+	}
+	if _, ok := rs.LookupCompleted(testMapPath); ok {
+		t.Errorf("a not-met quorum must NOT commit a NodeResult at the map path %q", testMapPath)
+	}
+}
+
+func TestRunMapRunReduceResumeReplaysWithoutBootingContainer(t *testing.T) {
+	// Task 11 regression (review): on a pure replay of an already-committed
+	// run: reducer, runMap must NOT Create (and tear down) the reducer container.
+	// A committed reduce replays; booting infra for it turns a should-be-pure
+	// replay into work that can FAIL the resume (e.g. an image no longer
+	// pullable), violating "infra is rebuilt only for the uncommitted frontier."
+	rowSchema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"k"},
+		"properties":           map[string]any{"k": map[string]any{"type": "string"}},
+	}
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "scan", Run: "./scan {{ x }}", Container: testMapContainer,
+			OutputSchema: rowSchema,
+			OutputFiles:  ir.OutputFiles{{Name: "row", Path: "/out/row.csv"}},
+			Retry:        &ir.RetryPolicy{Attempts: 1}},
+	}
+	reduceSchema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"csv_rows"},
+		"properties":           map[string]any{"csv_rows": map[string]any{"type": "integer"}},
+	}
+	wf := staticOverWorkflow("x", body, 1, nil)
+	wf.Containers["agg"] = ir.Container{Image: "oci://example.com/r@sha256:" + strings.Repeat("3", 64)}
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{
+		Run:          "./merge.sh",
+		Container:    "agg",
+		OutputSchema: reduceSchema,
+		OutputFiles:  ir.OutputFiles{{Name: "csv", Path: "/out/versions.csv"}},
+	}
+
+	rig := newMapRig(t)
+	// Pre-seed the committed map items + the committed reduced result at the map
+	// path, so this runMap call is a pure replay. The merge.sh command is NOT
+	// programmed — if the reducer re-ran (or its container booted) the test would
+	// surface it (re-exec → unprogrammed command error / Create on CreateSpecs).
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b"))
+	rs.RecordMapItem(testMapPath, MapItemRecord{N: 0, ItemValue: "a", Status: ItemPassed})
+	rs.RecordMapItem(testMapPath, MapItemRecord{N: 1, ItemValue: "b", Status: ItemPassed})
+	rs.RecordCompleted(testMapPath, NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"csv_rows": float64(2)}})
+
+	createsBefore := len(rig.fake.CreateSpecs)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("resume replay: got (%q, %v), want (ok, nil)", oc, err)
+	}
+	// No reducer container was Created on replay (the committed-item skip means
+	// no per-item Create either; the only Create is newMapRig's base handle,
+	// which happened before this call).
+	for _, spec := range rig.fake.CreateSpecs[createsBefore:] {
+		if spec.Name == "agg" {
+			t.Errorf("resume replay booted the reducer container %q — a committed reduce must replay, not re-provision infra", spec.Name)
+		}
+	}
+	if got := len(rig.fake.CreateSpecs) - createsBefore; got != 0 {
+		t.Errorf("resume replay made %d Create call(s); want 0 (pure replay rebuilds no infra)", got)
+	}
+}
+
+func TestRunMapNoReduceStillAggregatesArray(t *testing.T) {
+	// Task 11 regression: without a reduce:, step.<bodyId> still lifts the
+	// per-item array (existing aggregation behavior unbroken).
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
+			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	wf := staticOverWorkflow("x", body, 1, nil) // no Reduce
+	mapNode := wf.Graph[0].(*ir.Map)
+
+	rig := newMapRig(t,
+		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":false}`)}},
+	)
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("no-reduce map: got (%q, %v), want (ok, nil)", oc, err)
+	}
+	// No node.completed at the bare map path (only per-item commits).
+	if _, ok := rs.LookupCompleted(testMapPath); ok {
+		t.Errorf("a non-reduce map must NOT commit a NodeResult at the map path %q", testMapPath)
+	}
+	// step.vote.ok lifts the per-item array.
+	sc := NewScope(rs, wf, "after_map")
+	got, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "vote"}, {Ident: "ok"}}})
+	if err != nil {
+		t.Fatalf("resolve step.vote.ok: %v", err)
+	}
+	arr, ok := got.([]any)
+	if !ok || len(arr) != 2 || arr[0] != true || arr[1] != false {
+		t.Errorf("step.vote.ok = %#v, want []any{true,false} (the per-item array)", got)
+	}
+}
+
+func TestRunMapRunReduceWiresContainerAndCommitsAtNodePath(t *testing.T) {
+	// Task 11 Step 3: an author run: reducer is wired through runMap — the
+	// reducer container is Created, the branch artifacts + manifest are staged,
+	// the command runs, and its typed output + artifact commit at the MAP path.
+	rowSchema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"k"},
+		"properties":           map[string]any{"k": map[string]any{"type": "string"}},
+	}
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "scan", Run: "./scan {{ x }}", Container: testMapContainer,
+			OutputSchema: rowSchema,
+			OutputFiles:  ir.OutputFiles{{Name: "row", Path: "/out/row.csv"}},
+			Retry:        &ir.RetryPolicy{Attempts: 1}},
+	}
+	reduceSchema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"csv_rows"},
+		"properties":           map[string]any{"csv_rows": map[string]any{"type": "integer"}},
+	}
+	wf := staticOverWorkflow("x", body, 1, nil)
+	wf.Containers["agg"] = ir.Container{Image: "oci://example.com/r@sha256:" + strings.Repeat("2", 64)}
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{
+		Run:          "./merge.sh",
+		Container:    "agg",
+		OutputSchema: reduceSchema,
+		OutputFiles:  ir.OutputFiles{{Name: "csv", Path: "/out/versions.csv"}},
+	}
+
+	rig := newMapRig(t)
+	rig.fake.ProgramExecWithFiles("./scan a", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"k":"a"}`)}, nil,
+		map[string][]byte{"/out/row.csv": []byte("row-a")})
+	rig.fake.ProgramExecWithFiles("./scan b", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"k":"b"}`)}, nil,
+		map[string][]byte{"/out/row.csv": []byte("row-b")})
+	rig.fake.ProgramExecWithFiles("./merge.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"csv_rows":2}`)}, nil,
+		map[string][]byte{"/out/versions.csv": []byte("merged")})
+
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("run reduce: got (%q, %v), want (ok, nil)", oc, err)
+	}
+
+	// The reducer committed its typed output + artifact at the MAP path.
+	nr, ok := rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("no NodeResult committed at the map path %q", testMapPath)
+	}
+	if nr.Outputs["csv_rows"] != float64(2) {
+		t.Errorf("reduced csv_rows = %v, want 2", nr.Outputs["csv_rows"])
+	}
+	ref, ok := nr.Files["/out/versions.csv"]
+	if !ok {
+		t.Fatalf("reduced node has no artifact at /out/versions.csv")
+	}
+	got, gerr := rig.blobs.Get(ref)
+	if gerr != nil {
+		t.Fatalf("Get reducer artifact: %v", gerr)
+	}
+	if string(got) != "merged" {
+		t.Errorf("reducer artifact = %q, want merged", got)
+	}
+
+	// step.scan.files.csv (from outside) resolves to the REDUCER's artifact.
+	sc := NewScope(rs, wf, "after_map")
+	cas, err := sc.ResolveArtifactPath("scan", "/out/versions.csv")
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(scan, /out/versions.csv): %v", err)
+	}
+	if cas != ref {
+		t.Errorf("ResolveArtifactPath = %q, want the reducer's ref %q", cas, ref)
+	}
+}
+
 // copyToSpy wraps the fake and records every CopyTo call (handle ID → staged
 // files), so a test can assert the bytes staged into per-item containers that
 // the map executor Destroys before the test can CaptureFiles them. Thread-safe

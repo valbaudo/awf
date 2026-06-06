@@ -180,14 +180,47 @@ func runMap(
 		return "", statusErr
 	}
 
-	// 5. Tally per MinSuccess.
+	// 5. Tally per MinSuccess (the success gate). For a non-reduce map this is
+	//    the terminal verdict; for a reduce map the min_success gate is bypassed
+	//    (a quorum reduce generalizes it — quorum is the success threshold), so a
+	//    reduce node's verdict is the reducer's outcome (step 6).
 	pass, fail := tallyResults(statuses)
 	minSuccess := defaultMinSuccess(n, len(overArr))
-	if int64(pass) >= minSuccess {
+	if n.Reduce == nil {
+		if int64(pass) >= minSuccess {
+			return OutcomeOK, nil
+		}
+		return OutcomeRetryableFailure, fmt.Errorf("engine.runMap: map %q: %d items passed, %d failed; min_success requires %d",
+			mapPath, pass, fail, minSuccess)
+	}
+
+	// 6. Fan-IN (C2a). Collect the committed branch outputs+artifacts, then
+	//    reduce. The reducer commits at the map's OWN path (mapPath) — the
+	//    aggregate stays engine-internal and the reduced output replaces it.
+	//
+	// Resume short-circuit FIRST: a committed reduce replays. Mirror the
+	// per-item committed-skip (above): on a pure replay we must NOT boot (and
+	// tear down) the reducer container — that would turn a should-be-pure replay
+	// into real work that can FAIL the resume (e.g. an image no longer pullable),
+	// violating "committed steps are replayed, not recomputed; infra is rebuilt
+	// only for the uncommitted frontier." runReduce has the same guard, but it
+	// fires AFTER the Create block below, so check it here before any infra.
+	if _, ok := runstate.LookupCompleted(mapPath); ok {
 		return OutcomeOK, nil
 	}
-	return OutcomeRetryableFailure, fmt.Errorf("engine.runMap: map %q: %d items passed, %d failed; min_success requires %d",
-		mapPath, pass, fail, minSuccess)
+	branches := collectReduceBranches(runstate, n, mapPath)
+	if n.Reduce.IsRun() {
+		// A run: reducer is a code step → it needs its own container. Create it
+		// here and Destroy after (mirrors dispatchItem's Create/defer Destroy).
+		spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Reduce.Container)
+		rh, cerr := ld.Backend.Create(ctx, spec)
+		if cerr != nil {
+			return "", fmt.Errorf("engine.runMap: create reduce container %q: %w", n.Reduce.Container, cerr)
+		}
+		defer func() { _ = ld.Backend.Destroy(context.Background(), rh) }()
+		ld = ld.WithItemHandle(n.Reduce.Container, rh)
+	}
+	return runReduce(ctx, n.Reduce, mapPath, branches, len(overArr), wf, runstate, ld, log, blobs, clk, tap)
 }
 
 // renderImageError marks a per-item map.image render fault (the image: template

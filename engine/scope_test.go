@@ -855,6 +855,87 @@ func TestScopeResolveArtifactPath(t *testing.T) {
 	}
 }
 
+// reducedMapWorkflow is a workflow whose only map (map[0]) declares a reduce:
+// over a body step `scan`. Used by the Task-11 scope-preference tests.
+func reducedMapWorkflow() *ir.Workflow {
+	q := ir.Ratio("1")
+	return &ir.Workflow{
+		ID: "test", Version: 1,
+		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
+		Graph: ir.NodeList{
+			&ir.Map{ // index 0
+				Body:   ir.NodeList{&ir.CodeStep{ID: "scan", Container: "lab", Run: "echo scan"}},
+				Reduce: &ir.Reduce{Quorum: &q, Over: "ok"},
+			},
+		},
+	}
+}
+
+func TestScopeAggregatePrefersReducedOutput(t *testing.T) {
+	// Task 11 Step 5: when the producing map declared a reduce: and committed a
+	// NodeResult at the map path, step.<bodyId>[.<field>] resolves to THAT
+	// (the reduced output), not the per-item array.
+	wf := reducedMapWorkflow()
+	rs := NewRunState(testRunID, testDigest, nil)
+	// A per-item commit exists (the body step), but the reducer's commit at the
+	// MAP path must win.
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "x", Status: ItemPassed})
+	rs.RecordCompleted("map[0].item-0.scan", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"ok": true}})
+	rs.RecordCompleted("map[0]", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"passed": true, "votes": 1, "agree": 1}})
+
+	sc := NewScope(rs, wf, "after_map")
+
+	// 3-seg field ref → the reduced field, NOT a single-element array.
+	got, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "scan"}, {Ident: "passed"}}})
+	if err != nil {
+		t.Fatalf("step.scan.passed: %v", err)
+	}
+	if got != true {
+		t.Errorf("step.scan.passed = %#v, want true (the reduced output, not an array)", got)
+	}
+
+	// 2-seg whole-output ref → the reduced object itself, NOT [{...}].
+	whole, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "scan"}}})
+	if err != nil {
+		t.Fatalf("step.scan: %v", err)
+	}
+	m, ok := whole.(map[string]any)
+	if !ok {
+		t.Fatalf("step.scan = %#v, want map[string]any (the reduced object)", whole)
+	}
+	if m["passed"] != true || m["agree"] != 1 {
+		t.Errorf("step.scan = %#v, want the reduced {passed,votes,agree}", m)
+	}
+}
+
+func TestScopeResolveArtifactPathPrefersReducedFiles(t *testing.T) {
+	// Task 11 Step 6: when the producing map declared a reduce: and committed a
+	// NodeResult at the map path, step.<bodyId>.files.<name> resolves to the
+	// REDUCER's artifact, not the per-item body artifact.
+	wf := reducedMapWorkflow()
+	rs := NewRunState(testRunID, testDigest, nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "x", Status: ItemPassed})
+	// Per-item body artifact (the wrong one once reduced).
+	rs.RecordCompleted("map[0].item-0.scan", NodeResult{
+		Outcome: OutcomeOK,
+		Files:   map[string]string{"/out/versions.csv": "per-item-ref"},
+	})
+	// The reducer's commit at the map path (the right one).
+	rs.RecordCompleted("map[0]", NodeResult{
+		Outcome: OutcomeOK,
+		Files:   map[string]string{"/out/versions.csv": "reduced-ref"},
+	})
+
+	sc := NewScope(rs, wf, "after_map")
+	cas, err := sc.ResolveArtifactPath("scan", "/out/versions.csv")
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(scan, /out/versions.csv): %v", err)
+	}
+	if cas != "reduced-ref" {
+		t.Errorf("cas = %q, want %q (the reducer's artifact, not the per-item one)", cas, "reduced-ref")
+	}
+}
+
 func mustParseRef(t *testing.T, src string) *template.Ref {
 	t.Helper()
 	r, err := template.ParseRef(src)

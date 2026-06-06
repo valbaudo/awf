@@ -68,7 +68,7 @@ func TestRunReduceQuorumMet(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRunReduceQuorumNotMet(t *testing.T) {
 	q := ir.Ratio("3")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeRetryableFailure {
 		t.Fatalf("Outcome = %q (err=%v), want retryable_failure", oc, err)
 	}
@@ -112,6 +112,54 @@ func TestRunReduceQuorumNotMet(t *testing.T) {
 	}
 }
 
+func TestRunReduceQuorumThresholdIsCohortNotSurvivors(t *testing.T) {
+	// Regression: the quorum threshold k must be measured against the fan-out
+	// COHORT, not the survivor count. With 3 items where 2 crashed mechanically
+	// (absent from branches) and the 1 survivor agrees, a quorum: 2 must FAIL —
+	// the author asked for 2 agreeing branches over a cohort of 3, and only 1
+	// agrees. (The old code measured k against len(branches)=1 and the int-cap
+	// `if i > total` silently lowered need to 1, vacuously passing.)
+	rig := newReduceRig(t)
+	branches := []reduceBranch{
+		{N: 0, Outputs: map[string]any{"vulnerable": true}}, // the only survivor; agrees
+		// items 1 and 2 crashed → no committed body output → absent.
+	}
+	q := ir.Ratio("2")
+	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, 3 /* cohort */, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	if oc != OutcomeRetryableFailure {
+		t.Fatalf("quorum 2 over cohort 3 with 1 agreeing survivor: outcome = %q (err=%v), want retryable_failure", oc, err)
+	}
+	if err == nil {
+		t.Fatal("want a non-nil error explaining the missed quorum")
+	}
+	if _, ok := rig.rs.LookupCompleted(testMapPath); ok {
+		t.Errorf("a not-met quorum must NOT commit a NodeResult at %q", testMapPath)
+	}
+}
+
+func TestRunReduceQuorumAllBranchesCrashedIsNotVacuousPass(t *testing.T) {
+	// Regression: when EVERY branch crashes mechanically (branches empty) a
+	// quorum must NOT vacuously pass with zero votes. quorum: 2 over a cohort of
+	// 3 with 0 survivors → need=2, agree=0 → retryable_failure (the old code:
+	// need=min(2,0)=0, agree=0 → passed with votes=0).
+	rig := newReduceRig(t)
+	q := ir.Ratio("2")
+	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+
+	oc, err := runReduce(context.Background(), r, testMapPath, nil /* all crashed */, 3 /* cohort */, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	if oc != OutcomeRetryableFailure {
+		t.Fatalf("quorum 2 over cohort 3 with 0 survivors: outcome = %q (err=%v), want retryable_failure", oc, err)
+	}
+	if err == nil {
+		t.Fatal("want a non-nil error explaining the missed quorum")
+	}
+	if _, ok := rig.rs.LookupCompleted(testMapPath); ok {
+		t.Errorf("an all-crashed cohort must NOT vacuously commit a passed quorum at %q", testMapPath)
+	}
+}
+
 func TestRunReduceResumeReplays(t *testing.T) {
 	rig := newReduceRig(t)
 	// Pre-seed a committed reduced result at the node path.
@@ -119,7 +167,7 @@ func TestRunReduceResumeReplays(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, nil, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, nil, 0, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if err != nil {
 		t.Fatalf("runReduce (resume): %v", err)
 	}
@@ -176,7 +224,7 @@ func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
 		OutputFiles:  ir.OutputFiles{{Name: "csv", Path: "/out/versions.csv"}},
 	}
 
-	oc, err := runReduce(context.Background(), r, mapPath, branches, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if err != nil {
 		t.Fatalf("runReduce (run): %v", err)
 	}

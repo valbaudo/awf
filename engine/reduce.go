@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/gowebpki/jcs"
 
@@ -43,14 +44,19 @@ type reduceBranch struct {
 //     commit its output_schema/output_files at nodePath.
 //
 // branches is the index-ordered list of (committed) branch results the caller
-// collected (from LookupMapItems→LookupCompleted). The interpreter is the only
-// state writer: runReduce Commits via the canonical engine.Commit and
-// RecordCompleted, exactly like a step.
+// collected (from LookupMapItems→LookupCompleted) — the SURVIVORS only; a branch
+// that failed mechanically is absent. cohort is the full fan-out count (every
+// item, surviving or not): the quorum threshold k is measured against the cohort,
+// NOT the survivor count, so an explicit quorum cannot be silently satisfied by
+// fewer agreeing branches than the author demanded when some branches crash. The
+// interpreter is the only state writer: runReduce Commits via the canonical
+// engine.Commit and RecordCompleted, exactly like a step.
 func runReduce(
 	ctx context.Context,
 	r *ir.Reduce,
 	nodePath string,
 	branches []reduceBranch,
+	cohort int,
 	wf *ir.Workflow,
 	rs *RunState,
 	ld *LocalDispatcher,
@@ -65,7 +71,7 @@ func runReduce(
 	}
 	switch {
 	case r.IsQuorum():
-		return runQuorumReduce(r, nodePath, branches, log, blobs, rs)
+		return runQuorumReduce(r, nodePath, branches, cohort, log, blobs, rs)
 	case r.IsRun():
 		return runCommandReduce(ctx, r, nodePath, branches, wf, rs, ld, log, blobs, clk, tap)
 	default:
@@ -76,20 +82,29 @@ func runReduce(
 // runQuorumReduce computes the quorum verdict purely in-engine and commits a
 // synthetic {passed,votes,agree} typed output at nodePath. A not-met quorum is
 // retryable_failure with no commit (mirrors min_success, engine/map.go).
-func runQuorumReduce(r *ir.Reduce, nodePath string, branches []reduceBranch, log state.Log, blobs state.Blobs, rs *RunState) (Outcome, error) {
+//
+// The threshold k is measured against the fan-out COHORT (every item, surviving
+// or not), not the survivor count: a branch that failed mechanically is absent
+// from branches and therefore correctly counts as a NON-agreeing vote. This is
+// what makes "unanimous is quorum(N)" honest — a unanimous quorum over a cohort
+// with one crashed branch FAILS (need=N over the cohort, agree<N), rather than
+// passing on the survivors. (Counting agree over survivors but k over the cohort
+// is the only combination that preserves the author's demand under crashes.)
+// votes reports the cohort size so the verdict reads against one denominator.
+func runQuorumReduce(r *ir.Reduce, nodePath string, branches []reduceBranch, cohort int, log state.Log, blobs state.Blobs, rs *RunState) (Outcome, error) {
 	agree := 0
 	for _, b := range branches {
 		if v, ok := b.Outputs[r.Over].(bool); ok && v {
 			agree++
 		}
 	}
-	need := quorumThreshold(r.Quorum, len(branches))
+	need := quorumThreshold(r.Quorum, cohort)
 	passed := int64(agree) >= need
-	out := map[string]any{"passed": passed, "votes": len(branches), "agree": agree}
+	out := map[string]any{"passed": passed, "votes": cohort, "agree": agree}
 	if !passed {
 		// Mirror min_success: a not-met quorum is retryable_failure, no commit.
 		return OutcomeRetryableFailure, fmt.Errorf("engine.runReduce: quorum %q: %d/%d branches agree, need %d",
-			nodePath, agree, len(branches), need)
+			nodePath, agree, cohort, need)
 	}
 	nr, err := Commit(log, blobs, nodePath, DispatchResult{Outcome: OutcomeOK, Outputs: out}, false)
 	if err != nil {
@@ -100,11 +115,19 @@ func runQuorumReduce(r *ir.Reduce, nodePath string, branches []reduceBranch, log
 }
 
 // quorumThreshold reuses defaultMinSuccess's Ratio int/float interpretation so
-// quorum and min_success are one parse. nil → all (defensive; validator
-// requires quorum present).
-func quorumThreshold(q *ir.Ratio, total int) int64 {
+// quorum and min_success are one parse. cohort is the fan-out count the
+// threshold is measured against (NOT the survivor count). nil → all (defensive;
+// validator requires quorum present).
+//
+// NOTE: defaultMinSuccess caps an int threshold at its `total` argument
+// (`if i > total { return total }`). That cap is correct ONLY when total is the
+// cohort size — passing the survivor count would silently lower an explicit
+// quorum k to the number of branches that happened to survive (the bug this
+// signature change fixes), letting a quorum pass with fewer agreeing branches
+// than the author demanded.
+func quorumThreshold(q *ir.Ratio, cohort int) int64 {
 	tmp := &ir.Map{MinSuccess: q}
-	return defaultMinSuccess(tmp, total)
+	return defaultMinSuccess(tmp, cohort)
 }
 
 // runCommandReduce stages the manifest + branch artifacts into the reducer's
@@ -184,6 +207,68 @@ func runCommandReduce(
 	}
 	rs.RecordCompleted(nodePath, nr)
 	return OutcomeOK, nil
+}
+
+// collectReduceBranches gathers the index-ordered, committed branch
+// contributions for a Map's reduce: clause (Task 11). For every PASSED map item
+// N (in MapItems[mapPath]), it reads the body step(s)' committed NodeResult at
+// the per-item runtime path (ItemPath(mapPath,N) + "." + <bodyStepSuffix>) and
+// merges their typed Outputs + named Files into one reduceBranch. This is the
+// SAME committed data engine/scope.go's aggregateMapOutputs lifts (the spec's
+// "from the existing aggregateMapOutputs" guarantee — deterministic,
+// committed-items-only, index-ordered → resume-stable). Failed/uncommitted items
+// are compacted out (they have no committed body output), exactly like the
+// aggregate.
+//
+// The supported (single-producing-step) body shape yields one body NodeResult
+// per item; if a body has multiple producing steps, their Outputs/Files are
+// shallow-merged into the branch (distinct step ids → distinct keys, so no
+// collision in practice).
+func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string) []reduceBranch {
+	// Body step suffixes (the path tail after ".body."), in walk order.
+	var suffixes []string
+	ir.WalkNodes(n.Body, "body", func(node ir.Node, path string) {
+		switch node.(type) {
+		case *ir.CodeStep, *ir.AgentStep:
+			// path is "body.<...>"; the per-item runtime path drops the leading
+			// "body." (replaced by ".item-N"), so strip it to the suffix.
+			suffixes = append(suffixes, strings.TrimPrefix(path, "body."))
+		}
+	})
+
+	items := rs.LookupMapItems(mapPath) // shallow copy — safe to sort in place
+	sort.Slice(items, func(i, j int) bool { return items[i].N < items[j].N })
+
+	branches := make([]reduceBranch, 0, len(items))
+	for _, mr := range items {
+		if mr.Status != ItemPassed {
+			continue // compact: only committed-success branches contribute
+		}
+		b := reduceBranch{N: mr.N, Outputs: map[string]any{}, Files: map[string]string{}}
+		committed := false
+		for _, suffix := range suffixes {
+			rp := ItemPath(mapPath, mr.N)
+			if suffix != "" {
+				rp += "." + suffix
+			}
+			nr, ok := rs.LookupCompleted(rp)
+			if !ok {
+				continue
+			}
+			committed = true
+			for k, v := range nr.Outputs {
+				b.Outputs[k] = v
+			}
+			for k, v := range nr.Files {
+				b.Files[k] = v
+			}
+		}
+		if !committed {
+			continue // no committed body output for this item — compact out
+		}
+		branches = append(branches, b)
+	}
+	return branches
 }
 
 // ensureLeadingSlash normalizes a branch artifact's declared container path so

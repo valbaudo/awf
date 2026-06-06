@@ -217,6 +217,22 @@ func (s *Scope) ResolveArtifactPath(id, containerPath string) (string, error) {
 	if !ok {
 		return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step %q not declared", id)
 	}
+	// C2a (reduce): symmetric to aggregateMapOutputs — if the producer sits in a
+	// single-map body, the map declared a reduce:, and the reducer committed a
+	// NodeResult at the map's own path, the artifact resolves to the REDUCER's
+	// file, not the per-item body artifact. A non-reduce map never commits at the
+	// bare map path, so this misses and per-item resolution below runs unchanged.
+	if mapStatic, _, isMapBody := ir.SingleMapBodyShape(staticPath); isMapBody {
+		if _, inside, ierr := s.instanceFromCtx(mapStatic, itemSep); ierr == nil && !inside {
+			if nr, ok := s.rs.LookupCompleted(mapStatic); ok {
+				cas, ok := nr.Files[containerPath]
+				if !ok {
+					return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: reduced map %q has no committed artifact at %q", id, containerPath)
+				}
+				return cas, nil
+			}
+		}
+	}
 	rp, err := s.stepRuntimePath(staticPath)
 	if err != nil {
 		return "", &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: err.Error()}
@@ -506,6 +522,21 @@ func (s *Scope) aggregateMapOutputs(staticPath string, ref *template.Ref) (any, 
 		return nil, false, nil // same-item ref → normal resolution
 	}
 	idSeg := ref.Segments[1]
+	// C2a (reduce): if the enclosing map declared a reduce:, its reduced output
+	// committed at the map's OWN path REPLACES the per-item aggregate. Prefer it.
+	// Safe because a non-reduce map NEVER commits a node.completed at the bare
+	// map path (only per-item ItemPaths + map.item events), so this misses and
+	// the array path below runs unchanged.
+	if nr, ok := s.rs.LookupCompleted(mapStatic); ok {
+		if len(ref.Segments) == 2 {
+			return nr.Outputs, true, nil
+		}
+		val, err := descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
+		if err != nil {
+			return nil, true, err
+		}
+		return val, true, nil
+	}
 	items := s.rs.LookupMapItems(mapStatic) // shallow copy — safe to sort in place
 	sort.Slice(items, func(i, j int) bool { return items[i].N < items[j].N })
 	out := []any{}
