@@ -595,8 +595,10 @@ as an array, so the array-only-in-`over:` rule (AWF5004) is unaffected. Declare
 `quorum: k` (the debate / cohort case) succeeds iff at least `k` branches produced
 a true `over` field; the reduced output is `{passed, votes, agree}`. `quorum`
 generalizes `min_success`: `min_success` is quorum over the mechanical success
-predicate (`any` = quorum(1), `unanimous` = quorum(N), `majority` = quorum(⌈N/2⌉)
-are author sugar over `k`). A `quorum` ratio reuses the `min_success` int-or-
+predicate. There are no named-threshold keywords; a quorum is always the numeric
+`k` (an int count or a fraction). Conceptually, "any" is quorum(1), a "majority"
+is quorum(⌈N/2⌉), and "unanimous" is quorum(N) — but each is written as that
+numeric `k`, never as the word. A `quorum` ratio reuses the `min_success` int-or-
 fraction form. Declaring both `min_success` and `reduce: {quorum}` on one node is
 rejected (**AWF5006**), as is a `quorum` whose `over:` names a field no body step
 declares in its `output_schema` (**AWF5006**). A `quorum` reduce that is not met
