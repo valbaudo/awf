@@ -69,9 +69,10 @@ func New(opts ...Option) (*Adapter, error) {
 // Ref returns the agent-runtime identifier this adapter satisfies.
 func (*Adapter) Ref() string { return AdapterRef }
 
-// Capabilities: layer-2 typed output (NativeSchema:false) + no container needed.
+// Capabilities: layer-2 typed output (NativeSchema:false) + no container needed +
+// threading supported (engine-supplied continues: message history prepended by launch).
 func (*Adapter) Capabilities() agent.Caps {
-	return agent.Caps{NativeSchema: false, Containerless: true}
+	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true}
 }
 
 // compile-time interface assertion: Adapter satisfies the full agent.Adapter contract.
