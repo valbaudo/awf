@@ -179,7 +179,9 @@ inside. A node with more than one, or none, is invalid.
       run: <command>
       timeout: <dur>                 # optional; on expiry -> retryable_failure
       output_schema: { ... }         # optional; step writes JSON to $AWF_OUTPUT
-      output_files: [<path>, ...]    # optional; captured into the artifact store on commit
+      output_files: [<path>, ...]    # optional; bare list -> capture-only
+      # output_files: { <name>: <path> }   # ...or a name->path map -> named, referenceable
+      input_files: { <dst>: step.<id>.files.<name> }   # optional; stage prior artifacts in
       idempotency_key: <template>    # optional; for effects outside the container
       retry: { ... }                 # optional
 
@@ -188,7 +190,8 @@ fields (the step writes conforming JSON to the file named by `$AWF_OUTPUT`; the
 runtime sets that variable but does **not** create its parent directory, so the
 step must `mkdir -p "$(dirname "$AWF_OUTPUT")"` before writing — a missing file
 is a `retryable_failure`, not a typed verdict);
-`output_files` captures named artifacts. A nonzero exit is a `retryable_failure`
+`output_files` captures artifacts and `input_files` stages prior artifacts in
+(see **Artifact channel** below). A nonzero exit is a `retryable_failure`
 unless its code is declared permanent (see **OUTCOMES, RETRY, AND REPAIR**).
 
 ## Agent step (uses)
@@ -203,7 +206,8 @@ format never hard-codes one harness's options.
       continues: <id>                # optional; id of a prior agent turn this turn continues
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
-      output_files: [<path>, ...]    # optional
+      output_files: [<path>, ...]    # optional; or { <name>: <path> } -> named (see Artifact channel)
+      input_files: { <dst>: step.<id>.files.<name> }   # optional; requires a container
       timeout: <dur>                 # optional
       idempotency_key: <template>    # optional
       retry: { ... }                 # optional
@@ -253,6 +257,58 @@ silently break a gate.
 Agent steps are atomic: one invocation is one checkpoint boundary, and resume
 re-runs the whole step from its pre-step snapshot. The agent's internal loop is
 its own business.
+
+## Artifact channel (output_files, input_files)
+
+`output_files` and `input_files` hand a file produced by one step to a *later*
+step — across **distinct** containers, content-addressed and resume-safe. The
+producer declares what it writes out; the consumer references it by name and the
+runtime stages the bytes in before the consumer runs. This is the file-handoff
+seam between black boxes: an agent writes a report in one workspace, a code step
+verifies it in a clean one. Both fields appear on code (`run:`) and agent
+(`uses:`) steps.
+
+**output_files (two forms)**
+:   A **bare list** of paths — `output_files: [/out/a, /out/b]` — captures each
+    path into the artifact store on commit, capture-only and unchanged from
+    earlier versions; those artifacts are durable but not referenceable by a
+    later step. A **name->path map** — `output_files: { report: /out/r.md }` —
+    is *named*: it captures the path **and** publishes a handle
+    `step.<id>.files.<name>` that a consumer's `input_files` can reference. The
+    handle name and the container path are independent; the consumer chooses its
+    own destination path. The two forms are mutually exclusive per step (a step's
+    `output_files` is either all bare or all named).
+
+**input_files**
+:   A map of *in-container destination path* -> *artifact reference* —
+    `input_files: { /work/report.md: step.recon.files.report }`. Before the step
+    runs, the runtime resolves each reference to its committed, content-addressed
+    blob and writes the bytes to the destination path inside this step's
+    container, creating parent directories as needed and overwriting any existing
+    file. The right-hand side is a **static reference**, not a `{{ }}` template
+    (like `container:`); the bytes themselves are opaque to the runtime.
+
+    The reference must name a **prior, in-scope** step that declared a *named*
+    `output_files` artifact of that name, exactly as a `step.<id>.<field>`
+    reference must name a declared output field. The producer's scope reachability
+    is enforced the same way (a producer inside a `gate`/`map` body is not
+    referenceable from outside that scope). Destination paths must be **absolute
+    and clean** — no `..` segment — and distinct (overlapping parent/child
+    destinations are undefined). A reference that fails any of these — undeclared
+    producer, undeclared artifact name, a `{{ }}` template, or a non-absolute /
+    `..`-containing destination — is rejected at validation (**AWF3007**).
+
+    `input_files` **requires a container**: it is rejected on a *containerless*
+    agent step (one whose runtime omits `container:`), since there is no container
+    to stage into.
+
+The handoff is crash-safe: because the reference resolves to a committed,
+content-addressed artifact, resume re-stages the same bytes from the same blob
+without re-running the producer (see **CHECKPOINTING AND RESUME**). Staging is
+in-memory: each staged artifact materializes fully in memory (as `output_files`
+capture does), so peak memory is roughly the sum of staged sizes times the
+in-flight `map`/`parallel` width, retained across retry backoff. Large-artifact
+streaming is out of scope; route big payloads as a single artifact, not many.
 
 ## Signal step (await)
 
