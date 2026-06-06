@@ -34,6 +34,7 @@ type AgentStep struct {
 	Container      string       `json:"container,omitempty"`
 	Uses           string       `json:"uses"`
 	With           RawConfig    `json:"with,omitempty"`
+	Continues      string       `json:"continues,omitempty"` // id of the prior agent turn to continue (engine-owned thread)
 	OutputSchema   *JSONSchema  `json:"output_schema,omitempty"`
 	OutputFiles    []string     `json:"output_files,omitempty"`
 	Timeout        *Duration    `json:"timeout,omitempty"`

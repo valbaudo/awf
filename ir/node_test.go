@@ -199,6 +199,38 @@ func TestAgentStepRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAgentStepContinuesRoundTrip(t *testing.T) {
+	in := `{"id":"revise","container":"lab","uses":"awf/llm","continues":"critique"}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, ok := n.(*AgentStep)
+	if !ok {
+		t.Fatalf("got %T, want *AgentStep", n)
+	}
+	if a.ID != "revise" || a.Uses != "awf/llm" || a.Continues != "critique" {
+		t.Fatalf("bad decode: %+v", a)
+	}
+	out, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
+func TestAgentStepContinuesOmittedWhenEmpty(t *testing.T) {
+	out, err := json.Marshal(&AgentStep{ID: "draft", Uses: "awf/llm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "continues") {
+		t.Fatalf("empty Continues must be omitted, got %s", out)
+	}
+}
+
 func TestSignalStepRoundTrip(t *testing.T) {
 	in := `{"id":"approve","await":"human_review"}`
 	n, err := unmarshalNode(json.RawMessage(in))
