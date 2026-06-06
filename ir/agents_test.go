@@ -19,7 +19,6 @@ func TestAgentRoleUnmarshal(t *testing.T) {
 				"uses": "anthropic/claude-code",
 				"model": "opus",
 				"system_prompt": "audit carefully",
-				"output_schema": {"type": "object"},
 				"with": {"mcp_servers": ["memclaw"]}
 			},
 			"writer": {
@@ -45,9 +44,6 @@ func TestAgentRoleUnmarshal(t *testing.T) {
 	if aud.SystemPrompt != "audit carefully" {
 		t.Errorf("auditor.SystemPrompt = %q", aud.SystemPrompt)
 	}
-	if aud.OutputSchema == nil || (*aud.OutputSchema)["type"] != "object" {
-		t.Errorf("auditor.OutputSchema = %v", aud.OutputSchema)
-	}
 	servers, ok := aud.With["mcp_servers"].([]any)
 	if !ok || len(servers) != 1 || servers[0] != "memclaw" {
 		t.Errorf("auditor.With[mcp_servers] = %v", aud.With["mcp_servers"])
@@ -56,7 +52,7 @@ func TestAgentRoleUnmarshal(t *testing.T) {
 	if writer.Uses != "openai/codex" {
 		t.Errorf("writer.Uses = %q", writer.Uses)
 	}
-	if writer.Model != "" || writer.SystemPrompt != "" || writer.OutputSchema != nil || writer.With != nil {
+	if writer.Model != "" || writer.SystemPrompt != "" || writer.With != nil {
 		t.Errorf("writer should have empty optionals: %+v", writer)
 	}
 }
@@ -92,7 +88,6 @@ func TestAgentRoleRoundTrip(t *testing.T) {
 				Uses:         "anthropic/claude-code",
 				Model:        "opus",
 				SystemPrompt: "audit",
-				OutputSchema: &JSONSchema{"type": "object"},
 				With:         RawConfig{"mcp_servers": []any{"memclaw"}},
 			},
 		},

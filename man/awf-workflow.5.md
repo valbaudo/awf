@@ -182,12 +182,12 @@ model, system prompt, and tools) without repeating it.
         uses: anthropic/claude-code   # an EXISTING adapter (anthropic/claude-code, openai/codex, ...)
         model: <model>                # optional; an opaque with: key the base adapter reads
         system_prompt: <text>         # optional; opaque with: key
-        output_schema: { ... }        # optional; the role's default typed-output contract
         with: { mcp_servers: [ ... ] }   # optional; opaque base-adapter config
 
 A role resolves at run start to its base adapter (the `uses:` ref). Its
-`model`, `system_prompt`, `output_schema`, and `with:` are **defaults** a step
-may override.
+`model`, `system_prompt`, and `with:` are **defaults** a step may override. (A
+role does **not** set a typed-output contract — `output_schema` is the step's
+own, not the role's.)
 
 **uses**
 :   Required. An **existing** adapter ref (`anthropic/claude-code`,
@@ -196,11 +196,12 @@ may override.
     contains `/` (the `<vendor>/<name>` form is reserved for adapter refs and
     would be ambiguous with one), is rejected (**AWF1033**).
 
-**model** / **system_prompt** / **output_schema**
+**model** / **system_prompt**
 :   Optional defaults. `model` and `system_prompt` are convenience fields the run
     folds into the role's `with:` as opaque keys — the base adapter reads them
-    (AWF never interprets a `with:` key). `output_schema` is the role's default
-    typed-output contract.
+    (AWF never interprets a `with:` key). A role does not carry an
+    `output_schema`: the typed-output contract is the **step's** own
+    `output_schema`.
 
 **with**
 :   Optional. Opaque base-adapter config, validated by the named adapter, never

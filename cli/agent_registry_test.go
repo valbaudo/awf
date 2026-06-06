@@ -302,12 +302,10 @@ func TestRegisterRoles_NameCollidesWithRegisteredRef_ErrAlreadyRegistered(t *tes
 }
 
 func TestRoleWithFor_FoldsConvenienceKeys(t *testing.T) {
-	schema := ir.JSONSchema{"type": "object"}
 	role := ir.AgentRole{
 		Uses:         claude.AdapterRef,
 		Model:        "opus",
 		SystemPrompt: "audit",
-		OutputSchema: &schema,
 		With:         ir.RawConfig{"mcp_servers": []any{"m"}},
 	}
 	got := roleWithFor(role)
@@ -316,9 +314,6 @@ func TestRoleWithFor_FoldsConvenienceKeys(t *testing.T) {
 	}
 	if got["system_prompt"] != "audit" {
 		t.Errorf("system_prompt = %v, want audit", got["system_prompt"])
-	}
-	if got["output_schema"] == nil {
-		t.Errorf("output_schema absent, want folded")
 	}
 	if got["mcp_servers"] == nil {
 		t.Errorf("mcp_servers dropped, want preserved from role with:")

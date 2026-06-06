@@ -160,10 +160,10 @@ func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agen
 }
 
 // registerRoles registers one DerivedAdapter per declared agents: role, AFTER
-// the base adapters are in reg. Each role's model/system_prompt/output_schema
-// fold into the role with: as opaque keys (the base adapter reads them); the
-// derived adapter then overlays the step's own with: ON TOP of that at dispatch
-// time. Registering under the role name makes the role a first-class pinned
+// the base adapters are in reg. Each role's model/system_prompt fold into the
+// role with: as opaque keys (the base adapter reads them); the derived adapter
+// then overlays the step's own with: ON TOP of that at dispatch time.
+// Registering under the role name makes the role a first-class pinned
 // runtime (run.started.Runtimes), so resume drift-checks its resolved base
 // version (cli/runtimes.go's resolveRuntimes Lookup is unchanged).
 //
@@ -194,14 +194,14 @@ func registerRoles(reg *agent.Registry, wf *ir.Workflow) error {
 	return nil
 }
 
-// roleWithFor folds the role's convenience fields (model, system_prompt,
-// output_schema) into the role with: as opaque keys — the canonical place the
-// engine deposits them so the base adapter reads them uniformly with a step's
-// own with:. Never reads an existing with: key for its decision (only sets the
-// three convenience keys when non-empty and ABSENT, so an explicit role with:
-// value still wins). The result is a fresh map (it never aliases role.With).
+// roleWithFor folds the role's convenience fields (model, system_prompt) into
+// the role with: as opaque keys — the canonical place the engine deposits them
+// so the base adapter reads them uniformly with a step's own with:. Never reads
+// an existing with: key for its decision (only sets the two convenience keys
+// when non-empty and ABSENT, so an explicit role with: value still wins). The
+// result is a fresh map (it never aliases role.With).
 func roleWithFor(role ir.AgentRole) ir.RawConfig {
-	out := make(ir.RawConfig, len(role.With)+3)
+	out := make(ir.RawConfig, len(role.With)+2)
 	for k, v := range role.With {
 		out[k] = v
 	}
@@ -213,11 +213,6 @@ func roleWithFor(role ir.AgentRole) ir.RawConfig {
 	if role.SystemPrompt != "" {
 		if _, set := out["system_prompt"]; !set {
 			out["system_prompt"] = role.SystemPrompt
-		}
-	}
-	if role.OutputSchema != nil {
-		if _, set := out["output_schema"]; !set {
-			out["output_schema"] = map[string]any(*role.OutputSchema)
 		}
 	}
 	return out
