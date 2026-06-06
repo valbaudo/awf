@@ -31,6 +31,8 @@ A workflow document has the following top-level shape:
     version: 1
     input: <json-schema>          # optional; run parameters
     env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent steps
+    agents:
+      <role>: { uses: <adapter-ref>, model, system_prompt, with } # optional; reusable roles (see AGENTS)
     containers:
       <name>: { image: <oci-ref>, resources: { cpu, mem } }   # or compose (see CONTAINERS)
     graph: [ <node>, ... ]
@@ -60,6 +62,11 @@ A workflow document has the following top-level shape:
     only; it does not inject into `run:` steps. (Independently of `env:`, a `run:`
     step inherits the host environment on the native backend but not on docker —
     so do not rely on `env:` to reach a `run:` step.)
+
+**agents**
+:   Optional. A map of reusable agent **roles** (see **AGENTS**). Each role is a
+    named, digest-pinned configuration of an existing adapter, referenced from a
+    step as `uses: <role>`.
 
 **containers**
 :   Required. The infrastructure the workflow runs against (see **CONTAINERS**).
@@ -163,6 +170,60 @@ Two consequences to keep in mind:
   what you want (the lab stays up), occasionally not (reset explicitly with a
   step).
 
+# AGENTS
+
+A **role** is a reusable, digest-pinned configuration of an existing agent — a
+name you bind once under top-level `agents:` and then reference from any number of
+steps as `uses: <role>`. It lets a fleet of steps share one agent setup (the same
+model, system prompt, and tools) without repeating it.
+
+    agents:
+      auditor:
+        uses: anthropic/claude-code   # an EXISTING adapter (anthropic/claude-code, openai/codex, ...)
+        model: <model>                # optional; an opaque with: key the base adapter reads
+        system_prompt: <text>         # optional; opaque with: key
+        output_schema: { ... }        # optional; the role's default typed-output contract
+        with: { mcp_servers: [ ... ] }   # optional; opaque base-adapter config
+
+A role resolves at run start to its base adapter (the `uses:` ref). Its
+`model`, `system_prompt`, `output_schema`, and `with:` are **defaults** a step
+may override.
+
+**uses**
+:   Required. An **existing** adapter ref (`anthropic/claude-code`,
+    `openai/codex`, ...). A role wraps a registered base adapter; it does not
+    define a new one. A role with an empty `uses:`, or a role **name** that
+    contains `/` (the `<vendor>/<name>` form is reserved for adapter refs and
+    would be ambiguous with one), is rejected (**AWF1033**).
+
+**model** / **system_prompt** / **output_schema**
+:   Optional defaults. `model` and `system_prompt` are convenience fields the run
+    folds into the role's `with:` as opaque keys — the base adapter reads them
+    (AWF never interprets a `with:` key). `output_schema` is the role's default
+    typed-output contract.
+
+**with**
+:   Optional. Opaque base-adapter config, validated by the named adapter, never
+    read by the core. This is where the shared **memory MCP handle** rides: carry
+    `mcp_servers` (or the adapter's equivalent) on the role and every step using
+    that role gets the same fleet-memory tool.
+
+A step's own `with:` shallow-merges **on top** of the role's (a step key wins).
+The merge is **key-blind** — AWF never interprets a `with:` key; it stays opaque
+to the named adapter. The role names and values fold into the definition digest
+and are pinned on resume, exactly like `env:`.
+
+**Static role `with:` vs. templated step `with:` (format contract).** A role's
+`with:` is **static**: it resolves once at run start, *before* any template scope
+exists, so it is **never** `{{ }}`-substituted. A step's own `with:` **is**
+substituted (`{{ run.id }}`, `{{ step.* }}`, ...) before it overlays on top of the
+role's. So a per-run **scope id** that ties the whole fleet to one memory
+namespace is supplied by the **step's** `with:` as a templated scalar — for
+example `with: { scope: "{{ run.id }}" }` — which the key-blind overlay places on
+top of the role's static `with:`. (Top-level `env:` is a host-var **name**
+allowlist, not a value map, so it cannot carry a templated value — do not use
+`env:` as a scope-id channel.)
+
 # STEPS
 
 A step node is exactly one of three black boxes; AWF runs it and does not look
@@ -213,8 +274,12 @@ format never hard-codes one harness's options.
       retry: { ... }                 # optional
 
 **uses**
-:   Required. The runtime ref. Resolution is runtime-defined; the identity *and
-    version* are pinned at run start.
+:   Required. The runtime ref. `uses:` resolves **first** against a declared
+    `agents:` role (see **AGENTS**), then against a registered base adapter ref.
+    A `uses:` that matches neither a declared role nor a `<vendor>/<name>` adapter
+    ref is rejected at validation (**AWF1034**). The identity *and version* are
+    pinned at run start; a role is pinned as a first-class runtime (its resolved
+    base version is drift-checked on resume).
 
 **container**
 :   Optional for agent steps. A runtime whose adapter is *containerless* — it
