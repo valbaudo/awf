@@ -36,6 +36,43 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 		ord++
 	})
 
+	// A.3.3 — acyclic. Walk the continues chain from each agent step that has one;
+	// a revisit of a node is a cycle. Reported once per detected cycle (at the entry
+	// node's path), independently of A.3.2 so a multi-edge cycle is caught even when
+	// one edge is also non-dominating. The walk is bounded by len(agents). All nodes
+	// in a detected cycle are marked so subsequent entry nodes in the same cycle do
+	// not re-report.
+	cycleReported := map[string]bool{}
+	WalkNodes(wf.Graph, "", func(n Node, srcPath string) {
+		as, ok := n.(*AgentStep)
+		if !ok || as.Continues == "" || cycleReported[as.ID] {
+			return
+		}
+		// visited tracks the chain walked from this entry, in order.
+		visited := []string{as.ID}
+		visitedSet := map[string]bool{as.ID: true}
+		cur := as.Continues
+		for i := 0; i < len(agents) && cur != ""; i++ {
+			next, exists := agents[cur]
+			if !exists {
+				break // unknown target; AWF1026 covers this
+			}
+			if visitedSet[next.ID] {
+				// Cycle detected: report once at the entry node and mark all
+				// nodes in the chain as reported so they don't re-fire.
+				c.errf(srcPath, "AWF1028", catalog["AWF1028"])
+				for _, id := range visited {
+					cycleReported[id] = true
+				}
+				cycleReported[next.ID] = true
+				return
+			}
+			visited = append(visited, next.ID)
+			visitedSet[next.ID] = true
+			cur = next.Continues
+		}
+	})
+
 	// Walk continuing steps in document order so diagnostics emit at stable paths.
 	WalkNodes(wf.Graph, "", func(n Node, srcPath string) {
 		as, ok := n.(*AgentStep)

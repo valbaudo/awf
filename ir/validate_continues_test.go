@@ -180,3 +180,39 @@ func TestContinuesMapItemFromOutsideRejected(t *testing.T) {
 	})
 	assertErrorAt(t, Validate(ld), "AWF1027", "after")
 }
+
+// --- AWF1028: acyclic continues chain (A.3.3) ---
+
+// A.3.3 — 2-cycle: a→b→a. The dominator rule (AWF1027) only rejects the backward
+// edge (a continues: b, where b is after a in document order). The forward edge
+// (b continues: a, where a is before b) passes AWF1027 — so the cycle guard must
+// fire independently via the dedicated chain walk. AWF1028 is emitted once per
+// detected cycle (at the entry node, i.e. the first continuing step in document order
+// whose chain loops back to itself).
+func TestContinuesCycleRejected(t *testing.T) {
+	// a → b → a. In document order [a, b]:
+	// • "a continues: b" trips AWF1027 (b is after a), so a returns early — the cycle
+	//   walk catches it from b's perspective instead.
+	// AWF1028 must fire exactly once.
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&AgentStep{ID: "a", Uses: "awf/llm", Continues: "b", With: RawConfig{"model": "m", "prompt": "p"}},
+			&AgentStep{ID: "b", Uses: "awf/llm", Continues: "a", With: RawConfig{"model": "m", "prompt": "p"}},
+		},
+	})
+	assertOneError(t, Validate(ld), "AWF1028")
+}
+
+// A clean linear chain produces no AWF1028.
+func TestContinuesLinearChainNoCycle(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&AgentStep{ID: "first", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}},
+			&AgentStep{ID: "second", Uses: "awf/llm", Continues: "first", With: RawConfig{"model": "m", "prompt": "p"}},
+			&AgentStep{ID: "third", Uses: "awf/llm", Continues: "second", With: RawConfig{"model": "m", "prompt": "p"}},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF1028")
+}
