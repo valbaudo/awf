@@ -2,11 +2,13 @@ package awfllm_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/awfllm"
 	"github.com/valbaudo/awf/ir"
 )
@@ -52,7 +54,7 @@ func TestStream_OpenAICompat_AccumulatesAndEmits(t *testing.T) {
 		BaseURL: "https://api.example.com/v1", APIKey: "sk-test", Model: "gpt-x",
 		StructuredOutput: "response_format", IdempotencyKey: "idem-1",
 	}
-	full, usage, finish, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object"},
+	full, usage, finish, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object"}, nil,
 		func(d string, _ []byte) { deltas = append(deltas, d) })
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -95,7 +97,7 @@ func TestStream_OpenAICompat_400IsPermanent(t *testing.T) {
 	})
 	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
 	cfg := awfllm.ReqConfigForTest{BaseURL: "https://x/v1", APIKey: "k", Model: "nope", StructuredOutput: "response_format"}
-	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", &ir.JSONSchema{"type": "object"}, func(string, []byte) {})
+	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", &ir.JSONSchema{"type": "object"}, nil, func(string, []byte) {})
 	if err == nil || !awfllm.IsPermanentLLMErrorForTest(err) {
 		t.Fatalf("err = %v, want permanent (400 invalid_request_error)", err)
 	}
@@ -116,7 +118,7 @@ func TestStream_OpenAICompat_NoDoubleCallOn429(t *testing.T) {
 	})
 	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
 	cfg := awfllm.ReqConfigForTest{BaseURL: "https://x/v1", APIKey: "k", Model: "m", StructuredOutput: "off"}
-	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", nil, func(string, []byte) {})
+	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", nil, nil, func(string, []byte) {})
 	if err == nil {
 		t.Fatal("err = nil, want an error for 429")
 	}
@@ -149,7 +151,7 @@ func TestStream_OpenAICompat_TempAndCap(t *testing.T) {
 		HasMaxTokens:     true,
 		MaxTokens:        256,
 	}
-	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hello", &ir.JSONSchema{"type": "object"}, func(string, []byte) {})
+	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hello", &ir.JSONSchema{"type": "object"}, nil, func(string, []byte) {})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -233,7 +235,7 @@ func TestStream_OllamaNative_AccumulatesAndFormat(t *testing.T) {
 		StructuredOutput: "ollama_format",
 	}
 	var deltas []string
-	full, usage, _, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "integer"}}},
+	full, usage, _, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "integer"}}}, nil,
 		func(d string, _ []byte) { deltas = append(deltas, d) })
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -257,4 +259,139 @@ func TestStream_OllamaNative_AccumulatesAndFormat(t *testing.T) {
 	// restatement is centralized in assemblePrompt (N2) and verified by
 	// TestAssemblePrompt_* — NOT here: StreamForTest receives the prompt verbatim,
 	// so this transport-level test must not assert prompt content.
+}
+
+// TestStream_T7_OpenAI_ThreadRendered — T7 wire test (OpenAI path).
+// Drives stream with a one-turn thread {User:"u1",Assistant:"a1"}, system prompt
+// "SYS", and current prompt "now". Asserts the request messages array is exactly:
+//
+//	[{role:system,content:SYS},{role:user,content:u1},{role:assistant,content:a1},{role:user,content:now}]
+//
+// (4 messages, that order) — engine-supplied conversation history rendered correctly.
+func TestStream_T7_OpenAI_ThreadRendered(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(openAISSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+
+	thread := []agent.ThreadTurn{{User: "u1", Assistant: "a1"}}
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL:      "https://api.example.com/v1",
+		APIKey:       "sk-test",
+		Model:        "gpt-x",
+		SystemPrompt: "SYS",
+		// StructuredOutput intentionally omitted ("") → OpenAI compat, no response_format
+	}
+	_, _, _, err := a.StreamForTest(context.Background(), cfg, "now", nil, thread, func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	// Parse the messages array from the captured JSON body.
+	var parsed struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"` // openai-go may encode content as string or array
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &parsed); err != nil {
+		t.Fatalf("unmarshal body: %v\nbody: %s", err, gotBody)
+	}
+
+	// Helper: extract string content regardless of whether openai-go encodes it as
+	// a plain string or a single-item array [{type:text,text:...}].
+	contentStr := func(v any) string {
+		switch c := v.(type) {
+		case string:
+			return c
+		case []any:
+			if len(c) == 1 {
+				if m, ok := c[0].(map[string]any); ok {
+					if s, ok := m["text"].(string); ok {
+						return s
+					}
+				}
+			}
+		}
+		return ""
+	}
+
+	want := []struct{ role, content string }{
+		{"system", "SYS"},
+		{"user", "u1"},
+		{"assistant", "a1"},
+		{"user", "now"},
+	}
+	if len(parsed.Messages) != len(want) {
+		t.Fatalf("messages count = %d, want %d; body: %s", len(parsed.Messages), len(want), gotBody)
+	}
+	for i, w := range want {
+		got := parsed.Messages[i]
+		gotContent := contentStr(got.Content)
+		if got.Role != w.role || gotContent != w.content {
+			t.Errorf("messages[%d] = {role:%q, content:%q}, want {role:%q, content:%q}",
+				i, got.Role, gotContent, w.role, w.content)
+		}
+	}
+}
+
+// TestStream_T7_Ollama_ThreadRendered — T7 wire test (Ollama native path).
+// Same scenario as the OpenAI variant: one prior turn + system + current prompt.
+// Asserts the Ollama messages array is:
+//
+//	[{role:system,content:SYS},{role:user,content:u1},{role:assistant,content:a1},{role:user,content:now}]
+func TestStream_T7_Ollama_ThreadRendered(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			Body:       io.NopCloser(strings.NewReader(ollamaNDJSON)),
+		}, nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+
+	thread := []agent.ThreadTurn{{User: "u1", Assistant: "a1"}}
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL:          "http://localhost:11434",
+		Model:            "llama3",
+		SystemPrompt:     "SYS",
+		StructuredOutput: "ollama_format",
+	}
+	_, _, _, err := a.StreamForTest(context.Background(), cfg, "now", &ir.JSONSchema{"type": "object"}, thread, func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	var parsed struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &parsed); err != nil {
+		t.Fatalf("unmarshal body: %v\nbody: %s", err, gotBody)
+	}
+
+	want := []struct{ role, content string }{
+		{"system", "SYS"},
+		{"user", "u1"},
+		{"assistant", "a1"},
+		{"user", "now"},
+	}
+	if len(parsed.Messages) != len(want) {
+		t.Fatalf("messages count = %d, want %d; body: %s", len(parsed.Messages), len(want), gotBody)
+	}
+	for i, w := range want {
+		got := parsed.Messages[i]
+		if got.Role != w.role || got.Content != w.content {
+			t.Errorf("messages[%d] = {role:%q, content:%q}, want {role:%q, content:%q}",
+				i, got.Role, got.Content, w.role, w.content)
+		}
+	}
 }

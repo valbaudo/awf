@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/ir"
 )
 
@@ -22,8 +23,8 @@ func NewAPIErrorForTest(status int, typ, body string) *apiError {
 	return &apiError{Status: status, Type: typ, Body: body}
 }
 
-func (a *Adapter) StreamForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, emit func(string, []byte)) (string, usageRec, string, error) {
-	return a.stream(ctx, reqConfig(cfg), prompt, schema, emit)
+func (a *Adapter) StreamForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(string, []byte)) (string, usageRec, string, error) {
+	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, emit)
 }
 
 // ReqConfigForTest mirrors reqConfig (unexported) for test construction.
