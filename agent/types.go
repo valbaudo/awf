@@ -62,6 +62,15 @@ func (e SecretEnv) String() string {
 // leak secrets.
 func (e SecretEnv) GoString() string { return e.String() }
 
+// ThreadTurn is one prior (user, assistant) exchange in an engine-owned
+// conversation. The engine assembles a slice of these from the durable log
+// (continues: threading) and feeds it to the generating turn only; it is
+// never a bindable reference and never visible to until/templates.
+type ThreadTurn struct {
+	User      string `json:"user"`
+	Assistant string `json:"assistant"`
+}
+
 // AgentInvocation is the per-call input handed to Adapter.Launch. Slice 5.2
 // wiring (engine/local_dispatcher.go runAgentStep) constructs one of these
 // per AgentStep, resolves the templated With through template.Evaluator,
@@ -80,6 +89,7 @@ type AgentInvocation struct {
 	Env            SecretEnv      `json:"-"`                         // env vars forwarded into the harness exec (slice 5.3 reads ANTHROPIC_API_KEY etc.); never JSON-marshaled so secrets cannot reach the state log
 	IdempotencyKey string         `json:"idempotency_key,omitempty"` // resolved-template; passed to harness env per spec §10
 	Feedback       ir.RawConfig   `json:"feedback,omitempty"`        // prior gate verdict on repair attempts > 1 (nil on attempt 1)
+	Thread         []ThreadTurn   `json:"thread,omitempty"`          // engine-assembled prior turns (separate channel from Feedback); generator-only
 }
 
 // AgentResult is the synchronous return of Adapter.Launch. Output is the
