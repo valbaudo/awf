@@ -185,6 +185,96 @@ graph:
 	}
 }
 
+func TestRunAgentStep_ThreadAssembledFromContinues(t *testing.T) {
+	// Two sequential agent steps; turn2 continues: turn1. Both use the same
+	// uses: so AWF1028 (same-runtime) passes. The fake scripts a distinct
+	// verbatim transcript pair per call. After the run, turn2's invocation
+	// must carry turn1's committed pair as its single Thread entry, and
+	// turn1's invocation must have an empty Thread.
+	const yaml = `workflow: continues-linear
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: turn1
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: "p1"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [k]
+      properties:
+        k: { type: string }
+  - id: turn2
+    container: lab
+    uses: anthropic/claude-code
+    continues: turn1
+    with:
+      prompt: "p2"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [k]
+      properties:
+        k: { type: string }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").
+		Script(0, fake.Result{
+			Output:     map[string]any{"k": "v1"},
+			Transcript: agent.ThreadTurn{User: "prompt-1", Assistant: "answer-1"},
+		}).
+		Script(1, fake.Result{
+			Output:     map[string]any{"k": "v2"},
+			Transcript: agent.ThreadTurn{User: "prompt-2", Assistant: "answer-2"},
+		})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	calls := fk.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("len(calls) = %d, want 2", len(calls))
+	}
+	// turn1: no continues -> empty Thread.
+	if len(calls[0].Thread) != 0 {
+		t.Errorf("turn1 Thread = %+v, want empty", calls[0].Thread)
+	}
+	// turn2: Thread is the single committed turn1 pair (root->current order).
+	if len(calls[1].Thread) != 1 {
+		t.Fatalf("turn2 Thread len = %d, want 1", len(calls[1].Thread))
+	}
+	if calls[1].Thread[0].User != "prompt-1" || calls[1].Thread[0].Assistant != "answer-1" {
+		t.Errorf("turn2 Thread[0] = %+v, want {prompt-1,answer-1}", calls[1].Thread[0])
+	}
+}
+
 // mustJSON is a per-package test helper. Task 2 defined an identical body
 // in engine/events_test.go (package engine — internal); this file is
 // package engine_test (external), a separate scope, so we declare it

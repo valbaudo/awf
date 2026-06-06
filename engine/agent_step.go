@@ -106,6 +106,35 @@ func runAgentStep(
 		}
 	}
 
+	// continues: threading — assemble the prior turns from the committed log.
+	// Pure over the committed log: StepPathIndex is a deterministic whole-graph
+	// walk; stepRuntimePath resolves each predecessor to THIS consumer's own
+	// attempt/item/iter (ctxPath == path), which is why rejected gate attempts and
+	// foreign map items are excluded by addressing, not special-casing. One Scope
+	// is reused across the walk. Walked root->current (prepend), so the oldest
+	// turn is Thread[0] and the immediate predecessor is last.
+	//
+	// Phase 5.1: hoist StepPathIndex/threadTargets to once-per-run (requires a
+	// runAgentStep signature change). The per-step walk is correct and cheap for
+	// AWF's bounded single-host graphs.
+	var thread []agent.ThreadTurn
+	idx := StepPathIndex(wf)
+	threadScope := NewScope(runstate, wf, path)
+	for cur := as.Continues; cur != ""; {
+		predRuntime, perr := threadScope.stepRuntimePath(idx[cur])
+		if perr != nil { // impossible after validation (AWF1026/AWF1030); defensive.
+			return failStep(log, path, OutcomePermanentFailure,
+				fmt.Errorf("engine.runAgentStep: resolve continues target %q at %q: %w", cur, path, perr))
+		}
+		predNR, ok := runstate.LookupCompleted(predRuntime)
+		if !ok { // ok guaranteed by dominance (AWF1026); defensive.
+			return failStep(log, path, OutcomePermanentFailure,
+				fmt.Errorf("engine.runAgentStep: continues target %q not committed (runtime %q)", cur, predRuntime))
+		}
+		thread = append([]agent.ThreadTurn{{User: predNR.Transcript.User, Assistant: predNR.Transcript.Assistant}}, thread...)
+		cur = continuesOf(wf, cur)
+	}
+
 	// 4. Build ResolvedInputs. Timeout cast follows the runCodeStep idiom
 	// (engine/interpreter.go:283): ir.AgentStep.Timeout is *ir.Duration where
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
@@ -117,6 +146,7 @@ func runAgentStep(
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,
 		Feedback:              feedback, // slice 5.3
+		Thread:                thread,   // Task 4.5
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)
@@ -165,9 +195,12 @@ func runAgentStep(
 
 	// 6. Happy path: commit via the canonical engine.Commit. Commit owns the
 	// content-address-then-pointer-swap invariant (CLAUDE.md "Commit"); we
-	// reuse it verbatim. Then mirror the result into runstate.
-	// TODO(Task 4.5): compute the real participates value at this call site.
-	nr, commitErr := Commit(log, blobs, path, dr, false)
+	// reuse it verbatim. Then mirror the result into runstate. A step
+	// participates in a conversation (so its transcript blob must be committed)
+	// iff it continues someone OR is continued-from by some other step.
+	// Phase 5.1: hoist threadTargets to once-per-run.
+	participates := as.Continues != "" || threadTargets(wf)[as.ID]
+	nr, commitErr := Commit(log, blobs, path, dr, participates)
 	if commitErr != nil {
 		return "", fmt.Errorf("engine.runAgentStep: commit at %q: %w", path, commitErr)
 	}
@@ -201,6 +234,35 @@ func substituteRawConfig(in ir.RawConfig, scope template.Scope) (ir.RawConfig, e
 		out[k] = sub
 	}
 	return out, nil
+}
+
+// continuesOf returns the Continues target of the agent step with the given id,
+// or "" if the id is not an agent step (cannot happen after AWF1025 validation).
+// Used to walk a continues: chain to its root during thread assembly. Built on
+// ir.WalkNodes (the single whole-graph pre-order walk) so it can never drift
+// from the runtime addressing the rest of the engine uses.
+func continuesOf(wf *ir.Workflow, id string) string {
+	var out string
+	ir.WalkNodes(wf.Graph, "", func(n ir.Node, _ string) {
+		if as, ok := n.(*ir.AgentStep); ok && as.ID == id {
+			out = as.Continues
+		}
+	})
+	return out
+}
+
+// threadTargets returns the set of step ids that appear as some agent step's
+// continues: target. A step participates in a conversation (and so commits its
+// transcript blob) iff it has a continues: OR is some other step's target.
+// Computed per agent-step entry; Phase 5.1 hoists it to run scope.
+func threadTargets(wf *ir.Workflow) map[string]bool {
+	tt := map[string]bool{}
+	ir.WalkNodes(wf.Graph, "", func(n ir.Node, _ string) {
+		if as, ok := n.(*ir.AgentStep); ok && as.Continues != "" {
+			tt[as.Continues] = true
+		}
+	})
+	return tt
 }
 
 // appendAgentEvents writes one agent.event log entry per buffered AgentEvent.

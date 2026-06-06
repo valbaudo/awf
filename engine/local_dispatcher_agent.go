@@ -108,6 +108,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		OutputSchema:   intent.ResolvedInputs.OutputSchema,
 		IdempotencyKey: intent.IdempotencyKey,
 		Feedback:       intent.ResolvedInputs.Feedback, // slice 5.3
+		Thread:         intent.ResolvedInputs.Thread,   // Task 4.5
 	}
 
 	// γ contract: Launch returns immediately with events + outcome channels
@@ -174,6 +175,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		AgentEvents: bufferedEvents,
 		Files:       packFiles(launchOutcome.Result.Files),
 		Metrics:     &metrics,
+		Transcript:  launchOutcome.Result.Transcript, // adapter-provided; no With["prompt"] read anywhere in engine
 	}
 
 	// Record the container for OK (committed) steps; failed steps carry none
