@@ -155,6 +155,44 @@ func TestNativeRunBasicContract(t *testing.T) {
 	backendtest.RunBasicContract(t, b)
 }
 
+// TestNativeCopyToRoundTrip exercises the real native CopyTo impl (host
+// filepath.Join + os.MkdirAll + os.WriteFile) Docker-free, including the
+// nested-directory MkdirAll path it claims to support. The shared
+// backendtest.RunCopyToContract is NOT reused here: its NESTED dst path is
+// ABSOLUTE ("/work/sub/in.txt"), which native (no isolation, decision 10)
+// writes LITERALLY to the host — `mkdir /work` fails on a read-only root. We
+// use a WORKDIR-RELATIVE nested path instead, which filepath.Joins against the
+// per-handle TempDir, so the nested-dir creation is still verified end-to-end.
+func TestNativeCopyToRoundTrip(t *testing.T) {
+	b, h := newBackendAndHandle(t)
+	ctx := context.Background()
+
+	want := []byte("hello-artifact\n")
+	dst := "sub/nested/in.txt" // relative + nested: exercises MkdirAll of parents
+	if err := b.CopyTo(ctx, h, []container.InputFile{{Path: dst, Content: want}}); err != nil {
+		t.Fatalf("CopyTo: %v", err)
+	}
+	got, err := b.CaptureFiles(ctx, h, []string{dst})
+	if err != nil {
+		t.Fatalf("CaptureFiles after CopyTo: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Content) != string(want) {
+		t.Errorf("round-trip mismatch: got %v, want %q", got, want)
+	}
+	// The parent dirs were actually created under the workdir.
+	if _, err := os.Stat(filepath.Join(h.ID, "sub", "nested", "in.txt")); err != nil {
+		t.Errorf("expected nested file under workdir: %v", err)
+	}
+	// len==0 is a no-op returning nil.
+	if err := b.CopyTo(ctx, h, nil); err != nil {
+		t.Errorf("CopyTo(nil): got %v, want nil", err)
+	}
+	// Unknown handle is a hard error.
+	if err := b.CopyTo(ctx, container.Handle{ID: "ghost"}, []container.InputFile{{Path: dst, Content: want}}); err == nil {
+		t.Errorf("CopyTo on unknown handle returned nil; want error")
+	}
+}
+
 // drain consumes all chunks from ch (expected to be closed before Exec returns).
 func drain(ch <-chan container.IOChunk) []container.IOChunk {
 	var out []container.IOChunk
