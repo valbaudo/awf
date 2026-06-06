@@ -1,6 +1,9 @@
 package ir
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // validateContinues runs the AWF1026-AWF1031 pass over every AgentStep that declares
 // continues:. It is a pure function of the static IR graph — each node's static path
@@ -16,15 +19,21 @@ import "fmt"
 func validateContinues(ld *LoadedDefinition, c *collector) {
 	wf := ld.Workflow
 
-	// One WalkNodes pass builds: id → static path, id → *AgentStep, id → document-order
+	// One WalkNodes pass builds: id → *AgentStep, id → static path, id → document-order
 	// ordinal. WalkNodes visits parent-before-children in slice order, so the ordinal is
 	// a topological document position usable for the precedes-in-document-order half of
 	// the dominator rule (A.3.2). Last-write-wins on (validator-rejected, AWF1004) dup ids.
 	agents := map[string]*AgentStep{}
-	WalkNodes(wf.Graph, "", func(n Node, _ string) {
+	paths := map[string]string{}
+	order := map[string]int{}
+	ord := 0
+	WalkNodes(wf.Graph, "", func(n Node, path string) {
 		if v, ok := n.(*AgentStep); ok {
 			agents[v.ID] = v
+			paths[v.ID] = path
+			order[v.ID] = ord
 		}
+		ord++
 	})
 
 	// Walk continuing steps in document order so diagnostics emit at stable paths.
@@ -39,6 +48,49 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 			c.errf(srcPath, "AWF1026", fmt.Sprintf("%s (continues: %q)", catalog["AWF1026"], as.Continues))
 			return // every downstream rule needs a real target.
 		}
-		_ = tgt // used by later rules (2.3-2.6).
+		_ = tgt // used by later rules (2.4-2.6).
+
+		// A.3.2 — dominator (incl. multiplicity). T dominates S iff every scope enclosing
+		// T also encloses S (T's enclosing-scope prefix is a path-boundary prefix of S) AND
+		// T precedes S in document order. The static path encodes the full scope chain, so
+		// this is exactly the set stepRuntimePath can resolve (gate/map/loop/if rejected when
+		// they enclose T but not S; forward/self refs rejected by the order check).
+		if !dominates(paths[as.Continues], srcPath, order[as.Continues], order[as.ID]) {
+			c.errf(srcPath, "AWF1027", fmt.Sprintf("%s (continues: %q)", catalog["AWF1027"], as.Continues))
+			return // a non-dominating target can't be assembled; later rules are moot.
+		}
 	})
+}
+
+// dominates reports whether the target's static path tgtPath dominates the source's
+// static path srcPath, given their document-order ordinals. Domination = (a) tgt's
+// enclosing-scope prefix is a path-boundary prefix of src, so every scope enclosing tgt
+// also encloses src (and they share the same if/else branch, gate side, map/loop body,
+// etc.); and (b) tgt precedes src in document order (rejects forward + self refs). The
+// id segment of tgt is stripped before the prefix test — a step does not "enclose" itself.
+func dominates(tgtPath, srcPath string, tgtOrd, srcOrd int) bool {
+	if tgtOrd >= srcOrd {
+		return false
+	}
+	return hasPathPrefix(srcPath, scopePrefixOf(tgtPath))
+}
+
+// scopePrefixOf strips the trailing id segment from a step's static path, leaving the
+// chain of enclosing scope segments ("" for a top-level step). For "gate[0].generate.ask"
+// it returns "gate[0].generate"; for "draft" it returns "".
+func scopePrefixOf(path string) string {
+	if i := strings.LastIndex(path, "."); i >= 0 {
+		return path[:i]
+	}
+	return ""
+}
+
+// hasPathPrefix reports whether prefix is a path-boundary prefix of path: either equal,
+// or path == prefix + "." + rest. The "" prefix (top-level scope) matches everything.
+// The boundary check stops "gate[0]" from matching "gate[01].x".
+func hasPathPrefix(path, prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+".")
 }

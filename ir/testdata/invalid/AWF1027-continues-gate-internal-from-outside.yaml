@@ -1,0 +1,27 @@
+workflow: continues-gate-internal-from-outside
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      generate:
+        - id: inner
+          uses: awf/llm
+          with: { model: m, prompt: p }
+      evaluate:
+        - id: j
+          container: c
+          run: 'printf "{\"ok\":true}" > "$AWF_OUTPUT"'
+          output_schema:
+            type: object
+            required: [ok]
+            properties:
+              ok: { type: boolean }
+            additionalProperties: false
+      until: "{{ step.j.ok }}"
+      max_attempts: 3
+  - id: after
+    uses: awf/llm
+    continues: inner
+    with: { model: m, prompt: p }

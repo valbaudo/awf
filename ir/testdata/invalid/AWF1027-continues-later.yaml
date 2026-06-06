@@ -1,0 +1,10 @@
+workflow: continues-later
+version: 1
+graph:
+  - id: critique
+    uses: awf/llm
+    continues: revise
+    with: { model: m, prompt: p }
+  - id: revise
+    uses: awf/llm
+    with: { model: m, prompt: p }

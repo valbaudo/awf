@@ -1,0 +1,31 @@
+workflow: continues-cross-item
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+input:
+  type: object
+  properties:
+    xs: { type: array, items: { type: object } }
+graph:
+  - map:
+      over: "{{ input.xs }}"
+      as: x
+      container: c
+      concurrency: 2
+      body:
+        - id: first_pass
+          container: c
+          uses: awf/llm
+          with: { model: m, prompt: p }
+  - map:
+      over: "{{ input.xs }}"
+      as: y
+      container: c
+      concurrency: 2
+      body:
+        - id: second_pass
+          container: c
+          uses: awf/llm
+          continues: first_pass
+          with: { model: m, prompt: p }

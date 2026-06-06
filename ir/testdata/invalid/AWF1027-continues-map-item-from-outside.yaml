@@ -1,0 +1,24 @@
+workflow: continues-map-item-from-outside
+version: 1
+containers:
+  c:
+    image: oci://x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+input:
+  type: object
+  properties:
+    xs: { type: array, items: { type: object } }
+graph:
+  - map:
+      over: "{{ input.xs }}"
+      as: x
+      container: c
+      concurrency: 2
+      body:
+        - id: per_item
+          container: c
+          uses: awf/llm
+          with: { model: m, prompt: p }
+  - id: after
+    uses: awf/llm
+    continues: per_item
+    with: { model: m, prompt: p }

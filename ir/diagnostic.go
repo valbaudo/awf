@@ -147,6 +147,7 @@ var catalog = map[string]string{
 	"AWF1024": "env entry is not a valid environment-variable name (must match [A-Za-z_][A-Za-z0-9_]*)",
 	"AWF1025": "container is a map `image:` target and also declares a static image/compose; the static pin is silently overwritten per-element at dispatch — remove the static image/compose, or do not target it with a map `image:`",
 	"AWF1026": "continues target is not an agent step (must be the id of another agent step, not code/signal/control)",
+	"AWF1027": "continues target does not dominate this turn (must precede it in document order and every gate/map/loop/if-branch scope enclosing the target must also enclose this turn — forward/self refs, sibling branches, and gate/map/loop-internal targets are rejected)",
 	"AWF2001": "JSON Schema does not compile per the JSON Schema 2020-12 metaschema",
 	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",
