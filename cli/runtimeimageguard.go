@@ -19,5 +19,5 @@ func checkRuntimeImageCapability(wf *ir.Workflow, backend container.Backend) err
 	if backend.Capabilities().RuntimeImage {
 		return nil
 	}
-	return fmt.Errorf("workflow uses a map `image:` (a runtime-resolved per-element image), which the selected backend cannot honor — it would ignore image: and run bodies on the host without isolation or digest capture; no backend supports runtime-image maps yet (docker support is a planned follow-up)")
+	return fmt.Errorf("workflow uses a map `image:` (a runtime-resolved per-element image), which the selected backend cannot honor — it would ignore image: and run bodies on the host without isolation or digest capture. No backend can run a map `image:` workflow yet. To run today, replace the map's `image:` with a static, digest-pinned `containers:` entry (image: ...@sha256:...) and target it with `container:` instead")
 }
