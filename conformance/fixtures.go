@@ -727,6 +727,48 @@ graph:
       max_attempts: 3
 `, fakeImageDigest, phase5VerdictSchemaYAML)
 
+// gatedLeafThreadWorkflow — T4 (evaluator independence). draft + critique are
+// plain prior turns; revise (the gate's generate leaf) continues critique;
+// judge (the evaluator) has NO continues. Asserts judge's invocation Thread
+// is empty — the evaluator judges in a fresh context (D8, gate integrity).
+var gatedLeafThreadWorkflow = fmt.Sprintf(`workflow: conformance-gated-leaf-thread
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - id: draft
+    container: lab
+    uses: test/llm
+    with: { prompt: "draft" }
+  - id: critique
+    container: lab
+    uses: test/llm
+    continues: draft
+    with: { prompt: "critique" }
+  - gate:
+      generate:
+        - id: revise
+          container: lab
+          uses: test/llm
+          continues: critique
+          with: { prompt: "revise" }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [draft]
+            properties:
+              draft: { type: string }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: test/oracle
+          with: { prompt: "judge" }
+          %s
+      until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
+      max_attempts: 2
+`, fakeImageDigest, phase5VerdictSchemaYAML)
+
 // signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
 // A single `await: human_review` step followed by an echo step that references
 // the signal payload. No containers entry for the await itself; the after step

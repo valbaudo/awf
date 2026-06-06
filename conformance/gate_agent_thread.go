@@ -9,6 +9,58 @@ import (
 	"github.com/valbaudo/awf/engine"
 )
 
+// testGateAgentEvaluatorIndependence is T4: a gated leaf (revise continues:
+// critique) passes on attempt 1; the evaluator (judge, no continues) MUST
+// receive an empty Thread — fresh context, gate integrity (D8).
+//
+// The workflow has two plain sequential turns before the gate (draft, critique)
+// and a gate whose generate leaf (revise) continues critique. The evaluator
+// (judge) uses a SEPARATE fake adapter (test/oracle) and declares NO continues.
+// By construction the engine assembles no thread for the judge — it participates
+// in no conversation chain. The test asserts this structurally by inspecting
+// oracleFake.Calls(): every oracle call must have an empty Thread slice.
+//
+// Fake call-index model for test/llm (draft, critique, revise share one fake):
+//
+//	[0] draft     → {u1, a1}
+//	[1] critique  → continues draft; Thread = [{u1,a1}]
+//	[2] revise    → continues critique; Thread = [{u1,a1},{u2,a2}]
+//
+// The oracle (test/oracle) gets call [0] → {verified:true, ...}; gate passes.
+func testGateAgentEvaluatorIndependence(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	var oracleFake *fake.Fake
+	register := func(reg *agent.Registry) {
+		gen := fake.New("test/llm").
+			Script(0, fake.Result{Output: map[string]any{}, Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"}}).            // draft
+			Script(1, fake.Result{Output: map[string]any{}, Transcript: agent.ThreadTurn{User: "u2", Assistant: "a2"}}).            // critique
+			Script(2, fake.Result{Output: map[string]any{"draft": "d"}, Transcript: agent.ThreadTurn{User: "u3", Assistant: "a3"}}) // revise
+		oracleFake = fake.New("test/oracle").
+			Script(0, fake.Result{Output: map[string]any{"verified": true, "fooled_by_benign": false, "feedback": ""}})
+		if err := reg.Register(gen); err != nil {
+			t.Fatalf("Register gen: %v", err)
+		}
+		if err := reg.Register(oracleFake); err != nil {
+			t.Fatalf("Register oracle: %v", err)
+		}
+	}
+	h := newHarnessWithAgentRegistry(t, factory, gatedLeafThreadWorkflow, register)
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("runWorkflow: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+	calls := oracleFake.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("oracle Calls len = %d, want 1", len(calls))
+	}
+	if len(calls[0].Thread) != 0 {
+		t.Errorf("evaluator Thread = %+v, want empty (fresh-context gate integrity, D8)", calls[0].Thread)
+	}
+}
+
 // testGateAgentThread is the T2 bucket (Phase 5 slice 5.3): a sub-conversation
 // INSIDE one gate's generate — generate: [ask, refine continues: ask]. ask runs
 // once per attempt; refine continues ask. The gate fails attempt 1 (oracle
