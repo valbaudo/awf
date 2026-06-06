@@ -433,6 +433,56 @@ func TestStructuralSignalStepAwaitCharset(t *testing.T) {
 	}
 }
 
+// TestStructuralSignalStepWhereExpr exercises AWF1036: a signal step's where:
+// clause must be a valid bounded boolean expression once its {{ }} slots are
+// scanned and stripped. `{{ }}` slots render from the engine scope at runtime
+// and bare identifiers resolve against the delivered payload, so the validator
+// replaces each slot with a parse-safe placeholder and ParseExprs the remainder.
+func TestStructuralSignalStepWhereExpr(t *testing.T) {
+	cases := []struct {
+		name    string
+		where   string
+		wantErr bool // true => AWF1036 must fire
+	}{
+		// 1. quoted-slot string comparison — valid (the author's "" survive the
+		//    slot strip, so the placeholder lands inside them: candidate_id == "<ph>").
+		{"quoted-slot-string", `candidate_id == "{{ hyp.id }}"`, false},
+		// 2. truncated comparison — invalid.
+		{"truncated", "candidate_id ==", true},
+		// 3. unbalanced slot — the slot scan fails.
+		{"unbalanced-slot", "{{ unbalanced ", true},
+		// 4. arithmetic — not in the bounded-boolean grammar; ParseExpr rejects `+`.
+		{"arithmetic", "candidate_id + 1 == 2", true},
+		// 5. empty where (omitted) — no-op, no AWF1036.
+		{"empty", "", false},
+		// 6. numeric correlation, no inner quotes — valid (bare placeholder is a
+		//    valid primary in operand position: count == <ph>).
+		{"numeric-bare-slot", "count == {{ n }}", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ld := makeLD(&Workflow{
+				ID: "signal-where", Version: 1,
+				Containers: map[string]Container{},
+				Graph: NodeList{
+					&SignalStep{ID: "wait", Await: "oob-hit", Where: tc.where},
+				},
+			})
+			diags := Validate(ld)
+			var got bool
+			for _, d := range diags {
+				if d.Code == "AWF1036" {
+					got = true
+				}
+			}
+			if got != tc.wantErr {
+				t.Errorf("where=%q: got AWF1036=%v, want %v (diags=%v)", tc.where, got, tc.wantErr, diags)
+			}
+		})
+	}
+}
+
 func TestStructuralAgentStepAllowsNoContainer(t *testing.T) {
 	// Part A: an AgentStep may omit `container:` (the runtime may be a
 	// containerless adapter, e.g. awf/llm). No AWF1009 should fire for the

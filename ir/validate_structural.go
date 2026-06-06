@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/valbaudo/awf/template"
 )
 
 // maxExpressionBytes caps the size of an ir.Expr or ir.Template field before the validator
@@ -134,6 +136,9 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 				c.errf(path, "AWF1020", fmt.Sprintf("%s: await=%q (must match %s)",
 					catalog["AWF1020"], v.Await, stepIDPattern))
 			}
+			// SP4 keyed signals: the optional where: clause must be a bounded
+			// boolean expression once its {{ }} slots are scanned/stripped (AWF1036).
+			checkWhereExpr(v.Where, path+".where", c)
 			// SignalStep has no container — by design (AWF §4.3).
 		case *If:
 			path := PathFor(parent, "if", "", i)
@@ -367,6 +372,47 @@ func nodeHasOutputSchema(n Node) bool {
 func checkFieldSize(src, path string, c *collector) {
 	if len(src) > maxExpressionBytes {
 		c.errf(path, "AWF1016", fmt.Sprintf("%s (got %d bytes)", catalog["AWF1016"], len(src)))
+	}
+}
+
+// checkWhereExpr validates a signal step's where: clause (SP4 keyed signals).
+// The clause is template-then-expr: `{{ … }}` slots render from the engine scope
+// at runtime, and bare identifiers resolve against the delivered payload. To
+// validate the EXPR grammar (bounded boolean — no arithmetic) we scan the slots
+// first (catches `{{ }}` imbalance), replace each with a parse-safe placeholder,
+// then ParseExpr the remainder. Bare idents are NOT cross-checked against any
+// output_schema (they are payload fields, not step.<id>.<field> refs). Emits
+// AWF1036 on any deviation. Empty where → no-op.
+//
+// The placeholder is a bare `0` so it is a valid primary in BOTH operand
+// positions an author may write the slot in: inside the author's own quotes for
+// a string correlation value (`candidate_id == "{{ id }}"` → `candidate_id ==
+// "0"`, a string literal) and bare for a numeric one (`count == {{ n }}` →
+// `count == 0`, a number literal). A self-quoted placeholder would break the
+// quoted-string case by colliding with the author's surrounding `"`.
+func checkWhereExpr(src, path string, c *collector) {
+	if src == "" {
+		return
+	}
+	checkFieldSize(src, path, c) // AWF1016 size guard, same as other expr fields
+	slots, err := template.Slots(src)
+	if err != nil {
+		c.errf(path, "AWF1036", fmt.Sprintf("%s: %s", catalog["AWF1036"], syntaxMessage(err)))
+		return
+	}
+	// Replace each slot span with a placeholder primary so the surrounding
+	// expression grammar parses without the runtime-substituted value. Slots are
+	// in ascending Start order (template.Slots emits them left-to-right).
+	var b strings.Builder
+	cursor := 0
+	for _, sl := range slots {
+		b.WriteString(src[cursor:sl.Start])
+		b.WriteString("0") // a bare number literal — valid primary in any operand position
+		cursor = sl.End
+	}
+	b.WriteString(src[cursor:])
+	if _, err := template.ParseExpr(template.UnwrapEnvelope(b.String())); err != nil {
+		c.errf(path, "AWF1036", fmt.Sprintf("%s: %s", catalog["AWF1036"], syntaxMessage(err)))
 	}
 }
 
