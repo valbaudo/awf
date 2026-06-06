@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/valbaudo/awf/agent"
+	agentfake "github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -630,5 +632,173 @@ func TestCLIResume_PopulatesResolverFromDefaultAllowlist(t *testing.T) {
 	_ = r.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
 	if r.Resolver == nil {
 		t.Error("Resolver still nil after resume; want populated by buildAgentRegistry with default allowlist")
+	}
+}
+
+// buildInFlightLogForWF writes a minimal in-flight log (run.started only,
+// no run.finished) for the workflow file at wfPath, using the given runID
+// and the supplied runtimes slice (stored in RunStartedData.Runtimes for the
+// resume-side drift check). Returns the stateDir so callers can pass it to
+// awf resume.
+func buildInFlightLogForWF(t *testing.T, wfPath, runID string, runtimes []engine.ResolvedRuntime) string {
+	t.Helper()
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if _, err := state.OpenBlobs(filepath.Join(stateDir, "blobs")); err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	ld, err := loader.Load(wfPath)
+	if err != nil {
+		t.Fatalf("loader.Load(%q): %v", wfPath, err)
+	}
+	if diags := ir.Validate(ld); ir.HasErrors(diags) {
+		t.Fatalf("fixture invalid: %v", diags)
+	}
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	if err != nil {
+		t.Fatalf("ComputeDigest: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	log, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	rsd, err := json.Marshal(engine.RunStartedData{
+		RunID: runID, WorkflowDigest: digest, Backend: "fake",
+		Runtimes: runtimes,
+	})
+	if err != nil {
+		t.Fatalf("Marshal run.started: %v", err)
+	}
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: rsd}); err != nil {
+		t.Fatalf("Append run.started: %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return stateDir
+}
+
+// TestResume_ContinuesAgainstNonThreadedAdapter_FailsFast is the T8 end-to-end
+// for `awf resume`: a continues: step whose adapter is NOT Threaded must be
+// rejected before run.resumed is appended, with ExitUsage and the
+// ErrThreadedRequired message.
+func TestResume_ContinuesAgainstNonThreadedAdapter_FailsFast(t *testing.T) {
+	t.Parallel()
+	fk := agentfake.New("anthropic/claude-code") // default Caps: Threaded false
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	tmp := t.TempDir()
+	// Write a continues: workflow against the non-threaded adapter.
+	wfPath := filepath.Join(tmp, "continues-wf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: continues-resume-test
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    uses: anthropic/claude-code
+    container: lab
+  - id: refine
+    uses: anthropic/claude-code
+    container: lab
+    continues: draft
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID := "test-threaded-guard-resume"
+	// Pre-populate Runtimes in run.started to match what resolveRuntimes would
+	// return for the two claude-code steps (one deduped (uses,container) pair,
+	// default fake version "fake-v1").
+	runtimes := []engine.ResolvedRuntime{
+		{Ref: "anthropic/claude-code", Version: "fake-v1", Container: "lab"},
+	}
+	stateDir := buildInFlightLogForWF(t, wfPath, runID, runtimes)
+
+	r := &cli.Runner{
+		Backend:  container.NewFake(),
+		IDGen:    &clock.Fake{IDs: []string{runID}},
+		Resolver: &reg,
+	}
+	var stdout, stderr bytes.Buffer
+	rc := r.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage (%d); stderr: %s", rc, cli.ExitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does not support engine-threaded conversations") {
+		t.Fatalf("stderr = %q, want ErrThreadedRequired message", stderr.String())
+	}
+	// Guard fires BEFORE run.resumed is appended: fold the log and confirm no
+	// run.resumed event.
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	lg, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = lg.Close() }()
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == engine.EventRunResumed {
+			t.Errorf("run.resumed found in log after guard rejection; guard must fire before appending it")
+		}
+	}
+}
+
+// TestResume_ContinuesAgainstThreadedAdapter_OK confirms that a continues:
+// step whose adapter IS Threaded (awf/llm) passes the guard on resume.
+func TestResume_ContinuesAgainstThreadedAdapter_OK(t *testing.T) {
+	t.Parallel()
+	fk := agentfake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	tmp := t.TempDir()
+	// Write a containerless continues: workflow against the Threaded adapter.
+	wfPath := filepath.Join(tmp, "continues-threaded-wf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: continues-threaded-resume-test
+version: 1
+graph:
+  - id: draft
+    uses: awf/llm
+  - id: refine
+    uses: awf/llm
+    continues: draft
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID := "test-threaded-ok-resume"
+	// Containerless adapter: one (uses, "") pair with default fake version.
+	runtimes := []engine.ResolvedRuntime{
+		{Ref: "awf/llm", Version: "fake-v1", Container: ""},
+	}
+	stateDir := buildInFlightLogForWF(t, wfPath, runID, runtimes)
+
+	r := &cli.Runner{
+		Backend:  container.NewFake(),
+		IDGen:    &clock.Fake{IDs: []string{runID}},
+		Resolver: &reg,
+	}
+	var stdout, stderr bytes.Buffer
+	rc := r.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
+	// Guard passes; the run may fail at dispatch (fake not programmed), but
+	// NOT with the ErrThreadedRequired message.
+	if rc == cli.ExitUsage && strings.Contains(stderr.String(), "does not support engine-threaded conversations") {
+		t.Fatalf("Threaded adapter incorrectly rejected by guard on resume; stderr: %s", stderr.String())
 	}
 }
