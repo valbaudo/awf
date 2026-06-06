@@ -28,6 +28,13 @@ type Caps struct {
 	// container, unchanged. The engine does not otherwise branch on Caps
 	// (Phase 5 decision 16).
 	Containerless bool `json:"containerless"`
+
+	// Threaded reports that this adapter prepends an engine-supplied
+	// AgentInvocation.Thread to its request (continues: threading). The engine
+	// does not branch on Caps at runtime (decision 16); this drives conformance
+	// routing and a run-start guard (a continues: step against a non-Threaded
+	// adapter fails fast). Direct Containerless precedent.
+	Threaded bool `json:"threaded,omitempty"`
 }
 
 // SecretEnv is the type used for env-passthrough values that contain secrets
@@ -106,6 +113,13 @@ type AgentResult struct {
 	ExitCode int               `json:"exit_code"`
 	Metrics  MetricSet         `json:"metrics"`
 	Files    map[string][]byte `json:"files,omitempty"`
+	// Transcript is the adapter-provided verbatim {clean user prompt, verbatim
+	// final assistant message} pair for continues: threading. The engine reads
+	// no with: key — the ADAPTER supplies both halves (reading its own with:
+	// legitimately). json:"-": never journaled raw (Phase 4 Commit content-
+	// addresses it as a blob ref when the step participates in a conversation),
+	// matching the Env SecretEnv json:"-" precedent.
+	Transcript ThreadTurn `json:"-"`
 }
 
 // AgentEvent is one slice of progress emitted live on the channel returned
