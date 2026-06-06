@@ -161,6 +161,7 @@ var catalog = map[string]string{
 	"AWF3004": "compose file failed to parse",
 	"AWF3005": "compose file uses `extends:` or `include:` directives; the validator refuses these (they would follow arbitrary disk paths and bypass loader confinement)",
 	"AWF3006": "code step declares output_schema but its run script never writes $AWF_OUTPUT",
+	"AWF3007": "input_files reference is not a prior in-scope step's named output_files artifact (step.<id>.files.<name>)",
 	"AWF5001": "reference to `evaluate.<field>` outside a gate's generate or until",
 	"AWF5002": "map output aggregation across nested or loop-multiplied maps is not yet defined",
 	"AWF5003": "reference to a step inside a gate or map body from outside that scope — gate/map-internal steps resolve only within the same attempt/item (read a gate's product via evaluate.<field>)",

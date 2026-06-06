@@ -11,6 +11,8 @@ package ir
 //     container shape, parallel/map distinct-container rule
 //   - refs       (AWF3001/2) — output_schema-iff-referenced cross-walk via the template
 //     package (Slots → ParseRef per Template; ParseExpr → References per Expr)
+//   - input_files (AWF3007) — every input_files value is a static step.<id>.files.<name>
+//     ref naming a prior in-scope step's NAMED output_files artifact (dst absolute + clean)
 //   - schema     (AWF2001/2) — JSON Schema well-formedness + §7 floor (warning, agents only)
 //   - compose    (AWF3003/4/5) — compose-go/v2 parse + digest-pinning of every inner image
 //
@@ -33,6 +35,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 	validateStructural(ld, c)
 	validateContinues(ld, c)
 	validateRefs(ld, c)
+	validateInputFiles(ld, c)
 	validateAwfOutputWrites(ld.Workflow.Graph, c)
 	validateSchema(ld, c)
 	validateCompose(ld, c)
