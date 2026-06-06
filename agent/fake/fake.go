@@ -31,11 +31,12 @@ const defaultVersion = "fake-v1"
 // returns, optional Events emitted on the channel before the result, and
 // optional Cost the fake stamps into AgentResult.Metrics.
 type Result struct {
-	Output map[string]any
-	Events []agent.AgentEvent
-	Cost   float64 // dollars; stamped into AgentResult.Metrics.Cost.USD
-	Tokens agent.MetricTokens
-	Files  map[string][]byte
+	Output     map[string]any
+	Events     []agent.AgentEvent
+	Cost       float64 // dollars; stamped into AgentResult.Metrics.Cost.USD
+	Tokens     agent.MetricTokens
+	Files      map[string][]byte
+	Transcript agent.ThreadTurn // scriptable verbatim pair; copied into AgentResult.Transcript by Launch
 }
 
 // Fake is the in-memory scripted adapter. Zero value is NOT usable — call
@@ -206,7 +207,8 @@ func (f *Fake) Launch(ctx context.Context, _ container.Handle, inv agent.AgentIn
 					Cost:   agent.MetricCost{USD: r.Cost, Source: agent.CostSourceReported},
 					Tokens: r.Tokens,
 				},
-				Files: r.Files,
+				Files:      r.Files,
+				Transcript: r.Transcript,
 			},
 		}
 	}()

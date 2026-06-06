@@ -313,3 +313,32 @@ func TestFake_Launch_FailureBranch_OutcomeCarriesErr(t *testing.T) {
 		t.Error("outcome.Err = nil; want non-nil for missing script")
 	}
 }
+
+func TestFake_Launch_TranscriptRoundTrip(t *testing.T) {
+	// Phase 3 Task 3.3: Result.Transcript is copied verbatim into
+	// AgentResult.Transcript so conformance tests can assert per-turn content
+	// without a real adapter.
+	want := agent.ThreadTurn{User: "u0", Assistant: "a0"}
+	f := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output:     map[string]any{"ok": true},
+		Transcript: want,
+	})
+
+	events, outcomeCh, err := f.Launch(
+		context.Background(),
+		container.Handle{Name: "lab"},
+		agent.AgentInvocation{Uses: "anthropic/claude-code"},
+	)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range events {
+	}
+	outcome := <-outcomeCh
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if got := outcome.Result.Transcript; got != want {
+		t.Errorf("Transcript = %+v, want %+v", got, want)
+	}
+}
