@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/valbaudo/awf/agent"
 )
 
 func TestParseOutcome(t *testing.T) {
@@ -569,4 +571,26 @@ func TestRunStateConcurrentSignals(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestNodeResultTranscriptByValue(t *testing.T) {
+	// ThreadTurn is a scalar-pair struct (two strings) — copying NodeResult copies
+	// Transcript by value, giving independent storage. This is DISTINCT from the
+	// shared-map fields (Outputs/Files) and shared-slice field (Stdout) pinned by
+	// TestNodeResultCopyIsShallow. Mutations through the copy do NOT affect the
+	// original — document that contract here so future readers know it's intentional.
+	original := NodeResult{
+		Outcome:    OutcomeOK,
+		Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"},
+	}
+	cp := original
+	// ThreadTurn is two strings — copy is fully independent (unlike Outputs/Files maps).
+	cp.Transcript.User = "mutated"
+	if original.Transcript.User != "u1" {
+		t.Errorf("Transcript.User unexpectedly shared: original=%q cp=%q",
+			original.Transcript.User, cp.Transcript.User)
+	}
+	if original.Transcript.Assistant != "a1" {
+		t.Errorf("Transcript.Assistant = %q, want a1", original.Transcript.Assistant)
+	}
 }

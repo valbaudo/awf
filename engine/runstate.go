@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"sync"
+
+	"github.com/valbaudo/awf/agent"
 )
 
 // Outcome is the mechanical-only classification a step ends with (AWF standard §6).
@@ -169,6 +171,7 @@ type NodeResult struct {
 	Stdout     []byte            // materialized stdout; READ-ONLY (see NodeResult doc). nil if step produced no stdout.
 	StdoutRef  string            // CAS pointer (validates against Stdout)
 	Files      map[string]string // declared path → CAS ref. READ-ONLY (see NodeResult doc).
+	Transcript agent.ThreadTurn  // materialized from TranscriptRef by Fold (continues: threading). READ-ONLY. Zero value when the step didn't participate.
 }
 
 // RunState is the in-memory fold of the log: the interpreter consults it to skip
