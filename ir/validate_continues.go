@@ -85,8 +85,6 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 			c.errf(srcPath, "AWF1026", fmt.Sprintf("%s (continues: %q)", catalog["AWF1026"], as.Continues))
 			return // every downstream rule needs a real target.
 		}
-		_ = tgt // used by later rules (2.4-2.6).
-
 		// A.3.2 — dominator (incl. multiplicity). T dominates S iff every scope enclosing
 		// T also encloses S (T's enclosing-scope prefix is a path-boundary prefix of S) AND
 		// T precedes S in document order. The static path encodes the full scope chain, so
@@ -95,6 +93,12 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 		if !dominates(paths[as.Continues], srcPath, order[as.Continues], order[as.ID]) {
 			c.errf(srcPath, "AWF1027", fmt.Sprintf("%s (continues: %q)", catalog["AWF1027"], as.Continues))
 			return // a non-dominating target can't be assembled; later rules are moot.
+		}
+
+		// A.3.4 — same-uses. S and T must declare the same agent runtime identifier.
+		// (Same-model is intentionally not enforced; that is adapter-level config in with:.)
+		if as.Uses != tgt.Uses {
+			c.errf(srcPath, "AWF1029", fmt.Sprintf("%s (this step uses %q, target uses %q)", catalog["AWF1029"], as.Uses, tgt.Uses))
 		}
 	})
 }

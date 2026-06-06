@@ -216,3 +216,42 @@ func TestContinuesLinearChainNoCycle(t *testing.T) {
 	})
 	assertNoCode(t, Validate(ld), "AWF1028")
 }
+
+// --- AWF1029: same-uses rule (A.3.4) ---
+
+// A continuing step whose uses differs from its target's uses must be rejected.
+func TestContinuesDifferentUsesRejected(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&AgentStep{ID: "first", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "p"}},
+			&AgentStep{ID: "second", Uses: "awf/llm", Continues: "first", With: RawConfig{"model": "m", "prompt": "p"}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1029", "second")
+}
+
+// A continuing step with the same uses as its target must be clean.
+func TestContinuesSameUsesClean(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&AgentStep{ID: "first", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}},
+			&AgentStep{ID: "second", Uses: "awf/llm", Continues: "first", With: RawConfig{"model": "m", "prompt": "p"}},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF1029")
+}
+
+// A three-step chain where all uses match must be clean.
+func TestContinuesChainSameUsesClean(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&AgentStep{ID: "first", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}},
+			&AgentStep{ID: "second", Uses: "awf/llm", Continues: "first", With: RawConfig{"model": "m", "prompt": "p"}},
+			&AgentStep{ID: "third", Uses: "awf/llm", Continues: "second", With: RawConfig{"model": "m", "prompt": "p"}},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF1029")
+}
