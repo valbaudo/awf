@@ -68,6 +68,7 @@ func buildResult(full string, usage usageRec, inv agent.AgentInvocation) (agent.
 			Tokens: agent.MetricTokens{Input: usage.Input, Output: usage.Output, CacheReadInput: usage.CacheRead},
 			Turns:  1,
 		},
+		Transcript: agent.ThreadTurn{User: stringOr(inv.With, keyPrompt, ""), Assistant: full},
 	}, nil
 }
 
