@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -984,5 +985,74 @@ func TestFold_Golden_LoopWithBodySteps(t *testing.T) {
 		if _, ok := rs.Completed[p]; !ok {
 			t.Errorf("Completed[%q] missing", p)
 		}
+	}
+}
+
+func TestFoldMaterializesTranscript(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	pair := agent.ThreadTurn{User: "u1", Assistant: "a1"}
+	pb, err := json.Marshal(pair)
+	if err != nil {
+		t.Fatalf("marshal pair: %v", err)
+	}
+	ref, err := blobs.Put(pb)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	data, err := json.Marshal(NodeCompletedData{Outcome: "ok", TranscriptRef: ref})
+	if err != nil {
+		t.Fatalf("marshal NodeCompletedData: %v", err)
+	}
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r1", WorkflowDigest: "d"})},
+		{Seq: 2, TS: fixedTS, Path: "turn1", Type: EventNodeCompleted, Data: data},
+	}
+	rs, foldErr := Fold(events, blobs)
+	if foldErr != nil {
+		t.Fatalf("Fold: %v", foldErr)
+	}
+	nr, ok := rs.Completed["turn1"]
+	if !ok {
+		t.Fatal("turn1 not in Completed")
+	}
+	if nr.Transcript.User != "u1" || nr.Transcript.Assistant != "a1" {
+		t.Errorf("nr.Transcript = %+v, want {User:u1 Assistant:a1}", nr.Transcript)
+	}
+}
+
+func TestFoldNoTranscriptRefIsZeroValue(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	data, err := json.Marshal(NodeCompletedData{Outcome: "ok"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r1", WorkflowDigest: "d"})},
+		{Seq: 2, TS: fixedTS, Path: "step", Type: EventNodeCompleted, Data: data},
+	}
+	rs, foldErr := Fold(events, blobs)
+	if foldErr != nil {
+		t.Fatalf("Fold: %v", foldErr)
+	}
+	if got := rs.Completed["step"].Transcript; got != (agent.ThreadTurn{}) {
+		t.Errorf("Transcript = %+v, want zero value (no TranscriptRef)", got)
+	}
+}
+
+func TestFoldMissingTranscriptBlobIsError(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	data, err := json.Marshal(NodeCompletedData{Outcome: "ok", TranscriptRef: "awf-d1:sha256:" + strings.Repeat("ff", 32)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r1", WorkflowDigest: "d"})},
+		{Seq: 2, TS: fixedTS, Path: "turn1", Type: EventNodeCompleted, Data: data},
+	}
+	if _, foldErr := Fold(events, blobs); foldErr == nil {
+		t.Fatal("Fold should error on a node.completed referencing a missing transcript blob (spec §8 atomicity)")
 	}
 }
