@@ -240,8 +240,9 @@ func TestRunInputFilesCrossContainerHandoff(t *testing.T) {
 	rs := engine.NewRunState("r1", "d1", nil)
 
 	// The producer's exec produces /out/report.md (seeded directly on lab's
-	// handle so the post-Exec CaptureFiles finds it — ProgramExecWithFiles is a
-	// later task; WriteFile is the equivalent seed here).
+	// handle so the post-Exec CaptureFiles finds it). This engine test holds the
+	// handle directly, so WriteFile is the natural seed; the conformance bucket,
+	// which can't reach the harness-internal handle, uses ProgramExecWithFiles.
 	sentinel := []byte("recon findings\n")
 	fake.ProgramExec("./recon.sh", container.ExecResult{ExitCode: 0}, nil)
 	if err := fake.WriteFile(labH, "/out/report.md", sentinel); err != nil {

@@ -42,6 +42,12 @@ type Fake struct {
 	execTable   map[string]ExecResult
 	streamTable map[string][]IOChunk
 
+	// fileTable, keyed on Cmd.Run, records files a programmed command WRITES into
+	// the executing handle's fs when it runs — simulating output_files production
+	// on the scripted fake (SP1 Task 8a). Set via ProgramExecWithFiles; consulted
+	// in Exec under the same mutex, BEFORE the dispatcher's post-Exec CaptureFiles.
+	fileTable map[string]map[string][]byte
+
 	// Fault hooks — set via FailExecAfterN / FailCaptureAfterN (Task 3).
 	// nil = no fault. The check in Exec/CaptureFiles is wired now so Task 3
 	// is a single setter addition rather than threading code through here.
@@ -235,6 +241,17 @@ func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (<-chan IOChunk, <-c
 		}
 	}
 
+	// Write any files this programmed command produces into the handle's fs
+	// (SP1 Task 8a) — under the same mutex, BEFORE returning, so the
+	// dispatcher's post-Exec CaptureFiles (output_files capture) finds them.
+	// fh is the executing handle (existence verified above).
+	if produced := f.fileTable[cmd.Run]; produced != nil {
+		fh := f.handles[h.ID]
+		for p, b := range produced {
+			fh.files[p] = cloneBytes(b)
+		}
+	}
+
 	// Build the two channels. chunks is pre-buffered (deterministic burst is
 	// the Fake's contract); result is 1-buffered. Both are pre-closed so the
 	// caller observes the full burst plus the result without blocking.
@@ -403,6 +420,27 @@ func (f *Fake) ProgramExec(run string, result ExecResult, chunks []IOChunk) {
 		}
 		f.streamTable[run] = dup
 	}
+}
+
+// ProgramExecWithFiles is ProgramExec plus the files the programmed command
+// WRITES into the executing handle's fs when it runs — simulating output_files
+// production on the scripted fake (SP1 Task 8a). The conformance harness creates
+// handles internally with no seed hook, so a producer step makes its own
+// artifact via this affordance (the written files are then captured by the
+// dispatcher's post-Exec CaptureFiles). Defensive-copies the map and every byte
+// slice. Existing ProgramExec callers are unaffected (this is a new method).
+func (f *Fake) ProgramExecWithFiles(run string, result ExecResult, chunks []IOChunk, files map[string][]byte) {
+	f.ProgramExec(run, result, chunks)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fileTable == nil {
+		f.fileTable = map[string]map[string][]byte{}
+	}
+	cp := make(map[string][]byte, len(files))
+	for p, b := range files {
+		cp[p] = cloneBytes(b)
+	}
+	f.fileTable[run] = cp
 }
 
 // ProgramExecAny is the "match any Cmd.Run" variant of ProgramExec, used

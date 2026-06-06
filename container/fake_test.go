@@ -431,6 +431,57 @@ func TestFake_Exec_ErrorReturnsNilChannels(t *testing.T) {
 	}
 }
 
+func TestFakeProgramExecWithFiles(t *testing.T) {
+	// SP1 Task 8a: a programmed command that, when it execs, writes files into
+	// the handle's fs — simulating output_files production on the scripted fake.
+	// The conformance harness creates handles internally (no seed hook), so the
+	// producer must make its own artifact via this affordance.
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "p"})
+	f.ProgramExecWithFiles("./p.sh", container.ExecResult{ExitCode: 0}, nil,
+		map[string][]byte{"/out/r.md": []byte("X")})
+	chunks, res, err := f.Exec(context.Background(), h, container.Cmd{Run: "./p.sh"})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	for range chunks {
+	}
+	<-res
+	got, err := f.CaptureFiles(context.Background(), h, []string{"/out/r.md"})
+	if err != nil || len(got) != 1 || string(got[0].Content) != "X" {
+		t.Errorf("exec did not produce file: got %v err %v", got, err)
+	}
+}
+
+func TestFakeProgramExecWithFilesDefensiveCopy(t *testing.T) {
+	// The files map (and its byte slices) are defensive-copied on the way in,
+	// matching ProgramExec's discipline: a caller mutating its map/slices after
+	// ProgramExecWithFiles returns must NOT corrupt what Exec subsequently writes.
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "p"})
+	content := []byte("original")
+	files := map[string][]byte{"/out/r.md": content}
+	f.ProgramExecWithFiles("./p.sh", container.ExecResult{ExitCode: 0}, nil, files)
+	// Mutate caller's slice + map after the call returns.
+	content[0] = 'X'
+	files["/out/r.md"] = []byte("REPLACED")
+
+	chunks, res, err := f.Exec(context.Background(), h, container.Cmd{Run: "./p.sh"})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	for range chunks {
+	}
+	<-res
+	got, err := f.CaptureFiles(context.Background(), h, []string{"/out/r.md"})
+	if err != nil {
+		t.Fatalf("CaptureFiles: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Content) != "original" {
+		t.Errorf("file leaked caller mutation: got %q, want %q", got[0].Content, "original")
+	}
+}
+
 func TestFakeProgramExecDefensiveCopy(t *testing.T) {
 	// Mirror state.InMemoryBlobs.TestInMemoryBlobsDefensiveCopy. A caller that
 	// mutates the slices passed to ProgramExec after it returns must NOT
