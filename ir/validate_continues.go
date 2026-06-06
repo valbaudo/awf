@@ -92,6 +92,20 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 			c.errf(srcPath, "AWF1026", fmt.Sprintf("%s (continues: %q)", catalog["AWF1026"], as.Continues))
 			return // every downstream rule needs a real target.
 		}
+		// A.3.7 — concurrent parallel-sibling reject (race fix). A parallel child has a
+		// BARE path (no branch label) under parallel[N] (ir.WalkNodes), so two distinct
+		// direct children A, B of the same parallel[N] satisfy dominates(A,B): A's scope
+		// prefix is a boundary prefix of B and A precedes B in document order. But
+		// engine/parallel.go runs the children as CONCURRENT goroutines, so B's thread
+		// assembly LookupCompleted(A) nondeterministically finds A committed or not — a
+		// race. Checked BEFORE the AWF1027 emit (it is a strict sub-case of "passes the
+		// dominator prefix test") so the specific AWF1032 diagnostic wins over the generic
+		// AWF1027 one. The fan-out pattern (both branches continue a step OUTSIDE the
+		// parallel) is NOT a sibling link and stays valid.
+		if parallelSiblings(paths[as.Continues], srcPath) {
+			c.errf(srcPath, "AWF1032", fmt.Sprintf("%s (continues: %q)", catalog["AWF1032"], as.Continues))
+			return // unaddressable at run time; later rules are moot.
+		}
 		// A.3.2 — dominator (incl. multiplicity). T dominates S iff every scope enclosing
 		// T also encloses S (T's enclosing-scope prefix is a path-boundary prefix of S) AND
 		// T precedes S in document order. The static path encodes the full scope chain, so
@@ -130,6 +144,48 @@ func dominates(tgtPath, srcPath string, tgtOrd, srcOrd int) bool {
 		return false
 	}
 	return hasPathPrefix(srcPath, scopePrefixOf(tgtPath))
+}
+
+// parallelSiblings reports whether tgtPath and srcPath are distinct direct children
+// of the SAME parallel[N] block — i.e. they run concurrently (engine/parallel.go
+// fans children out as goroutines), so the target is NOT guaranteed to have
+// committed before the source's turn assembles its thread (a race). It mirrors the
+// addressing fact that a parallel child diverges with NO branch label (ir.WalkNodes:
+// "bare parallel[i] — no branch label"), unlike if (.then/.else) or map (.body):
+// the two children's paths share the `parallel[N]` segment but the segment
+// IMMEDIATELY following it differs.
+//
+// It walks both paths in lockstep to the first segment that differs. If the segment
+// just BEFORE that divergence point is a `parallel[N]`, the two paths split into two
+// different concurrent branches of that parallel → siblings (reject). Cases that
+// must stay valid and return false here:
+//   - the target is OUTSIDE the parallel (the fan-out pattern: both branches
+//     continue a pre-fork ancestor) — there is no shared parallel[N] prefix, so the
+//     divergence is at the top (preceding segment is "", not a parallel).
+//   - the two steps are SEQUENTIAL within the SAME parallel child (the child is a
+//     control node holding a sub-sequence): they share the child sub-path, so the
+//     segment after parallel[N] is identical and the divergence (if any) is deeper,
+//     after a non-parallel boundary.
+//   - identical paths (a step is not its own concurrent sibling).
+func parallelSiblings(tgtPath, srcPath string) bool {
+	tgt := strings.Split(tgtPath, ".")
+	src := strings.Split(srcPath, ".")
+	n := len(tgt)
+	if len(src) < n {
+		n = len(src)
+	}
+	for i := 0; i < n; i++ {
+		if tgt[i] == src[i] {
+			continue
+		}
+		// First divergence at segment i. The shared parent boundary is segment i-1.
+		// They are concurrent siblings iff that boundary is a parallel[N] segment
+		// (so the two children carry bare, label-less, divergent paths under it).
+		return i > 0 && strings.HasPrefix(tgt[i-1], "parallel[")
+	}
+	// No divergence within the shorter length: one path is a prefix of the other
+	// (or they are identical) — same branch, not concurrent siblings.
+	return false
 }
 
 // scopePrefixOf strips the trailing id segment from a step's static path, leaving the
