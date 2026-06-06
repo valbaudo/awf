@@ -79,6 +79,13 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 		if !ok || as.Continues == "" {
 			return
 		}
+		// A.3.5 — source must not be inside a gate evaluate: block (gate independence /
+		// D8). Decidable from the source's static path alone; runs before the target
+		// lookup so it fires regardless of whether the target is valid.
+		if inEvaluateBlock(srcPath) {
+			c.errf(srcPath, "AWF1030", catalog["AWF1030"])
+			// fall through: a misplaced evaluator turn may also have a bad target; both diagnostics help.
+		}
 		// A.3.1 — target exists and is an agent step.
 		tgt, isAgent := agents[as.Continues]
 		if !isAgent {
@@ -134,4 +141,17 @@ func hasPathPrefix(path, prefix string) bool {
 		return true
 	}
 	return path == prefix || strings.HasPrefix(path, prefix+".")
+}
+
+// inEvaluateBlock reports whether a static path runs inside some gate's evaluate: list,
+// i.e. it contains an "evaluate" segment immediately following a "gate[N]" segment.
+// For example "gate[0].evaluate.judge" → true; "gate[0].generate.refine" → false.
+func inEvaluateBlock(path string) bool {
+	segs := strings.Split(path, ".")
+	for i := 1; i < len(segs); i++ {
+		if segs[i] == "evaluate" && strings.HasPrefix(segs[i-1], "gate[") {
+			return true
+		}
+	}
+	return false
 }

@@ -150,6 +150,7 @@ var catalog = map[string]string{
 	"AWF1027": "continues target does not dominate this turn (must precede it in document order and every gate/map/loop/if-branch scope enclosing the target must also enclose this turn — forward/self refs, sibling branches, and gate/map/loop-internal targets are rejected)",
 	"AWF1028": "continues links form a cycle",
 	"AWF1029": "continues target must use the same agent runtime (uses) as this step",
+	"AWF1030": "a step inside a gate's evaluate: block may not use continues (the evaluator must judge in a fresh context)",
 	"AWF2001": "JSON Schema does not compile per the JSON Schema 2020-12 metaschema",
 	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",

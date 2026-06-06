@@ -255,3 +255,49 @@ func TestContinuesChainSameUsesClean(t *testing.T) {
 	})
 	assertNoCode(t, Validate(ld), "AWF1029")
 }
+
+// --- AWF1030: evaluate-block prohibition (A.3.5) ---
+
+// A step inside a gate's evaluate: block that declares continues: is AWF1030.
+// The evaluator must judge in a fresh context; a conversation thread would couple
+// the evaluator to the history of the generate side, violating gate independence.
+func TestContinuesInEvaluateRejected(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&AgentStep{ID: "draft", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}},
+			&Gate{
+				Generate: NodeList{&AgentStep{ID: "gen", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}}},
+				Evaluate: NodeList{
+					&AgentStep{ID: "judge", Uses: "awf/llm", Continues: "draft", // forbidden in evaluate
+						With:         RawConfig{"model": "m", "prompt": "p"},
+						OutputSchema: &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}},
+				},
+				Until:       Expr("{{ step.judge.ok }}"),
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1030", "gate[1].evaluate.judge")
+}
+
+// A step inside a gate's generate: block is allowed to use continues:
+// (generate is not a fresh-context scope; only evaluate: is forbidden).
+func TestContinuesInGenerateAllowed(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{
+					&AgentStep{ID: "ask", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}},
+					&AgentStep{ID: "refine", Uses: "awf/llm", Continues: "ask", With: RawConfig{"model": "m", "prompt": "p"}},
+				},
+				Evaluate:    NodeList{&CodeStep{ID: "j", Container: "c", Run: "true", OutputSchema: &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}}},
+				Until:       Expr("{{ step.j.ok }}"),
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF1030")
+}
