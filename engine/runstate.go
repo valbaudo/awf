@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/ir"
 )
 
 // Outcome is the mechanical-only classification a step ends with (AWF standard §6).
@@ -267,6 +268,15 @@ type RunState struct {
 	// for non-snapshot containers and pre-Phase-7 logs (the event fields are
 	// omitempty, so the Fold guard skips them).
 	SnapshotRefs map[string]string
+
+	// continues: threading derivations — built once per run from wf (whole-graph
+	// walks), reused by every runAgentStep that assembles a thread. Guarded by
+	// their own sync.Once so a parallel/map fan-out computes each once, race-free
+	// (distinct from mu, which guards the mutable run-state maps).
+	threadOnce      sync.Once
+	stepPathIdx     map[string]string
+	agentStepIdx    map[string]*ir.AgentStep
+	threadTargetSet map[string]bool
 
 	// mu serializes access to Completed / Branches / LoopIters / GateAttempts
 	// / MapItems / Signals / SignalReceivedAt / Paused / Cancelled / CancelReason.
@@ -541,4 +551,44 @@ func (rs *RunState) LookupCancelReason() string {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	return rs.CancelReason
+}
+
+// initThreadIndexes builds the three continues: derivations once. Called via
+// the accessors below; the sync.Once makes the whole-graph walks run a single
+// time per run regardless of how many concurrent runAgentStep callers hit it.
+func (rs *RunState) initThreadIndexes(wf *ir.Workflow) {
+	rs.threadOnce.Do(func() {
+		rs.stepPathIdx = StepPathIndex(wf)
+		rs.agentStepIdx = map[string]*ir.AgentStep{}
+		rs.threadTargetSet = map[string]bool{}
+		ir.WalkNodes(wf.Graph, "", func(n ir.Node, _ string) {
+			as, ok := n.(*ir.AgentStep)
+			if !ok {
+				return
+			}
+			rs.agentStepIdx[as.ID] = as
+			if as.Continues != "" {
+				rs.threadTargetSet[as.Continues] = true
+			}
+		})
+	})
+}
+
+// stepPathIndex returns the once-built id→static-path index (continues: assembly).
+func (rs *RunState) stepPathIndex(wf *ir.Workflow) map[string]string {
+	rs.initThreadIndexes(wf)
+	return rs.stepPathIdx
+}
+
+// agentStepByID returns the once-built id→*AgentStep index (continues: chain walk).
+func (rs *RunState) agentStepByID(wf *ir.Workflow) map[string]*ir.AgentStep {
+	rs.initThreadIndexes(wf)
+	return rs.agentStepIdx
+}
+
+// threadTargets returns the once-built set of ids that appear as some step's
+// continues: target (the Commit participates precompute).
+func (rs *RunState) threadTargets(wf *ir.Workflow) map[string]bool {
+	rs.initThreadIndexes(wf)
+	return rs.threadTargetSet
 }
