@@ -2,10 +2,8 @@ package signal
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,17 +11,10 @@ import (
 	"time"
 )
 
-// ErrPaused is the sentinel engine.Run returns alongside Outcome("") when
-// control-file polling detects pause.json. The CLI's runAndFinish maps this
-// to a clean exit (rc=0) WITHOUT writing run.finished — the run is non-
-// terminal and resumable.
-var ErrPaused = errors.New("signal: run paused (non-terminal)")
-
-// ErrCancelled is the sentinel engine.Run returns alongside Outcome("") when
-// control-file polling detects cancel.json. The engine has ALREADY appended
-// the terminal run.cancelled event; the CLI exits cleanly. `awf resume`
-// refuses any log with a run.cancelled event.
-var ErrCancelled = errors.New("signal: run cancelled (terminal)")
+// The pause/cancel control surface (PauseRequest/CancelRequest, WritePause/
+// WriteCancel, CheckPauseCancel/ClearPauseCancel, and the ErrPaused/ErrCancelled
+// sentinels) lives in control.go — same package, same *Broker receiver, same
+// controlDir. broker.go is the named-signal queue (WriteSignal/Receive/consume).
 
 // Broker is the per-run control-surface. One Broker per run.id, bound to its
 // .awf/runs/<run.id>/control/ directory. The engine constructs an instance at
@@ -217,20 +208,24 @@ func (b *Broker) Receive(ctx context.Context, name string, timeout time.Duration
 	}
 }
 
-// tryConsume scans controlDir for the EARLIEST-seq signal file matching name,
-// reads its bytes, atomic-renames it into consumed/, and returns the Delivery.
-// ok=false if no matching file is present.
-func (b *Broker) tryConsume(name string) (Delivery, bool) {
+// candidate is one buffered signal file matching a name — what tryConsume and
+// tryConsumeMatching select from.
+type candidate struct {
+	seq      int
+	fileName string
+}
+
+// sortedCandidates returns every buffered signal file in controlDir matching
+// name, ascending by seq (nil if none, or the dir is unreadable). It is the
+// shared read-only scan behind tryConsume (which takes the earliest) and
+// tryConsumeMatching (which takes the first whose payload matches) — only the
+// SELECTION rule and the rename tail differ, so only this scan is shared.
+func (b *Broker) sortedCandidates(name string) []candidate {
 	entries, err := os.ReadDir(b.controlDir)
 	if err != nil {
-		return Delivery{}, false
+		return nil
 	}
-	// Find all matching entries; pick earliest seq.
-	type match struct {
-		seq      int
-		fileName string
-	}
-	var matches []match
+	var cands []candidate
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -239,13 +234,21 @@ func (b *Broker) tryConsume(name string) (Delivery, bool) {
 		if !ok || n != name {
 			continue
 		}
-		matches = append(matches, match{seq, e.Name()})
+		cands = append(cands, candidate{seq, e.Name()})
 	}
-	if len(matches) == 0 {
+	sort.Slice(cands, func(i, j int) bool { return cands[i].seq < cands[j].seq })
+	return cands
+}
+
+// tryConsume scans controlDir for the EARLIEST-seq signal file matching name,
+// reads its bytes, atomic-renames it into consumed/, and returns the Delivery.
+// ok=false if no matching file is present.
+func (b *Broker) tryConsume(name string) (Delivery, bool) {
+	cands := b.sortedCandidates(name)
+	if len(cands) == 0 {
 		return Delivery{}, false
 	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].seq < matches[j].seq })
-	earliest := matches[0]
+	earliest := cands[0]
 	srcPath := filepath.Join(b.controlDir, earliest.fileName)
 
 	payload, err := os.ReadFile(srcPath)
@@ -319,31 +322,8 @@ func (b *Broker) ReceiveMatching(ctx context.Context, name string, timeout time.
 // ok=false if no candidate matches this scan. Mirrors tryConsume's read/rename
 // mechanics exactly; only the selection rule differs.
 func (b *Broker) tryConsumeMatching(name string, match MatchFunc) (Delivery, bool) {
-	entries, err := os.ReadDir(b.controlDir)
-	if err != nil {
-		return Delivery{}, false
-	}
-	type match2 struct {
-		seq      int
-		fileName string
-	}
-	var matches []match2
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		n, seq, ok := parseSignalFileName(e.Name())
-		if !ok || n != name {
-			continue
-		}
-		matches = append(matches, match2{seq, e.Name()})
-	}
-	if len(matches) == 0 {
-		return Delivery{}, false
-	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].seq < matches[j].seq })
-	for _, m := range matches {
-		srcPath := filepath.Join(b.controlDir, m.fileName)
+	for _, c := range b.sortedCandidates(name) {
+		srcPath := filepath.Join(b.controlDir, c.fileName)
 		payload, rerr := os.ReadFile(srcPath)
 		if rerr != nil {
 			continue // disappeared / unreadable; another consumer or a transient fault
@@ -355,11 +335,11 @@ func (b *Broker) tryConsumeMatching(name string, match MatchFunc) (Delivery, boo
 		if err := os.MkdirAll(b.consumedDir, 0o755); err != nil {
 			return Delivery{}, false
 		}
-		dstPath := filepath.Join(b.consumedDir, m.fileName)
+		dstPath := filepath.Join(b.consumedDir, c.fileName)
 		if err := os.Rename(srcPath, dstPath); err != nil {
 			continue // concurrent consumer claimed it; try the next candidate
 		}
-		return Delivery{Name: name, Seq: m.seq, Payload: payload}, true
+		return Delivery{Name: name, Seq: c.seq, Payload: payload}, true
 	}
 	return Delivery{}, false
 }
@@ -392,112 +372,4 @@ func (b *Broker) Drain() []Delivery {
 		}
 	}
 	return deliveries
-}
-
-// PauseRequest is the parsed body of pause.json.
-type PauseRequest struct {
-	NodePath string `json:"node_path,omitempty"`
-	Reason   string `json:"reason,omitempty"`
-}
-
-// CancelRequest is the parsed body of cancel.json.
-type CancelRequest struct {
-	Reason string `json:"reason,omitempty"`
-}
-
-// WritePause writes pause.json. Idempotent — overwrites any existing file.
-func (b *Broker) WritePause(req PauseRequest) error {
-	return b.writeControlJSON(pauseFileName, "pause", req)
-}
-
-// WriteCancel writes cancel.json. Idempotent.
-func (b *Broker) WriteCancel(req CancelRequest) error {
-	return b.writeControlJSON(cancelFileName, "cancel", req)
-}
-
-// writeControlJSON serializes req as JSON and writes it to controlDir/filename
-// after ensuring controlDir exists. The label appears in error messages to
-// distinguish the call site (pause vs cancel). Shared by WritePause/WriteCancel.
-func (b *Broker) writeControlJSON(filename, label string, req any) error {
-	if err := os.MkdirAll(b.controlDir, 0o755); err != nil {
-		return fmt.Errorf("signal: mkdir %q: %w", b.controlDir, err)
-	}
-	data, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("signal: marshal %s: %w", label, err)
-	}
-	path := filepath.Join(b.controlDir, filename)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("signal: write %q: %w", path, err)
-	}
-	return nil
-}
-
-// maxControlFileBytes caps how much we read from pause.json / cancel.json.
-// L10 fix: defense against an adversarial / misconfigured writer that
-// redirects a huge stream into the control file (e.g. `head -c 1G /dev/zero
-// > control/cancel.json`). AWF is an offensive security tool; adversarial
-// inputs are part of the threat model. 64KiB is more than enough for a
-// reasonable JSON reason string.
-const maxControlFileBytes = 64 * 1024
-
-// readControlFile reads up to maxControlFileBytes from path. Returns nil
-// (no err) if the file doesn't exist. Errors only on I/O failures or
-// genuinely-unexpected conditions.
-func readControlFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	return io.ReadAll(io.LimitReader(f, maxControlFileBytes))
-}
-
-// CheckPauseCancel reports whether pause.json and cancel.json exist in
-// controlDir. Either bool may be true; both may be true (cancel-wins resolution
-// is the caller's responsibility — engine/controls.go does that).
-//
-// Returns (pauseReq, cancelReq, err). pauseReq/cancelReq are non-nil iff their
-// respective files exist. err is non-nil only on read errors (file exists but
-// not readable; malformed JSON is silently treated as an empty body). Reads
-// are capped at maxControlFileBytes (L10 fix).
-func (b *Broker) CheckPauseCancel() (*PauseRequest, *CancelRequest, error) {
-	pausePath := filepath.Join(b.controlDir, pauseFileName)
-	cancelPath := filepath.Join(b.controlDir, cancelFileName)
-
-	var pauseReq *PauseRequest
-	if data, err := readControlFile(pausePath); err != nil {
-		return nil, nil, fmt.Errorf("signal: read pause %q: %w", pausePath, err)
-	} else if data != nil {
-		var req PauseRequest
-		_ = json.Unmarshal(data, &req) // empty/malformed treated as empty body
-		pauseReq = &req
-	}
-
-	var cancelReq *CancelRequest
-	if data, err := readControlFile(cancelPath); err != nil {
-		return nil, nil, fmt.Errorf("signal: read cancel %q: %w", cancelPath, err)
-	} else if data != nil {
-		var req CancelRequest
-		_ = json.Unmarshal(data, &req)
-		cancelReq = &req
-	}
-	return pauseReq, cancelReq, nil
-}
-
-// ClearPauseCancel removes pause.json and cancel.json. Idempotent (missing
-// files are not errors). Called by cli/resume.go before re-entering the
-// engine — pause is non-terminal but stale pause.json would re-pause on the
-// next commit; resume must clear it to make forward progress.
-func (b *Broker) ClearPauseCancel() error {
-	for _, name := range []string{pauseFileName, cancelFileName} {
-		path := filepath.Join(b.controlDir, name)
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("signal: clear %q: %w", path, err)
-		}
-	}
-	return nil
 }
