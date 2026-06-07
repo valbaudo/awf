@@ -573,6 +573,11 @@ not `break`: it ends the current iteration/branch, not a whole loop.
           container: <name>          #   REQUIRED on a run: reducer — the declared container it runs in
           output_schema: <json-schema>     #   the reduced node's typed output
           output_files: { <name>: <path> } #   the reduced node's artifacts
+        prune:                       # optional; frontier — cancel result-blind losers as items commit
+          score: <field>             #   a NUMERIC field the body's last step declares in output_schema
+          keep: top(<k>)             #   keep the k highest scorers; prune the rest
+          # — OR (declare exactly one of keep: or stop_when:) —
+          stop_when: "<bool-expr>"   #   over best.score; once true, prune everything still running
 
 Data-driven expansion when the worklist size is known only at runtime — a crawl
 finds N pages, a query returns N records. Each element runs `body` in its *own*
@@ -657,6 +662,55 @@ channel uses (see *Artifact channel*). The reducer reads them and writes its
 declared `output_files` and `$AWF_OUTPUT`, which become the reduced node's
 artifacts and typed output.
 
+`prune:` turns a result-blind fan-out into a result-aware *frontier search*. As
+items commit, the engine reads a typed `score` per item and cancels the losers
+still in flight or not yet started — a hypothesis search that does not pay for the
+branches it has already beaten. It is an optional clause on `map` only; `parallel`
+has no `prune:` (see *parallel*). Declare a required `score:` and **exactly one**
+of `keep: top(<k>)` or `stop_when: "<bool-expr>"` — neither, both, an empty
+`score`, or a `keep` that is not `top(<positive int>)` is rejected by the
+validator (**AWF1037**).
+
+`score:` names a **numeric** field the body's **last step** declares in its
+`output_schema`. The engine reads it from the committed item as a typed number —
+never parsed from text; a `score:` that does not name a numeric field of that
+schema is rejected (**AWF5008**).
+
+`keep: top(k)`: as items complete, the engine keeps the `k` highest-scoring items
+and prunes the rest — in-flight items are cancelled, not-yet-started items never
+start. Ties beyond `k` are broken by **item index (lowest index wins)**, so the
+survivor set is deterministic.
+
+`stop_when: "{{ best.score >= 0.9 }}"`: a bounded boolean expression over
+**`best.score`** — the running best score so far. Once it is true, every
+still-running and not-yet-started item is pruned. It is the same bounded evaluator
+as `loop`/`gate` `until` — no arithmetic, calls, or loops (templating is not a
+language).
+
+Interaction with `min_success`: pruned items are removed from **both** the
+numerator and the denominator — they are neither passes nor the "all" baseline. A
+`map` with `min_success` unset (= all) plus `prune:` succeeds when every
+**non-pruned** item passed; a fraction is measured against the non-pruned set
+(`min_success: 0.5` over 10 items where 6 were pruned requires 2 of the 4
+survivors, not 5 of 10).
+
+Resume: a pruned item is recorded durably as a `map.item` event with status
+`item_pruned`; on resume that record is **replayed verbatim** — the item's body is
+not re-run and the prune is not re-decided. The committed journal is authoritative
+for which items survived; the frontier is never re-derived from raw scores,
+because items can commit in a different order across runs and a re-derived
+`top(k)` tie-break or first-firing `stop_when` could pick a different survivor set.
+
+`prune:` and `reduce:` compose: the survivors are the input to a `reduce:` fold —
+search, then collapse the winners to one. *(reduce: ships in a separate
+sub-project; this documents the intended composition.)*
+
+Out of scope: `prune:` on `parallel` — a `parallel` branch has no durable
+per-branch status record, so a pruned branch could not survive resume safely;
+`parallel` has no `prune:` surface in the format. Growable membership (a runtime
+`enqueue` of new items) is also out of scope — the item set is fixed by `over:`
+and stays static and digest-pinned.
+
 # OUTCOMES, RETRY, AND REPAIR
 
 Step outcomes are *mechanical only* — quality is the gate's job, not an outcome
@@ -672,6 +726,16 @@ class. Every step ends as exactly one of:
 **permanent_failure**
 :   An agent refusal or policy block, or an exit code in
     `non_retryable_exit_codes`. Not retryable.
+
+A fourth disposition exists only inside a pruned `map`. When a `map` declares
+`prune:` (see *map*), an item the frontier discards is recorded as **`pruned`** —
+neither `ok` nor a failure. A `pruned` item does not count toward `min_success`,
+does not raise a typed error, and does not trip an enclosing `try`/`catch`; it is
+a deliberate, mechanical cancellation by the coordinator, not a quality judgment
+(quality is still the gate's job). `pruned` is the *only* status outside `ok` /
+`retryable_failure` / `permanent_failure`, and it is confined to the `prune:`
+clause — every step outside a pruned `map` still ends as exactly one of the three
+above.
 
 Retry — transient recovery, applied to every step by default:
 
