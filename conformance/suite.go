@@ -146,4 +146,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("thread", func(t *testing.T) { testThread(t, factory) })
 	t.Run("roles", func(t *testing.T) { testRoles(t, factory) })
 	t.Run("reduce", func(t *testing.T) { testReduce(t, factory) })
+	t.Run("prune", func(t *testing.T) { testPrune(t, factory) })
 }
