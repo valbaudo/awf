@@ -175,6 +175,22 @@ func TestDigestFoldsPrune(t *testing.T) {
 	if dStop == dPrune {
 		t.Fatalf("different prune policies hashed equal: %s", dPrune)
 	}
+	// The k of keep: top(k) folds in too — PruneKeep.K has no json tag (its custom
+	// marshaler owns the "top(<k>)" wire form), so this guards that the k actually
+	// reaches the hash: top(2) and top(3) must differ.
+	withK3 := sampleWorkflow()
+	withK3.Graph = append(withK3.Graph,
+		&Map{Over: "input.items", As: "item", Container: "lab",
+			Body:  NodeList{&CodeStep{ID: "b", Run: "x"}},
+			Prune: &Prune{Score: "s", Keep: &PruneKeep{K: 3}}},
+	)
+	dK3, err := withK3.ComputeDigest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dK3 == dPrune {
+		t.Fatalf("keep: top(k) k value did not fold into the digest (top(2)==top(3): %s)", dPrune)
+	}
 }
 
 func TestLastStepID(t *testing.T) {
