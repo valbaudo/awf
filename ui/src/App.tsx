@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -29,6 +29,7 @@ function AwfNode({ data }: NodeProps) {
       data-node-path={data.path}
       data-kind={data.kind}
       data-state={data.state || ""}
+      data-node-class={data.nodeClass || "template"}
     >
       <Handle type="target" position={Position.Top} />
       <span className="awf-kind">{data.kind}</span>
@@ -56,67 +57,77 @@ export default function App() {
   const [edges, setEdges] = useState<RFEdge[]>([]);
   const [err, setErr] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
+  const nodeIds = useRef<Set<string>>(new Set());
 
-  // Initial load: fetch run list + static graph, lay out ONCE.
+  // ingest applies a projection: if the node SET is unchanged it only restyles state
+  // (cheap, no relayout, preserves pan/zoom) — the common live-overlay tick. If the set
+  // changed (a run added instance nodes, or the run/static selection changed) it re-runs
+  // ELK layout. This keeps state ticks smooth while still growing the graph as a run
+  // fans out into map items / gate attempts / loop iterations.
+  const ingest = useCallback(async (p: Projection) => {
+    const ids = new Set(p.nodes.map((n) => n.path));
+    const cur = nodeIds.current;
+    const same = ids.size === cur.size && [...ids].every((x) => cur.has(x));
+    if (same) {
+      setNodes((prev) => applyState(prev, p.run_overlay));
+      return;
+    }
+    const laid = await layout(p);
+    nodeIds.current = ids;
+    setNodes(applyState(laid.nodes, p.run_overlay));
+    setEdges(laid.edges);
+  }, []);
+
+  // Initial load: run list + static graph.
   useEffect(() => {
     (async () => {
       try {
         const rs = await getJSON<{ runs: RunRow[] }>("/api/runs");
         setRuns(rs.runs ?? []);
-        const p = await getJSON<Projection>("/api/graph");
-        const laid = await layout(p);
-        setNodes(laid.nodes);
-        setEdges(laid.edges);
+        await ingest(await getJSON<Projection>("/api/graph"));
         setLoaded(true);
       } catch (e) {
         setErr(String(e));
       }
     })();
-  }, []);
+  }, [ingest]);
 
-  // refresh re-fetches the selected run's overlay and RESTYLES only (no relayout).
-  const refresh = useCallback(async () => {
-    try {
-      const q = run ? `?run=${encodeURIComponent(run)}` : "";
-      const p = await getJSON<Projection>(`/api/graph${q}`);
-      setNodes((prev) => applyState(prev, p.run_overlay));
-      setErr("");
-    } catch (e) {
-      setErr(String(e));
-    }
-  }, [run]);
-
-  // Live overlay: subscribe to SSE for the selected run. The server pushes the current
-  // projection on connect and again on every log change; each message RESTYLES nodes
-  // (applyState) without relayout. No run selected -> clear the overlay (static view).
+  // Selected run -> live SSE (relayout on first/structure-changing message, restyle on
+  // state-only ticks). No run -> reload the static graph.
   useEffect(() => {
     if (!loaded) return;
     if (!run) {
-      setNodes((prev) => applyState(prev, undefined));
+      getJSON<Projection>("/api/graph").then(ingest).catch((e) => setErr(String(e)));
       return;
     }
     const es = new EventSource(`/api/events?run=${encodeURIComponent(run)}`);
     es.onmessage = (ev) => {
       try {
-        const p = JSON.parse(ev.data) as Projection;
-        setNodes((prev) => applyState(prev, p.run_overlay));
+        void ingest(JSON.parse(ev.data) as Projection);
         setErr("");
       } catch {
-        /* ignore a malformed frame; the next one will refresh state */
+        /* ignore a malformed frame; the next one refreshes */
       }
     };
     es.onerror = () => setErr("live stream interrupted");
     return () => es.close();
-  }, [run, loaded]);
+  }, [run, loaded, ingest]);
 
-  const onSelect = (e: React.ChangeEvent<HTMLSelectElement>) =>
-    setRun(e.target.value);
+  const refresh = useCallback(async () => {
+    try {
+      const q = run ? `?run=${encodeURIComponent(run)}` : "";
+      await ingest(await getJSON<Projection>(`/api/graph${q}`));
+      setErr("");
+    } catch (e) {
+      setErr(String(e));
+    }
+  }, [run, ingest]);
 
   const toolbar = useMemo(
     () => (
       <div className="awf-toolbar">
         <span className="awf-title">awf graph</span>
-        <select aria-label="run" value={run} onChange={onSelect}>
+        <select aria-label="run" value={run} onChange={(e) => setRun(e.target.value)}>
           <option value="">(static — no run)</option>
           {runs.map((r) => (
             <option key={r.run_id} value={r.run_id}>

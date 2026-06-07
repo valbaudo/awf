@@ -1,36 +1,27 @@
 # TODOS
 
-## Runtime instance object model for the graph projection (deferred from Slice 1)
+## DONE (2026-06-08): runtime instance object model + data edges
 
-**What:** Design the runtime instance object model for `awf graph` — first-class
-instance nodes (`map[0].item-3`, `gate[2].attempt-1`, `loop[0].body.iter-2`), a
-`node_class` distinction (template vs runtime scope), both `parent_path` (runtime tree)
-and `template_parent_path`, runtime-expanded edges (scope → its runtime children), and
-the runtime→template mapping for nested expansion.
+Both shipped in the `graph` package and `awf ui`:
+- **Data edges:** `graph.producerRefs` derives `step.<id>` references from templated
+  fields (reusing `template.Slots`/`ParseRef`/`References`/`ParseArtifactRef`) and emits
+  `Edge{kind:"data"}` producer → consumer. Excluded from ELK layout; rendered dashed.
+- **Instance object model:** `graph.BuildWithRun` emits `node_class:"instance"` nodes for
+  every runtime path with no template node (map items / gate attempts / loop iterations
+  and their children), from `obs.Project` spans, nested via the runtime parent, with
+  `instance_of` set to the template node. `templateOf` handles the map body→item-N
+  replacement vs the gate/loop attempt/iter append; `instanceEdges` projects each
+  template control edge into every instance context. The SPA relays-out when the node set
+  changes and restyles on state-only ticks.
 
-**Why:** The live-overlay UI must render nested runtime scopes (e.g. map item → loop
-iter → step). Slice 1 deliberately ships only a *flat* `run_overlay` (state keyed by
-runtime path) and defers this object model — proving it belongs in the UI slice, not
-frozen into the contract before any renderer validates it.
-
-**Context / where to start:**
-- The hard case is nested expansion: `gate[0].attempt-1.generate.map[0].item-3.loop[0].body.iter-2.step`.
-  `instance_of` cannot be derived by naive prefix-trimming.
-- `engine/scope.go:591` has the existing runtime→template path conversion logic — reuse
-  it, don't reinvent.
-- `engine/runstate.go:215` — `RunState.MapItems` is append/log order, NOT `N` order;
-  sort by `N` when expanding map instances.
-- Render state for instances needs the event stream (`node.started`/`failed`/`skipped`/
-  timing) plus `RunState` (committed facts) — `RunState` alone cannot show running/failed.
-
-**Depends on / blocked by:** Slice 1 (`awf graph --json`: static graph + flat overlay)
-shipping first.
-
-**Surfaced by:** /plan-eng-review cross-model (Codex) review, 2026-06-08.
+Not yet done (smaller follow-ups, uncaptured before): nested-loop instances remain
+unsupported upstream (`engine/scope.go` rejects them), so deeply nested loop expansions
+won't appear; `instance_of` is omitted for scope nodes whose template is a branch path
+(only leaf instances carry it).
 
 ## Considered and cut: `--run=latest`
 
 Run IDs are random 128-bit hex and `awf ls` sorts lexicographically, not by time; there
-is no created-at index, so `latest` has no cheap well-defined meaning. Slice 1 takes
-`--run=<id>` only. If CLI ergonomics later demand it, define `latest` as the run with the
-newest `run.started` timestamp (requires scanning each run's first frame).
+is no created-at index, so `latest` has no cheap well-defined meaning. `awf graph` / `awf
+ui` take `--run=<id>` only. If CLI ergonomics later demand it, define `latest` as the run
+with the newest `run.started` timestamp (requires scanning each run's first frame).

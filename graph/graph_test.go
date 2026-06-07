@@ -66,12 +66,12 @@ func TestBuildStaticStructure(t *testing.T) {
 		SchemaVersion: SchemaVersion,
 		Workflow:      "demo",
 		Nodes: []Node{
-			{Path: "build", Kind: "code", ID: "build", Parent: ""},
-			{Path: "gate[1]", Kind: "gate", Parent: ""},
-			{Path: "gate[1].generate.gen", Kind: "agent", ID: "gen", Parent: "gate[1].generate", With: ir.RawConfig{"model": "x"}},
-			{Path: "gate[1].evaluate.check", Kind: "code", ID: "check", Parent: "gate[1].evaluate"},
-			{Path: "map[2]", Kind: "map", Parent: ""},
-			{Path: "map[2].body.work", Kind: "code", ID: "work", Parent: "map[2].body"},
+			{Path: "build", Kind: "code", ID: "build", Parent: "", NodeClass: "template"},
+			{Path: "gate[1]", Kind: "gate", Parent: "", NodeClass: "template"},
+			{Path: "gate[1].generate.gen", Kind: "agent", ID: "gen", Parent: "gate[1].generate", With: ir.RawConfig{"model": "x"}, NodeClass: "template"},
+			{Path: "gate[1].evaluate.check", Kind: "code", ID: "check", Parent: "gate[1].evaluate", NodeClass: "template"},
+			{Path: "map[2]", Kind: "map", Parent: "", NodeClass: "template"},
+			{Path: "map[2].body.work", Kind: "code", ID: "work", Parent: "map[2].body", NodeClass: "template"},
 		},
 		Edges: []Edge{
 			{From: "build", To: "gate[1]", Kind: "control"},
@@ -83,6 +83,40 @@ func TestBuildStaticStructure(t *testing.T) {
 		gj, _ := json.MarshalIndent(got, "", "  ")
 		wj, _ := json.MarshalIndent(want, "", "  ")
 		t.Errorf("projection mismatch:\n got=%s\nwant=%s", gj, wj)
+	}
+}
+
+// TestBuildStaticDataEdges verifies producer->consumer data edges are derived from
+// templated fields (a {{ }} run ref and a bare map.over expr), reusing the template parser.
+func TestBuildStaticDataEdges(t *testing.T) {
+	wf := &ir.Workflow{
+		ID: "d",
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "build", Run: "make"},
+			&ir.CodeStep{ID: "analyze", Run: "cat {{ step.build.output.path }}"},
+			&ir.Map{Over: "step.build.output.items", As: "it", Container: "c", Body: ir.NodeList{&ir.CodeStep{ID: "w", Run: "go"}}},
+		},
+	}
+	got := BuildStatic(wf)
+	has := func(e Edge) bool {
+		for _, x := range got.Edges {
+			if x == e {
+				return true
+			}
+		}
+		return false
+	}
+	// {{ step.build... }} in analyze.run -> data edge build->analyze.
+	if !has(Edge{From: "build", To: "analyze", Kind: "data"}) {
+		t.Errorf("missing data edge build->analyze; edges=%+v", got.Edges)
+	}
+	// map.over references build -> data edge build->map[2].
+	if !has(Edge{From: "build", To: "map[2]", Kind: "data"}) {
+		t.Errorf("missing data edge build->map[2]; edges=%+v", got.Edges)
+	}
+	// control edges still present alongside data edges.
+	if !has(Edge{From: "build", To: "analyze", Kind: "control"}) {
+		t.Errorf("missing control edge build->analyze; edges=%+v", got.Edges)
 	}
 }
 
@@ -108,7 +142,7 @@ func TestBuildStaticSkipOmitted(t *testing.T) {
 		}
 	}
 	if len(got.Edges) != 1 || got.Edges[0] != (Edge{From: "a", To: "b", Kind: "control"}) {
-		t.Errorf("want single edge a->b, got %+v", got.Edges)
+		t.Errorf("want single control edge a->b, got %+v", got.Edges)
 	}
 }
 
@@ -134,7 +168,7 @@ func TestBuildStaticDeterministic(t *testing.T) {
 		t.Errorf("non-deterministic output:\n a=%s\n b=%s", a, b)
 	}
 	// schema_version present, with: keys serialized (opaque passthrough).
-	if !strings.Contains(string(a), `"schema_version":1`) {
+	if !strings.Contains(string(a), `"schema_version":2`) {
 		t.Errorf("missing schema_version: %s", a)
 	}
 	if !strings.Contains(string(a), `"with":{"a":1,"b":2,"c":3}`) {

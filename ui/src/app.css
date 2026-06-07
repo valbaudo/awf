@@ -37,6 +37,16 @@ html, body, #root { height: 100%; margin: 0; }
   align-items: flex-start;
 }
 
+/* runtime instance nodes (map items, gate attempts, loop iters, and their children) */
+.awf-node[data-node-class="instance"] { border-style: dotted; background: #fbfdff; }
+.awf-node[data-node-class="instance"] .awf-kind { color: #2563eb; }
+
+/* edges: control = solid, data ({{ }} references) = dashed grey */
+.react-flow__edge.awf-data-edge .react-flow__edge-path {
+  stroke: #94a3b8;
+  stroke-dasharray: 5 4;
+}
+
 /* run-state colors (overlay restyle target) */
 .awf-node[data-state="completed"] { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
 .awf-node[data-state="failed"]    { border-color: var(--fail); box-shadow: 0 0 0 1px var(--fail) inset; }

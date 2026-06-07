@@ -8,6 +8,8 @@ export interface PNode {
   id?: string;
   parent?: string;
   with?: Record<string, unknown>;
+  node_class?: string; // "template" | "instance"
+  instance_of?: string;
 }
 export interface PEdge {
   from: string;
@@ -94,11 +96,11 @@ export function toElkGraph(p: Projection): ElkGraph {
     if (c && byId.has(c)) byId.get(c)!.children.push(node);
     else roots.push(node);
   }
-  const edges: ElkEdge[] = p.edges.map((e, i) => ({
-    id: `e${i}`,
-    sources: [e.from],
-    targets: [e.to],
-  }));
+  // Only CONTROL edges drive layout; data edges (cross-cutting {{ }} references) are
+  // rendered but excluded here so they cannot distort the layered/nested layout.
+  const edges: ElkEdge[] = p.edges
+    .filter((e) => e.kind !== "data")
+    .map((e, i) => ({ id: `c${i}`, sources: [e.from], targets: [e.to] }));
   return {
     id: "root",
     layoutOptions: {

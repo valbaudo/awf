@@ -238,10 +238,14 @@ and executes nothing.
 ## awf graph _path_
 
 Project a workflow into a node/edge graph and print it as JSON — the contract a
-visual graph tool consumes. Without **--run** it emits the static template graph;
-with **--run** _id_ it attaches a flat `run_overlay` mapping each runtime node
-path to its state (`running`, `completed`, `failed`, or `skipped`). Reads the
-workflow (and, with **--run**, the journal) offline and executes nothing.
+visual graph tool consumes. Edges are `control` (execution order) and `data`
+(producer → consumer, derived from `{{ … }}` references). Without **--run** it
+emits the static template graph; with **--run** _id_ it adds runtime instance
+nodes (one per map item, gate attempt, and loop iteration, plus their children,
+each `node_class: instance` pointing at its template via `instance_of`) and a
+`run_overlay` mapping each node path to its state (`running`, `completed`,
+`failed`, or `skipped`). Reads the workflow (and, with **--run**, the journal)
+offline and executes nothing.
 
 **--run** _id_
 :   Overlay state from this run. Run ids are explicit (there is no `latest`); list

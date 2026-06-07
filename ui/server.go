@@ -118,13 +118,11 @@ func (s *Server) projectionFor(runID string) (graph.Projection, error) {
 		}
 		return graph.Projection{}, err
 	}
-	overlay, err := graph.Overlay(events)
+	// Full run projection: static graph + runtime instance nodes/edges + overlay.
+	proj, err := graph.BuildWithRun(s.wf, events)
 	if err != nil {
 		return graph.Projection{}, err
 	}
-	// Copy the static projection and attach the overlay (don't mutate s.static).
-	proj := s.static
-	proj.RunOverlay = overlay
 	s.cache[runID] = cachedProjection{size: info.Size(), mtime: info.ModTime().UnixNano(), proj: proj}
 	return proj, nil
 }

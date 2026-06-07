@@ -15,6 +15,7 @@ import (
 
 	"github.com/chromedp/chromedp"
 	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -85,5 +86,50 @@ func TestE2ELiveOverlay(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("live overlay E2E failed (ship gate, not a skip): %v", err)
+	}
+}
+
+// TestE2EInstanceNodes is the MANDATORY browser test for the runtime instance object
+// model: a 2-item map run must render instance nodes (data-node-class="instance") nested
+// under the template, with a body-step instance reaching its terminal state — proving the
+// projection's instance nodes + the SPA's nested rendering work end to end.
+func TestE2EInstanceNodes(t *testing.T) {
+	dir := t.TempDir()
+	wf := &ir.Workflow{ID: "m", Graph: ir.NodeList{
+		&ir.Map{Over: "input.items", As: "it", Container: "c", Body: ir.NodeList{
+			&ir.CodeStep{ID: "work", Run: "a"},
+			&ir.CodeStep{ID: "score", Run: "b"},
+		}},
+	}}
+	events := []state.Event{
+		{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "r1", WorkflowDigest: testDigest})},
+	}
+	for _, item := range []string{"item-0", "item-1"} {
+		for _, step := range []string{"work", "score"} {
+			p := "map[0]." + item + "." + step
+			events = append(events,
+				state.Event{Type: engine.EventNodeStarted, Path: p, Data: mustData(engine.NodeStartedData{Kind: "code"})},
+				state.Event{Type: engine.EventNodeCompleted, Path: p, Data: mustData(engine.NodeCompletedData{Outcome: "ok"})},
+			)
+		}
+	}
+	events = append(events, state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})})
+	writeRunLog(t, dir, "r1", events...)
+
+	ts := httptest.NewServer(New(wf, testDigest, dir).Handler())
+	defer ts.Close()
+
+	ctx, cancel := chromedp.NewContext(context.Background())
+	defer cancel()
+	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	err := chromedp.Run(ctx,
+		chromedp.Navigate(ts.URL+"/?run=r1"),
+		chromedp.WaitVisible(`[data-node-class="instance"]`, chromedp.ByQuery),
+		chromedp.WaitVisible(`[data-node-path="map[0].item-1.score"][data-state="completed"]`, chromedp.ByQuery),
+	)
+	if err != nil {
+		t.Fatalf("instance-nodes E2E failed (ship gate, not a skip): %v", err)
 	}
 }

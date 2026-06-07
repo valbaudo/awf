@@ -14,15 +14,16 @@ export interface LaidOut {
 // coordinate convention (position relative to parentNode), so geometry maps directly.
 // Run state is applied separately (applyState) so re-overlaying never re-lays-out.
 export async function layout(p: Projection): Promise<LaidOut> {
-  const meta = new Map<string, { kind: string; label: string }>();
-  for (const n of p.nodes) meta.set(n.path, { kind: n.kind, label: n.id || n.kind });
+  const meta = new Map<string, { kind: string; label: string; nodeClass: string }>();
+  for (const n of p.nodes)
+    meta.set(n.path, { kind: n.kind, label: n.id || n.kind, nodeClass: n.node_class || "template" });
 
   const res = (await elk.layout(toElkGraph(p) as never)) as ElkResult;
 
   const nodes: RFNode[] = [];
   const walk = (n: ElkResult, parent?: string) => {
     const isGroup = (n.children?.length ?? 0) > 0;
-    const m = meta.get(n.id) ?? { kind: "", label: n.id };
+    const m = meta.get(n.id) ?? { kind: "", label: n.id, nodeClass: "template" };
     nodes.push({
       id: n.id,
       type: "awf",
@@ -30,7 +31,7 @@ export async function layout(p: Projection): Promise<LaidOut> {
       parentNode: parent,
       extent: parent ? "parent" : undefined,
       selectable: !isGroup,
-      data: { label: m.label, kind: m.kind, path: n.id, group: isGroup, state: "" },
+      data: { label: m.label, kind: m.kind, path: n.id, group: isGroup, state: "", nodeClass: m.nodeClass },
       style: { width: n.width, height: n.height },
     });
     for (const c of n.children ?? []) walk(c, n.id);
@@ -41,6 +42,7 @@ export async function layout(p: Projection): Promise<LaidOut> {
     id: `e${i}`,
     source: e.from,
     target: e.to,
+    className: e.kind === "data" ? "awf-data-edge" : "awf-control-edge",
   }));
   return { nodes, edges };
 }

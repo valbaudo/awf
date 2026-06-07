@@ -21,8 +21,9 @@ import (
 
 // SchemaVersion is the version of the projection JSON contract. This JSON is a stable
 // boundary (consumed by external tooling), so every emission carries it — bump on any
-// breaking shape change.
-const SchemaVersion = 1
+// breaking shape change. v2 added data edges (Edge.Kind "data"), node_class, instance_of,
+// and runtime instance nodes (see instances.go).
+const SchemaVersion = 2
 
 // Projection is the full graph JSON. Nodes and Edges are emitted in deterministic
 // walk order (NodeList declaration order). RunOverlay, when present, is keyed by
@@ -48,6 +49,12 @@ type Node struct {
 	ID     string       `json:"id,omitempty"`
 	Parent string       `json:"parent,omitempty"`
 	With   ir.RawConfig `json:"with,omitempty"`
+	// NodeClass is "template" (a node authored in the graph) or "instance" (a runtime
+	// expansion that exists only for a given run — a map item, gate attempt, or loop
+	// iteration and its children). InstanceOf, set only on instances, is the path of the
+	// template node this instance is a copy of.
+	NodeClass  string `json:"node_class,omitempty"`
+	InstanceOf string `json:"instance_of,omitempty"`
 }
 
 // Edge is a control-flow edge between consecutive sibling nodes within one addressing
@@ -77,16 +84,29 @@ func BuildStatic(wf *ir.Workflow) Projection {
 	}
 	if wf != nil {
 		p.Workflow = wf.ID
-		walk(wf.Graph, "", &p)
+		walk(wf.Graph, "", &p, stepPathIndex(wf))
 	}
 	return p
+}
+
+// stepPathIndex maps every step id to its static node path, used to resolve data-edge
+// references (`step.<id>.…`) to producer node paths. Reuses the canonical ir.WalkNodes.
+func stepPathIndex(wf *ir.Workflow) map[string]string {
+	idx := map[string]string{}
+	ir.WalkNodes(wf.Graph, "", func(n ir.Node, path string) {
+		switch n.(type) {
+		case *ir.CodeStep, *ir.AgentStep, *ir.SignalStep:
+			idx[stepID(n)] = path
+		}
+	})
+	return idx
 }
 
 // walk emits one Node per non-Skip node in declaration order, a control Edge between
 // consecutive emitted siblings, and recurses into each control node's child branches.
 // Paths come from ir.PathFor / ir.ChildPath — the single source for the addressing
 // grammar — so they can never drift from the runtime/validator forms.
-func walk(list ir.NodeList, parent string, p *Projection) {
+func walk(list ir.NodeList, parent string, p *Projection, idx map[string]string) {
 	prev := ""
 	havePrev := false
 	for i, n := range list {
@@ -95,34 +115,43 @@ func walk(list ir.NodeList, parent string, p *Projection) {
 		}
 		path := staticPath(parent, n, i)
 		p.Nodes = append(p.Nodes, Node{
-			Path:   path,
-			Kind:   kindOf(n),
-			ID:     stepID(n),
-			Parent: parent,
-			With:   withOf(n),
+			Path:      path,
+			Kind:      kindOf(n),
+			ID:        stepID(n),
+			Parent:    parent,
+			With:      withOf(n),
+			NodeClass: "template",
 		})
 		if havePrev {
 			p.Edges = append(p.Edges, Edge{From: prev, To: path, Kind: "control"})
 		}
 		prev, havePrev = path, true
 
+		// Data edges: producer -> this node, for each `step.<id>` reference in this
+		// node's templated fields whose producer resolves to a node path.
+		for _, refID := range producerRefs(n) {
+			if from, ok := idx[refID]; ok && from != path {
+				p.Edges = append(p.Edges, Edge{From: from, To: path, Kind: "data"})
+			}
+		}
+
 		switch v := n.(type) {
 		case *ir.If:
-			walk(v.Then, ir.ChildPath(parent, "if", i, "then"), p)
-			walk(v.Else, ir.ChildPath(parent, "if", i, "else"), p)
+			walk(v.Then, ir.ChildPath(parent, "if", i, "then"), p, idx)
+			walk(v.Else, ir.ChildPath(parent, "if", i, "else"), p, idx)
 		case *ir.Loop:
-			walk(v.Body, ir.ChildPath(parent, "loop", i, "body"), p)
+			walk(v.Body, ir.ChildPath(parent, "loop", i, "body"), p, idx)
 		case *ir.Try:
-			walk(v.Do, ir.ChildPath(parent, "try", i, "do"), p)
-			walk(v.Catch, ir.ChildPath(parent, "try", i, "catch"), p)
-			walk(v.Finally, ir.ChildPath(parent, "try", i, "finally"), p)
+			walk(v.Do, ir.ChildPath(parent, "try", i, "do"), p, idx)
+			walk(v.Catch, ir.ChildPath(parent, "try", i, "catch"), p, idx)
+			walk(v.Finally, ir.ChildPath(parent, "try", i, "finally"), p, idx)
 		case *ir.Parallel:
-			walk(v.Children, path, p) // bare parallel[i] — no branch label
+			walk(v.Children, path, p, idx) // bare parallel[i] — no branch label
 		case *ir.Gate:
-			walk(v.Generate, ir.ChildPath(parent, "gate", i, "generate"), p)
-			walk(v.Evaluate, ir.ChildPath(parent, "gate", i, "evaluate"), p)
+			walk(v.Generate, ir.ChildPath(parent, "gate", i, "generate"), p, idx)
+			walk(v.Evaluate, ir.ChildPath(parent, "gate", i, "evaluate"), p, idx)
 		case *ir.Map:
-			walk(v.Body, ir.ChildPath(parent, "map", i, "body"), p)
+			walk(v.Body, ir.ChildPath(parent, "map", i, "body"), p, idx)
 		}
 	}
 }
