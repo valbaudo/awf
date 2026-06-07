@@ -119,6 +119,21 @@ func runMap(
 		wrappedTap = newSerializingWriter(tap)
 	}
 
+	// 3b. SP5 prune frontier. Build the controller + the in-flight cancel /
+	//     pruned-set registry only when the map declares a prune: clause. nil for
+	//     a plain map — every prune-specific branch below is guarded by `pr != nil`,
+	//     so a non-prune map runs byte-identically.
+	var pr *pruneRun
+	if n.Prune != nil {
+		stepID, ok := ir.LastStepID(n.Body)
+		if !ok {
+			// Should not happen — AWF5008 guarantees the last body node is a step.
+			return failStep(log, mapPath, OutcomePermanentFailure,
+				fmt.Errorf("engine.runMap: map %q declares prune: but the body's last node is not a step (AWF5008 should have caught)", mapPath))
+		}
+		pr = newPruneRun(n.Prune, mapPath, stepID)
+	}
+
 	statuses := make([]string, len(overArr)) // per-item terminal Status; pre-filled for already-committed items
 	var statusErr error
 	var statusErrMu sync.Mutex // protects statusErr
@@ -126,7 +141,9 @@ func runMap(
 
 	for i := 0; i < len(overArr); i++ {
 		i := i
-		// Skip already-committed items (resume: replayed, not recomputed).
+		// Skip already-committed items (resume: replayed, not recomputed). A
+		// folded item_pruned status lands here too — the prune decision is
+		// replayed verbatim, never re-fed to the controller (resume safety).
 		if status, ok := committed[i]; ok {
 			statuses[i] = status
 			continue
@@ -142,9 +159,34 @@ func runMap(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+
+			// Per-item dispatch ctx. For a prune map this is a cancellable child
+			// of the map ctx so a frontier loser can be cancelled INDIVIDUALLY
+			// (the map's own ctx, and thus its siblings, is untouched). For a
+			// plain map it is just the map ctx.
+			itemCtx := ctx
+			if pr != nil {
+				var itemCancel context.CancelFunc
+				itemCtx, itemCancel = context.WithCancel(ctx)
+				defer itemCancel()
+				pr.register(i, itemCancel)
+				// Queued-loser short-circuit: a not-yet-started item already
+				// marked pruned by an earlier commit never acquires a slot and
+				// never runs its body. Its durable item_pruned commit lands in
+				// the final pass after wg.Wait().
+				if pr.isPruned(i) {
+					return
+				}
+			}
+
 			// ctx-respecting Acquire. On ctx cancel, returns immediately
 			// without ever holding the semaphore slot.
-			if err := sem.Acquire(ctx, 1); err != nil {
+			if err := sem.Acquire(itemCtx, 1); err != nil {
+				// A prune cancel of THIS item's ctx is not an error — it is the
+				// frontier discarding a loser; the final pass commits it pruned.
+				if pr != nil && pr.isPruned(i) {
+					return
+				}
 				statusErrMu.Lock()
 				if statusErr == nil {
 					statusErr = fmt.Errorf("engine.runMap: acquire semaphore for item-%d: %w", i, err)
@@ -154,18 +196,69 @@ func runMap(
 			}
 			defer sem.Release(1)
 
-			status, dispatchErr := dispatchItem(ctx, n, mapPath, i, wf, runstate, ld, wrappedLog, blobs, clk, wrappedTap, broker)
+			// Re-check after acquiring: an item may have been pruned while it
+			// waited for a slot.
+			if pr != nil && pr.isPruned(i) {
+				return
+			}
+
+			status, dispatchErr := dispatchItem(itemCtx, n, mapPath, i, pr, wf, runstate, ld, wrappedLog, blobs, clk, wrappedTap, broker)
 			statuses[i] = status
 			if dispatchErr != nil {
+				// A prune cancel unwinds the body via ctx; that is not an internal
+				// error — the loser is already in the pruned set and the final pass
+				// commits it pruned.
+				if pr != nil && pr.isPruned(i) {
+					return
+				}
 				statusErrMu.Lock()
 				if statusErr == nil {
 					statusErr = dispatchErr // first internal error wins
 				}
 				statusErrMu.Unlock()
+				return
+			}
+
+			// SP5: a fresh-passing item reports its typed score to the frontier.
+			// The controller's decision marks + cancels losers; the final pass
+			// (after wg.Wait) commits the authoritative per-item status, so the
+			// commit is race-free regardless of concurrent completion order.
+			if pr != nil && status == ItemPassed {
+				if dErr := pr.report(runstate, i); dErr != nil {
+					statusErrMu.Lock()
+					if statusErr == nil {
+						statusErr = dErr
+					}
+					statusErrMu.Unlock()
+				}
 			}
 		}()
 	}
 	wg.Wait()
+
+	// 3c. SP5 final commit pass. For a prune map the per-item goroutine deferred
+	//     the map.item commit so the authoritative status (pruned vs body status)
+	//     is decided AFTER every fresh item has reported and the frontier settled
+	//     — committing inside the goroutine would race a later commit's prune of an
+	//     already-finished winner. Each not-already-committed item commits its
+	//     durable map.item{status} here: item_pruned if the frontier discarded it,
+	//     else its body status (passed/failed). A queued loser (body never ran)
+	//     commits item_pruned with no body status.
+	if pr != nil && statusErr == nil {
+		for i := 0; i < len(overArr); i++ {
+			if _, done := committed[i]; done {
+				continue // replayed from a prior run; never re-commit
+			}
+			final := statuses[i]
+			if pr.isPruned(i) {
+				final = ItemPruned
+			}
+			if _, cErr := commitMapItem(log, runstate, mapPath, i, final, "", ""); cErr != nil {
+				return "", cErr
+			}
+			statuses[i] = final
+		}
+	}
 
 	// 4. Internal dispatch error. A per-item runtime-image RENDER fault (bad
 	//    image: template or an empty-rendered image) is a deterministic DEFINITION
@@ -258,11 +351,18 @@ func (e *renderImageError) Unwrap() error { return e.err }
 // separate error for INTERNAL failures (Backend.Create / Destroy / log
 // append) — those propagate to runMap which returns ("", err) to the
 // interpreter.
+//
+// SP5: when pr != nil (a prune map) the map.item commit is DEFERRED to runMap's
+// final pass — dispatchItem returns the body status without committing, so the
+// authoritative pruned-vs-passed decision can be made after the frontier
+// settles (commit-after-join is race-free). A plain map (pr == nil) commits
+// internally, byte-identically to pre-SP5.
 func dispatchItem(
 	ctx context.Context,
 	n *ir.Map,
 	mapPath string,
 	itemN int,
+	pr *pruneRun,
 	wf *ir.Workflow,
 	runstate *RunState,
 	ld *LocalDispatcher,
@@ -307,6 +407,12 @@ func dispatchItem(
 	itemHandle, err := ld.Backend.Create(ctx, spec)
 	if err != nil {
 		if n.Image != "" {
+			// Tolerated per-item infra failure. For a prune map the commit is
+			// deferred to the final pass — return the failed status (image_unavailable
+			// reason is recorded only on the non-prune commit path).
+			if pr != nil {
+				return ItemFailed, nil
+			}
 			return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable)
 		}
 		return "", fmt.Errorf("create item-%d container: %w", itemN, err)
@@ -336,10 +442,16 @@ func dispatchItem(
 			return "", fmt.Errorf("append node.skipped for item-%d: %w", itemN, appErr)
 		}
 	} else if bodyErr != nil || bodyOC != OutcomeOK {
-		// Body failed mechanically (any non-skip error) → item_failed.
+		// Body failed mechanically (any non-skip error) → item_failed. For a prune
+		// map this includes a frontier cancel (ctx unwind of an in-flight loser);
+		// runMap's final pass overrides it with item_pruned for any pruned[i].
 		status = ItemFailed
 	}
 
+	// SP5: defer the map.item commit to runMap's final pass for a prune map.
+	if pr != nil {
+		return status, nil
+	}
 	return commitMapItem(log, runstate, mapPath, itemN, status, imageDigest, "")
 }
 

@@ -57,6 +57,28 @@ func (p PruneKeep) MarshalJSON() ([]byte, error) {
 	return json.Marshal(fmt.Sprintf("top(%d)", p.K))
 }
 
+// LastStepID returns the id of the body's LAST node when that node is a
+// code/agent step, plus a present flag. The prune controller reads the score
+// from the committed step output at ItemPath(mapPath, N) + "." + id, so the
+// engine needs the id of the score-producing step; the validator already
+// guarantees (AWF5008) the last node is a step with a numeric score field.
+// Returns ("", false) for an empty body or a control-flow terminal node —
+// mirrors lastStepSchema's walk so engine + validator agree on which node
+// produces the score.
+func LastStepID(body NodeList) (string, bool) {
+	if len(body) == 0 {
+		return "", false
+	}
+	switch s := body[len(body)-1].(type) {
+	case *CodeStep:
+		return s.ID, true
+	case *AgentStep:
+		return s.ID, true
+	default:
+		return "", false
+	}
+}
+
 // ParsePruneKeep parses "top(<k>)" into a PruneKeep with a positive K. Trims
 // surrounding and inner whitespace. Any other shape (wrong head, non-int,
 // k <= 0, unbalanced parens) is an error — the validator surfaces it as AWF1037.

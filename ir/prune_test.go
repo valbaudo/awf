@@ -176,3 +176,29 @@ func TestDigestFoldsPrune(t *testing.T) {
 		t.Fatalf("different prune policies hashed equal: %s", dPrune)
 	}
 }
+
+func TestLastStepID(t *testing.T) {
+	// LastStepID returns the id of the body's LAST node when it is a code/agent
+	// step (the producer of the prune score), or ("", false) otherwise. The
+	// engine reads the score from Completed[itemPath + "." + id].
+	cases := []struct {
+		name   string
+		body   NodeList
+		wantID string
+		wantOK bool
+	}{
+		{"single code step", NodeList{&CodeStep{ID: "hyp", Run: "x"}}, "hyp", true},
+		{"single agent step", NodeList{&AgentStep{ID: "gen", Uses: "claude"}}, "gen", true},
+		{"last of several", NodeList{&CodeStep{ID: "a", Run: "x"}, &CodeStep{ID: "score", Run: "y"}}, "score", true},
+		{"empty body", NodeList{}, "", false},
+		{"last node is control flow", NodeList{&CodeStep{ID: "a", Run: "x"}, &If{Cond: "{{ true }}"}}, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, ok := LastStepID(tc.body)
+			if id != tc.wantID || ok != tc.wantOK {
+				t.Errorf("LastStepID = (%q, %v), want (%q, %v)", id, ok, tc.wantID, tc.wantOK)
+			}
+		})
+	}
+}

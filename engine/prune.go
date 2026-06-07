@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -138,6 +139,123 @@ func asFloat(raw any) (float64, error) {
 	default:
 		return 0, fmt.Errorf("score is %T, want a number", raw)
 	}
+}
+
+// pruneRun is runMap's per-invocation prune bundle (SP5 Task 7). It pairs the
+// pure pruneController (the decision) with the runtime side effects the
+// controller deliberately avoids: the per-item cancel registry and the pruned
+// set. runMap owns the durable commits (interpreter-is-the-only-state-writer);
+// pruneRun owns only in-memory ctx-cancel + the score lookup.
+//
+// mapPath + stepID locate the score: it is the numeric score field in the
+// committed output of the body's LAST step at ItemPath(mapPath, N) + "." + stepID
+// (typed outputs only — never parsed from text).
+type pruneRun struct {
+	pc      *pruneController
+	mapPath string
+	stepID  string // body's last step id (the score producer)
+	field   string // prune.score field name
+
+	mu        sync.Mutex
+	cancels   map[int]context.CancelFunc // item index → its dispatch-ctx cancel
+	pruned    map[int]bool               // item index → frontier-discarded
+	completed map[int]bool               // item index → body finished (a stop_when winner)
+	stopAll   bool                       // stop_when fired: discard every non-winner
+}
+
+func newPruneRun(policy *ir.Prune, mapPath, stepID string) *pruneRun {
+	return &pruneRun{
+		pc:        newPruneController(policy),
+		mapPath:   mapPath,
+		stepID:    stepID,
+		field:     policy.Score,
+		cancels:   map[int]context.CancelFunc{},
+		pruned:    map[int]bool{},
+		completed: map[int]bool{},
+	}
+}
+
+// register records item's dispatch-ctx cancel so a frontier decision can cancel
+// it in-flight.
+func (r *pruneRun) register(item int, cancel context.CancelFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cancels[item] = cancel
+}
+
+// isPruned reports whether the frontier has discarded item. An item is pruned
+// if it was explicitly marked (keep-top-k loser), OR stop_when has fired and the
+// item is not a confirmed winner (it has not committed its own score). The
+// stopAll arm closes the registration race: an item whose goroutine had not yet
+// registered its cancel when stop_when fired still observes the stop here, before
+// it acquires a slot or runs its body.
+func (r *pruneRun) isPruned(item int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pruned[item] {
+		return true
+	}
+	return r.stopAll && !r.completed[item]
+}
+
+// report reads item's committed numeric score, feeds it to the controller, and
+// applies the resulting decision: marks each loser pruned and cancels its
+// in-flight dispatch ctx (a not-yet-started loser is short-circuited before it
+// acquires a slot; an already-finished loser's final-pass commit is overridden
+// to item_pruned). A StopAll decision discards every not-yet-terminal item.
+// Returns an error only for a non-numeric score / stop_when eval failure (the
+// caller fails the whole map — like a bad over).
+func (r *pruneRun) report(rs *RunState, item int) error {
+	nr, ok := rs.LookupCompleted(ItemPath(r.mapPath, item) + "." + r.stepID)
+	if !ok {
+		return fmt.Errorf("prune.score: item %d: body step %q committed no typed output", item, r.stepID)
+	}
+	var raw any
+	if nr.Outputs != nil {
+		raw = nr.Outputs[r.field]
+	}
+
+	// Mark the reporting item a confirmed winner (its body finished) BEFORE the
+	// decision, under r.mu, so a CONCURRENT StopAll from another item cannot prune
+	// an item that has already completed — closing the completed-but-not-yet-decided
+	// race. A completed item is "still running" no longer, so stop_when never
+	// discards it. (keep-top-k still prunes completed losers — handled below.)
+	r.mu.Lock()
+	r.completed[item] = true
+	r.mu.Unlock()
+
+	decision, err := r.pc.Report(item, raw)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if decision.StopAll {
+		// stop_when fired. Set the stopAll flag (isPruned consults it to close the
+		// registration race for not-yet-registered items), then cancel every
+		// registered item that has NOT completed its body — i.e. still-running or
+		// queued non-winners. Completed items are confirmed winners and survive.
+		r.stopAll = true
+		for idx, cancel := range r.cancels {
+			if r.completed[idx] {
+				continue // a confirmed winner — keep it
+			}
+			r.pruned[idx] = true
+			cancel()
+		}
+		return nil
+	}
+	for _, loser := range decision.PruneLosers {
+		if r.pruned[loser] {
+			continue // already cancelled — dedupe
+		}
+		r.pruned[loser] = true
+		if cancel, ok := r.cancels[loser]; ok {
+			cancel()
+		}
+	}
+	return nil
 }
 
 // bestScope is the minimal template.Scope for prune.stop_when: it resolves the

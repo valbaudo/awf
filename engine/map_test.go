@@ -364,6 +364,157 @@ func TestRunMapAllPrunedIsOK(t *testing.T) {
 	}
 }
 
+// scoreSchema is the output_schema for prune body steps: a single numeric
+// `score` field (the value the prune frontier reads per item).
+var scoreSchema = &ir.JSONSchema{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []any{"score"},
+	"properties":           map[string]any{"score": map[string]any{"type": "number"}},
+}
+
+// pruneBody is the standard prune body: a single code step `hyp` that runs
+// `./hyp {{ x }}` and declares the numeric `score` output. Concurrency-1 tests
+// must use this with retry attempts 1 (the InMemoryBlobs Put is single-writer).
+func pruneBody(retry *ir.RetryPolicy) ir.NodeList {
+	return ir.NodeList{
+		&ir.CodeStep{ID: "hyp", Run: "./hyp {{ x }}", Container: testMapContainer,
+			OutputSchema: scoreSchema, Retry: retry},
+	}
+}
+
+// pruneWorkflow builds a Workflow whose single Map carries a prune: clause.
+func pruneWorkflow(concurrency int, prune *ir.Prune) *ir.Workflow {
+	wf := staticOverWorkflow("x", pruneBody(&ir.RetryPolicy{Attempts: 1}), concurrency, nil)
+	wf.Graph[0].(*ir.Map).Prune = prune
+	return wf
+}
+
+// scoreProg builds an execProgram returning a typed {score: v} for `./hyp <item>`.
+func scoreProg(item string, v float64) execProgram {
+	raw, _ := json.Marshal(map[string]any{"score": v})
+	return execProgram{cmd: "./hyp " + item, res: container.ExecResult{ExitCode: 0, AWFOutput: raw}}
+}
+
+// statusByN returns N → Status for a MapItems slice (test convenience).
+func statusByN(items []MapItemRecord) map[int]string {
+	out := map[int]string{}
+	for _, mr := range items {
+		out[mr.N] = mr.Status
+	}
+	return out
+}
+
+func TestRunMapKeepTopK(t *testing.T) {
+	// SP5 Task 7: keep: top(2) over 4 items with scores [0.1, 0.9, 0.5, 0.7].
+	// The two highest scorers (indices 1, 3) survive (item_passed); the two
+	// lowest (indices 0, 2) are pruned (item_pruned). A pruned item is NEITHER
+	// a pass NOR a failure, so the map returns OutcomeOK with no error.
+	rig := newMapRig(t,
+		scoreProg("a", 0.1), scoreProg("b", 0.9), scoreProg("c", 0.5), scoreProg("d", 0.7))
+	wf := pruneWorkflow(4, &ir.Prune{Score: "score", Keep: &ir.PruneKeep{K: 2}})
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c", "d"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("keep top(2): got (%q, %v), want (ok, nil)", oc, err)
+	}
+	got := statusByN(rs.LookupMapItems(testMapPath))
+	want := map[int]string{0: ItemPruned, 1: ItemPassed, 2: ItemPruned, 3: ItemPassed}
+	for n, w := range want {
+		if got[n] != w {
+			t.Errorf("item N=%d status=%q, want %q", n, got[n], w)
+		}
+	}
+	// No node.failed / errors: prune is not a failure path.
+	events, _ := rig.lg.Fold()
+	for _, e := range events {
+		if e.Type == EventNodeFailed {
+			t.Errorf("unexpected node.failed event in a pruned map: %+v", e)
+		}
+	}
+}
+
+func TestRunMapStopWhen(t *testing.T) {
+	// SP5 Task 7: stop_when "best.score >= 0.9" over 4 items that all score 0.95,
+	// concurrency 1. Under a single slot the FIRST item to run commits 0.95, which
+	// trips stop_when; every other item is then pruned (queued-loser short-circuit
+	// — body never runs) before it ever acquires the slot. WHICH index runs first
+	// is scheduler-dependent, so the test asserts the order-INDEPENDENT invariant
+	// stop_when guarantees: exactly ONE item passes and the rest are pruned. The
+	// pruned items' bodies never executed (exactly one Exec call). Map → ok.
+	rig := newMapRig(t, scoreProg("a", 0.95), scoreProg("b", 0.95), scoreProg("c", 0.95), scoreProg("d", 0.95))
+	wf := pruneWorkflow(1, &ir.Prune{Score: "score", StopWhen: "{{ best.score >= 0.9 }}"})
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c", "d"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("stop_when: got (%q, %v), want (ok, nil)", oc, err)
+	}
+	var pass, pruned int
+	for _, mr := range rs.LookupMapItems(testMapPath) {
+		switch mr.Status {
+		case ItemPassed:
+			pass++
+		case ItemPruned:
+			pruned++
+		default:
+			t.Errorf("item N=%d unexpected status %q", mr.N, mr.Status)
+		}
+	}
+	if pass != 1 || pruned != 3 {
+		t.Errorf("stop_when tally: pass=%d pruned=%d, want pass=1 pruned=3 (the trigger passes, the rest are pruned)", pass, pruned)
+	}
+	// Exactly one body ran: the pruned items were short-circuited before dispatch.
+	if len(rig.fake.Calls) != 1 {
+		t.Errorf("pruned item bodies executed: fake.Calls = %v, want exactly 1 (the trigger)", rig.fake.Calls)
+	}
+}
+
+func TestRunMapPrunedDoesNotTripTry(t *testing.T) {
+	// SP5 Task 7: a pruned item is NOT a failure, so a prune map inside a
+	// try.do must NOT cause the try to enter catch. The catch would commit a
+	// sentinel code step; assert the sentinel never ran and the run is ok.
+	rig := newMapRig(t,
+		scoreProg("a", 0.1), scoreProg("b", 0.9), scoreProg("c", 0.5), scoreProg("d", 0.7))
+	mapNode := &ir.Map{
+		Over:        ir.Expr("{{ input.items }}"),
+		As:          "x",
+		Container:   testMapContainer,
+		Concurrency: 4,
+		Body:        pruneBody(&ir.RetryPolicy{Attempts: 1}),
+		Prune:       &ir.Prune{Score: "score", Keep: &ir.PruneKeep{K: 2}},
+	}
+	tryNode := &ir.Try{
+		Do:    ir.NodeList{mapNode},
+		Catch: ir.NodeList{&ir.CodeStep{ID: "sentinel", Run: "./sentinel", Container: testMapContainer}},
+	}
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]ir.Container{
+			testMapContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
+		},
+		Input: &ir.JSONSchema{
+			"type":       "object",
+			"properties": map[string]any{"items": map[string]any{"type": "array"}},
+		},
+		Graph: ir.NodeList{tryNode},
+	}
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c", "d"))
+
+	oc, err := interpNodes(context.Background(), wf.Graph, "", wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("prune-in-try: got (%q, %v), want (ok, nil) — pruned items must not trip catch", oc, err)
+	}
+	for _, c := range rig.fake.Calls {
+		if strings.Contains(c.Run, "./sentinel") {
+			t.Errorf("catch ran on a pruned map: fake.Calls = %v, want ./sentinel absent", rig.fake.Calls)
+		}
+	}
+}
+
 func TestRunMapSkipInItemEndsAsOK(t *testing.T) {
 	// Item-1's body contains a Skip; that item ends as item_passed (skip ends
 	// the item as ok per design §E step 5). The other items pass normally.
