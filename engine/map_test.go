@@ -295,6 +295,75 @@ func TestRunMapMinSuccessFailsBelow(t *testing.T) {
 	}
 }
 
+// seedCommittedMapItem appends a committed map.item event to lg (the durable
+// channel resume folds). Used by the prune-denominator tests to pre-seed pruned
+// / passed items WITHOUT the Task 6/7 controller wiring: runMap's resume
+// reconciliation reads these back via committed[N] and fills `statuses` from
+// them, so the tally runs over the durable record (replayed, not re-decided).
+func seedCommittedMapItem(t *testing.T, lg state.Log, mapPath string, n int, status string) {
+	t.Helper()
+	data, err := json.Marshal(MapItemData{N: n, Status: status})
+	if err != nil {
+		t.Fatalf("marshal map.item N=%d: %v", n, err)
+	}
+	if err := lg.Append(state.Event{Type: EventMapItem, Path: mapPath, Data: data}); err != nil {
+		t.Fatalf("append map.item N=%d: %v", n, err)
+	}
+}
+
+func TestRunMapPrunedExcludedFromMinSuccess(t *testing.T) {
+	// SP5 Task 4: pruned items are removed from BOTH the numerator AND the
+	// min_success denominator. 4 items, 2 pruned + 2 passed, min_success unset
+	// (= all). With pruned in the denominator the map would need 4 passes and
+	// fail ("2 passed"); excluding them, "all" means the 2 NON-pruned, both of
+	// which passed → OutcomeOK.
+	//
+	// Drive via the resume path: pre-seed the durable map.item record, fold,
+	// then run against a BARE fake. All items are committed, so the dispatch
+	// loop skips them and the tally runs over [passed, passed, pruned, pruned].
+	rig1 := newMapRig(t)
+	input := runOverItems("a", "b", "c", "d")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	seedCommittedMapItem(t, rig1.lg, testMapPath, 0, ItemPassed)
+	seedCommittedMapItem(t, rig1.lg, testMapPath, 1, ItemPruned)
+	seedCommittedMapItem(t, rig1.lg, testMapPath, 2, ItemPruned)
+	seedCommittedMapItem(t, rig1.lg, testMapPath, 3, ItemPassed)
+
+	wf := staticOverWorkflow("x", echoStep("x", nil), 4, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := foldFromRig(t, rig1)
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("pruned excluded from min_success: got (%q, %v), want (ok, nil) — pruned items must leave the denominator", oc, err)
+	}
+	if len(rig1.fake.Calls) != 0 {
+		t.Errorf("committed items re-executed: fake.Calls = %v, want []", rig1.fake.Calls)
+	}
+}
+
+func TestRunMapAllPrunedIsOK(t *testing.T) {
+	// SP5 Task 4 edge case: if EVERY item is pruned the effective denominator
+	// is 0; defaultMinSuccess(n, 0) = 0 and pass(0) >= 0 → OutcomeOK. An
+	// entirely-pruned frontier (e.g. stop_when fired immediately) is a success,
+	// not a failure — nothing was expected to survive.
+	rig1 := newMapRig(t)
+	input := runOverItems("a", "b", "c")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	seedCommittedMapItem(t, rig1.lg, testMapPath, 0, ItemPruned)
+	seedCommittedMapItem(t, rig1.lg, testMapPath, 1, ItemPruned)
+	seedCommittedMapItem(t, rig1.lg, testMapPath, 2, ItemPruned)
+
+	wf := staticOverWorkflow("x", echoStep("x", nil), 3, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := foldFromRig(t, rig1)
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("all-pruned: got (%q, %v), want (ok, nil)", oc, err)
+	}
+}
+
 func TestRunMapSkipInItemEndsAsOK(t *testing.T) {
 	// Item-1's body contains a Skip; that item ends as item_passed (skip ends
 	// the item as ok per design §E step 5). The other items pass normally.

@@ -184,14 +184,23 @@ func runMap(
 	//    the terminal verdict; for a reduce map the min_success gate is bypassed
 	//    (a quorum reduce generalizes it — quorum is the success threshold), so a
 	//    reduce node's verdict is the reducer's outcome (step 6).
+	// Pruned items (SP5) are removed from BOTH the numerator (tallyResults
+	// already ignores them) AND the denominator: a pruned item is a deliberate
+	// cancellation by the frontier, not a baseline expectation, so min_success
+	// is measured against the NON-pruned set. effectiveTotal shrinks by the
+	// pruned count; defaultMinSuccess(n, 0) returns 0 for an all-pruned map,
+	// so an entirely-pruned frontier (e.g. stop_when that fired immediately) is
+	// a success, not a failure.
 	pass, fail := tallyResults(statuses)
-	minSuccess := defaultMinSuccess(n, len(overArr))
+	pruned := countPruned(statuses)
+	effectiveTotal := len(overArr) - pruned
+	minSuccess := defaultMinSuccess(n, effectiveTotal)
 	if n.Reduce == nil {
 		if int64(pass) >= minSuccess {
 			return OutcomeOK, nil
 		}
-		return OutcomeRetryableFailure, fmt.Errorf("engine.runMap: map %q: %d items passed, %d failed; min_success requires %d",
-			mapPath, pass, fail, minSuccess)
+		return OutcomeRetryableFailure, fmt.Errorf("engine.runMap: map %q: %d items passed, %d failed, %d pruned; min_success requires %d of %d non-pruned",
+			mapPath, pass, fail, pruned, minSuccess, effectiveTotal)
 	}
 
 	// 6. Fan-IN (C2a). Collect the committed branch outputs+artifacts, then
@@ -413,6 +422,19 @@ func tallyResults(statuses []string) (pass, fail int) {
 		}
 	}
 	return pass, fail
+}
+
+// countPruned counts ItemPruned statuses in the per-item slice (SP5). Used to
+// shrink the min_success denominator: pruned items are neither numerator nor
+// baseline.
+func countPruned(statuses []string) int {
+	n := 0
+	for _, s := range statuses {
+		if s == ItemPruned {
+			n++
+		}
+	}
+	return n
 }
 
 // defaultMinSuccess returns the effective MinSuccess for the map. nil → all
