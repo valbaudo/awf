@@ -824,6 +824,11 @@ graph:
         - id: wait_oob
           await: oob-hit
           where: 'candidate_id == "{{ hyp.id }}"'
+          timeout: 2s   # fast-fail bound: a mis-correlated item never matches and
+                        # times out (retryable_failure) in 2s instead of hanging the
+                        # suite until the global test timeout. Both signals are
+                        # pre-buffered, so a correctly-correlated item matches on the
+                        # first poll, well inside this bound.
           output_schema:
             type: object
             additionalProperties: false

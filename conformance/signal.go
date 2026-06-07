@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,8 +44,15 @@ func testSignal(t *testing.T, factory BackendFactory) {
 // candidate_id matches the item's own id. Two signals are pre-written in an
 // order that does NOT match item order (b first, a second) so a plain
 // earliest-first consume would give item "a" the "b" payload (and item "b"
-// would then time out). Both items committing ok — with two signal.received
-// events — proves each item consumed its OWN correlated signal.
+// would then time out on the fixture's 2s bound — fast-fail, not a hang).
+//
+// The load-bearing assertion is per-item CORRELATION, not a payload count: for
+// each signal.received event we map its path's item-N suffix to the over[]
+// hypothesis id, resolve the event's PayloadRef from Blobs, and assert the
+// delivered candidate_id equals that item's own id. Counting events alone would
+// pass under a regression that ignores where: (both signals get consumed,
+// merely SWAPPED) — verified empirically (see commit message). This assertion
+// FAILS under that swap and PASSES only when correlation holds.
 func testSignalKeyedMatch(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	h := newHarnessWithInput(t, factory, signalWhereWorkflow, map[string]any{
@@ -74,19 +83,65 @@ func testSignalKeyedMatch(t *testing.T, factory BackendFactory) {
 	if oc != engine.OutcomeOK {
 		t.Errorf("outcome = %q, want ok", oc)
 	}
-	// Both signals were consumed (two signal.received events) and the run
-	// committed ok — proving each item matched its OWN candidate_id, not the
-	// earliest-seq signal.
+
+	// over[] index → the hypothesis id at that map item. The item-N suffix in a
+	// signal.received path is the over[] index, so item-0 must have consumed the
+	// "a" hit and item-1 the "b" hit, regardless of seq order.
+	wantByItem := map[int]string{0: "a", 1: "b"}
+
 	events := mustFoldEvents(t, h)
-	var sigReceived int
+	gotByItem := map[int]string{}
 	for _, e := range events {
-		if e.Type == engine.EventSignalReceived {
-			sigReceived++
+		if e.Type != engine.EventSignalReceived {
+			continue
+		}
+		itemN, ok := itemIndexFromPath(e.Path)
+		if !ok {
+			t.Fatalf("signal.received path %q has no item-N suffix", e.Path)
+		}
+		var d engine.SignalReceivedData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatalf("unmarshal SignalReceivedData at %q: %v", e.Path, err)
+		}
+		if d.PayloadRef == "" {
+			t.Fatalf("signal.received at %q has empty PayloadRef", e.Path)
+		}
+		raw, err := h.blobs.Get(d.PayloadRef)
+		if err != nil {
+			t.Fatalf("blobs.Get(%q) at %q: %v", d.PayloadRef, e.Path, err)
+		}
+		var payload struct {
+			CandidateID string `json:"candidate_id"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("unmarshal payload at %q: %v", e.Path, err)
+		}
+		gotByItem[itemN] = payload.CandidateID
+	}
+
+	if len(gotByItem) != len(wantByItem) {
+		t.Fatalf("signal.received events = %d, want %d (one per correlated item)", len(gotByItem), len(wantByItem))
+	}
+	for itemN, want := range wantByItem {
+		if got := gotByItem[itemN]; got != want {
+			t.Errorf("item-%d consumed candidate_id %q, want %q (mis-correlated signal)", itemN, got, want)
 		}
 	}
-	if sigReceived != 2 {
-		t.Errorf("signal.received events = %d, want 2 (one per correlated item)", sigReceived)
+}
+
+// itemIndexFromPath extracts the over[] index N from a map-body node path's
+// trailing ".item-N.<step>" segment (e.g. "map[0].item-1.wait_oob" -> 1).
+// Returns ok=false if no item segment is present.
+func itemIndexFromPath(path string) (int, bool) {
+	for _, seg := range strings.Split(path, ".") {
+		if rest, found := strings.CutPrefix(seg, "item-"); found {
+			n, err := strconv.Atoi(rest)
+			if err == nil {
+				return n, true
+			}
+		}
 	}
+	return 0, false
 }
 
 func testSignalAwaitDelivers(t *testing.T, factory BackendFactory) {
