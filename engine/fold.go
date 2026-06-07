@@ -246,6 +246,26 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				// ItemValue: nil (zero-value) — re-derived from `over` on re-entry.
 			})
 
+		case EventMapFrontier:
+			// SP5: a prune map commits its WHOLE per-item disposition as one
+			// atomic event. Replay every item's status verbatim — the frontier is
+			// NEVER re-derived (resume safety, see EventMapFrontier). Same
+			// MapItemRecord shape as the map.item arm; ItemValue stays nil
+			// (re-derived from `over` on re-entry, Design Q3).
+			var d MapFrontierData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+					EventMapFrontier, e.Seq, e.Path, err)
+			}
+			for _, it := range d.Items {
+				rs.MapItems[e.Path] = append(rs.MapItems[e.Path], MapItemRecord{
+					N:           it.N,
+					Status:      it.Status,
+					ImageDigest: it.ImageDigest,
+					Reason:      it.Reason,
+				})
+			}
+
 		case EventSignalReceived:
 			var d SignalReceivedData
 			if err := json.Unmarshal(e.Data, &d); err != nil {

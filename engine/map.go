@@ -236,27 +236,40 @@ func runMap(
 	}
 	wg.Wait()
 
-	// 3c. SP5 final commit pass. For a prune map the per-item goroutine deferred
-	//     the map.item commit so the authoritative status (pruned vs body status)
-	//     is decided AFTER every fresh item has reported and the frontier settled
-	//     — committing inside the goroutine would race a later commit's prune of an
-	//     already-finished winner. Each not-already-committed item commits its
-	//     durable map.item{status} here: item_pruned if the frontier discarded it,
-	//     else its body status (passed/failed). A queued loser (body never ran)
-	//     commits item_pruned with no body status.
+	// 3c. SP5 ATOMIC frontier commit. A prune disposition is a GLOBAL decision
+	//     (keep: top(k) / stop_when) that is only valid once every item has
+	//     reported and the frontier settled — so it is committed AFTER wg.Wait
+	//     (committing inside a goroutine would race a later prune of an already-
+	//     finished winner) AND all-or-nothing in ONE map.frontier event. A
+	//     per-item commit loop could crash mid-pass and leave a PARTIAL frontier:
+	//     resume would skip the committed survivors (their scores never re-enter a
+	//     fresh controller) and re-derive the rest against an incomplete score set,
+	//     yielding more survivors than keep: top(k) allows. One atomic event makes
+	//     that impossible — a crash before the single append leaves zero committed
+	//     dispositions, so resume re-runs the whole map from a clean slate (bodies
+	//     replay from their own committed node.completed; the frontier is decided
+	//     fresh, with no committed disposition to contradict). Each fresh item's
+	//     authoritative status is recorded here: item_pruned if the frontier
+	//     discarded it (incl. a queued loser whose body never ran), else its body
+	//     status. On a pure replay (every item already committed) there is nothing
+	//     to decide — the disposition is already durable, so skip the commit.
 	if pr != nil && statusErr == nil {
+		var fresh []MapItemData
 		for i := 0; i < len(overArr); i++ {
 			if _, done := committed[i]; done {
-				continue // replayed from a prior run; never re-commit
+				continue // replayed from a prior run; the frontier is already durable
 			}
 			final := statuses[i]
 			if pr.isPruned(i) {
 				final = ItemPruned
 			}
-			if _, cErr := commitMapItem(log, runstate, mapPath, i, final, "", ""); cErr != nil {
+			statuses[i] = final
+			fresh = append(fresh, MapItemData{N: i, Status: final})
+		}
+		if len(fresh) > 0 {
+			if cErr := commitMapFrontier(log, runstate, mapPath, fresh); cErr != nil {
 				return "", cErr
 			}
-			statuses[i] = final
 		}
 	}
 
@@ -322,7 +335,15 @@ func runMap(
 		defer func() { _ = ld.Backend.Destroy(context.Background(), rh) }()
 		ld = ld.WithItemHandle(n.Reduce.Container, rh)
 	}
-	return runReduce(ctx, n.Reduce, mapPath, branches, len(overArr), wf, runstate, ld, log, blobs, clk, tap)
+	// effectiveTotal (= len(overArr) - pruned), NOT len(overArr), is the quorum
+	// cohort: a pruned item is a deliberate frontier cancellation, not a baseline
+	// expectation, so it leaves the denominator exactly as it leaves min_success
+	// (above). A mechanically-FAILED branch still counts (it is in effectiveTotal
+	// but absent from `branches`, so it is a non-agreeing vote) — only pruned items
+	// are excluded. Passing len(overArr) here would demand agreement from items the
+	// frontier deliberately discarded, so a unanimous quorum over the survivors
+	// could never be met.
+	return runReduce(ctx, n.Reduce, mapPath, branches, effectiveTotal, wf, runstate, ld, log, blobs, clk, tap)
 }
 
 // renderImageError marks a per-item map.image render fault (the image: template
@@ -477,6 +498,34 @@ func commitMapItem(log state.Log, runstate *RunState, mapPath string, itemN int,
 	}
 	updateMapItemStatus(runstate, mapPath, itemN, status)
 	return status, nil
+}
+
+// commitMapFrontier appends a prune map's full per-item disposition as ONE
+// atomic map.frontier event (Append+Sync), then mirrors each item's status into
+// RunState.MapItems. The whole frontier rides a single journal entry so a crash
+// can never leave a partial disposition that resume would re-derive against an
+// incomplete score set (resume safety — see EventMapFrontier). items is the
+// fresh (not-already-committed) disposition; an empty slice never reaches here
+// (the caller skips a pure replay).
+func commitMapFrontier(log state.Log, runstate *RunState, mapPath string, items []MapItemData) error {
+	data, mErr := json.Marshal(MapFrontierData{Items: items})
+	if mErr != nil {
+		return fmt.Errorf("marshal map.frontier for %q: %w", mapPath, mErr)
+	}
+	if err := log.Append(state.Event{
+		Type: EventMapFrontier,
+		Path: mapPath,
+		Data: data,
+	}); err != nil {
+		return fmt.Errorf("append map.frontier for %q: %w", mapPath, err)
+	}
+	if err := log.Sync(); err != nil {
+		return fmt.Errorf("sync log after map.frontier for %q: %w", mapPath, err)
+	}
+	for _, it := range items {
+		updateMapItemStatus(runstate, mapPath, it.N, it.Status)
+	}
+	return nil
 }
 
 // updateMapItemStatus walks RunState.MapItems[mapPath] under the RunState

@@ -45,11 +45,15 @@ type reduceBranch struct {
 //
 // branches is the index-ordered list of (committed) branch results the caller
 // collected (from LookupMapItems→LookupCompleted) — the SURVIVORS only; a branch
-// that failed mechanically is absent. cohort is the full fan-out count (every
-// item, surviving or not): the quorum threshold k is measured against the cohort,
-// NOT the survivor count, so an explicit quorum cannot be silently satisfied by
-// fewer agreeing branches than the author demanded when some branches crash. The
-// interpreter is the only state writer: runReduce Commits via the canonical
+// that failed mechanically is absent. cohort is the NON-PRUNED fan-out count
+// (len(over) minus the items the prune frontier discarded): the quorum threshold
+// k is measured against the cohort, NOT the survivor count, so an explicit quorum
+// cannot be silently satisfied by fewer agreeing branches than the author
+// demanded when some branches crash. A mechanically-FAILED branch stays in the
+// cohort (it is absent from `branches`, so it correctly counts as a non-agreeing
+// vote); a deliberately-PRUNED item is removed from the cohort, exactly as it is
+// removed from the min_success denominator (the two thresholds stay symmetric).
+// The interpreter is the only state writer: runReduce Commits via the canonical
 // engine.Commit and RecordCompleted, exactly like a step.
 func runReduce(
 	ctx context.Context,
@@ -83,14 +87,17 @@ func runReduce(
 // synthetic {passed,votes,agree} typed output at nodePath. A not-met quorum is
 // retryable_failure with no commit (mirrors min_success, engine/map.go).
 //
-// The threshold k is measured against the fan-out COHORT (every item, surviving
-// or not), not the survivor count: a branch that failed mechanically is absent
-// from branches and therefore correctly counts as a NON-agreeing vote. This is
-// what makes "unanimous is quorum(N)" honest — a unanimous quorum over a cohort
-// with one crashed branch FAILS (need=N over the cohort, agree<N), rather than
-// passing on the survivors. (Counting agree over survivors but k over the cohort
-// is the only combination that preserves the author's demand under crashes.)
-// votes reports the cohort size so the verdict reads against one denominator.
+// The threshold k is measured against the NON-PRUNED fan-out COHORT, not the
+// survivor count: a branch that failed mechanically is absent from branches and
+// therefore correctly counts as a NON-agreeing vote. This is what makes
+// "unanimous is quorum(N)" honest — a unanimous quorum over a cohort with one
+// crashed branch FAILS (need=N over the cohort, agree<N), rather than passing on
+// the survivors. (Counting agree over survivors but k over the cohort is the only
+// combination that preserves the author's demand under crashes.) A deliberately-
+// PRUNED item is NOT in the cohort the caller passes (engine/map.go subtracts the
+// pruned count), so it neither inflates need nor counts as a missing vote —
+// symmetric with min_success. votes reports the cohort size so the verdict reads
+// against one denominator.
 func runQuorumReduce(r *ir.Reduce, nodePath string, branches []reduceBranch, cohort int, log state.Log, blobs state.Blobs, rs *RunState) (Outcome, error) {
 	agree := 0
 	for _, b := range branches {

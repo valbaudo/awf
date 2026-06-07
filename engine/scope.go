@@ -541,6 +541,12 @@ func (s *Scope) aggregateMapOutputs(staticPath string, ref *template.Ref) (any, 
 	sort.Slice(items, func(i, j int) bool { return items[i].N < items[j].N })
 	out := []any{}
 	for _, mr := range items {
+		if mr.Status == ItemPruned {
+			// A pruned item is a deliberate frontier cancellation, not a result —
+			// exclude it from the cross-map aggregate, exactly as collectReduceBranches
+			// (engine/reduce.go) excludes non-passed items from a reduce: fold.
+			continue
+		}
 		rp := ItemPath(mapStatic, mr.N)
 		if suffix != "" {
 			rp += "." + suffix

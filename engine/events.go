@@ -49,8 +49,29 @@ const (
 	// outcome, a failure, or a skip-target-detected ok). N is the 0-based item
 	// index (matching engine.ItemPath's "item-N" suffix and spec §5.7's
 	// `{{ <as>.index }}` 0-based convention). Status is one of ItemPassed /
-	// ItemFailed.
+	// ItemFailed. A PLAIN map commits one map.item per item as it terminates; a
+	// PRUNE map instead commits its whole disposition atomically via map.frontier
+	// (below), so map.item is never emitted by a prune map.
 	EventMapItem = "map.item"
+
+	// EventMapFrontier is the SP5 prune-map disposition commit. A prune map's
+	// per-item status is a GLOBAL frontier decision (keep: top(k) / stop_when)
+	// that is only valid once every item has reported its score — so, unlike a
+	// plain map (one map.item per item as it terminates), a prune map commits the
+	// ENTIRE per-item disposition as ONE atomic event after the frontier settles.
+	//
+	// This atomicity is load-bearing for resume. A per-item commit loop could
+	// crash mid-pass, leaving a PARTIAL frontier durable; resume would then skip
+	// the committed survivors (their scores never re-enter a fresh controller) and
+	// re-derive the uncommitted remainder against an incomplete score set —
+	// producing MORE survivors than keep: top(k) allows, silently. One atomic
+	// event makes the disposition all-or-nothing: resume either replays the full
+	// frontier verbatim (event present) or re-runs the whole map from a clean
+	// slate (event absent — the bodies replay from their own committed
+	// node.completed, and the frontier is decided fresh with no committed
+	// disposition to contradict). This is the runtime half of the man page's "the
+	// frontier is never re-derived from raw scores" guarantee (awf-workflow.5).
+	EventMapFrontier = "map.frontier"
 )
 
 // Map item statuses — the Status field on MapItemData. NOT the same vocabulary
@@ -106,6 +127,17 @@ type MapItemData struct {
 	// map as permanent_failure. Audit/forensic field: no production reader today
 	// (consumers are the docker RepoDigests follow-up + a future obs projection).
 	Reason string `json:"reason,omitempty"`
+}
+
+// MapFrontierData is the payload of a map.frontier event (SP5). Items is the
+// FULL per-item disposition a prune map decided on this run, index-ordered.
+// Items already committed by a prior run are NOT re-emitted (resume replays them
+// from the earlier event). Each element reuses MapItemData (N + Status; the
+// forensic ImageDigest/Reason fields stay empty for the prune path, exactly as
+// the pre-SP5 deferred commit did) so Fold rebuilds MapItemRecords with the same
+// code as the plain map.item arm.
+type MapFrontierData struct {
+	Items []MapItemData `json:"items"`
 }
 
 // Gate attempt outcomes — the AttemptOutcome field on GateAttemptData. NOT

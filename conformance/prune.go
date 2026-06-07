@@ -105,6 +105,48 @@ graph:
         stop_when: "{{ best.score >= 0.9 }}"
 `, fakeImageDigest)
 
+// prunePartialCrashWorkflow — keep: top(1) at concurrency 1, used by the
+// partial-crash resume test. concurrency 1 runs the four bodies STRICTLY
+// sequentially, so the body-append count is deterministic and the crash can be
+// aimed precisely at the single map.frontier append. Scores [0.9,0.1,0.2,0.3]
+// make item 0 the SOLE top-1 survivor; under a (buggy) per-item commit a crash
+// after item 0 committed would re-derive the remainder against an empty
+// controller and keep a SECOND survivor — the >k corruption this test guards.
+var prunePartialCrashWorkflow = fmt.Sprintf(`workflow: conformance-prune-partial-crash
+version: 1
+input:
+  type: object
+  required: [items]
+  additionalProperties: false
+  properties:
+    items:
+      type: array
+      items: { type: string }
+containers:
+  c0:
+    image: %s
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: x
+      container: c0
+      concurrency: 1
+      body:
+        - id: hyp
+          container: c0
+          run: "./hyp.sh {{ x }}"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [score]
+            properties:
+              score: { type: number }
+      prune:
+        score: score
+        keep: top(1)
+`, fakeImageDigest)
+
 // pruneTryWorkflow — SP5 a prune map nested in a try.do. A pruned item is NOT a
 // failure, so the frontier discarding losers must NOT raise an error into the
 // enclosing try → catch must NOT run. The catch step `sentinel` is deliberately
@@ -164,6 +206,62 @@ func scoreProgram(item string, v float64) execProgram {
 	}
 }
 
+// scoreAgreeProgram is scoreProgram plus a boolean `agree` the quorum reducer
+// counts — for the prune: + reduce:{quorum} composition test.
+func scoreAgreeProgram(item string, v float64, agree bool) execProgram {
+	raw, _ := json.Marshal(map[string]any{"score": v, "agree": agree})
+	return execProgram{
+		cmd: "./hyp.sh " + item,
+		res: container.ExecResult{ExitCode: 0, AWFOutput: raw},
+	}
+}
+
+// pruneQuorumWorkflow — the prune: + reduce:{quorum} composition. keep: top(2)
+// over 4 items, then a quorum: 1.0 (unanimous) reduce over the SURVIVORS' `agree`
+// field. The quorum cohort must be the NON-PRUNED count (2 survivors), not the
+// full fan-out (4): with cohort=2 the two unanimous survivors meet quorum (need
+// 2, agree 2 → passed, votes 2). The old behavior measured quorum against
+// len(over)=4, so unanimous survivors could never reach need=4 — a wrong
+// retryable_failure on a documented feature combination.
+var pruneQuorumWorkflow = fmt.Sprintf(`workflow: conformance-prune-quorum
+version: 1
+input:
+  type: object
+  required: [items]
+  additionalProperties: false
+  properties:
+    items:
+      type: array
+      items: { type: string }
+containers:
+  c0:
+    image: %s
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: x
+      container: c0
+      concurrency: 2
+      body:
+        - id: hyp
+          container: c0
+          run: "./hyp.sh {{ x }}"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [score, agree]
+            properties:
+              score: { type: number }
+              agree: { type: boolean }
+      prune:
+        score: score
+        keep: top(2)
+      reduce:
+        quorum: 1.0
+        over: agree
+`, fakeImageDigest)
+
 // testPrune is the SP5 conformance bucket — the prune: frontier on map against
 // the fake backend (the "definition of done"). Sub-tests pin each load-bearing
 // invariant from spec §3.2b + §7:
@@ -192,6 +290,8 @@ func testPrune(t *testing.T, factory BackendFactory) {
 	t.Run("prune_not_counted_by_min_success", func(t *testing.T) { testPruneNotCountedByMinSuccess(t, factory) })
 	t.Run("prune_stop_when", func(t *testing.T) { testPruneStopWhen(t, factory) })
 	t.Run("prune_resume", func(t *testing.T) { testPruneResume(t, factory) })
+	t.Run("prune_partial_crash_frontier", func(t *testing.T) { testPrunePartialCrashFrontier(t, factory) })
+	t.Run("prune_quorum_cohort_excludes_pruned", func(t *testing.T) { testPruneQuorumCohort(t, factory) })
 	t.Run("prune_does_not_trip_try", func(t *testing.T) { testPruneDoesNotTripTry(t, factory) })
 }
 
@@ -210,19 +310,53 @@ func keepTopKPrograms() []execProgram {
 }
 
 // itemStatusByN folds the log and returns a map of (mapPath item) N → committed
-// map.item Status. mapItems is the total number of map.item events seen.
-func itemStatusByN(events []state.Event) (byN map[int]string, mapItems int) {
+// disposition Status, plus dispositions, the total number of per-item
+// dispositions seen. A PLAIN map records one map.item event per item; a PRUNE
+// map records its whole disposition in ONE atomic map.frontier event (SP5) — this
+// counts both so prune-map assertions (e.g. "4 items committed") read the same
+// whether they land in 4 map.item events or 1 map.frontier of 4 items.
+func itemStatusByN(events []state.Event) (byN map[int]string, dispositions int) {
 	byN = map[int]string{}
 	for _, e := range events {
-		if e.Type != engine.EventMapItem {
-			continue
+		switch e.Type {
+		case engine.EventMapItem:
+			var d engine.MapItemData
+			_ = json.Unmarshal(e.Data, &d)
+			byN[d.N] = d.Status
+			dispositions++
+		case engine.EventMapFrontier:
+			var d engine.MapFrontierData
+			_ = json.Unmarshal(e.Data, &d)
+			for _, it := range d.Items {
+				byN[it.N] = it.Status
+				dispositions++
+			}
 		}
-		mapItems++
-		var d engine.MapItemData
-		_ = json.Unmarshal(e.Data, &d)
-		byN[d.N] = d.Status
 	}
-	return byN, mapItems
+	return byN, dispositions
+}
+
+// dispositionCountByN tallies how many times each item index commits a
+// disposition across the log (map.item OR a map.frontier element). Used to assert
+// commit-once: replay must never re-emit a frontier or duplicate a per-item
+// commit.
+func dispositionCountByN(events []state.Event) map[int]int {
+	perN := map[int]int{}
+	for _, e := range events {
+		switch e.Type {
+		case engine.EventMapItem:
+			var d engine.MapItemData
+			_ = json.Unmarshal(e.Data, &d)
+			perN[d.N]++
+		case engine.EventMapFrontier:
+			var d engine.MapFrontierData
+			_ = json.Unmarshal(e.Data, &d)
+			for _, it := range d.Items {
+				perN[it.N]++
+			}
+		}
+	}
+	return perN
 }
 
 func testPruneKeepTopK(t *testing.T, factory BackendFactory) {
@@ -439,23 +573,143 @@ func testPruneResume(t *testing.T, factory BackendFactory) {
 		}
 	}
 
-	// Per-N commit-once: each item index appears in exactly one map.item event
-	// across the resumed log (replay must not duplicate a pruned/passed commit).
-	perN := map[int]int{}
-	for _, e := range mustFoldEvents(t, h) {
-		if e.Type != engine.EventMapItem {
-			continue
-		}
-		var d engine.MapItemData
-		if uErr := json.Unmarshal(e.Data, &d); uErr != nil {
-			t.Fatalf("prune_resume: unmarshal map.item: %v", uErr)
-		}
-		perN[d.N]++
-	}
-	for n, count := range perN {
+	// Per-N commit-once: each item index commits exactly one disposition across
+	// the resumed log (replay must not re-emit the frontier or duplicate a commit).
+	for n, count := range dispositionCountByN(mustFoldEvents(t, h)) {
 		if count != 1 {
 			t.Errorf("prune_resume: item N=%d committed %d times; want 1 (replay must not duplicate)", n, count)
 		}
+	}
+}
+
+func testPrunePartialCrashFrontier(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	// THE atomic-frontier resume-safety test. A prune disposition is a GLOBAL
+	// top(k) decision committed as ONE atomic map.frontier event. Round 1 crashes
+	// AT that single append: every body has committed its node.completed, but the
+	// frontier has not. Under a (buggy) per-item commit a crash here would leave a
+	// PARTIAL frontier — resume would skip the committed survivor (its score never
+	// re-fed) and re-derive the rest against an EMPTY controller, keeping MORE
+	// survivors than keep: top(1) allows. The atomic event makes that impossible: a
+	// crash before it leaves ZERO committed dispositions, so resume re-derives the
+	// WHOLE frontier over the full (replayed) score set — exactly one survivor.
+	scores := []execProgram{
+		scoreProgram("a", 0.9), // index 0 — the sole top-1 survivor
+		scoreProgram("b", 0.1),
+		scoreProgram("c", 0.2),
+		scoreProgram("d", 0.3),
+	}
+	h := newHarnessWithInput(t, preProgramFake(t, factory, scores), prunePartialCrashWorkflow,
+		map[string]any{"items": []any{"a", "b", "c", "d"}})
+
+	// Crash at the map.frontier append. With concurrency 1 the bodies run strictly
+	// sequentially, so the appends before the frontier are deterministic:
+	// run.started(1) + 4×(node.started + node.completed)(8) = 9; the frontier is the
+	// 10th append, which FailAppendAfterN(9) fails.
+	h.log.FailAppendAfterN(9)
+	if _, err := h.runWorkflow(t); err == nil {
+		t.Fatal("prune_partial_crash: round-1 err = nil, want induced-fault error at the map.frontier append")
+	}
+
+	// Atomicity: the frontier did NOT commit, so ZERO dispositions are durable —
+	// never a partial subset (a per-item commit would have left 1+ survivors here).
+	if _, round1 := itemStatusByN(mustFoldEvents(t, h)); round1 != 0 {
+		t.Fatalf("prune_partial_crash: round-1 committed %d dispositions, want 0 (the frontier commit is atomic — a crash leaves no partial disposition)", round1)
+	}
+
+	// Resume against a BARE fake: every body committed its node.completed before the
+	// crash, so all four REPLAY (no programmed Exec needed) — only the cheap frontier
+	// re-derives, from the replayed scores, and must keep exactly the global top-1.
+	h.log.ClearFault()
+	h.factory = factory
+	oc, err := h.resumeWorkflow(t)
+	if err != nil {
+		t.Fatalf("prune_partial_crash: resume err = %v (bodies must replay; only the frontier re-derives)", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("prune_partial_crash: resume outcome = %q, want ok", oc)
+	}
+
+	byN, total := itemStatusByN(mustFoldEvents(t, h))
+	if total != 4 {
+		t.Fatalf("prune_partial_crash: post-resume disposition count = %d, want 4", total)
+	}
+	want := map[int]string{
+		0: engine.ItemPassed, // a=0.9 — the sole top-1 survivor
+		1: engine.ItemPruned, // b=0.1
+		2: engine.ItemPruned, // c=0.2
+		3: engine.ItemPruned, // d=0.3
+	}
+	survivors := 0
+	for n, w := range want {
+		if byN[n] != w {
+			t.Errorf("prune_partial_crash: item N=%d status=%q, want %q", n, byN[n], w)
+		}
+		if byN[n] == engine.ItemPassed {
+			survivors++
+		}
+	}
+	if survivors != 1 {
+		t.Errorf("prune_partial_crash: %d survivors after resume, want exactly 1 (keep top(1) — the frontier must not be re-derived against a partial score set)", survivors)
+	}
+
+	// Commit-once: the resumed run emits exactly one disposition per item (one
+	// atomic frontier of 4 items), never a duplicate.
+	for n, count := range dispositionCountByN(mustFoldEvents(t, h)) {
+		if count != 1 {
+			t.Errorf("prune_partial_crash: item N=%d committed %d times, want 1", n, count)
+		}
+	}
+}
+
+func testPruneQuorumCohort(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	// prune: + reduce:{quorum} composition (the cohort-denominator fix). keep:
+	// top(2) over 4 items prunes the two lowest scorers; a quorum: 1.0 reduce then
+	// folds the SURVIVORS' `agree` votes. The quorum threshold must be measured
+	// against the NON-PRUNED cohort (2 survivors), exactly as min_success excludes
+	// pruned items. The two survivors (b=0.9, d=0.7) both agree, so the unanimous
+	// quorum is met (need 2, agree 2) and the map ends ok with votes=2. Measuring
+	// quorum against the full fan-out (len(over)=4) — the old behavior — would
+	// require 4 agreeing votes that the pruned items can never supply, wrongly
+	// failing the map. The pruned items (a,c) agree=false, but they are absent from
+	// the reducer's branches entirely, so only the cohort denominator can be wrong.
+	programs := []execProgram{
+		scoreAgreeProgram("a", 0.1, false), // pruned (lowest)
+		scoreAgreeProgram("b", 0.9, true),  // survivor — agrees
+		scoreAgreeProgram("c", 0.5, false), // pruned
+		scoreAgreeProgram("d", 0.7, true),  // survivor — agrees
+	}
+	h := newHarnessWithInput(t, preProgramFake(t, factory, programs), pruneQuorumWorkflow,
+		map[string]any{"items": []any{"a", "b", "c", "d"}})
+
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("prune_quorum_cohort: runWorkflow: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("prune_quorum_cohort: outcome = %q, want ok (unanimous survivors meet quorum over the NON-pruned cohort)", oc)
+	}
+
+	// The reduced verdict committed at the map path reports the cohort denominator:
+	// votes must be 2 (the survivor count), NOT 4 (the full fan-out) — the proof
+	// that pruned items leave the quorum cohort.
+	rs, ferr := engine.Fold(mustFoldEvents(t, h), h.blobs)
+	if ferr != nil {
+		t.Fatalf("prune_quorum_cohort: Fold: %v", ferr)
+	}
+	nr, ok := rs.LookupCompleted("map[0]")
+	if !ok {
+		t.Fatalf("prune_quorum_cohort: no reduced verdict committed at map[0]")
+	}
+	if got := nr.Outputs["votes"]; got != float64(2) {
+		t.Errorf("prune_quorum_cohort: votes = %v, want 2 (cohort excludes the 2 pruned items)", got)
+	}
+	if got := nr.Outputs["agree"]; got != float64(2) {
+		t.Errorf("prune_quorum_cohort: agree = %v, want 2 (both survivors agree)", got)
+	}
+	if got := nr.Outputs["passed"]; got != true {
+		t.Errorf("prune_quorum_cohort: passed = %v, want true", got)
 	}
 }
 

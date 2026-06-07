@@ -694,16 +694,19 @@ numerator and the denominator — they are neither passes nor the "all" baseline
 (`min_success: 0.5` over 10 items where 6 were pruned requires 2 of the 4
 survivors, not 5 of 10).
 
-Resume: a pruned item is recorded durably as a `map.item` event with status
-`item_pruned`; on resume that record is **replayed verbatim** — the item's body is
-not re-run and the prune is not re-decided. The committed journal is authoritative
-for which items survived; the frontier is never re-derived from raw scores,
-because items can commit in a different order across runs and a re-derived
-`top(k)` tie-break or first-firing `stop_when` could pick a different survivor set.
+Resume: a prune map commits its whole per-item disposition (each item's
+`item_passed` / `item_pruned` / `item_failed` status) **atomically** as a single
+durable record once the frontier settles; on resume that record is **replayed
+verbatim** — surviving items' bodies are not re-run and the prune is not
+re-decided. The committed journal is authoritative for which items survived; the
+frontier is never re-derived from a partial score set, because items can commit in
+a different order across runs and a re-derived `top(k)` tie-break or first-firing
+`stop_when` could pick a different survivor set. A crash before the disposition
+commits leaves **no partial frontier**: the whole map re-runs from its already-
+committed per-item bodies and the frontier is decided once, cleanly.
 
 `prune:` and `reduce:` compose: the survivors are the input to a `reduce:` fold —
-search, then collapse the winners to one. *(reduce: ships in a separate
-sub-project; this documents the intended composition.)*
+search, then collapse the winners to one.
 
 Out of scope: `prune:` on `parallel` — a `parallel` branch has no durable
 per-branch status record, so a pruned branch could not survive resume safely;
