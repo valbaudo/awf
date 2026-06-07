@@ -90,6 +90,36 @@ func TestRunReduceQuorumMet(t *testing.T) {
 	}
 }
 
+// TestQuorumReduceOutputMatchesVerdictFields pins the cross-package contract
+// (SRP-4): runQuorumReduce must commit EXACTLY the keys ir.QuorumVerdictFields
+// declares — the set the validator binds downstream refs against. If the engine
+// adds/renames a verdict key without updating ir.QuorumVerdictFields (or vice
+// versa), this fails, closing the producer/validator drift gap.
+func TestQuorumReduceOutputMatchesVerdictFields(t *testing.T) {
+	rig := newReduceRig(t)
+	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"vulnerable": true}}}
+	q := ir.Ratio("1")
+	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+
+	if _, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil); err != nil {
+		t.Fatalf("runReduce: %v", err)
+	}
+	nr, ok := rig.rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("no NodeResult committed at %q", testMapPath)
+	}
+	if len(nr.Outputs) != len(ir.QuorumVerdictFields) {
+		t.Fatalf("quorum verdict %v has %d keys, want %d (ir.QuorumVerdictFields=%v)",
+			nr.Outputs, len(nr.Outputs), len(ir.QuorumVerdictFields), ir.QuorumVerdictFields)
+	}
+	for k := range nr.Outputs {
+		if !ir.QuorumVerdictFields[k] {
+			t.Errorf("quorum verdict key %q absent from ir.QuorumVerdictFields %v — producer/validator drift",
+				k, ir.QuorumVerdictFields)
+		}
+	}
+}
+
 func TestRunReduceQuorumNotMet(t *testing.T) {
 	rig := newReduceRig(t)
 	branches := []reduceBranch{
