@@ -86,10 +86,28 @@ export default function App() {
     }
   }, [run]);
 
-  // Re-overlay whenever the selected run changes (structure is identical -> restyle).
+  // Live overlay: subscribe to SSE for the selected run. The server pushes the current
+  // projection on connect and again on every log change; each message RESTYLES nodes
+  // (applyState) without relayout. No run selected -> clear the overlay (static view).
   useEffect(() => {
-    if (loaded) void refresh();
-  }, [run, loaded, refresh]);
+    if (!loaded) return;
+    if (!run) {
+      setNodes((prev) => applyState(prev, undefined));
+      return;
+    }
+    const es = new EventSource(`/api/events?run=${encodeURIComponent(run)}`);
+    es.onmessage = (ev) => {
+      try {
+        const p = JSON.parse(ev.data) as Projection;
+        setNodes((prev) => applyState(prev, p.run_overlay));
+        setErr("");
+      } catch {
+        /* ignore a malformed frame; the next one will refresh state */
+      }
+    };
+    es.onerror = () => setErr("live stream interrupted");
+    return () => es.close();
+  }, [run, loaded]);
 
   const onSelect = (e: React.ChangeEvent<HTMLSelectElement>) =>
     setRun(e.target.value);

@@ -8,6 +8,7 @@ import (
 
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/obs"
+	"github.com/valbaudo/awf/runlock"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -19,10 +20,10 @@ type RunRow struct {
 }
 
 // listRuns enumerates stateDir/runs and returns the runs whose workflow_digest matches
-// the loaded workflow, sorted by run id. Status is obs.DeriveStatus only -- flock
-// liveness (running vs crashed) is deferred to Slice 2b, so this stays self-contained
-// and free of any cli-package coupling. A missing runs dir yields an empty slice (not
-// an error): a freshly-created state dir simply has no runs yet.
+// the loaded workflow, sorted by run id. An "incomplete" run (started, no terminal
+// event) is resolved via the shared runlock probe into running (a live process holds the
+// lock) vs crashed (no holder), same split as `awf ls`. A missing runs dir yields an
+// empty slice (not an error): a freshly-created state dir simply has no runs yet.
 func listRuns(stateDir, wantDigest string) ([]RunRow, error) {
 	runsDir := filepath.Join(stateDir, "runs")
 	entries, err := os.ReadDir(runsDir)
@@ -46,9 +47,21 @@ func listRuns(stateDir, wantDigest string) ([]RunRow, error) {
 		if digest != wantDigest {
 			continue // a run of a different workflow (or version) -- don't offer it
 		}
+		status := obs.DeriveStatus(events)
+		if status == obs.RunIncomplete {
+			held, herr := runlock.Held(filepath.Join(runsDir, e.Name()))
+			if herr != nil {
+				return nil, herr
+			}
+			if held {
+				status = obs.RunRunning
+			} else {
+				status = obs.RunCrashed
+			}
+		}
 		rows = append(rows, RunRow{
 			RunID:    e.Name(),
-			Status:   string(obs.DeriveStatus(events)),
+			Status:   string(status),
 			Workflow: wfID,
 		})
 	}

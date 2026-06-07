@@ -258,8 +258,11 @@ workflow (and, with **--run**, the journal) offline and executes nothing.
 Serve a local, read-only web UI that renders the workflow graph and overlays run
 state. Binds **127.0.0.1** only — no authentication, no remote exposure — on an
 ephemeral port unless **--port** is given, prints the URL, and serves until
-interrupted. Open the URL, pick a run to see its state, and use **Refresh** to
-re-read it. The graph is rendered from the same projection as **awf graph**.
+interrupted. Open the URL and pick a run: its node states stream live (a node
+lights up as it starts, completes, fails, or is skipped) over Server-Sent Events,
+so a running workflow updates in place with no reload; **Refresh** forces a re-read.
+The run list distinguishes running from crashed runs via the run-liveness lock. The
+graph is rendered from the same projection as **awf graph**.
 
 **--state-dir** _dir_
 :   Base directory holding runs (default `./.awf`).

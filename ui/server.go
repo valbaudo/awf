@@ -17,16 +17,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/valbaudo/awf/graph"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
+)
+
+// SSE cadence (vars so tests can shorten them). pollInterval drives how often the watch
+// loop stats the run log; heartbeat keeps idle connections (and proxies) alive.
+var (
+	ssePollInterval = 500 * time.Millisecond
+	sseHeartbeat    = 15 * time.Second
 )
 
 // Listen binds a TCP listener on 127.0.0.1 (loopback only -- no remote exposure, which
@@ -71,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/graph", s.handleGraph)
 	mux.HandleFunc("/api/runs", s.handleRuns)
+	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.Handle("/", http.FileServerFS(dist()))
 	return mux
 }
@@ -146,4 +156,82 @@ func writeJSON(w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// handleEvents streams projection updates for a run as Server-Sent Events: one event on
+// connect, then one per detected log change (stat-then-fold poll), plus periodic
+// heartbeats. The watch loop runs IN this handler goroutine and returns on client
+// disconnect (r.Context().Done()), so there is no separate goroutine to leak.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	run := r.URL.Query().Get("run")
+	proj, err := s.projectionFor(run)
+	if err != nil {
+		if errors.Is(err, errNoRun) {
+			http.Error(w, "no such run", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+
+	writeSSE(w, proj)
+	flusher.Flush()
+	last, _ := s.statKey(run)
+
+	poll := time.NewTicker(ssePollInterval)
+	defer poll.Stop()
+	hb := time.NewTicker(sseHeartbeat)
+	defer hb.Stop()
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return // client disconnected -> handler returns -> nothing leaks
+		case <-poll.C:
+			cur, _ := s.statKey(run)
+			if cur == last {
+				continue
+			}
+			last = cur
+			p, perr := s.projectionFor(run)
+			if perr != nil {
+				return // run vanished or became unreadable -> end the stream
+			}
+			writeSSE(w, p)
+			flusher.Flush()
+		case <-hb.C:
+			_, _ = io.WriteString(w, ": hb\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// statKey returns a change key (size-mtime) for a run's log, and whether it exists.
+// Empty run id (static graph) has no log to watch -> ("", false), a stable key.
+func (s *Server) statKey(runID string) (string, bool) {
+	if runID == "" {
+		return "", false
+	}
+	info, err := os.Stat(filepath.Join(s.stateDir, "runs", runID, "log"))
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%d-%d", info.Size(), info.ModTime().UnixNano()), true
+}
+
+func writeSSE(w io.Writer, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 }
