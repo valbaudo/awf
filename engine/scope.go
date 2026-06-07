@@ -542,9 +542,12 @@ func (s *Scope) aggregateMapOutputs(staticPath string, ref *template.Ref) (any, 
 	out := []any{}
 	for _, mr := range items {
 		if mr.Status == ItemPruned {
-			// A pruned item is a deliberate frontier cancellation, not a result —
-			// exclude it from the cross-map aggregate, exactly as collectReduceBranches
-			// (engine/reduce.go) excludes non-passed items from a reduce: fold.
+			// A pruned item is a deliberate frontier cancellation, not a result, so
+			// it must not appear in the cross-map aggregate even though its body
+			// committed typed output before being pruned. (A mechanically-FAILED
+			// item is already compacted out below by the committed-output miss, so
+			// ItemPruned is the only status needing an explicit skip — this leaves
+			// the same survivors collectReduceBranches feeds a reduce: fold.)
 			continue
 		}
 		rp := ItemPath(mapStatic, mr.N)
