@@ -1,8 +1,25 @@
 .DEFAULT_GOAL := build
-.PHONY: build test lint integ integ-live man
+.PHONY: build test lint integ integ-live man ui ui-test e2e-ui
 
 build:
 	go build -o bin/awf ./cmd/awf
+
+# ui rebuilds the awf-ui SPA bundle into ui/dist (committed + //go:embed'd). Requires
+# node/npm. `go build`/CI do NOT need node — they consume the committed ui/dist. Run
+# this after changing anything under ui/src, then commit ui/dist.
+ui:
+	cd ui && npm ci && npm run build
+
+# ui-test runs the SPA's Vitest unit tests (pure transform / overlay logic). Node-only;
+# kept out of `make test` so the Go gate stays pure Go.
+ui-test:
+	cd ui && npm ci && npm test
+
+# e2e-ui runs the MANDATORY browser smoke (Slice 2a): boots the embedded SPA in a
+# headless Chrome/Chromium and asserts the graph renders + a run's snapshot state
+# paints. Needs a Chrome/Chromium on the machine; FAILS (not skips) if absent.
+e2e-ui:
+	go test -tags e2e -run E2E -count=1 ./ui/
 
 # man builds the troff man pages from their Markdown sources via go-md2man.
 # go-md2man is pinned (the version already in the module graph) so output is

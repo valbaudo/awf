@@ -137,6 +137,10 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return cliLS(args[1:], stdout, stderr)
 	case "inspect":
 		return cliInspect(args[1:], stdout, stderr)
+	case "graph":
+		return cliGraph(args[1:], stdout, stderr)
+	case "ui":
+		return cliUI(args[1:], stdout, stderr)
 	case "trace":
 		return cliTrace(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -180,6 +184,14 @@ func printUsage(w io.Writer) {
 	fprintln(w, "                              --output <fmt>     text (default) or json")
 	fprintln(w, "                              --tokens           per-step input/output token counts")
 	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "  graph <path>              emit the workflow's node/edge graph as JSON")
+	fprintln(w, "                              --run <id>         overlay per-path run state")
+	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "                              --output <fmt>     json (default)")
+	fprintln(w, "  ui <path>                 serve a local web UI of the graph + run state")
+	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "                              --port <n>         bind port (default: ephemeral)")
+	fprintln(w, "                              --open             open the URL in a browser")
 	fprintln(w, "  trace <run-id>            export a run's OTel span projection")
 	fprintln(w, "                              --otlp <endpoint>  export to an OTLP/HTTP collector")
 	fprintln(w, "                              --capture-content  attach agent I/O + outputs (default OFF)")

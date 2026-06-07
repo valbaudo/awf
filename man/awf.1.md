@@ -27,6 +27,10 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **trace** _run-id_ [**--state-dir** _dir_] [**--otlp** _endpoint_] [**--capture-content**] [**--output** _otel_|_json_]
 
+**awf** **graph** _path_ [**--run** _id_] [**--state-dir** _dir_] [**--output** _json_]
+
+**awf** **ui** _path_ [**--state-dir** _dir_] [**--port** _n_] [**--open**]
+
 **awf** **help**
 
 # DESCRIPTION
@@ -230,6 +234,41 @@ and executes nothing.
 
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).
+
+## awf graph _path_
+
+Project a workflow into a node/edge graph and print it as JSON — the contract a
+visual graph tool consumes. Without **--run** it emits the static template graph;
+with **--run** _id_ it attaches a flat `run_overlay` mapping each runtime node
+path to its state (`running`, `completed`, `failed`, or `skipped`). Reads the
+workflow (and, with **--run**, the journal) offline and executes nothing.
+
+**--run** _id_
+:   Overlay state from this run. Run ids are explicit (there is no `latest`); list
+    them with **awf ls**. Omit for the static graph.
+
+**--state-dir** _dir_
+:   Base directory holding runs (default `./.awf`).
+
+**--output** _json_
+:   Output format (only `json` today).
+
+## awf ui _path_
+
+Serve a local, read-only web UI that renders the workflow graph and overlays run
+state. Binds **127.0.0.1** only — no authentication, no remote exposure — on an
+ephemeral port unless **--port** is given, prints the URL, and serves until
+interrupted. Open the URL, pick a run to see its state, and use **Refresh** to
+re-read it. The graph is rendered from the same projection as **awf graph**.
+
+**--state-dir** _dir_
+:   Base directory holding runs (default `./.awf`).
+
+**--port** _n_
+:   Port to bind on 127.0.0.1 (default 0, an ephemeral port).
+
+**--open**
+:   Open the printed URL in the default browser (best-effort).
 
 ## awf help
 
