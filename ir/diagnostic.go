@@ -172,4 +172,6 @@ var catalog = map[string]string{
 	"AWF1035": "reduce: must declare exactly one of run: or quorum: (quorum requires over:; a run: reducer requires container:)",
 	"AWF1036": "where: clause is not a valid bounded boolean expression (after `{{ }}` slot scan / parse)",
 	"AWF5006": "reduce quorum/over names a body output field that no branch declares, or min_success and reduce:{quorum} are both declared on the same node",
+	"AWF1037": "prune must declare a `score` field name and exactly one of `keep`/`stop_when` (`keep` must be top(<positive int>), `stop_when` must be a non-empty bounded boolean expression)",
+	"AWF5008": "prune.score must name a numeric field declared in the output_schema of the map body's last step",
 }

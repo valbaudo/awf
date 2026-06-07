@@ -16,6 +16,9 @@ package ir
 //     of run:/quorum:; quorum needs over:; a run: reducer needs a resolvable
 //     container:) and quorum/over aggregation scope (over: names a real body field;
 //     min_success and reduce:{quorum} are mutually exclusive)
+//   - prune      (AWF1037, AWF5008) — map prune: frontier shape (a `score` field +
+//     exactly one of keep: top(<k>) / stop_when:) and score-field binding (score
+//     names a numeric field in the body's last step's output_schema)
 //   - refs       (AWF3001/2) — output_schema-iff-referenced cross-walk via the template
 //     package (Slots → ParseRef per Template; ParseExpr → References per Expr)
 //   - input_files (AWF3007) — every input_files value is a static step.<id>.files.<name>
@@ -43,6 +46,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 	validateAgents(ld, c)
 	validateContinues(ld, c)
 	validateReduce(ld, c)
+	validatePrune(ld, c)
 	validateRefs(ld, c)
 	validateInputFiles(ld, c)
 	validateAwfOutputWrites(ld.Workflow.Graph, c)
