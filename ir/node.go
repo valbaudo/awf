@@ -118,6 +118,9 @@ type Map struct {
 	MinSuccess  *Ratio   `json:"min_success,omitempty"`
 	Body        NodeList `json:"body"`
 	Reduce      *Reduce  `json:"reduce,omitempty"`
+	// Prune is the optional frontier clause (SP5, spec §3.2b). nil for a plain
+	// result-blind map. Folds into the digest via omitempty.
+	Prune *Prune `json:"prune,omitempty"`
 }
 
 func (*If) isNode()       {}
