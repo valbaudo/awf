@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -37,5 +38,32 @@ func TestFakeFailCreateForImage(t *testing.T) {
 func TestFakeAdvertisesRuntimeImageCapability(t *testing.T) {
 	if !NewFake().Capabilities().RuntimeImage {
 		t.Error("fake Caps.RuntimeImage = false, want true (fake resolves runtime images)")
+	}
+}
+
+// The fake's two Create-failure hooks must return DISTINGUISHABLE error types —
+// the engine routes them differently inside a map: FailCreateForImage models a
+// tolerated availability failure (*ImageUnavailableError → item_failed +
+// image_unavailable), FailCreateConfigForImage models a deterministic definition
+// fault (a PLAIN error → permanent_failure for the whole map). Guard the seam the
+// conformance map tests depend on.
+func TestFakeCreateFailureErrorTypes(t *testing.T) {
+	f := NewFake()
+	f.FailCreateForImage("img:gone")
+	f.FailCreateConfigForImage("img:badcfg")
+
+	_, err := f.Create(context.Background(), ContainerSpec{Name: "lab", Image: "img:gone"})
+	var iu *ImageUnavailableError
+	if !errors.As(err, &iu) {
+		t.Errorf("FailCreateForImage Create err = %v, want *ImageUnavailableError", err)
+	}
+
+	_, err = f.Create(context.Background(), ContainerSpec{Name: "lab", Image: "img:badcfg"})
+	if err == nil {
+		t.Fatal("FailCreateConfigForImage Create err = nil, want non-nil")
+	}
+	var iu2 *ImageUnavailableError
+	if errors.As(err, &iu2) {
+		t.Errorf("FailCreateConfigForImage Create err = %v, want a PLAIN error (NOT *ImageUnavailableError)", err)
 	}
 }

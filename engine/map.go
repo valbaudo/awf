@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/valbaudo/awf/clock"
+	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
@@ -274,13 +275,16 @@ func runMap(
 	}
 
 	// 4. Internal dispatch error. A per-item runtime-image RENDER fault (bad
-	//    image: template or an empty-rendered image) is a deterministic DEFINITION
-	//    error: fail the whole map LOUD as permanent_failure (like an unrenderable
+	//    image: template or an empty-rendered image) OR a per-item Create CONFIG
+	//    fault (the backend rejected an invalid per-element spec — bad resources,
+	//    a host config the daemon refuses) is a deterministic DEFINITION error:
+	//    fail the whole map LOUD as permanent_failure (like an unrenderable
 	//    `over`), never laundered into a tolerated item_failed. Other internal
 	//    errors (static Create failure, log append, ctx cancel) propagate raw.
 	if statusErr != nil {
 		var rie *renderImageError
-		if errors.As(statusErr, &rie) {
+		var cce *createConfigError
+		if errors.As(statusErr, &rie) || errors.As(statusErr, &cce) {
 			return failStep(log, mapPath, OutcomePermanentFailure, statusErr)
 		}
 		return "", statusErr
@@ -336,6 +340,26 @@ func (e *renderImageError) Error() string {
 }
 
 func (e *renderImageError) Unwrap() error { return e.err }
+
+// createConfigError marks a per-item Backend.Create failure that is NOT a
+// tolerated image-availability fault (container.ImageUnavailableError) — the
+// backend rejected the per-element SPEC itself (a malformed resources:, a host
+// config the daemon refused). Like renderImageError it is a DETERMINISTIC
+// definition error: dispatchItem returns it so runMap fails the WHOLE map as
+// permanent_failure, never laundering an author's broken definition into a
+// tolerated item_failed under min_success (the bug that hid `mem: 4Gi`). A
+// genuine "couldn't pull/boot this image" failure stays a tolerated per-item
+// ReasonImageUnavailable instead.
+type createConfigError struct {
+	itemN int
+	err   error
+}
+
+func (e *createConfigError) Error() string {
+	return fmt.Sprintf("map item-%d: container Create rejected the per-element spec (definition error): %v", e.itemN, e.err)
+}
+
+func (e *createConfigError) Unwrap() error { return e.err }
 
 // dispatchItem runs body for one item. Provisions a per-item container handle,
 // builds a per-item dispatcher, recursively walks body, commits the map.item
@@ -408,13 +432,34 @@ func dispatchItem(
 	itemHandle, err := ld.Backend.Create(ctx, spec)
 	if err != nil {
 		if n.Image != "" {
-			// Tolerated per-item infra failure. For a prune map the commit is
-			// deferred to the final pass — return the failed status (image_unavailable
-			// reason is recorded only on the non-prune commit path).
-			if pr != nil {
-				return ItemFailed, nil
+			// A context cancellation/timeout (possibly wrapped in an
+			// ImageUnavailableError by the backend) is a transient control signal —
+			// NOT a tolerated availability failure NOR a definition error. Propagate
+			// it raw, like the static path below, so a cancelled run stays resumable
+			// (its frontier uncommitted) instead of committing the map as a
+			// permanent_failure that resume would never retry.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", err
 			}
-			return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable)
+			// ONLY a container.ImageUnavailableError — a valid image that couldn't be
+			// pulled/booted, or an untrusted non-pinned rendered ref — is a tolerated
+			// per-item infra failure. For a prune map the commit is deferred to the
+			// final pass (image_unavailable reason is recorded only on the non-prune
+			// commit path).
+			var iu *container.ImageUnavailableError
+			if errors.As(err, &iu) {
+				if pr != nil {
+					return ItemFailed, nil
+				}
+				return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable)
+			}
+			// Any OTHER Create error is a deterministic definition error (an invalid
+			// per-element spec — bad resources, a host config the daemon rejects):
+			// fail the WHOLE map LOUD as permanent_failure (like a render fault),
+			// never laundered into a tolerated item_failed under min_success. This
+			// return is intentionally pr-agnostic — a prune map fails just as loud;
+			// only the TOLERATED path above is prune-gated.
+			return "", &createConfigError{itemN: itemN, err: err}
 		}
 		return "", fmt.Errorf("create item-%d container: %w", itemN, err)
 	}

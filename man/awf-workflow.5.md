@@ -599,7 +599,13 @@ cannot be booted fails that element only — committed as `item_failed` with
 `reason: image_unavailable`, counted against `min_success`, never the whole map.
 A `map.image` template that fails to render, or renders to an empty string, is a
 deterministic definition error: it fails the whole map as `permanent_failure`
-(like an unrenderable `over`), not a tolerated item. The template source text
+(like an unrenderable `over`), not a tolerated item. So is an element whose
+per-element spec the backend rejects — a malformed `resources:` (`mem`/`cpu`), or
+a host config the daemon refuses: an invalid spec is the author's pinned
+definition, not run-data, so it fails the whole map rather than being tolerated.
+Only a valid reference that cannot be pulled or booted — or a rendered reference
+that is not a `@sha256:` digest — is the tolerated `image_unavailable`. The
+template source text
 folds into the definition digest like every other field; the resolved digest is
 run state, not definition. The container named by `container:` supplies the
 per-element handle and any resources; with `image:` it carries `resources:`

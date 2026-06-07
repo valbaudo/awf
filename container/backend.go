@@ -17,6 +17,7 @@ package container
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // Backend executes commands inside long-lived containers. One concrete impl
@@ -338,3 +339,31 @@ var ErrUnsupported = errors.New("container: operation not supported by this back
 // importing the concrete backend package. Phase-4 decision 11: this is a
 // permanent_failure (retrying re-runs the step to fail identically).
 var ErrSnapshotTooLarge = errors.New("snapshot diff exceeds the backend size limit")
+
+// ImageUnavailableError, returned by Backend.Create, marks the SOLE Create
+// failure a map TOLERATES per element (P6a): a valid, non-empty image reference
+// that could not be made runnable — its pull failed, or its container would not
+// start / become ready — plus a rendered reference that is not a `@sha256:`
+// content digest (untrusted worklist run-data the format contract rejects per
+// element, not the author's pinned definition). The engine routes it to a
+// tolerated item_failed + ReasonImageUnavailable, counted against min_success.
+//
+// Every OTHER Create error is a deterministic DEFINITION error — an invalid
+// per-element spec the author wrote: a malformed `resources:` (e.g. mem: 4Gi the
+// daemon/parse rejects), or a host config the daemon refuses — and fails the
+// WHOLE map as permanent_failure. Backends MUST wrap ONLY genuine image-
+// availability / boot faults in this type; an UNWRAPPED Create error is treated
+// as a hard, map-failing config error. That fail-loud default is deliberate: it
+// stops a broken definition from being silently laundered into a tolerated
+// per-item skip (the bug that hid `mem: 4Gi` behind image_unavailable). Callers
+// route with errors.As.
+type ImageUnavailableError struct {
+	Image string
+	Err   error
+}
+
+func (e *ImageUnavailableError) Error() string {
+	return fmt.Sprintf("container: image %q unavailable: %v", e.Image, e.Err)
+}
+
+func (e *ImageUnavailableError) Unwrap() error { return e.Err }

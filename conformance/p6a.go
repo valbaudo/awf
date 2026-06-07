@@ -85,6 +85,32 @@ func preProgramFakeP6a(t *testing.T, factory BackendFactory, execs []execProgram
 	}
 }
 
+// preProgramFakeP6aConfigFail is preProgramFakeP6a but the `configFail` images
+// are programmed to fail Create with a PLAIN (non-ImageUnavailable) error —
+// modeling an invalid per-element spec the backend rejects (e.g. malformed
+// resources:). The engine must fail the whole map as permanent_failure, NOT
+// tolerate it. Non-fake backends pass through.
+func preProgramFakeP6aConfigFail(t *testing.T, factory BackendFactory, execs []execProgram, digests map[string]string, configFail []string) BackendFactory {
+	t.Helper()
+	return func() container.Backend {
+		b := factory()
+		fake, ok := b.(*container.Fake)
+		if !ok {
+			return b
+		}
+		for _, p := range execs {
+			fake.ProgramExec(p.cmd, p.res, nil)
+		}
+		for img, dig := range digests {
+			fake.ProgramImageDigest(img, dig)
+		}
+		for _, img := range configFail {
+			fake.FailCreateConfigForImage(img)
+		}
+		return fake
+	}
+}
+
 func p6aItems(pairs ...[2]string) map[string]any {
 	items := make([]any, 0, len(pairs))
 	for _, p := range pairs {
@@ -120,6 +146,7 @@ func testP6a(t *testing.T, factory BackendFactory) {
 	t.Run("resume_replays_committed_items_with_digest", func(t *testing.T) { testP6aResumeReplays(t, factory) })
 	t.Run("unavailable_image_is_item_failed_with_reason", func(t *testing.T) { testP6aUnavailableItemFailed(t, factory) })
 	t.Run("empty_runtime_image_is_hard_error", func(t *testing.T) { testP6aEmptyRuntimeImageIsHardError(t, factory) })
+	t.Run("config_create_error_is_hard_error", func(t *testing.T) { testP6aConfigCreateErrorIsHardError(t, factory) })
 	t.Run("mixed_tally_distinguishes_causes", func(t *testing.T) { testP6aMixedTallyDistinguishesCauses(t, factory) })
 }
 
@@ -303,6 +330,51 @@ func testP6aEmptyRuntimeImageIsHardError(t *testing.T, factory BackendFactory) {
 				}
 			}
 		}
+	}
+}
+
+// (4b) A per-element Create that fails with a NON-ImageUnavailable error (an
+// invalid per-element spec the backend rejects — e.g. a malformed resources:) is
+// a deterministic DEFINITION error: it must fail the WHOLE map as
+// permanent_failure, NOT be tolerated under min_success (contrast (3), a genuine
+// image_unavailable). Two items, min_success 0.5: item0 boots+passes, item1's
+// Create is config-invalid. If the config error were wrongly laundered into
+// image_unavailable, 1/2 ≥ 0.5 would pass — so an OK outcome here means the
+// swallowing bug regressed.
+func testP6aConfigCreateErrorIsHardError(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	f := preProgramFakeP6aConfigFail(t, factory,
+		[]execProgram{{cmd: "./probe.sh n0", res: container.ExecResult{ExitCode: 0}}},
+		map[string]string{p6aImgA: p6aDigest('a')},
+		[]string{p6aGone}, // item1: Create rejected as config-invalid (plain error)
+	)
+	h := newHarnessWithInput(t, f, p6aRuntimeImageWorkflow,
+		p6aItems([2]string{p6aImgA, "n0"}, [2]string{p6aGone, "n1"}))
+	oc, err := h.runWorkflow(t)
+	if oc == engine.OutcomeOK {
+		t.Fatalf("outcome = %q, want permanent_failure (a config Create error must fail the whole map, not be tolerated by min_success 0.5)", oc)
+	}
+	if oc != engine.OutcomePermanentFailure {
+		t.Errorf("outcome = %q, want %q", oc, engine.OutcomePermanentFailure)
+	}
+	if err == nil {
+		t.Error("runWorkflow returned nil error, want non-nil for a permanent_failure")
+	}
+	// A node.failed/permanent_failure must be present at the map path.
+	foundNodeFailed := false
+	for _, e := range mustFoldEvents(t, h) {
+		if e.Type == engine.EventNodeFailed && e.Path == "map[0]" {
+			var d engine.NodeFailedData
+			if jsonErr := json.Unmarshal(e.Data, &d); jsonErr != nil {
+				t.Fatalf("unmarshal node.failed: %v", jsonErr)
+			}
+			if d.Outcome == string(engine.OutcomePermanentFailure) {
+				foundNodeFailed = true
+			}
+		}
+	}
+	if !foundNodeFailed {
+		t.Error("no node.failed/permanent_failure at path map[0] — a config Create error must fail the whole map hard")
 	}
 }
 

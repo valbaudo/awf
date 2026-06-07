@@ -195,10 +195,15 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	// different bytes on a re-run/resume, breaking the pin-before-run invariant.
 	if spec.PullIfAbsent {
 		if !strings.Contains(spec.Image, "@sha256:") {
-			return container.Handle{}, fmt.Errorf("container/docker: Create: runtime-resolved map image %q must be digest-pinned (name@sha256:…); a mutable tag is not resume-reproducible", spec.Image)
+			// A rendered reference that is not digest-pinned is untrusted worklist
+			// run-data, not the author's pinned definition — tolerated per element
+			// (man awf-workflow(5), map): fail THAT element, not the whole map.
+			return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: fmt.Errorf("runtime-resolved map image must be digest-pinned (name@sha256:…); a mutable tag is not resume-reproducible")}
 		}
 		if err := b.pullByDigest(ctx, spec.Image); err != nil {
-			return container.Handle{}, err
+			// The reference is valid but couldn't be pulled — the tolerated
+			// image_unavailable case.
+			return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: err}
 		}
 	}
 
@@ -238,14 +243,18 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
 		// Cleanup the created-but-not-started container.
 		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
-		return container.Handle{}, fmt.Errorf("container/docker: Create: ContainerStart: %w", err)
+		// A valid image that won't start is "cannot be booted" — tolerated per
+		// element inside a map (man awf-workflow(5), map).
+		return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: fmt.Errorf("ContainerStart: %w", err)}
 	}
 
 	// If the image declares a healthcheck, wait until healthy. Otherwise the
 	// entrypoint exit-from-init IS the readiness (spec §3 / Phase 4 design §A).
 	if err := b.waitReady(ctx, resp.ID); err != nil {
 		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
-		return container.Handle{}, err
+		// Booted but never became ready/healthy — also "cannot be booted",
+		// tolerated per element.
+		return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: err}
 	}
 
 	b.mu.Lock()
@@ -303,8 +312,10 @@ func (b *Backend) pullByDigest(ctx context.Context, ref string) error {
 // native forms (4g, 4GB, 4096). go-units RAMInBytes rejects a trailing "i"
 // ("4Gi" → "invalid suffix: 'gi'"), but its k/m/g/t/p ARE already binary
 // (KiB/MiB/GiB/…), so dropping the "i" yields the same value: "4Gi" → "4G" → 4 GiB.
-// Without this the documented `mem: 4Gi` fails every Create — and inside a map that
-// failure is swallowed as image_unavailable.
+// Without this the documented `mem: 4Gi` fails every Create. A mem value that is
+// STILL invalid after this (e.g. "abc") is a definition error: Create returns a
+// plain (non-ImageUnavailableError) error, so inside a map it fails the whole map
+// as permanent_failure rather than being swallowed as image_unavailable.
 func parseMemBytes(s string) (int64, error) {
 	t := strings.TrimSpace(s)
 	if n := len(t); n >= 2 && (t[n-1] == 'i' || t[n-1] == 'I') {

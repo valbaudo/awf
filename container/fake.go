@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -97,8 +98,9 @@ type Fake struct {
 	// P6a — programmable spec.Image → resolved-digest table; Create returns the
 	// looked-up digest on the Handle ("" if unprogrammed). failCreate models an
 	// unavailable runtime image (Create errors).
-	imageDigests map[string]string
-	failCreate   map[string]bool
+	imageDigests     map[string]string
+	failCreate       map[string]bool
+	failCreateConfig map[string]bool
 }
 
 // fakeHandle is the per-Create internal state: an in-mem fs map.
@@ -125,8 +127,9 @@ func (f *Fake) ProgramImageDigest(image, digest string) {
 	f.imageDigests[image] = digest
 }
 
-// FailCreateForImage makes Create error for a spec.Image — models an
-// unavailable runtime image (P6a test helper). Lazily allocates the set.
+// FailCreateForImage makes Create return a *container.ImageUnavailableError for
+// a spec.Image — models a valid runtime image that can't be pulled/booted (the
+// SOLE tolerated per-element Create failure, P6a). Lazily allocates the set.
 func (f *Fake) FailCreateForImage(image string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -134,6 +137,21 @@ func (f *Fake) FailCreateForImage(image string) {
 		f.failCreate = map[string]bool{}
 	}
 	f.failCreate[image] = true
+}
+
+// FailCreateConfigForImage makes Create return a PLAIN (non-ImageUnavailable)
+// error for a spec.Image — models a deterministic DEFINITION fault (e.g. a
+// malformed resources: the backend rejects) that the engine must surface by
+// failing the WHOLE map as permanent_failure, NOT tolerate under min_success
+// (contrast FailCreateForImage, the tolerated availability failure). Lazily
+// allocates the set.
+func (f *Fake) FailCreateConfigForImage(image string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failCreateConfig == nil {
+		f.failCreateConfig = map[string]bool{}
+	}
+	f.failCreateConfig[image] = true
 }
 
 // WithBlobs wires a CAS store so the fake can serialize a container's in-mem
@@ -167,7 +185,14 @@ func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
 	// with this spec, so a test observes it even if the lookup fails it.
 	f.CreateSpecs = append(f.CreateSpecs, spec)
 	if f.failCreate[spec.Image] {
-		return Handle{}, fmt.Errorf("container/fake: Create: image %q programmed unavailable", spec.Image)
+		// A tolerated availability/boot failure (P6a): the engine routes the typed
+		// error to item_failed + ReasonImageUnavailable, counted against min_success.
+		return Handle{}, &ImageUnavailableError{Image: spec.Image, Err: errors.New("programmed unavailable")}
+	}
+	if f.failCreateConfig[spec.Image] {
+		// A deterministic definition fault: a PLAIN error the engine must NOT
+		// tolerate — it fails the whole map as permanent_failure.
+		return Handle{}, fmt.Errorf("container/fake: Create: image %q programmed config-invalid", spec.Image)
 	}
 	f.nextID++
 	id := fmt.Sprintf("fake-%d", f.nextID)

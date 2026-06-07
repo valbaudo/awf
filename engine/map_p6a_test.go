@@ -87,6 +87,48 @@ func TestMapImageDispatchSetsPullIfAbsent(t *testing.T) {
 	}
 }
 
+// A P6a element whose Backend.Create fails with a NON-ImageUnavailable error (an
+// invalid per-element spec — e.g. a malformed resources: the backend rejects) is
+// a deterministic DEFINITION error: it must fail the WHOLE map as
+// permanent_failure, never be laundered into a tolerated item_failed. The map
+// declares min_success 0.5 over 2 items with the OTHER item passing — so a tally
+// of 1/2 would meet the threshold. An OK outcome here would mean the config error
+// was wrongly swallowed as image_unavailable (the bug this guards).
+func TestMapConfigCreateErrorFailsWholeMap(t *testing.T) {
+	badRef := "registry.example.com/app@sha256:" + strings.Repeat("b", 64)
+	okRef := "registry.example.com/app@sha256:" + strings.Repeat("a", 64)
+	rig := newMapRig(t, ok("probe"))
+	rig.fake.FailCreateConfigForImage(badRef)
+
+	ms := ir.Ratio("0.5")
+	mapNode := &ir.Map{
+		Over: "{{ input.items }}", As: "v", Container: testMapContainer,
+		Image: "{{ v.image }}", Concurrency: 2, MinSuccess: &ms,
+		Body: ir.NodeList{&ir.CodeStep{ID: "p", Container: testMapContainer, Run: "probe"}},
+	}
+	wf := &ir.Workflow{
+		ID: "p6a-cfg", Version: 1,
+		Containers: map[string]ir.Container{testMapContainer: {}},
+		Input: &ir.JSONSchema{
+			"type":       "object",
+			"properties": map[string]any{"items": map[string]any{"type": "array"}},
+		},
+		Graph: ir.NodeList{mapNode},
+	}
+	rs := NewRunState(testRunID, testDigest, runOverItems(
+		map[string]any{"image": badRef},
+		map[string]any{"image": okRef},
+	))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomePermanentFailure {
+		t.Fatalf("runMap outcome = %q, want permanent_failure (a config Create error must fail the whole map, not be tolerated under min_success 0.5)", oc)
+	}
+	if err == nil {
+		t.Error("runMap err = nil, want non-nil for a permanent_failure")
+	}
+}
+
 // Per-item containers MUST get DISTINCT backend names: the docker backend derives
 // the container name from spec.Name, so every item sharing n.Container collides on
 // a concurrent Create (the bug the first real docker map run hit — the fake ignores
