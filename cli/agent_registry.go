@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 
@@ -202,9 +203,7 @@ func registerRoles(reg *agent.Registry, wf *ir.Workflow) error {
 // result is a fresh map (it never aliases role.With).
 func roleWithFor(role ir.AgentRole) ir.RawConfig {
 	out := make(ir.RawConfig, len(role.With)+2)
-	for k, v := range role.With {
-		out[k] = v
-	}
+	maps.Copy(out, role.With) // key-blind copy; never aliases role.With (out is fresh)
 	if role.Model != "" {
 		if _, set := out["model"]; !set {
 			out["model"] = role.Model
