@@ -405,6 +405,9 @@ func tallyResults(statuses []string) (pass, fail int) {
 			pass++
 		case ItemFailed:
 			fail++
+		case ItemPruned:
+			// Pruned items count as neither pass nor fail (SP5): removed from
+			// both the numerator and the min_success denominator (Task 4).
 		case "":
 			// Should not happen post-tally — defense-in-depth.
 		}

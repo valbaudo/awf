@@ -35,6 +35,23 @@ func TestEventTypeConstants(t *testing.T) {
 	}
 }
 
+func TestItemPrunedStatusConstant(t *testing.T) {
+	// Pin the exact wire string of the third terminal map-item status (SP5).
+	// Renaming it would invalidate every committed map.item{item_pruned} event.
+	if ItemPruned != "item_pruned" {
+		t.Errorf("ItemPruned = %q, want %q", ItemPruned, "item_pruned")
+	}
+}
+
+func TestTallyResultsIgnoresPruned(t *testing.T) {
+	// A pruned item counts as NEITHER a pass NOR a failure: it is removed from
+	// both the numerator and (via Task 4) the min_success denominator.
+	pass, fail := tallyResults([]string{ItemPassed, ItemPruned, ItemFailed})
+	if pass != 1 || fail != 1 {
+		t.Errorf("tallyResults(passed,pruned,failed) = (pass=%d, fail=%d), want (1, 1)", pass, fail)
+	}
+}
+
 func TestRunStartedDataRoundTrip(t *testing.T) {
 	in := RunStartedData{
 		RunID:          "deadbeef",

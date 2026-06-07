@@ -61,6 +61,17 @@ const (
 const (
 	ItemPassed = "item_passed"
 	ItemFailed = "item_failed"
+	// ItemPruned is the THIRD terminal map-item status (SP5, spec §3.2b — the
+	// one format revision). An item the prune frontier discarded: NEITHER a
+	// pass NOR a failure. tallyResults ignores it (it is removed from both the
+	// numerator and the min_success denominator); it raises no error and does
+	// not trip an enclosing try/catch. It is a map-item STATUS, NOT an
+	// engine.Outcome value — the mechanical Outcome enum (ok/retryable/permanent/
+	// rejected) is deliberately untouched. A pruned item commits a map.item
+	// event (no Outcome field), exactly like item_failed; it never commits a
+	// node.completed with a non-ok outcome (the fold's only-ok-commits invariant
+	// holds).
+	ItemPruned = "item_pruned"
 )
 
 // ReasonImageUnavailable is the sole tolerated per-item failure cause on a
