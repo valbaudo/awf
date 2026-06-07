@@ -29,6 +29,52 @@ Everything else in AWF exists to serve that check: long-lived containers (the te
 system to run against), typed outputs (so the check reads validated fields, not fragile text), and
 content-addressed checkpoint/resume (so an expensive agent run is never redone after a crash).
 
+## How it compares
+
+Most agentic runtimes converge on the same shape: the framework calls the model **in-process**, run
+state is a **mutable snapshot**, quality is whatever check the author wires up, and a changed
+definition is silently applied on the next run. AWF makes a different set of bets — it treats the
+agent as a **black box it never runs**, makes an **independent judge** the engine's job, commits
+**content-addressed artifacts**, and **hard-fails** rather than silently adapt when the definition or
+runtime drifts.
+
+This is positioning across categories, not a scorecard. A few rows are deliberately *different
+categories* — included for orientation, not as head-to-head peers (see the notes below).
+
+| | How the agent runs | Independent runtime gate | Durable resume | On definition drift | Infra |
+| --- | --- | --- | --- | --- | --- |
+| **AWF** | wraps any agent CLI as a black box (`claude-code`, `droid`, `codex`) or one HTTP LLM call, in a container | **engine-enforced** — a fresh-context judge repairs against its critique; a crash never counts as a rejection | **content-addressed** — replays committed steps, re-runs only the frontier | **hard-fails** — definition digest + resolved runtime version are pinned | long-lived digest-pinned containers/compose; single-host |
+| Claude Code `/workflows` | Claude subagents, in-process (Claude-only) | none enforced — quality is a pattern Claude *codes into the script* | none across sessions — resume is session-only, lost on exit | latest-wins | in-process, single-host |
+| LangGraph | in-process Python nodes; calls the model directly (any provider) | none enforced — hand-wired evaluator nodes | state snapshot per super-step, thread-keyed (not content-addressed) | latest-wins ("latest graph applied to every thread") | in-process (the Platform packages the orchestrator in Docker) |
+| CrewAI | in-process role-based crews + flows | none independent — a task guardrail uses the *same* agent's LLM, in-band | `@persist` state snapshot (SQLite) | latest-wins | in-process |
+| OpenAI Agents SDK *(Swarm successor)* | in-process agent loop + handoffs | none — tripwire guardrails halt, they don't repair | none native — Sessions are memory; durability delegated to Temporal | n/a (delegated) | in-process |
+| Pydantic AI | in-process typed agent loop | none in-graph — Pydantic Evals is offline/CI | delegated to Temporal/DBOS (replay / DB-checkpoint) | delegated to the host | in-process (+ Temporal/DBOS) |
+| Temporal *(durable-execution yardstick)* | model-agnostic infra; the agent/LLM call lives in an Activity | none | event-sourced deterministic replay — the gold standard | hard-fails on nondeterminism; opt-in versioning APIs | **distributed** (service + worker fleet) |
+| Eval / judge tools *(promptfoo, LangSmith, Braintrust)* | n/a — they grade outputs, they don't orchestrate work | independent judges exist — but offline eval, CI-merge gates, or online monitoring, never in-graph | n/a | n/a (they detect regressions across versions) | CLI / CI / SaaS |
+| DAG orchestrators *(Airflow, Prefect, Dagster)* | n/a — the model lives in your task code | none (data-quality checks ≠ an LLM judge) | task-state snapshot in a metadata DB (task-granular) | mostly recompute or version-record | distributed scheduler + workers |
+
+A few caveats so the table reads fairly:
+
+- **Temporal is the yardstick, not a target.** AWF is single-host and explicitly does *not* offer
+  distributed, durable-execution-grade exactly-once guarantees; it checkpoints to *skip* finished
+  work, not to distribute it. Temporal's event-sourced replay is the reference standard for "durable
+  resume" — AWF's content-addressed commit is a different mechanism with a narrower scope, not a
+  larger one.
+- **Eval tools and DAG orchestrators are different jobs.** Independent LLM judges already exist
+  (promptfoo, DeepEval, LangSmith, Braintrust) — but they run *offline* in CI or *monitor* live
+  traffic; Braintrust will even block a PR merge below a score threshold. None of them sit *inside* a
+  running workflow deciding whether the next stage executes and feeding the critique back into a
+  regenerate loop. That in-graph generate → independent-evaluate → repair loop is what AWF's gate is.
+  Likewise, AWF is not a data-pipeline scheduler.
+- **Closest on a single axis.** On *drift*, Restate (immutable versioned deployments + fail-loud on
+  mismatch) and DBOS (app-version pinning) are the nearest external analogs to AWF's pin-and-fail
+  invariant — they just pin in-process code rather than a workflow definition plus a container
+  digest. On *typed outputs*, Pydantic AI is the closest mirror.
+
+The through-line: every other runtime here calls the model itself and trusts the author (or an
+offline tool) to check the result. AWF wraps the model as a black box, and makes checking it the
+engine's job.
+
 ## Getting started
 
 Requirements: Go 1.26+, and Docker (optional) for the isolated container backend.
