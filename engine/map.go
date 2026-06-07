@@ -369,6 +369,13 @@ func dispatchItem(
 	itemPath := ItemPath(mapPath, itemN) // "map[0].item-3"
 
 	spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Container)
+	// Per-item containers MUST have distinct names: the docker backend derives the
+	// container name from spec.Name, so every item sharing n.Container would collide
+	// on a concurrent Create (the fake ignores Name, so this path went untested until
+	// the first real docker map run). Suffix the item index for uniqueness; the body
+	// still looks the handle up by n.Container via WithItemHandle below, so this only
+	// changes the backend-level container name.
+	spec.Name = fmt.Sprintf("%s-item-%d", n.Container, itemN)
 
 	// P6a: runtime-resolved per-element image. Render map.image against THIS
 	// item's scope — the pending MapItemRecord (recorded by runMap before this

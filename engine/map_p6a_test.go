@@ -86,3 +86,29 @@ func TestMapImageDispatchSetsPullIfAbsent(t *testing.T) {
 		t.Errorf("map.image Create spec PullIfAbsent = false, want true")
 	}
 }
+
+// Per-item containers MUST get DISTINCT backend names: the docker backend derives
+// the container name from spec.Name, so every item sharing n.Container collides on
+// a concurrent Create (the bug the first real docker map run hit — the fake ignores
+// Name, so the path went untested). Regression guard: each item's Create spec gets
+// a unique "<container>-item-N" name.
+func TestMapPerItemContainerNamesAreUnique(t *testing.T) {
+	rig := newMapRig(t, ok("echo a"), ok("echo b"))
+	wf := staticOverWorkflow("v", echoStep("v", nil), 2, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("runMap: (%q, %v), want (ok, nil)", oc, err)
+	}
+	got := map[string]int{}
+	for i := range rig.fake.CreateSpecs {
+		got[rig.fake.CreateSpecs[i].Name]++
+	}
+	for _, want := range []string{testMapContainer + "-item-0", testMapContainer + "-item-1"} {
+		if got[want] != 1 {
+			t.Errorf("per-item container name %q count=%d, want 1 (names must be unique per item); CreateSpecs names=%v", want, got[want], got)
+		}
+	}
+}

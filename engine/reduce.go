@@ -15,6 +15,7 @@ import (
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/retry"
 	"github.com/valbaudo/awf/state"
+	"github.com/valbaudo/awf/template"
 )
 
 // reduceStagingDir is the in-container directory a run: reducer's manifest and
@@ -237,9 +238,17 @@ func runCommandReduce(
 	//    runCode by building a NodeIntent with the reducer's Run/Container/
 	//    OutputSchema/OutputFiles + the staged InputFiles. The dispatcher stages
 	//    InputFiles via Backend.CopyTo (SP1) BEFORE exec — one delivery path.
-	synth := &ir.CodeStep{Run: r.Run, Container: r.Container, OutputSchema: r.OutputSchema, OutputFiles: r.OutputFiles}
+	// Template the reducer's run: against the map-path scope — exactly like a code
+	// step's run is templated — so {{ input.x }} / {{ step.y.z }} resolve. Without
+	// this the raw run reached the reducer literally. Container/output paths are
+	// static (no {{ }}), so only the command needs substitution.
+	cmd, terr := template.Substitute(r.Run, NewScope(rs, wf, nodePath))
+	if terr != nil {
+		return failStep(log, nodePath, OutcomePermanentFailure, fmt.Errorf("engine.runReduce: template reduce run %q: %w", r.Run, terr))
+	}
+	synth := &ir.CodeStep{Run: cmd, Container: r.Container, OutputSchema: r.OutputSchema, OutputFiles: r.OutputFiles}
 	resolved := ResolvedInputs{
-		Command:      r.Run,
+		Command:      cmd,
 		Env:          map[string]string{},
 		OutputFiles:  r.OutputFiles.Paths(),
 		OutputSchema: r.OutputSchema,

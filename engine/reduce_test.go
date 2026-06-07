@@ -307,3 +307,42 @@ func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
 		t.Errorf("reducer artifact bytes = %q, want merged-bytes", got)
 	}
 }
+
+// A run: reducer's command must be TEMPLATED against the map-path scope, exactly
+// like a code step's run — otherwise {{ input.x }} reaches the reducer literally
+// (the bug the first real docker run hit: item4.json carried "cveId":"{{ input.cve_id }}").
+func TestRunCommandReduceTemplatesRun(t *testing.T) {
+	rig := newReduceRig(t)
+	rig.fake.ProgramExecAny(container.ExecResult{ExitCode: 0}, nil)
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]ir.Container{
+			reduceContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
+		},
+		Input: &ir.JSONSchema{
+			"type":       "object",
+			"properties": map[string]any{"cve_id": map[string]any{"type": "string"}},
+		},
+		Graph: ir.NodeList{},
+	}
+	rs := NewRunState(testRunID, testDigest, map[string]any{"cve_id": "CVE-2025-0001"})
+	r := &ir.Reduce{Run: "echo {{ input.cve_id }}", Container: reduceContainer}
+	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"k": "a"}}}
+
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("runReduce: (%q, %v), want (ok, nil)", oc, err)
+	}
+	sawSubstituted := false
+	for _, c := range rig.fake.Calls {
+		if c.Run == "echo {{ input.cve_id }}" {
+			t.Errorf("reduce run executed LITERALLY (not templated): %q", c.Run)
+		}
+		if c.Run == "echo CVE-2025-0001" {
+			sawSubstituted = true
+		}
+	}
+	if !sawSubstituted {
+		t.Errorf("reduce run not templated to 'echo CVE-2025-0001'; Calls=%+v", rig.fake.Calls)
+	}
+}
