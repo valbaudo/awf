@@ -219,7 +219,7 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 			}
 		}
 		if spec.Resources.Mem != "" {
-			bytes, err := units.RAMInBytes(spec.Resources.Mem)
+			bytes, err := parseMemBytes(spec.Resources.Mem)
 			if err != nil {
 				return container.Handle{}, fmt.Errorf("container/docker: Create: invalid Resources.Mem %q: %w", spec.Resources.Mem, err)
 			}
@@ -296,6 +296,24 @@ func (b *Backend) pullByDigest(ctx context.Context, ref string) error {
 			return fmt.Errorf("container/docker: Create: ImagePull %q: %s", ref, s.Error)
 		}
 	}
+}
+
+// parseMemBytes parses a memory quantity into bytes, accepting the k8s-style
+// binary suffix the man page documents (e.g. `mem: 4Gi`) IN ADDITION to go-units'
+// native forms (4g, 4GB, 4096). go-units RAMInBytes rejects a trailing "i"
+// ("4Gi" → "invalid suffix: 'gi'"), but its k/m/g/t/p ARE already binary
+// (KiB/MiB/GiB/…), so dropping the "i" yields the same value: "4Gi" → "4G" → 4 GiB.
+// Without this the documented `mem: 4Gi` fails every Create — and inside a map that
+// failure is swallowed as image_unavailable.
+func parseMemBytes(s string) (int64, error) {
+	t := strings.TrimSpace(s)
+	if n := len(t); n >= 2 && (t[n-1] == 'i' || t[n-1] == 'I') {
+		switch t[n-2] {
+		case 'K', 'k', 'M', 'm', 'G', 'g', 'T', 't', 'P', 'p':
+			t = t[:n-1] // "4Gi" → "4G" (RAMInBytes treats G as binary GiB)
+		}
+	}
+	return units.RAMInBytes(t)
 }
 
 // Destroy force-removes the container associated with h. Returns an error if h

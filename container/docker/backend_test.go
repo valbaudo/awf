@@ -189,3 +189,28 @@ func TestRestoreErrorsOnEmptyName(t *testing.T) {
 		t.Fatal("Restore with empty name: err = nil, want non-nil")
 	}
 }
+
+// parseMemBytes must accept the k8s-style binary suffix the man page documents
+// (mem: 4Gi) as well as go-units' native forms — go-units RAMInBytes alone rejects
+// the trailing "i" ("invalid suffix: 'gi'"), which silently broke every map
+// per-item Create (swallowed as image_unavailable).
+func TestParseMemBytes(t *testing.T) {
+	const gib = int64(1024 * 1024 * 1024)
+	const mib = int64(1024 * 1024)
+	cases := map[string]int64{
+		"4Gi":   4 * gib, // documented k8s-style binary
+		"512Mi": 512 * mib,
+		"4g":    4 * gib, // go-units native binary
+		"4096":  4096,    // bare bytes
+	}
+	for in, want := range cases {
+		got, err := parseMemBytes(in)
+		if err != nil {
+			t.Errorf("parseMemBytes(%q): unexpected error %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseMemBytes(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
