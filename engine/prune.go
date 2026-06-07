@@ -25,10 +25,9 @@ import (
 //   - stop_when: once the bounded bool expr over best.score is true, prune
 //     everything still running (StopAll).
 type pruneController struct {
-	mu      sync.Mutex
-	policy  *ir.Prune
-	scores  map[int]float64 // itemIndex → committed score
-	stopAll bool
+	mu     sync.Mutex
+	policy *ir.Prune
+	scores map[int]float64 // itemIndex → committed score
 }
 
 func newPruneController(policy *ir.Prune) *pruneController {
@@ -65,7 +64,6 @@ func (p *pruneController) Report(item int, raw any) (pruneDecision, error) {
 			return pruneDecision{}, fmt.Errorf("prune.stop_when: %w", evalErr)
 		}
 		if ok {
-			p.stopAll = true
 			return pruneDecision{StopAll: true}, nil
 		}
 		return pruneDecision{}, nil
@@ -206,7 +204,7 @@ func (r *pruneRun) isPruned(item int) bool {
 // Returns an error only for a non-numeric score / stop_when eval failure (the
 // caller fails the whole map — like a bad over).
 func (r *pruneRun) report(rs *RunState, item int) error {
-	nr, ok := rs.LookupCompleted(ItemPath(r.mapPath, item) + "." + r.stepID)
+	nr, ok := rs.LookupCompleted(ItemStepPath(r.mapPath, item, r.stepID))
 	if !ok {
 		return fmt.Errorf("prune.score: item %d: body step %q committed no typed output", item, r.stepID)
 	}

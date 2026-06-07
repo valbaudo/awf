@@ -17,9 +17,14 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
+// reduceStagingDir is the in-container directory a run: reducer's manifest and
+// per-branch artifacts are staged under (spec §3.2a). Single source of truth so
+// the manifest path and the branch-artifact dst can never desync.
+const reduceStagingDir = "/work/.awf"
+
 // reduceManifestPath is where the canonical-JSON aggregate of branch typed
 // outputs is staged in a run: reducer's container (spec §3.2a).
-const reduceManifestPath = "/work/.awf/aggregate.json"
+const reduceManifestPath = reduceStagingDir + "/aggregate.json"
 
 // reduceBranch is one committed branch's contribution: its typed outputs + its
 // named artifacts (declared container path → CAS ref), index-ordered by the
@@ -28,6 +33,51 @@ type reduceBranch struct {
 	N       int
 	Outputs map[string]any
 	Files   map[string]string // declared container path → CAS ref (NodeResult.Files)
+}
+
+// runMapReduce runs a map's reduce: phase after fan-out (SP2 C2a): it collects
+// the committed branch outputs+artifacts and collapses them via runReduce,
+// committing the reduced output at the map's OWN path (the aggregate stays
+// engine-internal; the reduced output replaces it). Extracted from runMap so the
+// map handler ends with fan-out + tally and the fan-IN lives beside runReduce.
+// cohort is the non-pruned fan-out count (the quorum denominator).
+//
+// Resume short-circuit FIRST: a committed reduce replays. Mirror runMap's
+// per-item committed-skip — on a pure replay we must NOT boot (and tear down) the
+// reducer container, which would turn a should-be-pure replay into real work that
+// can FAIL the resume (e.g. an image no longer pullable), violating "committed
+// steps are replayed, not recomputed; infra is rebuilt only for the uncommitted
+// frontier." runReduce has the same guard, but it fires AFTER the Create below,
+// so check it here before any infra.
+func runMapReduce(
+	ctx context.Context,
+	n *ir.Map,
+	mapPath string,
+	cohort int,
+	wf *ir.Workflow,
+	runstate *RunState,
+	ld *LocalDispatcher,
+	log state.Log,
+	blobs state.Blobs,
+	clk clock.Clock,
+	tap io.Writer,
+) (Outcome, error) {
+	if _, ok := runstate.LookupCompleted(mapPath); ok {
+		return OutcomeOK, nil
+	}
+	branches := collectReduceBranches(runstate, n, mapPath)
+	if n.Reduce.IsRun() {
+		// A run: reducer is a code step → it needs its own container. Create it
+		// here and Destroy after (mirrors dispatchItem's Create/defer Destroy).
+		spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Reduce.Container)
+		rh, cerr := ld.Backend.Create(ctx, spec)
+		if cerr != nil {
+			return "", fmt.Errorf("engine.runMapReduce: create reduce container %q: %w", n.Reduce.Container, cerr)
+		}
+		defer func() { _ = ld.Backend.Destroy(context.Background(), rh) }()
+		ld = ld.WithItemHandle(n.Reduce.Container, rh)
+	}
+	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, runstate, ld, log, blobs, clk, tap)
 }
 
 // runReduce executes a Map's reduce: clause AFTER fan-out, collapsing the N
@@ -121,20 +171,18 @@ func runQuorumReduce(r *ir.Reduce, nodePath string, branches []reduceBranch, coh
 	return OutcomeOK, nil
 }
 
-// quorumThreshold reuses defaultMinSuccess's Ratio int/float interpretation so
+// quorumThreshold reuses ratioThreshold's Ratio int/float interpretation so
 // quorum and min_success are one parse. cohort is the fan-out count the
 // threshold is measured against (NOT the survivor count). nil → all (defensive;
 // validator requires quorum present).
 //
-// NOTE: defaultMinSuccess caps an int threshold at its `total` argument
+// NOTE: ratioThreshold caps an int threshold at its `total` argument
 // (`if i > total { return total }`). That cap is correct ONLY when total is the
 // cohort size — passing the survivor count would silently lower an explicit
-// quorum k to the number of branches that happened to survive (the bug this
-// signature change fixes), letting a quorum pass with fewer agreeing branches
-// than the author demanded.
+// quorum k to the number of branches that happened to survive, letting a quorum
+// pass with fewer agreeing branches than the author demanded.
 func quorumThreshold(q *ir.Ratio, cohort int) int64 {
-	tmp := &ir.Map{MinSuccess: q}
-	return defaultMinSuccess(tmp, cohort)
+	return ratioThreshold(q, cohort)
 }
 
 // runCommandReduce stages the manifest + branch artifacts into the reducer's
@@ -172,7 +220,7 @@ func runCommandReduce(
 				// Committed artifact unreadable — internal halt (SP1 errArtifactFetch precedent).
 				return "", fmt.Errorf("engine.runReduce: %w: branch %d file %q: %v", errArtifactFetch, b.N, p, gerr)
 			}
-			dst := fmt.Sprintf("/work/.awf/branch-%d%s", b.N, ensureLeadingSlash(p))
+			dst := fmt.Sprintf("%s/branch-%d%s", reduceStagingDir, b.N, ensureLeadingSlash(p))
 			dsts[dst] = content
 		}
 	}
@@ -254,11 +302,7 @@ func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string) []reduceBran
 		b := reduceBranch{N: mr.N, Outputs: map[string]any{}, Files: map[string]string{}}
 		committed := false
 		for _, suffix := range suffixes {
-			rp := ItemPath(mapPath, mr.N)
-			if suffix != "" {
-				rp += "." + suffix
-			}
-			nr, ok := rs.LookupCompleted(rp)
+			nr, ok := rs.LookupCompleted(ItemStepPath(mapPath, mr.N, suffix))
 			if !ok {
 				continue
 			}

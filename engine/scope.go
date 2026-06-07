@@ -550,11 +550,7 @@ func (s *Scope) aggregateMapOutputs(staticPath string, ref *template.Ref) (any, 
 			// the same survivors collectReduceBranches feeds a reduce: fold.)
 			continue
 		}
-		rp := ItemPath(mapStatic, mr.N)
-		if suffix != "" {
-			rp += "." + suffix
-		}
-		nr, ok := s.rs.LookupCompleted(rp)
+		nr, ok := s.rs.LookupCompleted(ItemStepPath(mapStatic, mr.N, suffix))
 		if !ok || nr.Outputs == nil {
 			continue // compact: only items where the producer committed typed output
 		}

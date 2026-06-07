@@ -309,41 +309,14 @@ func runMap(
 			mapPath, pass, fail, pruned, minSuccess, effectiveTotal)
 	}
 
-	// 6. Fan-IN (C2a). Collect the committed branch outputs+artifacts, then
-	//    reduce. The reducer commits at the map's OWN path (mapPath) — the
-	//    aggregate stays engine-internal and the reduced output replaces it.
-	//
-	// Resume short-circuit FIRST: a committed reduce replays. Mirror the
-	// per-item committed-skip (above): on a pure replay we must NOT boot (and
-	// tear down) the reducer container — that would turn a should-be-pure replay
-	// into real work that can FAIL the resume (e.g. an image no longer pullable),
-	// violating "committed steps are replayed, not recomputed; infra is rebuilt
-	// only for the uncommitted frontier." runReduce has the same guard, but it
-	// fires AFTER the Create block below, so check it here before any infra.
-	if _, ok := runstate.LookupCompleted(mapPath); ok {
-		return OutcomeOK, nil
-	}
-	branches := collectReduceBranches(runstate, n, mapPath)
-	if n.Reduce.IsRun() {
-		// A run: reducer is a code step → it needs its own container. Create it
-		// here and Destroy after (mirrors dispatchItem's Create/defer Destroy).
-		spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Reduce.Container)
-		rh, cerr := ld.Backend.Create(ctx, spec)
-		if cerr != nil {
-			return "", fmt.Errorf("engine.runMap: create reduce container %q: %w", n.Reduce.Container, cerr)
-		}
-		defer func() { _ = ld.Backend.Destroy(context.Background(), rh) }()
-		ld = ld.WithItemHandle(n.Reduce.Container, rh)
-	}
-	// effectiveTotal (= len(overArr) - pruned), NOT len(overArr), is the quorum
-	// cohort: a pruned item is a deliberate frontier cancellation, not a baseline
-	// expectation, so it leaves the denominator exactly as it leaves min_success
-	// (above). A mechanically-FAILED branch still counts (it is in effectiveTotal
-	// but absent from `branches`, so it is a non-agreeing vote) — only pruned items
-	// are excluded. Passing len(overArr) here would demand agreement from items the
-	// frontier deliberately discarded, so a unanimous quorum over the survivors
-	// could never be met.
-	return runReduce(ctx, n.Reduce, mapPath, branches, effectiveTotal, wf, runstate, ld, log, blobs, clk, tap)
+	// 6. Fan-IN (C2a): collapse the surviving branches via the reduce: clause
+	//    (engine/reduce.go owns the fan-in, beside runReduce). effectiveTotal
+	//    (= len(overArr) - pruned) is the quorum cohort — a pruned item is a
+	//    deliberate frontier cancellation, removed from the denominator exactly as
+	//    it is from min_success above; a mechanically-failed branch still counts
+	//    (absent from branches → a non-agreeing vote), so passing len(overArr)
+	//    would demand agreement from items the frontier deliberately discarded.
+	return runMapReduce(ctx, n, mapPath, effectiveTotal, wf, runstate, ld, log, blobs, clk, tap)
 }
 
 // renderImageError marks a per-item map.image render fault (the image: template
@@ -598,49 +571,46 @@ func countPruned(statuses []string) int {
 	return n
 }
 
-// defaultMinSuccess returns the effective MinSuccess for the map. nil → all
-// items required. Int → that count. Fraction → ceil(fraction * total) where
-// the fraction is in (0, 1].
+// defaultMinSuccess returns the effective MinSuccess for the map: nil → all items
+// required, else the map's min_success Ratio interpreted by ratioThreshold.
+func defaultMinSuccess(n *ir.Map, total int) int64 {
+	return ratioThreshold(n.MinSuccess, total)
+}
+
+// ratioThreshold interprets a min_success / quorum Ratio against a total. nil →
+// all (total). Int → that count. Fraction → ceil(fraction * total) for a fraction
+// in (0, 1]. Shared by defaultMinSuccess (min_success) and quorumThreshold
+// (quorum, engine/reduce.go) so the two thresholds parse by one rule.
 //
-// Phase 3 minimum: simple parsing; floats are rounded UP to the nearest int
-// per the spec's "at least this many" semantics.
+// Phase 3 minimum: simple parsing; floats are rounded UP to the nearest int per
+// the spec's "at least this many" semantics.
 //
-// Design Q7 (M10): AWF1012 does NOT validate min_success shape. On unparseable
-// input (e.g. min_success: "abc"), this function falls through to total —
-// fail-safe (treat as "all required," the most conservative interpretation).
-// The author sees a clear "min_success requires N" error from runMap when the
-// first item fails. Future slice may add explicit shape validation per spec
-// §11 if real-world workflows hit this footgun.
+// Design Q7 (M10): AWF1012 does NOT validate the shape. On unparseable input
+// (e.g. "abc"), this falls through to total — fail-safe (treat as "all
+// required," the most conservative interpretation). The author sees a clear
+// "requires N" error from runMap when the first item fails.
 //
 // L13 EDGE CASES:
-//   - Negative int → treated as total (degenerate; fails-safe).
+//   - Negative int → total (degenerate; fails-safe).
 //   - Int > total → clamped to total.
-//   - Fraction == 0 OR <= 0 → treated as total (degenerate; the author probably
-//     meant "no items required" but that's better expressed by removing the
-//     map or `concurrency: 0`; we don't accept "succeed even if everything
-//     fails" semantics).
+//   - Fraction <= 0 → total (degenerate; "succeed even if everything fails" is
+//     not accepted — express "no items required" by removing the map).
 //   - Fraction > 1 → clamped to total.
 //   - Unparseable string (per Q7) → total.
-func defaultMinSuccess(n *ir.Map, total int) int64 {
-	if n.MinSuccess == nil {
+func ratioThreshold(r *ir.Ratio, total int) int64 {
+	if r == nil {
 		return int64(total)
 	}
 	// Try int first.
-	if i, err := n.MinSuccess.Int64(); err == nil {
-		if i < 0 {
-			return int64(total)
-		}
-		if i > int64(total) {
+	if i, err := r.Int64(); err == nil {
+		if i < 0 || i > int64(total) {
 			return int64(total)
 		}
 		return i
 	}
 	// Try float (fraction in (0, 1]).
-	if f, err := n.MinSuccess.Float64(); err == nil {
-		if f <= 0 {
-			return int64(total)
-		}
-		if f > 1 {
+	if f, err := r.Float64(); err == nil {
+		if f <= 0 || f > 1 {
 			return int64(total)
 		}
 		// Ceil.

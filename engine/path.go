@@ -70,6 +70,27 @@ func ItemPath(mapPath string, item int) string {
 	return mapPath + itemSep + strconv.Itoa(item)
 }
 
+// ItemStepPath appends a body-step path tail to a map item's runtime path,
+// producing the journal key the engine reads a per-item body step's committed
+// output from:
+//
+//	ItemStepPath("map[0]", 3, "score")        → "map[0].item-3.score"
+//	ItemStepPath("map[0]", 3, "stepA.stepB")  → "map[0].item-3.stepA.stepB"
+//	ItemStepPath("map[0]", 3, "")             → "map[0].item-3"
+//
+// `suffix` is the (possibly multi-segment, possibly empty) body path tail — e.g.
+// the last body step id for prune's score lookup, or the WalkNodes suffix for
+// reduce/aggregate fan-in. Centralized here (not hand-joined at the call sites)
+// so the runtime-address '.'-join stays one source of truth (CLAUDE.md "node
+// addressing is one pure function").
+func ItemStepPath(mapPath string, item int, suffix string) string {
+	p := ItemPath(mapPath, item)
+	if suffix == "" {
+		return p
+	}
+	return p + "." + suffix
+}
+
 // ParentPath returns the runtime-address parent of a node path, and false when
 // the node is a top-level child of the run root (no parent segment).
 //
