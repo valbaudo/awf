@@ -45,15 +45,44 @@ func BuildWithRun(wf *ir.Workflow, events []state.Event) (Projection, error) {
 		inst = append(inst, Node{
 			Path:       s.Path,
 			Kind:       instanceKind(s),
+			ID:         lastSegment(s.Path), // a leaf's step name ("work"), a scope's coordinate ("item-0")
 			Parent:     s.ParentPath,
 			NodeClass:  "instance",
 			InstanceOf: nearestTemplateNode(templateOf(s.Path), static),
 		})
 	}
 	sort.Slice(inst, func(i, j int) bool { return inst[i].Path < inst[j].Path })
-	p.Nodes = append(p.Nodes, inst...)
 
-	p.Edges = append(p.Edges, instanceEdges(p.Nodes, p.Edges)...)
+	allNodes := append(append([]Node{}, p.Nodes...), inst...)
+	allEdges := append(append([]Edge{}, p.Edges...), instanceEdges(allNodes, p.Edges)...)
+
+	// Declutter: a template step that has runtime instances is redundant in a run view —
+	// the instances ARE its executions. Drop those template nodes (and any edge that loses
+	// an endpoint). Containers (map/gate/loop nodes) and never-instanced templates stay, so
+	// the run view shows actual executions nested under their scopes, not template stubs.
+	// (The static graph — no --run — is unaffected; it still shows every template node.)
+	instanced := map[string]bool{}
+	for _, i := range inst {
+		instanced[templateOf(i.Path)] = true
+	}
+	keep := map[string]bool{}
+	nodes := make([]Node, 0, len(allNodes))
+	for _, n := range allNodes {
+		if n.NodeClass != "instance" && instanced[n.Path] {
+			continue
+		}
+		nodes = append(nodes, n)
+		keep[n.Path] = true
+	}
+	edges := make([]Edge, 0, len(allEdges))
+	for _, e := range allEdges {
+		if keep[e.From] && keep[e.To] {
+			edges = append(edges, e)
+		}
+	}
+
+	p.Nodes = nodes
+	p.Edges = edges
 	if len(overlay) > 0 {
 		p.RunOverlay = overlay
 	}

@@ -1,58 +1,126 @@
 :root {
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  --ok: #16a34a;
-  --fail: #dc2626;
-  --run: #2563eb;
-  --skip: #9ca3af;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* surfaces + ink */
+  --bg: #f6f8fb;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --ink: #1e293b;
+  --muted: #64748b;
+  --faint: #94a3b8;
+
+  /* run state */
+  --completed: #10b981;
+  --failed: #f43f5e;
+  --running: #0ea5e9;
+  --skipped: #94a3b8;
+
+  /* edges */
+  --edge-control: #cbd5e1;
+  --edge-data: #a5b4fc;
 }
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+body { color: var(--ink); background: var(--bg); }
 
 .awf-app { display: flex; flex-direction: column; height: 100%; }
+
+/* ---- toolbar ---- */
 .awf-toolbar {
   display: flex; align-items: center; gap: 12px;
-  padding: 8px 12px; border-bottom: 1px solid #e5e7eb; background: #fafafa;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
 }
-.awf-title { font-weight: 600; }
+.awf-title { font-weight: 700; letter-spacing: -0.01em; }
 .awf-toolbar select, .awf-toolbar button {
-  font-size: 13px; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff;
+  font: inherit; font-size: 13px; color: var(--ink);
+  padding: 5px 10px; border: 1px solid var(--border-strong); border-radius: 8px;
+  background: #fff;
 }
-.awf-toolbar button { cursor: pointer; }
-.awf-err { color: var(--fail); font-size: 12px; }
+.awf-toolbar button { cursor: pointer; font-weight: 500; }
+.awf-toolbar button:hover { background: #f8fafc; border-color: var(--faint); }
+.awf-err { color: var(--failed); font-size: 12px; }
 .awf-canvas { flex: 1; min-height: 0; }
+.react-flow { background: var(--bg); }
 
+/* ---- nodes ---- */
 .awf-node {
-  display: flex; flex-direction: column; justify-content: center;
-  width: 100%; height: 100%; padding: 6px 10px;
-  border: 1px solid #cbd5e1; border-radius: 8px; background: #fff;
+  width: 100%; height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
   font-size: 12px; overflow: hidden;
 }
-.awf-kind { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.04em; }
-.awf-label { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.awf-node.awf-group {
-  background: rgba(241, 245, 249, 0.5);
-  border-style: dashed;
-  justify-content: flex-start;
-  align-items: flex-start;
+.awf-leaf {
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  padding: 7px 11px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 1px rgba(15, 23, 42, 0.04);
 }
 
-/* runtime instance nodes (map items, gate attempts, loop iters, and their children) */
-.awf-node[data-node-class="instance"] { border-style: dotted; background: #fbfdff; }
-.awf-node[data-node-class="instance"] .awf-kind { color: #2563eb; }
-
-/* edges: control = solid, data ({{ }} references) = dashed grey */
-.react-flow__edge.awf-data-edge .react-flow__edge-path {
-  stroke: #94a3b8;
-  stroke-dasharray: 5 4;
+.awf-kind {
+  font-size: 9.5px; font-weight: 600; color: var(--faint);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.awf-label {
+  font-weight: 600; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* run-state colors (overlay restyle target) */
-.awf-node[data-state="completed"] { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
-.awf-node[data-state="failed"]    { border-color: var(--fail); box-shadow: 0 0 0 1px var(--fail) inset; }
-.awf-node[data-state="skipped"]   { border-color: var(--skip); background: #f3f4f6; }
-.awf-node[data-state="running"]   { border-color: var(--run); animation: awf-pulse 1.1s ease-in-out infinite; }
+/* ---- group (container) nodes: a titled translucent panel ---- */
+.awf-group {
+  background: rgba(241, 245, 249, 0.55);
+  border-color: var(--border-strong);
+  border-radius: 12px;
+}
+.awf-group-head {
+  display: flex; align-items: baseline; gap: 7px;
+  height: 28px; padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 12px 12px 0 0;
+  background: rgba(248, 250, 252, 0.92);
+}
+.awf-group-head .awf-label { font-weight: 600; color: var(--muted); font-size: 11.5px; }
+
+/* ---- runtime instance nodes: subtle indigo cue, not dotted ---- */
+.awf-node[data-node-class="instance"] { border-color: #dbe1f2; }
+.awf-node[data-node-class="instance"] .awf-kind { color: #818cf8; }
+
+/* ---- run-state accents (overlay restyle target) ----
+   leaf: left accent bar via inset shadow (no layout shift) + faint tint + border.
+   group: tinted title bar + colored border. */
+.awf-leaf[data-state="completed"] { border-color: #a7f3d0; background: #f0fdf9;
+  box-shadow: inset 3px 0 0 var(--completed), 0 1px 2px rgba(15,23,42,0.06); }
+.awf-leaf[data-state="failed"] { border-color: #fecdd3; background: #fff1f3;
+  box-shadow: inset 3px 0 0 var(--failed), 0 1px 2px rgba(15,23,42,0.06); }
+.awf-leaf[data-state="skipped"] { border-color: var(--border); background: #f8fafc; opacity: 0.7;
+  box-shadow: inset 3px 0 0 var(--skipped); }
+.awf-leaf[data-state="running"] { border-color: #bae6fd; background: #f0f9ff;
+  box-shadow: inset 3px 0 0 var(--running), 0 1px 2px rgba(15,23,42,0.06);
+  animation: awf-pulse 1.4s ease-in-out infinite; }
+
+.awf-group[data-state="completed"] { border-color: #a7f3d0; }
+.awf-group[data-state="completed"] .awf-group-head { background: #ecfdf5; }
+.awf-group[data-state="failed"] { border-color: #fecdd3; }
+.awf-group[data-state="failed"] .awf-group-head { background: #fff1f3; }
+.awf-group[data-state="running"] { border-color: #bae6fd; animation: awf-pulse 1.4s ease-in-out infinite; }
+.awf-group[data-state="running"] .awf-group-head { background: #f0f9ff; }
+.awf-group[data-state="skipped"] { opacity: 0.75; }
+
 @keyframes awf-pulse {
-  0%, 100% { box-shadow: 0 0 0 1px var(--run) inset; }
-  50%      { box-shadow: 0 0 0 3px var(--run) inset; }
+  0%, 100% { box-shadow: inset 3px 0 0 var(--running), 0 0 0 0 rgba(14, 165, 233, 0.35); }
+  50%      { box-shadow: inset 3px 0 0 var(--running), 0 0 0 4px rgba(14, 165, 233, 0); }
 }
+
+/* ---- edges ---- */
+.react-flow__edge.awf-control-edge .react-flow__edge-path { stroke: var(--edge-control); stroke-width: 1.5; }
+.react-flow__edge.awf-data-edge .react-flow__edge-path {
+  stroke: var(--edge-data); stroke-width: 1.5; stroke-dasharray: 5 4;
+}
+
+/* ---- hide handle dots (read-only viz; edges still attach) ---- */
+.react-flow__handle { opacity: 0; min-width: 1px; min-height: 1px; width: 1px; height: 1px; border: 0; }
+.react-flow__controls { box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12); border-radius: 8px; overflow: hidden; }

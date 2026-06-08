@@ -68,9 +68,13 @@ func TestBuildWithRunInstances(t *testing.T) {
 		byPath[n.Path] = n
 	}
 
-	// Template nodes still present.
-	if byPath["map[0]"].NodeClass != "template" || byPath["map[0].body.work"].NodeClass != "template" {
-		t.Errorf("template nodes missing/mislabeled: %+v", byPath)
+	// The map container stays; template body steps that have instances are dropped in the
+	// run view (the instances represent them).
+	if byPath["map[0]"].NodeClass != "template" {
+		t.Errorf("map[0] container missing/mislabeled: %+v", byPath["map[0]"])
+	}
+	if _, ok := byPath["map[0].body.work"]; ok {
+		t.Errorf("template body step map[0].body.work should be dropped in run view (covered by instances)")
 	}
 	// Instance scope for item-0 — instance_of resolves to the enclosing map node.
 	if n := byPath["map[0].item-0"]; n.NodeClass != "instance" || n.Kind != "map_item" || n.Parent != "map[0]" || n.InstanceOf != "map[0]" {

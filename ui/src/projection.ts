@@ -49,8 +49,8 @@ export interface ElkGraph {
   edges: ElkEdge[];
 }
 
-export const NODE_W = 180;
-export const NODE_H = 44;
+export const NODE_W = 156;
+export const NODE_H = 46;
 
 // containerOf returns the React-Flow / ELK parent of a node: the nearest ancestor that
 // is itself a node. The projection's `parent` is the enclosing ADDRESSING SCOPE, which
@@ -107,9 +107,12 @@ export function toElkGraph(p: Projection): ElkGraph {
       "elk.algorithm": "layered",
       "elk.direction": "DOWN",
       "elk.hierarchyHandling": "INCLUDE_CHILDREN",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "40",
-      "elk.spacing.nodeNode": "30",
-      "elk.padding": "[top=28,left=16,bottom=16,right=16]",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "48",
+      "elk.spacing.nodeNode": "26",
+      "elk.spacing.edgeNode": "20",
+      // top padding reserves the group title bar (see .awf-group-head) so children never
+      // overlap it; the rest gives nested panels visual breathing room.
+      "elk.padding": "[top=40,left=18,bottom=18,right=18]",
     },
     children: roots,
     edges,

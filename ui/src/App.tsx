@@ -7,6 +7,7 @@ import ReactFlow, {
   type Edge as RFEdge,
   type Node as RFNode,
   type NodeProps,
+  type ReactFlowInstance,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import "./app.css";
@@ -22,15 +23,28 @@ interface RunRow {
 // AwfNode renders every node (leaf and group). The data-* attributes are the testable
 // contract the browser smoke / E2E asserts on (not colors).
 function AwfNode({ data }: NodeProps) {
-  const group = Boolean(data.group);
+  const attrs = {
+    "data-node-path": data.path,
+    "data-kind": data.kind,
+    "data-state": data.state || "",
+    "data-node-class": data.nodeClass || "template",
+  } as const;
+  // Group nodes render only a title bar at the top; their children are laid out below it
+  // (ELK reserves top padding), so a child never covers the title.
+  if (data.group) {
+    return (
+      <div className="awf-node awf-group" {...attrs}>
+        <Handle type="target" position={Position.Top} />
+        <div className="awf-group-head">
+          <span className="awf-kind">{data.kind}</span>
+          {data.label !== data.kind && <span className="awf-label">{data.label}</span>}
+        </div>
+        <Handle type="source" position={Position.Bottom} />
+      </div>
+    );
+  }
   return (
-    <div
-      className={`awf-node${group ? " awf-group" : ""}`}
-      data-node-path={data.path}
-      data-kind={data.kind}
-      data-state={data.state || ""}
-      data-node-class={data.nodeClass || "template"}
-    >
+    <div className="awf-node awf-leaf" {...attrs}>
       <Handle type="target" position={Position.Top} />
       <span className="awf-kind">{data.kind}</span>
       <span className="awf-label">{data.label}</span>
@@ -58,6 +72,17 @@ export default function App() {
   const [err, setErr] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
   const nodeIds = useRef<Set<string>>(new Set());
+  const rf = useRef<ReactFlowInstance | null>(null);
+
+  // Re-fit the view whenever the node count changes (initial load + every relayout, e.g.
+  // a run fanning out new instances). React Flow's `fitView` prop only fits once at mount,
+  // which is before the async ELK layout populates nodes — so we re-fit here. The short
+  // delay lets React Flow measure the freshly-rendered nodes before fitting.
+  useEffect(() => {
+    if (!nodes.length) return;
+    const id = setTimeout(() => rf.current?.fitView({ padding: 0.16, duration: 200 }), 120);
+    return () => clearTimeout(id);
+  }, [nodes.length]);
 
   // ingest applies a projection: if the node SET is unchanged it only restyles state
   // (cheap, no relayout, preserves pan/zoom) — the common live-overlay tick. If the set
@@ -150,7 +175,11 @@ export default function App() {
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          onInit={(inst) => {
+            rf.current = inst;
+          }}
           fitView
+          minZoom={0.1}
           proOptions={{ hideAttribution: true }}
         >
           <Background />
