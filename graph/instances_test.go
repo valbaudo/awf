@@ -15,6 +15,9 @@ func TestTemplateOfAndContext(t *testing.T) {
 		{"map[0].item-3.work", "map[0].body.work", "item-3"},                    // map: item replaces body
 		{"gate[2].attempt-1.generate.gen", "gate[2].generate.gen", "attempt-1"}, // gate: attempt appended
 		{"loop[0].body.iter-2.step", "loop[0].body.step", "iter-2"},             // loop: iter appended
+		// nested expansion (e.g. a loop inside a map item): the graph layer drops every
+		// instance segment and collects them all, so it renders these if they ever appear.
+		{"map[0].item-1.loop[0].body.iter-2.step", "map[0].body.loop[0].body.step", "item-1.iter-2"},
 	}
 	for _, c := range cases {
 		if got := templateOf(c.runtime); got != c.tmpl {
@@ -69,9 +72,9 @@ func TestBuildWithRunInstances(t *testing.T) {
 	if byPath["map[0]"].NodeClass != "template" || byPath["map[0].body.work"].NodeClass != "template" {
 		t.Errorf("template nodes missing/mislabeled: %+v", byPath)
 	}
-	// Instance scope for item-0.
-	if n := byPath["map[0].item-0"]; n.NodeClass != "instance" || n.Kind != "map_item" || n.Parent != "map[0]" {
-		t.Errorf("item-0 scope = %+v, want instance/map_item/parent map[0]", n)
+	// Instance scope for item-0 — instance_of resolves to the enclosing map node.
+	if n := byPath["map[0].item-0"]; n.NodeClass != "instance" || n.Kind != "map_item" || n.Parent != "map[0]" || n.InstanceOf != "map[0]" {
+		t.Errorf("item-0 scope = %+v, want instance/map_item/parent map[0]/instance_of map[0]", n)
 	}
 	// Instance leaf, pointing back at its template step.
 	if n := byPath["map[0].item-1.score"]; n.NodeClass != "instance" || n.InstanceOf != "map[0].body.score" || n.Parent != "map[0].item-1" {

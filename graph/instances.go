@@ -42,17 +42,12 @@ func BuildWithRun(wf *ir.Workflow, events []state.Event) (Projection, error) {
 		if static[s.Path] {
 			continue // a template node that ran; its state is in the overlay
 		}
-		tmpl := templateOf(s.Path)
-		instanceOf := ""
-		if static[tmpl] {
-			instanceOf = tmpl // a leaf instance points at its template step
-		}
 		inst = append(inst, Node{
 			Path:       s.Path,
 			Kind:       instanceKind(s),
 			Parent:     s.ParentPath,
 			NodeClass:  "instance",
-			InstanceOf: instanceOf,
+			InstanceOf: nearestTemplateNode(templateOf(s.Path), static),
 		})
 	}
 	sort.Slice(inst, func(i, j int) bool { return inst[i].Path < inst[j].Path })
@@ -152,6 +147,24 @@ func instanceContext(path string) string {
 		}
 	}
 	return strings.Join(segs, ".")
+}
+
+// nearestTemplateNode resolves an instance's InstanceOf: the nearest ancestor of tmpl
+// that is an actual template node. A leaf instance's templateOf is already a node (returns
+// itself); a scope instance's templateOf is a branch path (e.g. "map[0].body") that walks
+// up to the enclosing map/gate/loop node ("map[0]"). Returns "" if none matches.
+func nearestTemplateNode(tmpl string, static map[string]bool) string {
+	for tmpl != "" {
+		if static[tmpl] {
+			return tmpl
+		}
+		i := strings.LastIndex(tmpl, ".")
+		if i < 0 {
+			return ""
+		}
+		tmpl = tmpl[:i]
+	}
+	return ""
 }
 
 func lastSegment(path string) string {
