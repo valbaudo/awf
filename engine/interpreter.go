@@ -248,6 +248,13 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 		if !ok {
 			return nil, fmt.Errorf("input_files[%s]: step %q has no named output_files artifact %q", dst, id, name)
 		}
+		// output_files paths are templated at capture (substituteOutputPaths), so the
+		// artifact commits PATH-keyed under the SUBSTITUTED path. Substitute here too
+		// (same input.*/step.* scope → same result) so the ref lookup hits that key.
+		containerPath, err := template.Substitute(containerPath, scope)
+		if err != nil {
+			return nil, fmt.Errorf("input_files[%s]: substitute artifact path %q: %w", dst, containerPath, err)
+		}
 		cas, err := scope.ResolveArtifactPath(id, containerPath)
 		if err != nil {
 			return nil, fmt.Errorf("input_files[%s]: %w", dst, err)
@@ -259,6 +266,26 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 		out = append(out, container.InputFile{Path: dst, Content: b})
 	}
 	return out, nil
+}
+
+// substituteOutputPaths template-substitutes each output_files path against the
+// step's scope, returning the capture paths in declaration order (nil for empty,
+// matching ir.OutputFiles.Paths). output_files paths are templated exactly like
+// run: and idempotency_key, so a path such as /work/records/{{ input.cve_id }}.json
+// captures — and commits, PATH-keyed in commit.go — under the substituted name.
+func substituteOutputPaths(ofs ir.OutputFiles, scope *Scope) ([]string, error) {
+	if len(ofs) == 0 {
+		return nil, nil
+	}
+	paths := make([]string, 0, len(ofs))
+	for _, of := range ofs {
+		p, err := template.Substitute(of.Path, scope)
+		if err != nil {
+			return nil, fmt.Errorf("output_files path %q: %w", of.Path, err)
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
 }
 
 // runCodeStep is the CodeStep handler — composes substitution, retry, dispatch,
@@ -326,11 +353,15 @@ func runCodeStep(
 		return failStep(log, path, OutcomePermanentFailure, err)
 	}
 
+	outputFiles, err := substituteOutputPaths(cs.OutputFiles, scope)
+	if err != nil {
+		return failStep(log, path, OutcomePermanentFailure, fmt.Errorf("engine.Run: substitute output_files at %q: %w", path, err))
+	}
 	snapBare, _ := SplitContainerRef(cs.Container)
 	resolved := ResolvedInputs{
 		Command:               command,
 		Env:                   map[string]string{},
-		OutputFiles:           cs.OutputFiles.Paths(),
+		OutputFiles:           outputFiles,
 		OutputSchema:          cs.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,

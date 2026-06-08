@@ -345,6 +345,13 @@ verifies it in a clean one. Both fields appear on code (`run:`) and agent
     own destination path. The two forms are mutually exclusive per step (a step's
     `output_files` is either all bare or all named).
 
+    Both forms' **container paths are `{{ }}`-substituted** from the step's scope
+    (exactly like `run:` and `idempotency_key`) before capture, so a path such as
+    `/work/records/{{ input.cve_id }}.json` captures — and, for a named form, is
+    referenced — under its substituted name. This is the path on the *producer's*
+    side; the `input_files` reference itself stays a static
+    `step.<id>.files.<name>` handle, never a `{{ }}` template (see below).
+
 **input_files**
 :   A map of *in-container destination path* -> *artifact reference* —
     `input_files: { /work/report.md: step.recon.files.report }`. Before the step
