@@ -68,15 +68,29 @@ func runMapReduce(
 	}
 	branches := collectReduceBranches(runstate, n, mapPath)
 	if n.Reduce.IsRun() {
-		// A run: reducer is a code step → it needs its own container. Create it
-		// here and Destroy after (mirrors dispatchItem's Create/defer Destroy).
-		spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Reduce.Container)
-		rh, cerr := ld.Backend.Create(ctx, spec)
-		if cerr != nil {
-			return "", fmt.Errorf("engine.runMapReduce: create reduce container %q: %w", n.Reduce.Container, cerr)
+		// A run reducer is a code step → it needs its container handle. The
+		// reducer's container is a `containers:`-declared name, so it is normally
+		// ALREADY provisioned and present in ld.Handles (brought up once at run
+		// start, like every other declared container). REUSE that handle.
+		//
+		// Create-then-defer-Destroy here (the old behaviour, which "mirrored"
+		// dispatchItem's per-ITEM ephemeral containers) is wrong for a SHARED
+		// declared container: for a compose project it brings the project up a
+		// second time AND tears the WHOLE project down when the reduce returns —
+		// destroying a lab that LATER steps still use. That is the slice5
+		// item4-reduce → item5 "Exec: unknown handle <lab>" failure; slice2 never
+		// hit it because nothing ran after its reduce. Only a container the
+		// dispatcher does NOT already hold (not pre-provisioned) is Created +
+		// Destroyed here.
+		if _, have := ld.Handles[n.Reduce.Container]; !have {
+			spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Reduce.Container)
+			rh, cerr := ld.Backend.Create(ctx, spec)
+			if cerr != nil {
+				return "", fmt.Errorf("engine.runMapReduce: create reduce container %q: %w", n.Reduce.Container, cerr)
+			}
+			defer func() { _ = ld.Backend.Destroy(context.Background(), rh) }()
+			ld = ld.WithItemHandle(n.Reduce.Container, rh)
 		}
-		defer func() { _ = ld.Backend.Destroy(context.Background(), rh) }()
-		ld = ld.WithItemHandle(n.Reduce.Container, rh)
 	}
 	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, runstate, ld, log, blobs, clk, tap)
 }

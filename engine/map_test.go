@@ -1049,6 +1049,71 @@ func TestRunMapQuorumReduceThresholdIsCohortWhenBranchCrashes(t *testing.T) {
 	}
 }
 
+func TestRunMapRunReduceReusesPreProvisionedContainer(t *testing.T) {
+	// Regression: a run-reduce whose container is a PRE-DECLARED one (already
+	// brought up + present in ld.Handles, like every declared container at run
+	// start) must REUSE that handle — runMapReduce must NOT Create+Destroy it. The
+	// old code did (it "mirrored" dispatchItem's per-ITEM ephemeral containers),
+	// which for a compose project tears the WHOLE project down when the reduce
+	// returns — destroying a lab that LATER steps still use. That was the slice5
+	// item4-reduce → item5 "Exec: unknown handle <lab>" failure (slice2 never hit
+	// it because nothing ran after its reduce).
+	rowSchema := &ir.JSONSchema{
+		"type": "object", "additionalProperties": false,
+		"required": []any{"k"}, "properties": map[string]any{"k": map[string]any{"type": "string"}},
+	}
+	reduceSchema := &ir.JSONSchema{
+		"type": "object", "additionalProperties": false,
+		"required": []any{"csv_rows"}, "properties": map[string]any{"csv_rows": map[string]any{"type": "integer"}},
+	}
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "scan", Run: "./scan {{ x }}", Container: testMapContainer,
+			OutputSchema: rowSchema, OutputFiles: ir.OutputFiles{{Name: "row", Path: "/out/row.csv"}},
+			Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	wf := staticOverWorkflow("x", body, 1, nil)
+	wf.Containers["agg"] = ir.Container{Image: "oci://example.com/r@sha256:" + strings.Repeat("3", 64)}
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{
+		Run: "./merge.sh", Container: "agg", OutputSchema: reduceSchema,
+		OutputFiles: ir.OutputFiles{{Name: "csv", Path: "/out/versions.csv"}},
+	}
+
+	rig := newMapRig(t, execProgram{cmd: "./scan a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"k":"a"}`)}})
+	rig.fake.ProgramExecWithFiles("./merge.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"csv_rows":1}`)},
+		nil, map[string][]byte{"/out/versions.csv": []byte("merged")})
+
+	// Pre-provision the reduce container 'agg' in ld.Handles (as a real run does
+	// for EVERY declared container at run start).
+	aggH, err := rig.fake.Create(context.Background(), container.ContainerSpec{Name: "agg"})
+	if err != nil {
+		t.Fatalf("seed agg: %v", err)
+	}
+	rig.ld.Handles["agg"] = aggH
+	countAggCreates := func() int {
+		n := 0
+		for _, s := range rig.fake.CreateSpecs {
+			if s.Name == "agg" {
+				n++
+			}
+		}
+		return n
+	}
+	before := countAggCreates() // 1 (the seed above)
+
+	rs := NewRunState(testRunID, testDigest, runOverItems("a"))
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("runMap with a run-reduce into a pre-provisioned container: (%q, %v), want (ok, nil)", oc, err)
+	}
+	if after := countAggCreates(); after != before {
+		t.Errorf("the reduce re-Created the PRE-PROVISIONED container 'agg' (%d→%d Backend.Create calls); the reducer must REUSE ld.Handles[agg], not Create+Destroy it — Create+Destroy of a shared compose project tears down a lab that later steps still need", before, after)
+	}
+	if _, ok := rs.LookupCompleted(testMapPath); !ok {
+		t.Errorf("the reduce did not commit a result at the map path %q (it must still RUN, just in the existing handle)", testMapPath)
+	}
+}
+
 func TestRunMapRunReduceResumeReplaysWithoutBootingContainer(t *testing.T) {
 	// Task 11 regression (review): on a pure replay of an already-committed
 	// run: reducer, runMap must NOT Create (and tear down) the reducer container.
