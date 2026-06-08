@@ -284,6 +284,105 @@ func TestLocalDispatcherCapturesOutputFiles(t *testing.T) {
 	}
 }
 
+func TestLocalDispatcherRunAgentCapturesDeclaredOutputFiles(t *testing.T) {
+	d, backend, h := newDispatcher(t)
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d.Resolver = &reg
+	if err := backend.WriteFile(h, "/out/agent-report.json", []byte(`{"from":"agent"}`)); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	intent := engine.NodeIntent{
+		Path: "agent_report",
+		Node: &ir.AgentStep{ID: "agent_report", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:        "anthropic/claude-code",
+			With:        ir.RawConfig{"prompt": "write the report"},
+			OutputFiles: []string{"/out/agent-report.json"},
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", dr.Outcome)
+	}
+	if len(dr.Files) != 1 || dr.Files[0].Path != "/out/agent-report.json" || string(dr.Files[0].Content) != `{"from":"agent"}` {
+		t.Errorf("Files = %+v, want declared agent output file", dr.Files)
+	}
+}
+
+func TestLocalDispatcherRunAgentMissingOutputFileIsRetryable(t *testing.T) {
+	d, _, _ := newDispatcher(t)
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d.Resolver = &reg
+	intent := engine.NodeIntent{
+		Path: "agent_forgot",
+		Node: &ir.AgentStep{ID: "agent_forgot", Container: "lab", Uses: "anthropic/claude-code"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:        "anthropic/claude-code",
+			With:        ir.RawConfig{"prompt": "write the report"},
+			OutputFiles: []string{"/out/never-created"},
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeRetryableFailure {
+		t.Errorf("Outcome = %v, want retryable", dr.Outcome)
+	}
+	if dr.Err == nil {
+		t.Error("DispatchResult.Err is nil; want capture error")
+	}
+}
+
+func TestLocalDispatcherRunAgentContainerlessOutputFilesRejectedBeforeLaunch(t *testing.T) {
+	d, _, _ := newDispatcher(t)
+	var reg agent.Registry
+	fk := fake.New("awf/llm").
+		WithCaps(agent.Caps{NativeSchema: false, Containerless: true}).
+		Script(0, fake.Result{Output: map[string]any{"ok": true}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d.Resolver = &reg
+	intent := engine.NodeIntent{
+		Path: "llm_report",
+		Node: &ir.AgentStep{ID: "llm_report", Uses: "awf/llm"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:        "awf/llm",
+			With:        ir.RawConfig{"prompt": "write the report"},
+			OutputFiles: []string{"/out/report.md"},
+		},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Errorf("Outcome = %v, want permanent_failure", dr.Outcome)
+	}
+	if dr.Err == nil || !strings.Contains(dr.Err.Error(), "output_files requires a container") {
+		t.Fatalf("Err = %v, want output_files requires a container", dr.Err)
+	}
+	if calls := fk.Calls(); len(calls) != 0 {
+		t.Fatalf("fake adapter was launched %d time(s), want 0", len(calls))
+	}
+}
+
 func TestRunCodeStagesInputFiles(t *testing.T) {
 	// SP1 artifact channel: the dispatcher calls Backend.CopyTo to stage
 	// ResolvedInputs.InputFiles into the container BEFORE Exec. This is the

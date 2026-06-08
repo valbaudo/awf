@@ -855,6 +855,45 @@ func TestScopeResolveArtifactPath(t *testing.T) {
 	}
 }
 
+func TestScopeResolveArtifactPathFromPassedGateAttempt(t *testing.T) {
+	schema := &ir.JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	wf := &ir.Workflow{
+		ID: "test", Version: 1,
+		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
+		Graph: ir.NodeList{
+			&ir.Gate{
+				Generate: ir.NodeList{
+					&ir.CodeStep{ID: "recon", Container: "lab", Run: "true", OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.md"}}},
+				},
+				Evaluate:    ir.NodeList{&ir.CodeStep{ID: "judge", Container: "lab", Run: "true", OutputSchema: schema}},
+				Until:       ir.Expr("{{ evaluate.ok }}"),
+				MaxAttempts: 2,
+			},
+			&ir.CodeStep{ID: "hunt", Container: "lab", Run: "true", InputFiles: map[string]string{"/work/report.md": "step.recon.files.report"}},
+		},
+	}
+	rs := NewRunState(testRunID, "digest", nil)
+	rs.RecordCompleted("gate[0].attempt-1.generate.recon", NodeResult{
+		Outcome: OutcomeOK,
+		Files:   map[string]string{"/out/report.md": "rejected-blob"},
+	})
+	rs.RecordCompleted("gate[0].attempt-2.generate.recon", NodeResult{
+		Outcome: OutcomeOK,
+		Files:   map[string]string{"/out/report.md": "passed-blob"},
+	})
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 1, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"ok": false}})
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 2, AttemptOutcome: AttemptPassed, Verdict: map[string]any{"ok": true}})
+
+	sc := NewScope(rs, wf, "hunt")
+	cas, err := sc.ResolveArtifactPath("recon", "/out/report.md")
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(recon): %v", err)
+	}
+	if cas != "passed-blob" {
+		t.Errorf("cas = %q, want passed-blob", cas)
+	}
+}
+
 // reducedMapWorkflow is a workflow whose only map (map[0]) declares a reduce:
 // over a body step `scan`. Used by the Task-11 scope-preference tests.
 func reducedMapWorkflow() *ir.Workflow {

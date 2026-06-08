@@ -9,10 +9,12 @@ import (
 
 // validateInputFiles checks every step's input_files: each value must be a
 // static step.<id>.files.<name> reference (AWF3007) naming a prior step that
-// declared a NAMED output_files artifact <name> and is reachable in scope
-// (same gate/map subtree, via opaqueScopePrefix/pathWithinScope) — matching the
-// rigor of the existing step.<id>.<field> ref validator. Each destination path
-// must also be absolute and clean (a format contract for the new field).
+// declared a NAMED output_files artifact <name> and is reachable in scope.
+// Map bodies remain opaque except for reduce: promotion. Gate bodies are special:
+// an input_files artifact ref from after a gate may resolve to the accepted
+// attempt's artifact at runtime. Scalar step refs remain gate-scoped. Each
+// destination path must also be absolute and clean (a format contract for the
+// new field).
 func validateInputFiles(ld *LoadedDefinition, c *collector) {
 	if ld == nil || ld.Workflow == nil {
 		return
@@ -116,6 +118,14 @@ func validateNamedArtifactRef(
 		return
 	}
 	if scope, opaque := opaqueScopePrefix(p.path); opaque && !pathWithinScope(nodePath, scope) {
+		if isGateScope(scope) {
+			return
+		}
 		c.errf(nodePath, "AWF3007", label+": producer "+id+" is inside a gate/map scope not reachable from here")
 	}
+}
+
+func isGateScope(scope string) bool {
+	segs := strings.Split(scope, ".")
+	return len(segs) > 0 && strings.HasPrefix(segs[len(segs)-1], "gate[")
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"time"
 
@@ -225,7 +226,9 @@ func interpNode(
 var errArtifactFetch = errors.New("engine: input_files artifact fetch failed")
 
 // resolveInputFiles maps a step's input_files (container-path → artifact ref)
-// to staged bytes. Builds the name→path index once per call (one graph walk via
+// to staged bytes. Destination container paths are template-substituted against
+// the consumer's scope before staging, matching output_files path templating.
+// Builds the name→path index once per call (one graph walk via
 // ir.OutputFilesByStepID), avoiding a re-walk per ref within the call.
 // Ref errors (parse/undeclared/not-committed) return a plain error (caller →
 // permanent_failure); a Blobs.Get failure is wrapped with errArtifactFetch
@@ -242,6 +245,13 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 	sort.Strings(dsts)
 	out := make([]container.InputFile, 0, len(in))
 	for _, dst := range dsts {
+		resolvedDst, err := template.Substitute(dst, scope)
+		if err != nil {
+			return nil, fmt.Errorf("input_files[%s]: substitute destination: %w", dst, err)
+		}
+		if !path.IsAbs(resolvedDst) || resolvedDst != path.Clean(resolvedDst) {
+			return nil, fmt.Errorf("input_files[%s]: substituted destination %q must be an absolute, clean path (no '..' segment)", dst, resolvedDst)
+		}
 		id, name, ok := template.ParseArtifactRef(in[dst])
 		if !ok {
 			return nil, fmt.Errorf("input_files[%s]=%q: expected step.<id>.files.<name>", dst, in[dst])
@@ -253,7 +263,7 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 		// output_files paths are templated at capture (substituteOutputPaths), so the
 		// artifact commits PATH-keyed under the SUBSTITUTED path. Substitute here too
 		// (same input.*/step.* scope → same result) so the ref lookup hits that key.
-		containerPath, err := template.Substitute(containerPath, scope)
+		containerPath, err = template.Substitute(containerPath, scope)
 		if err != nil {
 			return nil, fmt.Errorf("input_files[%s]: substitute artifact path %q: %w", dst, containerPath, err)
 		}
@@ -265,7 +275,7 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 		if err != nil {
 			return nil, fmt.Errorf("input_files[%s]: %w (%v)", dst, errArtifactFetch, err)
 		}
-		out = append(out, container.InputFile{Path: dst, Content: b})
+		out = append(out, container.InputFile{Path: resolvedDst, Content: b})
 	}
 	return out, nil
 }

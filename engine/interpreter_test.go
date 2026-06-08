@@ -409,6 +409,68 @@ func TestRunNamedOutputFileRefWithTemplatedPath(t *testing.T) {
 	}
 }
 
+func TestRunInputFilesDestinationPathTemplated(t *testing.T) {
+	// input_files destination paths are template-substituted against the consumer
+	// scope before staging, matching output_files path templating. This is needed
+	// for dynamic record paths such as /work/records/{{ input.cve_id }}.json.
+	t.Parallel()
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	fake := container.NewFake()
+	labH, err := fake.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create lab: %v", err)
+	}
+	boxH, err := fake.Create(context.Background(), container.ContainerSpec{Name: "box"})
+	if err != nil {
+		t.Fatalf("Create box: %v", err)
+	}
+	disp := &engine.LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"lab": labH, "box": boxH}}
+	log := state.NewInMemoryLog(clk)
+	blobs := state.NewInMemoryBlobs()
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: []byte(`{"run_id":"r1","workflow_digest":"d1"}`)}); err != nil {
+		t.Fatalf("seed run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d1", map[string]any{"cve": "CVE-2025-29927"})
+
+	sentinel := []byte(`{"ok":true}`)
+	fake.ProgramExec("./make.sh", container.ExecResult{ExitCode: 0}, nil)
+	if err := fake.WriteFile(labH, "/out/record.json", sentinel); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fake.ProgramExec("./consume.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]ir.Container{"lab": {}, "box": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "make", Container: "lab", Run: "./make.sh",
+				OutputFiles: ir.OutputFiles{{Name: "record", Path: "/out/record.json"}},
+			},
+			&ir.CodeStep{
+				ID: "consume", Container: "box", Run: "./consume.sh",
+				InputFiles: map[string]string{"/work/records/{{ input.cve }}.json": "step.make.files.record"},
+			},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+	got, err := fake.CaptureFiles(context.Background(), boxH, []string{"/work/records/CVE-2025-29927.json"})
+	if err != nil {
+		t.Fatalf("CaptureFiles templated destination: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Content) != string(sentinel) {
+		t.Errorf("staged into templated destination = %+v, want %q", got, sentinel)
+	}
+}
+
 func TestRunCodeStepFailureHaltsSubsequentSteps(t *testing.T) {
 	t.Parallel()
 	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)

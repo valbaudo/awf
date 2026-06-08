@@ -233,6 +233,20 @@ func (s *Scope) ResolveArtifactPath(id, containerPath string) (string, error) {
 			}
 		}
 	}
+	if rp, handled, err := s.passedGateArtifactRuntimePath(staticPath); handled {
+		if err != nil {
+			return "", err
+		}
+		nr, ok := s.rs.LookupCompleted(rp)
+		if !ok {
+			return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: passed gate step %q not yet committed (%s)", id, rp)
+		}
+		cas, ok := nr.Files[containerPath]
+		if !ok {
+			return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: passed gate step %q has no committed artifact at %q", id, containerPath)
+		}
+		return cas, nil
+	}
 	rp, err := s.stepRuntimePath(staticPath)
 	if err != nil {
 		return "", &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: err.Error()}
@@ -246,6 +260,34 @@ func (s *Scope) ResolveArtifactPath(id, containerPath string) (string, error) {
 		return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step %q has no committed artifact at %q", id, containerPath)
 	}
 	return cas, nil
+}
+
+func (s *Scope) passedGateArtifactRuntimePath(staticPath string) (string, bool, error) {
+	gateStatic, ok := gateScopePrefix(staticPath)
+	if !ok || runtimePathWithinGate(s.ctxPath, gateStatic) {
+		return "", false, nil
+	}
+	attempts := s.rs.LookupGateAttempts(gateStatic)
+	for i := len(attempts) - 1; i >= 0; i-- {
+		if attempts[i].AttemptOutcome == AttemptPassed {
+			return strings.Replace(staticPath, gateStatic, AttemptPath(gateStatic, attempts[i].N), 1), true, nil
+		}
+	}
+	return "", true, template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step inside gate %q has no passed attempt", gateStatic)
+}
+
+func gateScopePrefix(staticPath string) (string, bool) {
+	segs := strings.Split(staticPath, ".")
+	for i := len(segs) - 1; i >= 0; i-- {
+		if strings.HasPrefix(segs[i], "gate[") {
+			return strings.Join(segs[:i+1], "."), true
+		}
+	}
+	return "", false
+}
+
+func runtimePathWithinGate(ctxPath, gateStatic string) bool {
+	return ctxPath == gateStatic || strings.HasPrefix(ctxPath, gateStatic+attemptSep)
 }
 
 // resolveEvaluate handles `evaluate.<field>` refs. Per Phase 3 slice 3.3

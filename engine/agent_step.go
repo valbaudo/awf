@@ -161,6 +161,11 @@ func runAgentStep(
 		return failStep(log, path, OutcomePermanentFailure, err)
 	}
 
+	outputFiles, err := substituteOutputPaths(as.OutputFiles, scope)
+	if err != nil {
+		return failStep(log, path, OutcomePermanentFailure, fmt.Errorf("engine.runAgentStep: substitute output_files at %q: %w", path, err))
+	}
+
 	// 4. Build ResolvedInputs. Timeout cast follows the runCodeStep idiom
 	// (engine/interpreter.go:283): ir.AgentStep.Timeout is *ir.Duration where
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
@@ -168,6 +173,7 @@ func runAgentStep(
 	resolved := ResolvedInputs{
 		Uses:                  as.Uses,
 		With:                  resolvedWith,
+		OutputFiles:           outputFiles,
 		OutputSchema:          as.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,

@@ -89,8 +89,10 @@ func TestInputFilesDotDotDstReportsAWF3007(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
 }
 
-// Producer inside a gate body, consumer outside it → unreachable scope → AWF3007.
-func TestInputFilesProducerInsideGateUnreachableReportsAWF3007(t *testing.T) {
+// A named artifact produced inside a gate is consumable after the gate. At
+// runtime it resolves to the accepted attempt's committed file. Scalar step refs
+// remain gate-scoped; this promotion is specific to input_files artifacts.
+func TestInputFilesProducerInsidePassedGateAllowed(t *testing.T) {
 	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -106,7 +108,7 @@ func TestInputFilesProducerInsideGateUnreachableReportsAWF3007(t *testing.T) {
 				InputFiles: map[string]string{"/work/report.md": "step.recon.files.report"}},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
+	assertNoErrorCode(t, Validate(ld), "AWF3007")
 }
 
 // Agent-step consumer also validates input_files.

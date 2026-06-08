@@ -104,10 +104,11 @@ type AgentInvocation struct {
 // references bind only to typed fields). ExitCode mirrors a process exit
 // code shape (0 = ok); the engine reads it but currently only treats
 // nonzero as a transport-class signal — quality verdicts live in Output.
-// Metrics carries OTel-bound counters (Phase 6 obs reads them). Files maps
-// declared output_files paths to their content bytes (Phase 5 adapter
-// implementations capture from inside the container; slice 5.2 dispatcher
-// Puts these into Blobs at commit boundary).
+// Metrics carries OTel-bound counters (Phase 6 obs reads them). Files contains
+// adapter-provided extra artifacts to commit. For container-backed agent steps,
+// the engine captures declared output_files from the container at the commit
+// boundary; adapters do not need to read those paths themselves. Containerless
+// adapters cannot declare output_files.
 type AgentResult struct {
 	Output   map[string]any    `json:"output,omitempty"`
 	ExitCode int               `json:"exit_code"`

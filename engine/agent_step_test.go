@@ -655,6 +655,88 @@ func TestRunAgentStep_StagesInputFiles(t *testing.T) {
 	}
 }
 
+func TestRunAgentStep_OutputFilesPathTemplatedAndCommitted(t *testing.T) {
+	const yaml = `workflow: agent-output-files
+version: 1
+input:
+  type: object
+  additionalProperties: false
+  required: [cve_id]
+  properties:
+    cve_id: { type: string }
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: write_record
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: "write the record"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    output_files:
+      record: "/work/records/{{ input.cve_id }}.json"
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	be := container.NewFake()
+	h, err := be.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create lab: %v", err)
+	}
+	if err := be.WriteFile(h, "/work/records/CVE-2026-0001.json", []byte(`{"cve":"CVE-2026-0001"}`)); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  be,
+		Handles:  map[string]container.Handle{"lab": h},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", map[string]any{"cve_id": "CVE-2026-0001"})
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+	nr, ok := rs.LookupCompleted("write_record")
+	if !ok {
+		t.Fatal("RunState.Completed missing write_record")
+	}
+	cas, ok := nr.Files["/work/records/CVE-2026-0001.json"]
+	if !ok {
+		t.Fatalf("Committed files = %+v, want substituted record path", nr.Files)
+	}
+	got, err := blobs.Get(cas)
+	if err != nil {
+		t.Fatalf("Blobs.Get: %v", err)
+	}
+	if string(got) != `{"cve":"CVE-2026-0001"}` {
+		t.Errorf("Blob content = %q", got)
+	}
+}
+
 // mustJSON is a per-package test helper. Task 2 defined an identical body
 // in engine/events_test.go (package engine — internal); this file is
 // package engine_test (external), a separate scope, so we declare it

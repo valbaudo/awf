@@ -358,18 +358,26 @@ verifies it in a clean one. Both fields appear on code (`run:`) and agent
     runs, the runtime resolves each reference to its committed, content-addressed
     blob and writes the bytes to the destination path inside this step's
     container, creating parent directories as needed and overwriting any existing
-    file. The right-hand side is a **static reference**, not a `{{ }}` template
-    (like `container:`); the bytes themselves are opaque to the runtime.
+    file. Destination paths are `{{ }}`-substituted from the consumer step's
+    scope before staging, so a path such as
+    `/work/records/{{ input.cve_id }}.json` is valid after substitution. The
+    right-hand side is a **static reference**, not a `{{ }}` template (like
+    `container:`); the bytes themselves are opaque to the runtime.
 
     The reference must name a **prior, in-scope** step that declared a *named*
     `output_files` artifact of that name, exactly as a `step.<id>.<field>`
-    reference must name a declared output field. The producer's scope reachability
-    is enforced the same way (a producer inside a `gate`/`map` body is not
-    referenceable from outside that scope). Destination paths must be **absolute
-    and clean** — no `..` segment — and distinct (overlapping parent/child
-    destinations are undefined). A reference that fails any of these — undeclared
-    producer, undeclared artifact name, a `{{ }}` template, or a non-absolute /
-    `..`-containing destination — is rejected at validation (**AWF3007**).
+    reference must name a declared output field. Scope reachability is mostly the
+    same, with one file-specific exception: after a `gate` passes, a later
+    `input_files` reference may point at a producer inside that gate, and the
+    runtime resolves it to the accepted attempt's committed artifact. Scalar
+    `step.<id>.<field>` references remain gate-scoped; this exception exists only
+    for durable files. A producer inside a `map` body is still not referenceable
+    from outside unless the map has a `reduce:` product. Destination paths must be
+    **absolute and clean after substitution** — no `..` segment — and distinct
+    (overlapping parent/child destinations are undefined). A reference that fails
+    any of these — undeclared producer, undeclared artifact name, a templated
+    right-hand side, or a non-absolute / `..`-containing destination — is rejected
+    at validation (**AWF3007**).
 
     `input_files` **requires a container**: it is rejected on a *containerless*
     agent step (one whose runtime omits `container:`), since there is no container

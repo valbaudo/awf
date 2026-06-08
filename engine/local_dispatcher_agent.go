@@ -108,6 +108,16 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		return DispatchResult{Outcome: OutcomeRetryableFailure, Err: err}, closedChunks(), nil
 	}
 
+	// Declared output_files require a container to capture from. Reject before
+	// Launch so a malformed containerless workflow cannot perform agent-side
+	// effects and only then fail at capture time.
+	if len(intent.ResolvedInputs.OutputFiles) > 0 && bare == "" {
+		return DispatchResult{
+			Outcome: OutcomePermanentFailure,
+			Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: output_files requires a container at %q", intent.Path),
+		}, closedChunks(), nil
+	}
+
 	// Apply step timeout to ctx (mirrors runCode).
 	if intent.ResolvedInputs.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -193,6 +203,20 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}
 	}
 
+	files := packFiles(launchOutcome.Result.Files)
+	if len(intent.ResolvedInputs.OutputFiles) > 0 {
+		captured, captureErr := d.Backend.CaptureFiles(ctx, h, intent.ResolvedInputs.OutputFiles)
+		if captureErr != nil {
+			return DispatchResult{
+				Outcome:     OutcomeRetryableFailure,
+				Outputs:     launchOutcome.Result.Output,
+				AgentEvents: bufferedEvents,
+				Err:         captureErr,
+			}, closedChunks(), nil
+		}
+		files = append(files, captured...)
+	}
+
 	exitCodePtr := copyIntPtr(launchOutcome.Result.ExitCode)
 	metrics := launchOutcome.Result.Metrics
 	if d.StepCostLine && d.AgentEventTap != nil {
@@ -203,7 +227,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		ExitCode:    exitCodePtr,
 		Outputs:     launchOutcome.Result.Output,
 		AgentEvents: bufferedEvents,
-		Files:       packFiles(launchOutcome.Result.Files),
+		Files:       files,
 		Metrics:     &metrics,
 		Transcript:  launchOutcome.Result.Transcript, // adapter-provided; no With["prompt"] read anywhere in engine
 	}
