@@ -172,6 +172,10 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
+	if err := checkRuntimeComposeCapability(ld.Workflow, *backendKind, backend); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
 
 	// Slice 5.3: if Resolver isn't test-injected, build the production
 	// *agent.Registry from --agent-env + the resolved backend. Tests that

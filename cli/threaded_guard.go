@@ -89,6 +89,10 @@ func checkThreadedNodes(nodes ir.NodeList, resolver agent.Resolver) error {
 			if err := checkThreadedNodes(v.Body, resolver); err != nil {
 				return err
 			}
+		case *ir.Compose:
+			if err := checkThreadedNodes(v.Body, resolver); err != nil {
+				return err
+			}
 		default:
 			// Unreachable from outside ir/ (ir.Node is a closed sum type with an
 			// unexported isNode() marker). Defensive: keep this switch in sync with

@@ -131,6 +131,11 @@ func walkAgentRefsNodes(nodes ir.NodeList, seen map[agentRef]bool) {
 			// pinning — per-item containers are dispatch-time (static maps:
 			// image-digest-pinned; P6a runtime-image maps: digest-captured at
 			// first boot). See the doc-comment above for the safety argument.
+		case *ir.Compose:
+			// Runtime compose body intentionally NOT traversed for run-start
+			// agent-version pinning: the scoped container handle is promoted at
+			// dispatch time from a committed artifact, so there is no handle to
+			// pass to Adapter.Version at run start.
 		default:
 			// Unreachable from outside ir/ (ir.Node is closed sum type with
 			// unexported isNode() marker). Defensive documentation only.

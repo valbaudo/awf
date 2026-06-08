@@ -65,6 +65,11 @@ func producerRefs(n ir.Node) []string {
 	case *ir.Map:
 		addExpr(string(v.Over))
 		addSlots(string(v.Image))
+	case *ir.Compose:
+		if id, _, ok := template.ParseArtifactRef(v.From); ok {
+			add(id)
+		}
+		addSlots(string(v.Service))
 	}
 	return ids
 }

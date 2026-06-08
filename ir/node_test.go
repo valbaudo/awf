@@ -360,13 +360,41 @@ func TestTryCatchFinallyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestComposeRoundTrip(t *testing.T) {
+	in := `{"compose":{"as":"lab","from":"step.generate.files.compose","service":"{{ step.generate.service }}","body":[{"id":"smoke","container":"lab","run":"wget -qO- http://127.0.0.1:8080/health"}]}}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cn, ok := n.(*Compose)
+	if !ok {
+		t.Fatalf("got %T, want *Compose", n)
+	}
+	if cn.As != "lab" || cn.From != "step.generate.files.compose" || string(cn.Service) != "{{ step.generate.service }}" {
+		t.Fatalf("bad decode: %+v", cn)
+	}
+	if len(cn.Body) != 1 {
+		t.Fatalf("body len = %d, want 1", len(cn.Body))
+	}
+	if _, ok := cn.Body[0].(*CodeStep); !ok {
+		t.Fatalf("body[0] = %T, want *CodeStep", cn.Body[0])
+	}
+	out, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
 // TestNodeRegistryExhaustive guards the 3-touchpoint invariant called out in node.go: every
 // controlKeys entry must have a matching case in unmarshalControl, and the total number of kinds
 // (control + step) must equal the count of concrete Node types. A future contributor who adds a
 // control type to the factory but forgets the switch case lands in the "unknown control" branch,
 // which this test catches before it can ship.
 func TestNodeRegistryExhaustive(t *testing.T) {
-	const wantKinds = 10 // 3 step + 7 control; update when (the standard's set of) node kinds changes.
+	const wantKinds = 11 // 3 step + 8 control; update when (the standard's set of) node kinds changes.
 	if got := len(controlKeys) + len(stepKeys); got != wantKinds {
 		t.Fatalf("registries cover %d kinds, want %d", got, wantKinds)
 	}

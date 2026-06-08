@@ -13,7 +13,7 @@ var controlKeys = map[string]func() Node{
 	"if": func() Node { return &If{} }, "loop": func() Node { return &Loop{} },
 	"try": func() Node { return &Try{} }, "parallel": func() Node { return &Parallel{} },
 	"gate": func() Node { return &Gate{} }, "skip": func() Node { return &Skip{} },
-	"map": func() Node { return &Map{} },
+	"map": func() Node { return &Map{} }, "compose": func() Node { return &Compose{} },
 }
 var stepKeys = map[string]func() Node{
 	"run": func() Node { return &CodeStep{} }, "uses": func() Node { return &AgentStep{} },
@@ -91,6 +91,9 @@ func unmarshalControl(key string, inner json.RawMessage, n Node) error {
 		return json.Unmarshal(inner, &v.Reason)
 	case *Map:
 		type a Map
+		return json.Unmarshal(inner, (*a)(v))
+	case *Compose:
+		type a Compose
 		return json.Unmarshal(inner, (*a)(v))
 	default:
 		return fmt.Errorf("unknown control key %q", key)

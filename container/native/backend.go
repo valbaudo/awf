@@ -76,7 +76,7 @@ func (*Backend) Capabilities() container.Caps {
 	// RuntimeImage is false: native ignores spec.Image and runs on the host, so
 	// a map's runtime image cannot be honored. The CLI guard rejects such a
 	// workflow on native (P6a) — fail closed.
-	return container.Caps{Snapshot: container.SnapshotNone, RuntimeImage: false}
+	return container.Caps{Snapshot: container.SnapshotNone, RuntimeImage: false, RuntimeCompose: false}
 }
 
 // Create rejects compose-mode (no service-routing on host), ignores

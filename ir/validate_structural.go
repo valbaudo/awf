@@ -93,7 +93,7 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 	// (d) Walk the graph: step-id uniqueness, container-ref resolution (missing OR unresolved),
 	// control-node shape, parallel distinct-container rule, expression-size limits, AWF1019.
 	seen := map[string]string{} // step id → first path where seen, for the duplicate diag
-	walkStructural(wf.Graph, "", wf, c, seen)
+	walkStructural(wf.Graph, "", wf, c, seen, nil)
 }
 
 // envNamePattern is the POSIX-portable environment-variable identifier charset. A workflow's
@@ -113,18 +113,18 @@ var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //
 // requireContainer is true for CodeStep / AgentStep (where AWF §4 requires a container) and
 // false for SignalStep (where AWF §4.3 explicitly states "No container needed").
-func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, seen map[string]string) {
+func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, seen map[string]string, scoped map[string]bool) {
 	for i, n := range nodes {
 		switch v := n.(type) {
 		case *CodeStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
-			checkContainerRef(v.Container, path, wf, c, true /* required */)
+			checkContainerRefInScope(v.Container, path, wf, scoped, c, true /* required */)
 			checkFieldSize(v.Run, path, c)
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
-			checkContainerRef(v.Container, path, wf, c, false /* optional: containerless adapters (awf/llm) need no container; run-start guard enforces it */)
+			checkContainerRefInScope(v.Container, path, wf, scoped, c, false /* optional: containerless adapters (awf/llm) need no container; run-start guard enforces it */)
 		case *SignalStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
@@ -143,8 +143,8 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 		case *If:
 			path := PathFor(parent, "if", "", i)
 			checkFieldSize(string(v.Cond), path, c)
-			walkStructural(v.Then, ChildPath(parent, "if", i, "then"), wf, c, seen)
-			walkStructural(v.Else, ChildPath(parent, "if", i, "else"), wf, c, seen)
+			walkStructural(v.Then, ChildPath(parent, "if", i, "then"), wf, c, seen, scoped)
+			walkStructural(v.Else, ChildPath(parent, "if", i, "else"), wf, c, seen, scoped)
 		case *Loop:
 			path := PathFor(parent, "loop", "", i)
 			if v.Until == nil && v.MaxIters == nil {
@@ -153,15 +153,15 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			if v.Until != nil {
 				checkFieldSize(string(*v.Until), path, c)
 			}
-			walkStructural(v.Body, ChildPath(parent, "loop", i, "body"), wf, c, seen)
+			walkStructural(v.Body, ChildPath(parent, "loop", i, "body"), wf, c, seen, scoped)
 		case *Try:
-			walkStructural(v.Do, ChildPath(parent, "try", i, "do"), wf, c, seen)
-			walkStructural(v.Catch, ChildPath(parent, "try", i, "catch"), wf, c, seen)
-			walkStructural(v.Finally, ChildPath(parent, "try", i, "finally"), wf, c, seen)
+			walkStructural(v.Do, ChildPath(parent, "try", i, "do"), wf, c, seen, scoped)
+			walkStructural(v.Catch, ChildPath(parent, "try", i, "catch"), wf, c, seen, scoped)
+			walkStructural(v.Finally, ChildPath(parent, "try", i, "finally"), wf, c, seen, scoped)
 		case *Parallel:
 			path := PathFor(parent, "parallel", "", i)
 			checkParallelDistinctContainers(v.Children, path, c)
-			walkStructural(v.Children, path, wf, c, seen)
+			walkStructural(v.Children, path, wf, c, seen, scoped)
 		case *Gate:
 			path := PathFor(parent, "gate", "", i)
 			if len(v.Generate) == 0 {
@@ -178,8 +178,8 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 					c.errf(path, "AWF1014", catalog["AWF1014"])
 				}
 			}
-			walkStructural(v.Generate, ChildPath(parent, "gate", i, "generate"), wf, c, seen)
-			walkStructural(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), wf, c, seen)
+			walkStructural(v.Generate, ChildPath(parent, "gate", i, "generate"), wf, c, seen, scoped)
+			walkStructural(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), wf, c, seen, scoped)
 		case *Skip:
 			// skip has no fields that need structural validation.
 		case *Map:
@@ -198,7 +198,7 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 				if strings.Contains(v.Container, "{{") {
 					c.errf(path, "AWF1019", catalog["AWF1019"])
 				} else {
-					checkContainerRef(v.Container, path, wf, c, true /* required */)
+					checkContainerRefInScope(v.Container, path, wf, scoped, c, true /* required */)
 				}
 			}
 			// AWF1023: snapshot:workspace on the map's fanned-out container would collide
@@ -213,7 +213,32 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 					c.errf(path, "AWF1023", catalog["AWF1023"])
 				}
 			}
-			walkStructural(v.Body, ChildPath(parent, "map", i, "body"), wf, c, seen)
+			walkStructural(v.Body, ChildPath(parent, "map", i, "body"), wf, c, seen, scoped)
+		case *Compose:
+			path := PathFor(parent, "compose", "", i)
+			if v.As == "" || v.From == "" || v.Service == "" || len(v.Body) == 0 {
+				c.errf(path, "AWF1038", catalog["AWF1038"])
+			}
+			if v.As != "" {
+				switch {
+				case strings.Contains(v.As, "{{"):
+					c.errf(path, "AWF1019", catalog["AWF1019"])
+				case !stepIDPattern.MatchString(v.As):
+					c.errf(path, "AWF1038", fmt.Sprintf("%s: as=%q must match %s", catalog["AWF1038"], v.As, stepIDPattern))
+				case containerDeclared(wf, v.As):
+					c.errf(path, "AWF1038", fmt.Sprintf("%s: as=%q collides with top-level container", catalog["AWF1038"], v.As))
+				case scoped[v.As]:
+					c.errf(path, "AWF1038", fmt.Sprintf("%s: as=%q collides with an outer scoped handle", catalog["AWF1038"], v.As))
+				}
+			}
+			if v.Service != "" {
+				checkFieldSize(string(v.Service), path+".service", c)
+			}
+			nextScoped := cloneScoped(scoped)
+			if v.As != "" {
+				nextScoped[v.As] = true
+			}
+			walkStructural(v.Body, ChildPath(parent, "compose", i, "body"), wf, c, seen, nextScoped)
 		}
 	}
 }
@@ -266,6 +291,10 @@ func checkStepID(id, path string, c *collector, seen map[string]string) {
 // Per AWF §3, "lab:db" syntax addresses a sibling service in the same compose project; only
 // the bare name (left of the colon) is checked against the declared container set.
 func checkContainerRef(name, path string, wf *Workflow, c *collector, required bool) {
+	checkContainerRefInScope(name, path, wf, nil, c, required)
+}
+
+func checkContainerRefInScope(name, path string, wf *Workflow, scoped map[string]bool, c *collector, required bool) {
 	if name == "" {
 		if required {
 			c.errf(path, "AWF1009", fmt.Sprintf("%s (container reference is empty)", catalog["AWF1009"]))
@@ -281,9 +310,25 @@ func checkContainerRef(name, path string, wf *Workflow, c *collector, required b
 	if i := strings.Index(name, ":"); i >= 0 {
 		bare = name[:i]
 	}
+	if scoped[bare] {
+		return
+	}
 	if _, ok := wf.Containers[bare]; !ok {
 		c.errf(path, "AWF1009", fmt.Sprintf("%s (container %q)", catalog["AWF1009"], name))
 	}
+}
+
+func cloneScoped(scoped map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(scoped)+1)
+	for k, v := range scoped {
+		out[k] = v
+	}
+	return out
+}
+
+func containerDeclared(wf *Workflow, name string) bool {
+	_, ok := wf.Containers[name]
+	return ok
 }
 
 func checkParallelDistinctContainers(children NodeList, path string, c *collector) {
@@ -344,6 +389,8 @@ func firstContainerRef(n Node) string {
 		return ""
 	case *Map:
 		return v.Container
+	case *Compose:
+		return ""
 	case *Parallel:
 		// Nested parallel: take the first branch's first container.
 		if len(v.Children) > 0 {
@@ -438,6 +485,8 @@ func collectMapImageTargets(nodes NodeList, set map[string]bool) {
 				}
 				set[bare] = true
 			}
+			collectMapImageTargets(v.Body, set)
+		case *Compose:
 			collectMapImageTargets(v.Body, set)
 		case *If:
 			collectMapImageTargets(v.Then, set)

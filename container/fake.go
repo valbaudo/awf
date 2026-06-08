@@ -78,6 +78,14 @@ type Fake struct {
 	// recorded scalars (Name/Image/PullIfAbsent) are what tests assert on.
 	CreateSpecs []ContainerSpec
 
+	// ExecHandles records the Handle value passed to each Exec call. Tests use
+	// this to assert compose service overrides (`container: lab:api`) reached
+	// the backend as a handle-level Service override.
+	ExecHandles []Handle
+
+	// DestroyCalls records every Handle passed to Destroy, in order.
+	DestroyCalls []Handle
+
 	// "Any" programmed response (slice 5.3 Task 16). Used by tests where
 	// the Cmd.Run is built by the caller (the test's SUBJECT), not the
 	// key to look up. nil = unset; takes effect only as a fall-through
@@ -173,9 +181,9 @@ func (f *Fake) Capabilities() Caps {
 	// The fake resolves runtime images via its programmable digest table, so it
 	// advertises RuntimeImage (P6a). Snapshot still depends on an injected CAS.
 	if f.blobs != nil {
-		return Caps{Snapshot: SnapshotFSCoW, RuntimeImage: true}
+		return Caps{Snapshot: SnapshotFSCoW, RuntimeImage: true, RuntimeCompose: true}
 	}
-	return Caps{Snapshot: SnapshotNone, RuntimeImage: true}
+	return Caps{Snapshot: SnapshotNone, RuntimeImage: true, RuntimeCompose: true}
 }
 
 func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
@@ -197,7 +205,7 @@ func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {
 	f.nextID++
 	id := fmt.Sprintf("fake-%d", f.nextID)
 	f.handles[id] = &fakeHandle{files: map[string][]byte{}}
-	return Handle{Name: spec.Name, ID: id, ResolvedImageDigest: f.imageDigests[spec.Image]}, nil
+	return Handle{Name: spec.Name, ID: id, Service: spec.Service, ResolvedImageDigest: f.imageDigests[spec.Image]}, nil
 }
 
 // Exec returns the ExecResult programmed for cmd.Run (via ProgramExec). The
@@ -227,6 +235,7 @@ func (f *Fake) Exec(ctx context.Context, h Handle, cmd Cmd) (<-chan IOChunk, <-c
 	// invoked us with this Cmd; the recording is what the env-injection test
 	// asserts on regardless of whether the lookup succeeds.
 	f.Calls = append(f.Calls, cloneCmd(cmd))
+	f.ExecHandles = append(f.ExecHandles, h)
 
 	// Block gate: if the test armed a blockExecCh, release the mutex and wait
 	// until the channel is closed (or ctx is cancelled). This lets the caller
@@ -409,6 +418,7 @@ func (f *Fake) Restore(_ context.Context, ref SnapshotRef, name string) (Handle,
 func (f *Fake) Destroy(_ context.Context, h Handle) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.DestroyCalls = append(f.DestroyCalls, h)
 	if _, ok := f.handles[h.ID]; !ok {
 		return fmt.Errorf("container/fake: Destroy: unknown handle %q (already destroyed or never Created)", h.ID)
 	}

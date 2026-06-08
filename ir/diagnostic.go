@@ -164,6 +164,7 @@ var catalog = map[string]string{
 	"AWF3005": "compose file uses `extends:` or `include:` directives; the validator refuses these (they would follow arbitrary disk paths and bypass loader confinement)",
 	"AWF3006": "code step declares output_schema but its run script never writes $AWF_OUTPUT",
 	"AWF3007": "input_files reference is not a prior in-scope step's named output_files artifact (step.<id>.files.<name>)",
+	"AWF3008": "runtime compose service does not exist in the generated compose project",
 	"AWF5001": "reference to `evaluate.<field>` outside a gate's generate or until",
 	"AWF5002": "map output aggregation across nested or loop-multiplied maps is not yet defined",
 	"AWF5003": "reference to a step inside a gate or map body from outside that scope — gate/map-internal steps resolve only within the same attempt/item (read a gate's product via evaluate.<field>)",
@@ -171,7 +172,8 @@ var catalog = map[string]string{
 	"AWF5005": "exit_code/stdout are not defined on map aggregates (a map-internal step aggregates to []outputs or []field only)",
 	"AWF1035": "reduce: must declare exactly one of run: or quorum: (quorum requires over:; a run: reducer requires container:)",
 	"AWF1036": "where: clause is not a valid bounded boolean expression (after `{{ }}` slot scan / parse)",
-	"AWF5006": "reduce quorum/over names a body output field that no branch declares, or min_success and reduce:{quorum} are both declared on the same node",
 	"AWF1037": "prune must declare a `score` field name and exactly one of `keep`/`stop_when` (`keep` must be top(<positive int>), `stop_when` must be a non-empty bounded boolean expression)",
+	"AWF1038": "compose block is invalid (requires static as/from/service/body, non-empty body, and a scoped handle that does not collide)",
+	"AWF5006": "reduce quorum/over names a body output field that no branch declares, or min_success and reduce:{quorum} are both declared on the same node",
 	"AWF5008": "prune.score must name a numeric field declared in the output_schema of the map body's last step",
 }

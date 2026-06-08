@@ -34,9 +34,13 @@ func TestWalkNodesVisitsEveryNodeWithCanonicalPaths(t *testing.T) {
 			Catch:   NodeList{&CodeStep{ID: "t_catch"}},
 			Finally: NodeList{&CodeStep{ID: "t_fin"}},
 		},
-		&AgentStep{ID: "a0"},  // index 6
-		&SignalStep{ID: "s0"}, // index 7
-		&Skip{Reason: "done"}, // index 8 — must NOT be visited (no skip[N])
+		&Compose{ // index 6
+			As: "lab", From: "step.gen.files.compose", Service: "web",
+			Body: NodeList{&CodeStep{ID: "smoke"}},
+		},
+		&AgentStep{ID: "a0"},  // index 7
+		&SignalStep{ID: "s0"}, // index 8
+		&Skip{Reason: "done"}, // index 9 — must NOT be visited (no skip[N])
 	}
 
 	type visited struct {
@@ -69,6 +73,8 @@ func TestWalkNodesVisitsEveryNodeWithCanonicalPaths(t *testing.T) {
 		{"*ir.CodeStep", "try[5].do.t_do"},
 		{"*ir.CodeStep", "try[5].catch.t_catch"},
 		{"*ir.CodeStep", "try[5].finally.t_fin"},
+		{"*ir.Compose", "compose[6]"},
+		{"*ir.CodeStep", "compose[6].body.smoke"},
 		{"*ir.AgentStep", "a0"},
 		{"*ir.SignalStep", "s0"},
 	}

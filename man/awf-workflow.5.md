@@ -727,6 +727,49 @@ per-branch status record, so a pruned branch could not survive resume safely;
 `enqueue` of new items) is also out of scope — the item set is fixed by `over:`
 and stays static and digest-pinned.
 
+## compose
+
+    - compose:
+        as: <name>                         # block-scoped container handle
+        from: step.<id>.files.<name>       # generated Compose artifact
+        service: <template>                # default service to exec into
+        body: [<node>...]
+
+Promotes a Compose file produced earlier in the run into an AWF-managed Compose
+project for the duration of `body`. The `from:` value is a **static named
+artifact reference** with the same rules as `input_files`: it must name a prior,
+in-scope step's named `output_files` artifact and is rejected at validation if it
+does not (**AWF3007**). The artifact bytes themselves are not known until run
+time, so AWF validates those exact committed bytes just before promotion:
+malformed YAML / Compose load failure (**AWF3004**), mutable or missing service
+images (**AWF3003**), and file-following directives `include:`, `extends:`, and
+`label_file:` (**AWF3005**) fail before Docker create.
+
+`as:` creates a block-scoped container handle name. Steps inside `body` may use
+`container: <as>` to exec into the rendered default `service`, or
+`container: <as>:<service>` to override the service for that step. The default
+service and any service override must name services present in the generated
+Compose project; missing services fail the compose block before Docker create.
+The scoped handle is valid only inside `body`; using it outside the block is a
+normal unresolved container reference (**AWF1009**). `as:` must be static and may
+not collide with top-level containers or outer scoped handles (**AWF1038**).
+
+The runtime brings the generated project up with the backend's normal Compose
+readiness (`up --wait` on Docker), runs `body`, then tears the project down on
+block exit. Promotion and readiness failures are ordinary workflow failures: wrap
+the block in `try`/`catch` to emit an application-level result such as
+`cannot_build_lab`. `finally` keeps its existing cleanup meaning; container and
+Compose teardown remain AWF-owned.
+
+On resume, the producer step is replayed from its committed journal entry, the
+same artifact bytes are promoted again, completed body steps are skipped, and the
+unfinished body frontier continues. Project names are derived from the run id and
+the block's runtime path plus `as:` (including map item path segments when
+nested in a `map`), so two blocks using the same `as:` in different scopes do
+not collide at the Docker project layer. The native backend
+does not advertise runtime-Compose support; `awf run --backend native` rejects a
+workflow containing `compose:` before execution.
+
 # OUTCOMES, RETRY, AND REPAIR
 
 Step outcomes are *mechanical only* — quality is the gate's job, not an outcome

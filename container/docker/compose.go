@@ -2,9 +2,11 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
+	"time"
 
 	composeloader "github.com/compose-spec/compose-go/v2/loader"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
@@ -17,6 +19,8 @@ import (
 
 	cont "github.com/valbaudo/awf/container"
 )
+
+const composeCleanupGrace = 30 * time.Second
 
 // createCompose handles the compose-mode branch of Backend.Create. Re-parses
 // the compose bytes via compose-spec/compose-go/v2 (Design Q1 — same library
@@ -106,6 +110,14 @@ func (b *Backend) createCompose(ctx context.Context, spec cont.ContainerSpec) (c
 			Wait:    true,
 		},
 	}); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), composeCleanupGrace)
+		defer cancel()
+		if cleanupErr := composeAPI.Down(cleanupCtx, project.Name, api.DownOptions{
+			RemoveOrphans: true,
+			Volumes:       true,
+		}); cleanupErr != nil {
+			return cont.Handle{}, fmt.Errorf("container/docker: createCompose: Up failed and cleanup Down failed: %w", errors.Join(err, cleanupErr))
+		}
 		return cont.Handle{}, fmt.Errorf("container/docker: createCompose: Up: %w", err)
 	}
 

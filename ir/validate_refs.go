@@ -15,6 +15,7 @@ import (
 // "no output_schema declared." Dereference at use sites.
 type producer struct {
 	path   string
+	ord    int
 	kind   string // "code", "agent", "signal", "input"
 	schema *JSONSchema
 }
@@ -114,14 +115,17 @@ func mapsByPath(nodes NodeList) map[string]*Map {
 }
 
 func indexProducers(nodes NodeList, producers map[string]producer) {
+	ord := 0
 	WalkNodes(nodes, "", func(n Node, path string) {
+		currentOrd := ord
+		ord++
 		switch v := n.(type) {
 		case *CodeStep:
-			producers[v.ID] = producer{path: path, kind: "code", schema: v.OutputSchema}
+			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "code", schema: v.OutputSchema}
 		case *AgentStep:
-			producers[v.ID] = producer{path: path, kind: "agent", schema: v.OutputSchema}
+			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "agent", schema: v.OutputSchema}
 		case *SignalStep:
-			producers[v.ID] = producer{path: path, kind: "signal", schema: v.OutputSchema}
+			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "signal", schema: v.OutputSchema}
 		}
 	})
 }
@@ -208,6 +212,10 @@ func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]
 			// v.Container is a STATIC container name (AWF §5.7); validated by walkStructural
 			// (AWF1009/AWF1019). Not a Template — no Slots/ParseRef walk here.
 			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, maps, referenced, evaluateAllowed, false)
+		case *Compose:
+			path := PathFor(parent, "compose", "", i)
+			checkTemplateRefs(string(v.Service), path+".service", c, producers, maps, referenced, evaluateAllowed, false)
+			walkRefs(v.Body, ChildPath(parent, "compose", i, "body"), c, producers, maps, referenced, evaluateAllowed, false)
 		}
 	}
 }

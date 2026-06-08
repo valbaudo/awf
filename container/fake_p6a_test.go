@@ -41,6 +41,12 @@ func TestFakeAdvertisesRuntimeImageCapability(t *testing.T) {
 	}
 }
 
+func TestFakeAdvertisesRuntimeComposeCapability(t *testing.T) {
+	if !NewFake().Capabilities().RuntimeCompose {
+		t.Error("fake Caps.RuntimeCompose = false, want true (fake promotes runtime compose specs)")
+	}
+}
+
 // The fake's two Create-failure hooks must return DISTINGUISHABLE error types —
 // the engine routes them differently inside a map: FailCreateForImage models a
 // tolerated availability failure (*ImageUnavailableError → item_failed +

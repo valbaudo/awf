@@ -8,7 +8,13 @@ import (
 	composeloader "github.com/compose-spec/compose-go/v2/loader"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	goyaml "github.com/goccy/go-yaml"
+	digest "github.com/opencontainers/go-digest"
 )
+
+type ComposeValidationError struct {
+	Code    string
+	Message string
+}
 
 // validateCompose runs the AWF3003 (digest-pinning of inner images), AWF3004 (compose parse
 // failure), and AWF3005 (extends/include directives forbidden) pass. We use compose-spec/
@@ -58,30 +64,63 @@ func validateCompose(ld *LoadedDefinition, c *collector) {
 			c.errf(ContainerPath(name, ""), "AWF3004", fmt.Sprintf("compose file %q not loaded", ctr.Compose))
 			continue
 		}
-		// Layer 1: pre-scan for extends/include/label_file directives. Refuse rather than try to
-		// validate them — they're a file-read primitive disguised as a portability feature.
-		if found, reason := hasFileFollowingDirective(bytes); found {
-			c.errf(ContainerPath(name, ""), "AWF3005", reason)
-			continue
-		}
-		// Layer 2: compose-go with SkipExtends + SkipInclude as defense-in-depth.
-		project, err := loadComposeBytes(ctr.Compose, bytes)
-		if err != nil {
-			c.errf(ContainerPath(name, ""), "AWF3004", err.Error())
-			continue
-		}
-		for svcName, svc := range project.Services {
-			if svc.Image == "" {
-				c.errf(ContainerPath(name, ""), "AWF3003",
-					fmt.Sprintf("service %q has no image: (AWF cannot digest-pin a build target)", svcName))
-				continue
-			}
-			if !strings.Contains(svc.Image, "@sha256:") {
-				c.errf(ContainerPath(name, ""), "AWF3003",
-					fmt.Sprintf("service %q image %q is not digest-pinned", svcName, svc.Image))
-			}
+		for _, err := range ValidateComposeBytes(ctr.Compose, bytes) {
+			c.errf(ContainerPath(name, ""), err.Code, err.Message)
 		}
 	}
+}
+
+func ValidateComposeBytes(filename string, bytes []byte, requiredServices ...string) []ComposeValidationError {
+	// Layer 1: pre-scan for extends/include/label_file directives. Refuse rather than try to
+	// validate them — they're a file-read primitive disguised as a portability feature.
+	if found, reason := hasFileFollowingDirective(bytes); found {
+		return []ComposeValidationError{{Code: "AWF3005", Message: reason}}
+	}
+	// Layer 2: compose-go with SkipExtends + SkipInclude as defense-in-depth.
+	project, err := loadComposeBytes(filename, bytes)
+	if err != nil {
+		return []ComposeValidationError{{Code: "AWF3004", Message: err.Error()}}
+	}
+
+	var errs []ComposeValidationError
+	for svcName, svc := range project.Services {
+		if svc.Image == "" {
+			errs = append(errs, ComposeValidationError{
+				Code:    "AWF3003",
+				Message: fmt.Sprintf("service %q has no image: (AWF cannot digest-pin a build target)", svcName),
+			})
+			continue
+		}
+		if !validSHA256DigestPinnedImage(svc.Image) {
+			errs = append(errs, ComposeValidationError{
+				Code:    "AWF3003",
+				Message: fmt.Sprintf("service %q image %q is not pinned to a valid sha256 digest", svcName, svc.Image),
+			})
+		}
+	}
+	for _, svcName := range requiredServices {
+		svcName = strings.TrimSpace(svcName)
+		if svcName == "" {
+			errs = append(errs, ComposeValidationError{Code: "AWF3008", Message: catalog["AWF3008"] + ": empty service name"})
+			continue
+		}
+		if _, ok := project.Services[svcName]; !ok {
+			errs = append(errs, ComposeValidationError{
+				Code:    "AWF3008",
+				Message: fmt.Sprintf("%s: service %q not found", catalog["AWF3008"], svcName),
+			})
+		}
+	}
+	return errs
+}
+
+func validSHA256DigestPinnedImage(image string) bool {
+	at := strings.LastIndex(image, "@")
+	if at < 0 || at == len(image)-1 {
+		return false
+	}
+	d, err := digest.Parse(image[at+1:])
+	return err == nil && d.Algorithm() == digest.SHA256
 }
 
 // hasFileFollowingDirective scans the raw compose YAML for file-following directives the

@@ -19,6 +19,21 @@ func TestComposeDigestPinningAWF3003(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF3003", "containers.lab")
 }
 
+func TestComposeInvalidShaDigestAWF3003(t *testing.T) {
+	ld := &LoadedDefinition{
+		Workflow: &Workflow{
+			ID: "compose", Version: 1,
+			Containers: map[string]Container{"lab": {Compose: "lab/compose.yml", Service: "vuln"}},
+			Graph:      NodeList{},
+		},
+		WorkflowPath: "/tmp/wf.yaml",
+		ComposeFiles: map[string][]byte{
+			"lab/compose.yml": []byte("services:\n  vuln:\n    image: example.com/vuln@sha256:not-a-real-digest\n"),
+		},
+	}
+	assertErrorAt(t, Validate(ld), "AWF3003", "containers.lab")
+}
+
 func TestComposeMissingImage(t *testing.T) {
 	ld := &LoadedDefinition{
 		Workflow: &Workflow{
@@ -140,4 +155,72 @@ func TestComposeLabelFileBlockedAWF3005(t *testing.T) {
 		},
 	}
 	assertErrorAt(t, Validate(ld), "AWF3005", "containers.lab")
+}
+
+func TestValidateComposeBytesRuntimeChecks(t *testing.T) {
+	pinned := []byte("services:\n  web:\n    image: example.com/web@sha256:0000000000000000000000000000000000000000000000000000000000000000\n  api:\n    image: example.com/api@sha256:1111111111111111111111111111111111111111111111111111111111111111\n")
+	if errs := ValidateComposeBytes("runtime.yml", pinned, "web"); len(errs) != 0 {
+		t.Fatalf("valid pinned runtime compose returned errors: %+v", errs)
+	}
+
+	cases := []struct {
+		name    string
+		content []byte
+		service string
+		code    string
+	}{
+		{
+			name:    "malformed yaml",
+			content: []byte("services:\n  web:\n    image: ok\n  - nope\n"),
+			service: "web",
+			code:    "AWF3004",
+		},
+		{
+			name:    "unpinned image",
+			content: []byte("services:\n  web:\n    image: nginx:latest\n"),
+			service: "web",
+			code:    "AWF3003",
+		},
+		{
+			name:    "include",
+			content: []byte("include:\n  - path: /etc/passwd\nservices:\n  web:\n    image: example.com/web@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"),
+			service: "web",
+			code:    "AWF3005",
+		},
+		{
+			name:    "extends",
+			content: []byte("services:\n  web:\n    extends:\n      file: /etc/passwd\n      service: base\n"),
+			service: "web",
+			code:    "AWF3005",
+		},
+		{
+			name:    "label_file",
+			content: []byte("services:\n  web:\n    image: example.com/web@sha256:0000000000000000000000000000000000000000000000000000000000000000\n    label_file: /etc/shadow\n"),
+			service: "web",
+			code:    "AWF3005",
+		},
+		{
+			name:    "missing service",
+			content: pinned,
+			service: "missing",
+			code:    "AWF3008",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := ValidateComposeBytes("runtime.yml", tc.content, tc.service)
+			if !composeErrorsContain(errs, tc.code) {
+				t.Fatalf("ValidateComposeBytes code set = %+v, want %s", errs, tc.code)
+			}
+		})
+	}
+}
+
+func composeErrorsContain(errs []ComposeValidationError, code string) bool {
+	for _, err := range errs {
+		if err.Code == code {
+			return true
+		}
+	}
+	return false
 }

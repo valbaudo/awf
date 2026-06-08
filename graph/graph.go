@@ -152,6 +152,8 @@ func walk(list ir.NodeList, parent string, p *Projection, idx map[string]string)
 			walk(v.Evaluate, ir.ChildPath(parent, "gate", i, "evaluate"), p, idx)
 		case *ir.Map:
 			walk(v.Body, ir.ChildPath(parent, "map", i, "body"), p, idx)
+		case *ir.Compose:
+			walk(v.Body, ir.ChildPath(parent, "compose", i, "body"), p, idx)
 		}
 	}
 }
@@ -178,6 +180,8 @@ func staticPath(parent string, n ir.Node, i int) string {
 		return ir.PathFor(parent, "gate", "", i)
 	case *ir.Map:
 		return ir.PathFor(parent, "map", "", i)
+	case *ir.Compose:
+		return ir.PathFor(parent, "compose", "", i)
 	default:
 		panic(fmt.Sprintf("graph.staticPath: unexpected node type %T", n))
 	}
@@ -209,6 +213,8 @@ func kindOf(n ir.Node) string {
 		return "skip"
 	case *ir.Map:
 		return "map"
+	case *ir.Compose:
+		return "compose"
 	default:
 		panic(fmt.Sprintf("graph.kindOf: unexpected node type %T", n))
 	}

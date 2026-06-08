@@ -46,6 +46,9 @@ func TestCapabilitiesReturnsSnapshotNone(t *testing.T) {
 	if got := b.Capabilities().Snapshot; got != container.SnapshotNone {
 		t.Errorf("Capabilities().Snapshot = %v, want SnapshotNone", got)
 	}
+	if b.Capabilities().RuntimeCompose {
+		t.Error("Capabilities().RuntimeCompose = true, want false (native cannot promote compose projects)")
+	}
 }
 
 func TestCreateRejectsComposeSpec(t *testing.T) {

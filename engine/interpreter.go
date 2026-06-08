@@ -204,6 +204,8 @@ func interpNode(
 		return runGate(ctx, v, ir.PathFor(parent, "gate", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Map:
 		return runMap(ctx, v, ir.PathFor(parent, "map", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+	case *ir.Compose:
+		return runCompose(ctx, v, ir.PathFor(parent, "compose", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
 	case *ir.Skip:
 		return runSkip(v)
 	default:

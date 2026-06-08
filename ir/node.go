@@ -1,6 +1,6 @@
 package ir
 
-// Node is one of the ten node kinds (3 step + 7 control). Discriminated by key-presence at the
+// Node is one of the eleven node kinds (3 step + 8 control). Discriminated by key-presence at the
 // wire level (the AWF standard's surface), so adding/removing a kind touches FOUR places in this
 // package — keep them in sync:
 //
@@ -122,6 +122,12 @@ type Map struct {
 	// result-blind map. Folds into the digest via omitempty.
 	Prune *Prune `json:"prune,omitempty"`
 }
+type Compose struct {
+	As      string   `json:"as"`
+	From    string   `json:"from"`
+	Service Template `json:"service"`
+	Body    NodeList `json:"body"`
+}
 
 func (*If) isNode()       {}
 func (*Loop) isNode()     {}
@@ -130,6 +136,7 @@ func (*Parallel) isNode() {}
 func (*Gate) isNode()     {}
 func (*Skip) isNode()     {}
 func (*Map) isNode()      {}
+func (*Compose) isNode()  {}
 
 // NodeList is the type of every node-bearing field. A bare []Node cannot unmarshal (interface
 // elements), so all such fields use this named type whose UnmarshalJSON (in node_unmarshal.go)

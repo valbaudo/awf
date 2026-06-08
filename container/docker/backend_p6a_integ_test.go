@@ -20,6 +20,13 @@ func TestP6a_CapabilitiesAdvertisesRuntimeImage(t *testing.T) {
 	}
 }
 
+func TestP6a_CapabilitiesAdvertisesRuntimeCompose(t *testing.T) {
+	_, b := newTestBackend(t, "p6a-runtime-compose-caps")
+	if !b.Capabilities().RuntimeCompose {
+		t.Error("Caps.RuntimeCompose = false, want true (docker honors scoped runtime compose promotion)")
+	}
+}
+
 // TestP6a_CreatePullsAndCapturesDigest is the core proof: with PullIfAbsent set
 // and a digest-pinned ref, Create pulls the image itself (no pre-provisioning),
 // boots it, and reports the booted content digest on Handle.ResolvedImageDigest

@@ -3,6 +3,6 @@
     "Severity": "error",
     "Path": "containers.lab",
     "Code": "AWF3003",
-    "Message": "service \"vuln\" image \"nginx:latest\" is not digest-pinned"
+    "Message": "service \"vuln\" image \"nginx:latest\" is not pinned to a valid sha256 digest"
   }
 ]

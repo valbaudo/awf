@@ -160,6 +160,12 @@ type Caps struct {
 	// guard rejects a runtime-image workflow on it rather than silently
 	// running bodies on the host.
 	RuntimeImage bool
+
+	// RuntimeCompose reports whether the backend can promote compose bytes
+	// generated during a workflow run into a managed project with normal
+	// lifecycle ownership. Zero-value false FAILS CLOSED: native cannot honor
+	// compose projects and must be rejected before execution.
+	RuntimeCompose bool
 }
 
 // SnapshotMode is the snapshot capability a backend supports.

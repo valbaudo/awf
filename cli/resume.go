@@ -282,6 +282,10 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
+	if err := checkRuntimeComposeCapability(ld.Workflow, string(kind), backend); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
 
 	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
 	skipTeardown := false

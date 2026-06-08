@@ -63,6 +63,7 @@ func TestChildPath(t *testing.T) {
 		{"", "gate", "generate", 2, "gate[2].generate"},
 		{"", "gate", "evaluate", 2, "gate[2].evaluate"},
 		{"", "map", "body", 0, "map[0].body"},
+		{"", "compose", "body", 0, "compose[0].body"},
 		{"loop[0].body", "if", "then", 3, "loop[0].body.if[3].then"},
 	}
 	for _, c := range cases {

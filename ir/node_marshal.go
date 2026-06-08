@@ -20,6 +20,10 @@ func (n *Loop) MarshalJSON() ([]byte, error) { type a Loop; return wrap("loop", 
 func (n *Try) MarshalJSON() ([]byte, error)  { type a Try; return wrap("try", (*a)(n)) }
 func (n *Gate) MarshalJSON() ([]byte, error) { type a Gate; return wrap("gate", (*a)(n)) }
 func (n *Map) MarshalJSON() ([]byte, error)  { type a Map; return wrap("map", (*a)(n)) }
+func (n *Compose) MarshalJSON() ([]byte, error) {
+	type a Compose
+	return wrap("compose", (*a)(n))
+}
 
 // Parallel marshals to the standard's array-value form: {"parallel":[<node>,...]} (§5.4).
 func (n *Parallel) MarshalJSON() ([]byte, error) {

@@ -65,6 +65,9 @@ func WalkNodes(list NodeList, parent string, visit func(n Node, path string)) {
 		case *Map:
 			visit(v, PathFor(parent, "map", "", i))
 			WalkNodes(v.Body, ChildPath(parent, "map", i, "body"), visit)
+		case *Compose:
+			visit(v, PathFor(parent, "compose", "", i))
+			WalkNodes(v.Body, ChildPath(parent, "compose", i, "body"), visit)
 		default:
 			panic(fmt.Sprintf("ir.WalkNodes: unexpected node type %T", n))
 		}
