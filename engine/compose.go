@@ -123,6 +123,10 @@ func composeServiceOverrides(as string, body ir.NodeList) []string {
 			ref = s.Container
 		case *ir.AgentStep:
 			ref = s.Container
+		case *ir.Map:
+			if s.Reduce != nil && s.Reduce.IsRun() {
+				ref = s.Reduce.Container
+			}
 		default:
 			return
 		}

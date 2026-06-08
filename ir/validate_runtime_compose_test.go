@@ -51,6 +51,31 @@ func TestRuntimeComposeScopedHandleAllowedInBody(t *testing.T) {
 	assertNoErrorCode(t, diags, "AWF3007")
 }
 
+func TestRuntimeComposeScopedHandleAllowedInMapReduce(t *testing.T) {
+	wf := runtimeComposeWF(NodeList{
+		&Map{
+			Over:        Expr("{{ input.items }}"),
+			As:          "item",
+			Container:   "runner",
+			Concurrency: 1,
+			Body: NodeList{
+				&CodeStep{ID: "scan", Container: "lab", Run: "true"},
+			},
+			Reduce: &Reduce{Run: "./merge.sh", Container: "lab"},
+		},
+	})
+	wf.Input = &JSONSchema{
+		"type": "object",
+		"properties": map[string]any{
+			"items": map[string]any{"type": "array"},
+		},
+	}
+	ld := makeLD(wf)
+	diags := Validate(ld)
+	assertNoError(t, diags)
+	assertNoErrorCode(t, diags, "AWF1009")
+}
+
 func TestRuntimeComposeScopedHandleRejectedOutsideBody(t *testing.T) {
 	wf := runtimeComposeWF(NodeList{
 		&CodeStep{ID: "smoke", Container: "lab", Run: "true"},
@@ -59,6 +84,31 @@ func TestRuntimeComposeScopedHandleRejectedOutsideBody(t *testing.T) {
 
 	diags := Validate(makeLD(wf))
 	assertErrorAt(t, diags, "AWF1009", "outside")
+}
+
+func TestRuntimeComposeScopedHandleRejectedInMapReduceOutsideBody(t *testing.T) {
+	wf := runtimeComposeWF(NodeList{
+		&CodeStep{ID: "smoke", Container: "lab", Run: "true"},
+	})
+	wf.Input = &JSONSchema{
+		"type": "object",
+		"properties": map[string]any{
+			"items": map[string]any{"type": "array"},
+		},
+	}
+	wf.Graph = append(wf.Graph, &Map{
+		Over:        Expr("{{ input.items }}"),
+		As:          "item",
+		Container:   "runner",
+		Concurrency: 1,
+		Body: NodeList{
+			&CodeStep{ID: "scan", Container: "runner", Run: "true"},
+		},
+		Reduce: &Reduce{Run: "./merge.sh", Container: "lab"},
+	})
+
+	diags := Validate(makeLD(wf))
+	assertErrorAt(t, diags, "AWF1009", "map[2].reduce")
 }
 
 func TestRuntimeComposeFromMustNameDeclaredOutputFile(t *testing.T) {

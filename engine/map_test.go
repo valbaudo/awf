@@ -1114,6 +1114,65 @@ func TestRunMapRunReduceReusesPreProvisionedContainer(t *testing.T) {
 	}
 }
 
+func TestRunMapRunReduceServiceOverrideReusesBarePreProvisionedContainer(t *testing.T) {
+	rowSchema := &ir.JSONSchema{
+		"type": "object", "additionalProperties": false,
+		"required": []any{"k"}, "properties": map[string]any{"k": map[string]any{"type": "string"}},
+	}
+	reduceSchema := &ir.JSONSchema{
+		"type": "object", "additionalProperties": false,
+		"required": []any{"csv_rows"}, "properties": map[string]any{"csv_rows": map[string]any{"type": "integer"}},
+	}
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "scan", Run: "./scan {{ x }}", Container: testMapContainer,
+			OutputSchema: rowSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	wf := staticOverWorkflow("x", body, 1, nil)
+	wf.Containers["lab"] = ir.Container{Image: "oci://example.com/lab@sha256:" + strings.Repeat("4", 64)}
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{
+		Run: "./merge.sh", Container: "lab:api", OutputSchema: reduceSchema,
+		OutputFiles: ir.OutputFiles{{Name: "csv", Path: "/out/versions.csv"}},
+	}
+
+	rig := newMapRig(t, execProgram{cmd: "./scan a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"k":"a"}`)}})
+	rig.fake.ProgramExecWithFiles("./merge.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"csv_rows":1}`)},
+		nil, map[string][]byte{"/out/versions.csv": []byte("merged")})
+
+	labH, err := rig.fake.Create(context.Background(), container.ContainerSpec{Name: "lab", Service: "web"})
+	if err != nil {
+		t.Fatalf("seed lab: %v", err)
+	}
+	rig.ld.Handles["lab"] = labH
+
+	rs := NewRunState(testRunID, testDigest, runOverItems("a"))
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("runMap with service override reducer: (%q, %v), want (ok, nil)", oc, err)
+	}
+	for _, spec := range rig.fake.CreateSpecs {
+		if spec.Name == "lab:api" {
+			t.Fatalf("run reducer created a full-ref container %q; want reuse of bare handle \"lab\"", spec.Name)
+		}
+	}
+	var reduceHandle *container.Handle
+	for i, call := range rig.fake.Calls {
+		if call.Run == "./merge.sh" {
+			reduceHandle = &rig.fake.ExecHandles[i]
+			break
+		}
+	}
+	if reduceHandle == nil {
+		t.Fatal("reducer command ./merge.sh was not executed")
+	}
+	if reduceHandle.ID != labH.ID {
+		t.Errorf("reducer handle ID = %q, want pre-provisioned lab handle %q", reduceHandle.ID, labH.ID)
+	}
+	if reduceHandle.Service != "api" {
+		t.Errorf("reducer handle service = %q, want api override", reduceHandle.Service)
+	}
+}
+
 func TestRunMapRunReduceResumeReplaysWithoutBootingContainer(t *testing.T) {
 	// Task 11 regression (review): on a pure replay of an already-committed
 	// run: reducer, runMap must NOT Create (and tear down) the reducer container.

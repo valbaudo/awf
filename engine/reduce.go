@@ -82,14 +82,15 @@ func runMapReduce(
 		// hit it because nothing ran after its reduce. Only a container the
 		// dispatcher does NOT already hold (not pre-provisioned) is Created +
 		// Destroyed here.
-		if _, have := ld.Handles[n.Reduce.Container]; !have {
-			spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Reduce.Container)
+		bare, _ := SplitContainerRef(n.Reduce.Container)
+		if _, have := ld.Handles[bare]; !have {
+			spec := ContainerSpecFor(wf, ld.ComposeFiles, bare)
 			rh, cerr := ld.Backend.Create(ctx, spec)
 			if cerr != nil {
 				return "", fmt.Errorf("engine.runMapReduce: create reduce container %q: %w", n.Reduce.Container, cerr)
 			}
 			defer func() { _ = ld.Backend.Destroy(context.Background(), rh) }()
-			ld = ld.WithItemHandle(n.Reduce.Container, rh)
+			ld = ld.WithItemHandle(bare, rh)
 		}
 	}
 	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, runstate, ld, log, blobs, clk, tap)

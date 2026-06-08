@@ -137,6 +137,44 @@ func TestRunComposeServiceOverrideReachesScopedHandle(t *testing.T) {
 	}
 }
 
+func TestComposeServiceOverridesIncludesMapReduce(t *testing.T) {
+	got := composeServiceOverrides("lab", ir.NodeList{
+		&ir.Map{
+			Over:        ir.Expr("{{ input.items }}"),
+			As:          "item",
+			Container:   "runner",
+			Concurrency: 1,
+			Body: ir.NodeList{
+				&ir.CodeStep{ID: "scan", Container: "lab", Run: "true"},
+			},
+			Reduce: &ir.Reduce{Run: "./merge.sh", Container: "lab:api"},
+		},
+	})
+	want := []string{"api"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("composeServiceOverrides = %v, want %v", got, want)
+	}
+}
+
+func TestComposeServiceOverridesIgnoresQuorumReduceContainer(t *testing.T) {
+	quorum := ir.Ratio("1")
+	got := composeServiceOverrides("lab", ir.NodeList{
+		&ir.Map{
+			Over:        ir.Expr("{{ input.items }}"),
+			As:          "item",
+			Container:   "runner",
+			Concurrency: 1,
+			Body: ir.NodeList{
+				&ir.CodeStep{ID: "vote", Container: "lab", Run: "true"},
+			},
+			Reduce: &ir.Reduce{Quorum: &quorum, Over: "passed", Container: "lab:api"},
+		},
+	})
+	if len(got) != 0 {
+		t.Fatalf("composeServiceOverrides = %v, want no services for quorum reducer container", got)
+	}
+}
+
 func TestRunComposeDestroyFailureFailsWhenBodySucceeded(t *testing.T) {
 	wf, node := runtimeComposeWorkflow(ir.NodeList{
 		&ir.CodeStep{ID: "smoke", Container: "lab", Run: "./smoke.sh"},
