@@ -404,6 +404,44 @@ func TestRefsAgentSchemaReferencedInWithPromptNoAWF3002(t *testing.T) {
 	assertNoCode(t, Validate(ld), "AWF3002")
 }
 
+func TestRefsAgentSchemaReferencedInWorkflowOutputsNoAWF3002(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "exports-ref", Version: 1,
+		Containers:   map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		OutputSchema: objectSchema("finding"),
+		Outputs: map[string]TemplateValue{
+			"finding": []byte(`"{{ step.scan.finding }}"`),
+		},
+		Graph: NodeList{
+			&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "scan"},
+				OutputSchema: objectSchema("finding")},
+		},
+	})
+
+	assertNoCode(t, Validate(ld), "AWF3002")
+}
+
+func TestRefsAgentSchemaReferencedInCallInputNoAWF3002(t *testing.T) {
+	root := validCallingRoot()
+	root.Containers = map[string]Container{"c": {Image: "oci://x@sha256:abc"}}
+	root.Graph = NodeList{
+		&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "scan"},
+			OutputSchema: objectSchema("finding")},
+		&CallStep{
+			ID:   "child",
+			Call: "scan",
+			Input: map[string]TemplateValue{
+				"query": []byte(`"{{ step.scan.finding }}"`),
+			},
+		},
+	}
+	child := childWorkflowWithTypedOutput("child", "summary")
+	child.Input = objectSchema("query")
+	ld := loadedWithChild(root, child)
+
+	assertNoCode(t, Validate(ld), "AWF3002")
+}
+
 // TestRefsBrokenRefInWithPromptReportsAWF3001 asserts that a broken reference
 // inside a with: string value emits AWF3001 at the path "<step-id>.with.<key>".
 func TestRefsBrokenRefInWithPromptReportsAWF3001(t *testing.T) {

@@ -69,12 +69,35 @@ func validateRefsModule(ld *LoadedDefinition, mod validationModule, c *collector
 	// and no over-sink map at the top level — only the gate frame's generate/until flip
 	// evaluateAllowed true, and only a map's over: carries its map path as the array sink.
 	walkRefs(wf.Graph, "", c, producers, maps, referenced, false, "")
+	markTemplateValueRefsReferenced(wf, c, producers, maps, referenced)
 
 	// AWF3002: any AgentStep with an output_schema but no inbound ref → warning.
 	for id, p := range producers {
 		if p.kind == "agent" && p.schema != nil && !referenced[id] {
 			c.warnf(p.path, "AWF3002", fmt.Sprintf("%s (step %q)", catalog["AWF3002"], id))
 		}
+	}
+}
+
+func markTemplateValueRefsReferenced(wf *Workflow, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool) {
+	tmp := &collector{source: c.source}
+	WalkNodes(wf.Graph, "", func(n Node, nodePath string) {
+		call, ok := n.(*CallStep)
+		if !ok {
+			return
+		}
+		validateTemplateValueRefs(tmp, "AWF3001", nodePath+".input", call.Input, producers, maps, referenced)
+	})
+	if len(wf.Outputs) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(wf.Outputs))
+	for key := range wf.Outputs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		validateTemplateValueRefs(tmp, "AWF3001", "outputs."+key, map[string]TemplateValue{"": wf.Outputs[key]}, producers, maps, referenced)
 	}
 }
 
@@ -738,7 +761,7 @@ func validateCalls(ld *LoadedDefinition, mod validationModule, c *collector) {
 		} else if child, ok := callTargetModule(ld, mod.ModuleID, call.Call); ok && child != nil && child.Workflow != nil {
 			validateCallInputContract(c, nodePath, call.Input, child.Workflow.Input)
 		}
-		validateTemplateValueRefs(c, "AWF1041", nodePath+".input", call.Input, producers, maps)
+		validateTemplateValueRefs(c, "AWF1041", nodePath+".input", call.Input, producers, maps, nil)
 	})
 }
 
@@ -897,7 +920,7 @@ func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *coll
 				c.errf(path, "AWF1042", fmt.Sprintf("%s: output %q is not declared in output_schema", catalog["AWF1042"], key))
 			}
 		}
-		validateTemplateValueRefs(c, "AWF1042", path, map[string]TemplateValue{"": wf.Outputs[key]}, producers, maps)
+		validateTemplateValueRefs(c, "AWF1042", path, map[string]TemplateValue{"": wf.Outputs[key]}, producers, maps, nil)
 	}
 
 	if len(wf.ArtifactExports) == 0 {
@@ -928,6 +951,7 @@ func validateTemplateValueRefs(
 	values map[string]TemplateValue,
 	producers map[string]producer,
 	maps map[string]*Map,
+	referenced map[string]bool,
 ) {
 	if len(values) == 0 {
 		return
@@ -947,7 +971,7 @@ func validateTemplateValueRefs(
 			c.errf(path, code, fmt.Sprintf("%s: invalid JSON value: %s", catalog[code], err))
 			continue
 		}
-		walkTemplateValueStrings(c, code, path, decoded, producers, maps)
+		walkTemplateValueStrings(c, code, path, decoded, producers, maps, referenced)
 	}
 }
 
@@ -957,16 +981,19 @@ func walkTemplateValueStrings(
 	value any,
 	producers map[string]producer,
 	maps map[string]*Map,
+	referenced map[string]bool,
 ) {
 	switch v := value.(type) {
 	case string:
 		tmp := &collector{source: c.source}
-		referenced := map[string]bool{}
+		if referenced == nil {
+			referenced = map[string]bool{}
+		}
 		checkTemplateRefs(v, path, tmp, producers, maps, referenced, false, "")
 		reemitDiagnosticsAs(c, tmp.out, code)
 	case []any:
 		for i, elem := range v {
-			walkTemplateValueStrings(c, code, fmt.Sprintf("%s[%d]", path, i), elem, producers, maps)
+			walkTemplateValueStrings(c, code, fmt.Sprintf("%s[%d]", path, i), elem, producers, maps, referenced)
 		}
 	case map[string]any:
 		keys := make([]string, 0, len(v))
@@ -975,7 +1002,7 @@ func walkTemplateValueStrings(
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			walkTemplateValueStrings(c, code, path+"."+key, v[key], producers, maps)
+			walkTemplateValueStrings(c, code, path+"."+key, v[key], producers, maps, referenced)
 		}
 	}
 }
