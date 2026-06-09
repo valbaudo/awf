@@ -43,6 +43,10 @@ type RunOptions struct {
 	// Broker is the signal broker for pause/cancel IPC. nil is valid — signal
 	// steps fail with a clear error when reached with a nil broker.
 	Broker *signal.Broker
+
+	// Assets is the recorded run-start asset manifest. Task 5 consumes it when
+	// resolving asset.<id> input_files; nil preserves pre-assets behavior.
+	Assets map[string]RunStartedAsset
 }
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph

@@ -247,6 +247,12 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		inputRef = ref
 	}
 
+	assetSnapshots, err := storeAssetSnapshots(blobs, ld.Assets)
+	if err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
+
 	// Step 9: OpenLogExclusive atomically claims the run.id.
 	runDir := filepath.Join(*stateDir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -298,6 +304,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		WorkflowVersion: ld.Workflow.Version, // slice 6.1 — obs awf.workflow.version
 		InputRef:        inputRef,
 		Backend:         concreteBackendKind,
+		Assets:          assetSnapshots,
 		Runtimes:        resolvedRuntimes, // Phase 5 slice 5.1
 	})
 	if err != nil {
@@ -323,5 +330,5 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// r.BrokerOptions defaults to empty (100ms poll) in production; tests
 	// inject signal.WithPollInterval(time.Millisecond) for fast runs.
 	broker := awfsignal.NewBroker(awfsignal.ControlDir(*stateDir, id), r.BrokerOptions...)
-	return r.runAndFinish(ctx, backend, ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", broker, &skipTeardown)
+	return r.runAndFinish(ctx, backend, ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", assetSnapshots, broker, &skipTeardown)
 }

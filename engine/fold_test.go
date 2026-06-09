@@ -73,6 +73,42 @@ func TestFold_RunStartedSeeds(t *testing.T) {
 	}
 }
 
+func TestFold_RunStartedAssetsDoNotDereferenceBlobs(t *testing.T) {
+	missingRef := "awf-d1:sha256:" + strings.Repeat("b", 64)
+	events := []state.Event{
+		{
+			Seq: 1, Epoch: 0, TS: fixedTS,
+			Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{
+				RunID:          "deadbeef",
+				WorkflowDigest: "awf-d1:sha256:wf",
+				Assets: map[string]RunStartedAsset{
+					"input": {
+						DeclaredPath: "asset.txt",
+						Files: []RunStartedAssetFile{{
+							Path: ".", Ref: missingRef, Size: 5, SHA256: strings.Repeat("0", 64),
+						}},
+					},
+				},
+			}),
+		},
+	}
+	rs, err := Fold(events, state.NewInMemoryBlobs())
+	if err != nil {
+		t.Fatalf("Fold dereferenced asset ref %q: %v", missingRef, err)
+	}
+	if rs.RunID != "deadbeef" || rs.WorkflowDigest != "awf-d1:sha256:wf" {
+		t.Fatalf("RunState = %+v", rs)
+	}
+	started, err := RunStartedDataFromEvents(events)
+	if err != nil {
+		t.Fatalf("RunStartedDataFromEvents: %v", err)
+	}
+	if got := started.Assets["input"].Files[0].Ref; got != missingRef {
+		t.Fatalf("recorded asset ref = %q, want %q", got, missingRef)
+	}
+}
+
 func TestFold_RunStartedWithoutInput(t *testing.T) {
 	// A workflow without an `input:` declaration emits run.started with InputRef="".
 	// The fold leaves RunState.Input nil (NOT empty-map).

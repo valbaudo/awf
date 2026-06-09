@@ -223,6 +223,12 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 			runID, rs.WorkflowDigest, wfPath, currentDigest)
 		return ExitUsage
 	}
+	started, err := engine.RunStartedDataFromEvents(events)
+	if err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+	recordedAssets := started.Assets
 
 	// Slice 5.3: if Resolver isn't test-injected, build the production
 	// *agent.Registry. `awf resume` does not accept --agent-env (per Phase 5
@@ -367,5 +373,5 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// Branches / LoopIters) skip already-committed nodes — same code path on
 	// first run and resume (CLAUDE.md invariant). backend (local) is passed
 	// in — runAndFinish does NOT read r.Backend.
-	return r.runAndFinish(ctx, backend, ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", broker, &skipTeardown)
+	return r.runAndFinish(ctx, backend, ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, broker, &skipTeardown)
 }

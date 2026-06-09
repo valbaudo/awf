@@ -3,6 +3,8 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -1379,6 +1381,109 @@ func TestCLIRunBackendInvalidValueIsExitUsage(t *testing.T) {
 	}
 }
 
+func TestCLIRunRunStartedRecordsAssetSnapshots(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("hello asset\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "fixtures", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fixtures", "z.txt"), []byte("z"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fixtures", "nested", "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wfPath := filepath.Join(dir, "workflow.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: asset-snapshots
+version: 1
+assets:
+  prompt: prompt.txt
+  fixtures: fixtures
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	started := readRunStartedData(t, stateDir, "test-run-1")
+	if len(started.Assets) != 2 {
+		t.Fatalf("run.started.Assets len = %d, want 2: %#v", len(started.Assets), started.Assets)
+	}
+	prompt := started.Assets["prompt"]
+	if prompt.DeclaredPath != "prompt.txt" || prompt.IsDir {
+		t.Fatalf("prompt asset metadata = %#v", prompt)
+	}
+	if len(prompt.Files) != 1 {
+		t.Fatalf("prompt files len = %d, want 1", len(prompt.Files))
+	}
+	assertRunStartedAssetFile(t, stateDir, prompt.Files[0], ".", []byte("hello asset\n"))
+
+	fixtures := started.Assets["fixtures"]
+	if fixtures.DeclaredPath != "fixtures" || !fixtures.IsDir {
+		t.Fatalf("fixtures asset metadata = %#v", fixtures)
+	}
+	if len(fixtures.Files) != 2 {
+		t.Fatalf("fixtures files len = %d, want 2: %#v", len(fixtures.Files), fixtures.Files)
+	}
+	assertRunStartedAssetFile(t, stateDir, fixtures.Files[0], "nested/a.txt", []byte("a"))
+	assertRunStartedAssetFile(t, stateDir, fixtures.Files[1], "z.txt", []byte("z"))
+}
+
+func TestCLIRunAssetBlobPutFailureDoesNotAppendRunStarted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := []byte("cannot-store")
+	if err := os.WriteFile(filepath.Join(dir, "asset.txt"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wfPath := filepath.Join(dir, "workflow.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: asset-put-failure
+version: 1
+assets:
+  input: asset.txt
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	sum := sha256.Sum256(content)
+	shardPath := filepath.Join(stateDir, "blobs", "sha256", hex.EncodeToString(sum[:])[:2])
+	if err := os.MkdirAll(filepath.Dir(shardPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(shardPath, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, wfPath}, &stdout, &stderr)
+	if rc == cli.ExitOK {
+		t.Fatalf("rc = ExitOK, want failure; stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "put asset") {
+		t.Fatalf("stderr missing asset put failure: %s", stderr.String())
+	}
+	logPath := filepath.Join(stateDir, "runs", "test-run-1", "log")
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatalf("run log exists after asset Put failure; run.started must not be appended")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat run log: %v", err)
+	}
+}
+
 func TestCLIRunUsageListsBackendAuto(t *testing.T) {
 	t.Parallel()
 	runner := newTestRunner(t, container.NewFake())
@@ -1410,6 +1515,11 @@ graph: []
 // and returns its Backend field.
 func readRunStartedBackendField(t *testing.T, stateDir, runID string) string {
 	t.Helper()
+	return readRunStartedData(t, stateDir, runID).Backend
+}
+
+func readRunStartedData(t *testing.T, stateDir, runID string) engine.RunStartedData {
+	t.Helper()
 	logPath := filepath.Join(stateDir, "runs", runID, "log")
 	fl, err := state.OpenLog(logPath, clock.System{})
 	if err != nil {
@@ -1426,11 +1536,37 @@ func readRunStartedBackendField(t *testing.T, stateDir, runID string) string {
 			if err := json.Unmarshal(e.Data, &d); err != nil {
 				t.Fatalf("Unmarshal run.started: %v", err)
 			}
-			return d.Backend
+			return d
 		}
 	}
 	t.Fatalf("no run.started event in log %q", logPath)
-	return ""
+	return engine.RunStartedData{}
+}
+
+func assertRunStartedAssetFile(t *testing.T, stateDir string, got engine.RunStartedAssetFile, wantPath string, wantBytes []byte) {
+	t.Helper()
+	if got.Path != wantPath {
+		t.Fatalf("asset file path = %q, want %q", got.Path, wantPath)
+	}
+	if got.Size != int64(len(wantBytes)) {
+		t.Fatalf("asset file size = %d, want %d", got.Size, len(wantBytes))
+	}
+	sum := sha256.Sum256(wantBytes)
+	wantHash := hex.EncodeToString(sum[:])
+	if got.SHA256 != wantHash {
+		t.Fatalf("asset file sha256 = %q, want %q", got.SHA256, wantHash)
+	}
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
+	if err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	raw, err := blobs.Get(got.Ref)
+	if err != nil {
+		t.Fatalf("Get asset blob %q: %v", got.Ref, err)
+	}
+	if string(raw) != string(wantBytes) {
+		t.Fatalf("asset blob bytes = %q, want %q", raw, wantBytes)
+	}
 }
 
 func TestCLIRun_AgentStepFixturePopulatesRunStartedRuntimes(t *testing.T) {

@@ -73,6 +73,40 @@ func TestRunStartedDataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunStartedDataRoundTripAssets(t *testing.T) {
+	in := RunStartedData{
+		RunID:          "deadbeef",
+		WorkflowDigest: "awf-d1:sha256:abc",
+		Assets: map[string]RunStartedAsset{
+			"fixtures": {
+				DeclaredPath: "fixtures",
+				IsDir:        true,
+				Files: []RunStartedAssetFile{
+					{Path: "a.txt", Ref: "awf-d1:sha256:aaa", Size: 1, SHA256: "aaa"},
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"assets"`)) || bytes.Contains(b, []byte(`"bytes"`)) {
+		t.Fatalf("run.started assets JSON shape = %s", b)
+	}
+	var out RunStartedData
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := out.Assets["fixtures"]
+	if got.DeclaredPath != "fixtures" || !got.IsDir || len(got.Files) != 1 {
+		t.Fatalf("decoded asset = %#v", got)
+	}
+	if got.Files[0].Path != "a.txt" || got.Files[0].Ref != "awf-d1:sha256:aaa" || got.Files[0].Size != 1 || got.Files[0].SHA256 != "aaa" {
+		t.Fatalf("decoded asset file = %#v", got.Files[0])
+	}
+}
+
 func TestNodeCompletedDataRoundTrip(t *testing.T) {
 	exit := 0
 	in := NodeCompletedData{

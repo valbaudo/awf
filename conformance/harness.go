@@ -203,8 +203,13 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 			}
 			inputRef = ref
 		}
+		assetSnapshots, err := storeHarnessAssetSnapshots(h.blobs, ld.Assets)
+		if err != nil {
+			return "", err
+		}
 		runStartedData, _ := json.Marshal(engine.RunStartedData{
 			RunID: h.runID, WorkflowDigest: digest, InputRef: inputRef,
+			Assets:   assetSnapshots,
 			Runtimes: h.runtimes, // nil for non-role buckets (omitempty → byte-identical)
 		})
 		if err := h.log.Append(state.Event{

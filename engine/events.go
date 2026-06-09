@@ -261,13 +261,31 @@ const (
 // vs `"runtimes":[]` wire drift a Phase 5 writer would otherwise create
 // by forgetting to initialize an empty slice.
 type RunStartedData struct {
-	RunID           string            `json:"run_id"`
-	WorkflowDigest  string            `json:"workflow_digest"`
-	WorkflowID      string            `json:"workflow_id,omitempty"`      // slice 6.1 — obs awf.workflow.id (standard §9); empty in pre-6.1 logs
-	WorkflowVersion int               `json:"workflow_version,omitempty"` // slice 6.1 — obs awf.workflow.version; 0 in pre-6.1 logs
-	InputRef        string            `json:"input_ref,omitempty"`        // empty if Workflow.Input is nil
-	Backend         string            `json:"backend,omitempty"`          // slice 4.5; "" → BackendDocker on resume
-	Runtimes        []ResolvedRuntime `json:"runtimes,omitempty"`
+	RunID           string                     `json:"run_id"`
+	WorkflowDigest  string                     `json:"workflow_digest"`
+	WorkflowID      string                     `json:"workflow_id,omitempty"`      // slice 6.1 — obs awf.workflow.id (standard §9); empty in pre-6.1 logs
+	WorkflowVersion int                        `json:"workflow_version,omitempty"` // slice 6.1 — obs awf.workflow.version; 0 in pre-6.1 logs
+	InputRef        string                     `json:"input_ref,omitempty"`        // empty if Workflow.Input is nil
+	Backend         string                     `json:"backend,omitempty"`          // slice 4.5; "" → BackendDocker on resume
+	Assets          map[string]RunStartedAsset `json:"assets,omitempty"`
+	Runtimes        []ResolvedRuntime          `json:"runtimes,omitempty"`
+}
+
+// RunStartedAsset is the durable run-start manifest for one workflow asset.
+// The map key in RunStartedData.Assets is the asset id; no duplicated ID is
+// stored here, so readers have one authoritative key.
+type RunStartedAsset struct {
+	DeclaredPath string                `json:"declared_path"`
+	IsDir        bool                  `json:"is_dir"`
+	Files        []RunStartedAssetFile `json:"files"`
+}
+
+// RunStartedAssetFile points at one content-addressed asset file snapshot.
+type RunStartedAssetFile struct {
+	Path   string `json:"path"`
+	Ref    string `json:"ref"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
 }
 
 // ResolvedRuntime is one element of RunStartedData.Runtimes — a `uses:` ref + the

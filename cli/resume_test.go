@@ -445,6 +445,100 @@ func TestCLIResumeDigestMismatchHardError(t *testing.T) {
 	}
 }
 
+func TestCLIResumeAssetDigestMismatchBeforeMissingSnapshotBlob(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runID := "test-resume-asset-digest-mismatch"
+	dir := t.TempDir()
+	assetPath := filepath.Join(dir, "asset.txt")
+	if err := os.WriteFile(assetPath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wfPath := filepath.Join(dir, "workflow.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: asset-drift
+version: 1
+assets:
+  input: asset.txt
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ld, err := loader.Load(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if _, err := state.OpenBlobs(filepath.Join(stateDir, "blobs")); err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	log, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	missingRef := "awf-d1:sha256:" + strings.Repeat("a", 64)
+	runStartedData, err := json.Marshal(engine.RunStartedData{
+		RunID:          runID,
+		WorkflowDigest: digest,
+		Backend:        engine.BackendFake,
+		Assets: map[string]engine.RunStartedAsset{
+			"input": {
+				DeclaredPath: "asset.txt",
+				Files: []engine.RunStartedAssetFile{{
+					Path: ".", Ref: missingRef, Size: int64(len("original")),
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal run.started: %v", err)
+	}
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
+		t.Fatalf("Append run.started: %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := os.WriteFile(assetPath, []byte("mutated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, runID, wfPath,
+	}, &stdout, &stderr)
+	if rc == cli.ExitOK {
+		t.Fatalf("rc = ExitOK, want digest mismatch; stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "digest mismatch") {
+		t.Fatalf("stderr missing digest mismatch: %s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), missingRef) || strings.Contains(stderr.String(), "not exist") {
+		t.Fatalf("resume reported missing asset blob before digest drift: %s", stderr.String())
+	}
+	logReopen, _ := state.OpenLog(logPath, clock.System{})
+	defer func() { _ = logReopen.Close() }()
+	events, _ := logReopen.Fold()
+	for _, e := range events {
+		if e.Type == engine.EventRunResumed {
+			t.Errorf("asset digest-mismatch refusal must NOT append run.resumed; events: %+v", events)
+		}
+	}
+}
+
 func TestErrRuntimeDrift_Format(t *testing.T) {
 	err := &cli.ErrRuntimeDrift{
 		Ref:       "anthropic/claude-code",
