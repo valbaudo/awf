@@ -132,7 +132,7 @@ func indexModuleProducers(ld *LoadedDefinition, moduleID string, nodes NodeList,
 		case *CallStep:
 			child, ok := callTargetModule(ld, moduleID, v.Call)
 			if ok && child != nil && child.Workflow != nil {
-				producers[v.ID] = producer{path: path, ord: currentOrd, kind: "call", schema: child.Workflow.OutputSchema}
+				producers[v.ID] = producer{path: path, ord: currentOrd, kind: "call", schema: callProducerSchema(child.Workflow)}
 			} else {
 				producers[v.ID] = producer{path: path, ord: currentOrd, kind: "call"}
 			}
@@ -154,6 +154,36 @@ func indexModuleProducers(ld *LoadedDefinition, moduleID string, nodes NodeList,
 			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "map_compact", schema: schema}
 		}
 	})
+}
+
+func callProducerSchema(wf *Workflow) *JSONSchema {
+	if wf == nil || wf.OutputSchema == nil || len(wf.Outputs) == 0 {
+		return nil
+	}
+	props, _ := (*wf.OutputSchema)["properties"].(map[string]any)
+	if len(props) == 0 {
+		return nil
+	}
+	boundProps := map[string]any{}
+	keys := make([]string, 0, len(wf.Outputs))
+	for key := range wf.Outputs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if prop, ok := props[key]; ok {
+			boundProps[key] = prop
+		}
+	}
+	if len(boundProps) == 0 {
+		return nil
+	}
+	schema := JSONSchema{
+		"type":                 "object",
+		"properties":           boundProps,
+		"additionalProperties": false,
+	}
+	return &schema
 }
 
 func callTargets(ld *LoadedDefinition, parentID string) map[string]string {
