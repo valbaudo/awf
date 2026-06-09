@@ -270,8 +270,20 @@ func checkInlineSize(v any) error {
 	switch x := v.(type) {
 	case string:
 		n = len(x)
+	case map[string]any:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return EvalErrf(EvalCodeInvalidScalar, "ref value cannot be JSON-encoded for inline size check: %v", err)
+		}
+		n = len(b)
+	case []any:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return EvalErrf(EvalCodeInvalidScalar, "ref value cannot be JSON-encoded for inline size check: %v", err)
+		}
+		n = len(b)
 	default:
-		return nil // bool / number / nil / composite — all bounded or rejected elsewhere
+		return nil // bool / number / nil — all bounded or rejected elsewhere
 	}
 	if n > MaxInlineBytes {
 		return EvalErrf(EvalCodeOversize, "ref value is %d bytes, MaxInlineBytes is %d (pass via output_files per spec §4)", n, MaxInlineBytes)

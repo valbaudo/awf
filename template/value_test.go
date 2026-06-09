@@ -85,3 +85,25 @@ func TestEvalTemplateValueRejectsOversize(t *testing.T) {
 		t.Errorf("err = %v, want AWF4001", err)
 	}
 }
+
+func TestEvalTemplateValueRejectsOversizeWholeRefObject(t *testing.T) {
+	raw := json.RawMessage(`"{{ input.payload }}"`)
+	huge := map[string]any{"blob": strings.Repeat("a", MaxInlineBytes+1)}
+
+	_, err := EvalTemplateValue(raw, mapScope{"input.payload": huge})
+	var ee *EvalError
+	if !errors.As(err, &ee) || ee.Code != EvalCodeOversize {
+		t.Errorf("err = %v, want AWF4001", err)
+	}
+}
+
+func TestEvalTemplateValueRejectsOversizeWholeRefArray(t *testing.T) {
+	raw := json.RawMessage(`"{{ input.payload }}"`)
+	huge := []any{strings.Repeat("a", MaxInlineBytes+1)}
+
+	_, err := EvalTemplateValue(raw, mapScope{"input.payload": huge})
+	var ee *EvalError
+	if !errors.As(err, &ee) || ee.Code != EvalCodeOversize {
+		t.Errorf("err = %v, want AWF4001", err)
+	}
+}
