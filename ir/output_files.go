@@ -132,7 +132,8 @@ func (o OutputFiles) PathForName(name string) (string, bool) {
 	return "", false
 }
 
-// OutputFilesByStepID indexes every code/agent step's output_files by id in ONE
+// OutputFilesByStepID indexes every code/agent step's and reduced map product's
+// output_files by id in ONE
 // graph walk. Shared by input_files validation (ir/validate_input_files.go) and
 // engine resolution (engine.resolveInputFiles) so neither walks per-ref.
 func OutputFilesByStepID(wf *Workflow) map[string]OutputFiles {
@@ -143,6 +144,10 @@ func OutputFilesByStepID(wf *Workflow) map[string]OutputFiles {
 			out[s.ID] = s.OutputFiles
 		case *AgentStep:
 			out[s.ID] = s.OutputFiles
+		case *Map:
+			if s.ID != "" && s.Reduce != nil {
+				out[s.ID] = s.Reduce.OutputFiles
+			}
 		}
 	})
 	return out

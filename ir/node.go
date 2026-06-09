@@ -112,6 +112,7 @@ type Skip struct {
 	Reason string `json:"-"`
 }
 type Map struct {
+	ID          string   `json:"id,omitempty"`
 	Over        Expr     `json:"over"`
 	As          string   `json:"as"`
 	Container   string   `json:"container"`

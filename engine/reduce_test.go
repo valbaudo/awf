@@ -308,6 +308,71 @@ func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunReduceTemplatesBodyStepRefsAsJSON(t *testing.T) {
+	rig := newReduceRig(t)
+	mapPath := "map[0]"
+	rowSchema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"k"},
+		"properties":           map[string]any{"k": map[string]any{"type": "string"}},
+	}
+	reduceSchema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"csv_rows"},
+		"properties":           map[string]any{"csv_rows": map[string]any{"type": "integer"}},
+	}
+	wf := minimalReduceWorkflow()
+	wf.Graph = ir.NodeList{
+		&ir.Map{
+			Over:        ir.Expr("{{ input.items }}"),
+			As:          "x",
+			Container:   reduceContainer,
+			Concurrency: 1,
+			Body: ir.NodeList{
+				&ir.CodeStep{ID: "scan", Run: "./scan {{ x }}", Container: reduceContainer, OutputSchema: rowSchema},
+			},
+		},
+	}
+	branches := []reduceBranch{
+		{N: 0, Outputs: map[string]any{"k": "a"}},
+		{N: 1, Outputs: map[string]any{"k": "b"}},
+	}
+	rig.rs.RecordMapItem(mapPath, MapItemRecord{N: 0, ItemValue: "a", Status: ItemPassed})
+	rig.rs.RecordMapItem(mapPath, MapItemRecord{N: 1, ItemValue: "b", Status: ItemPassed})
+	rig.rs.RecordCompleted(ItemStepPath(mapPath, 0, "scan"), NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"k": "a"}})
+	rig.rs.RecordCompleted(ItemStepPath(mapPath, 1, "scan"), NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"k": "b"}})
+
+	const rendered = `["a","b"]`
+	outputPath := `/out/["a","b"].json`
+	rig.fake.ProgramExecWithFiles("./merge.sh "+rendered, container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"csv_rows":2}`),
+	}, nil, map[string][]byte{outputPath: []byte("merged-bytes")})
+
+	r := &ir.Reduce{
+		Run:          "./merge.sh {{ step.scan.k }}",
+		Container:    reduceContainer,
+		OutputSchema: reduceSchema,
+		OutputFiles:  ir.OutputFiles{{Name: "json", Path: "/out/{{ step.scan.k }}.json"}},
+	}
+	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), wf, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want ok", oc)
+	}
+	nr, ok := rig.rs.LookupCompleted(mapPath)
+	if !ok {
+		t.Fatalf("no NodeResult committed at %q", mapPath)
+	}
+	if _, ok := nr.Files[outputPath]; !ok {
+		t.Fatalf("no committed artifact at %q (files=%v)", outputPath, nr.Files)
+	}
+}
+
 // A run: reducer's command must be TEMPLATED against the map-path scope, exactly
 // like a code step's run — otherwise {{ input.x }} reaches the reducer literally
 // (the bug the first real docker run hit: item4.json carried "cveId":"{{ input.cve_id }}").

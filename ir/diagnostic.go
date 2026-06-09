@@ -177,4 +177,7 @@ var catalog = map[string]string{
 	"AWF1038": "compose block is invalid (requires static as/from/service/body, non-empty body, and a scoped handle that does not collide)",
 	"AWF5006": "reduce quorum/over names a body output field that no branch declares, or min_success and reduce:{quorum} are both declared on the same node",
 	"AWF5008": "prune.score must name a numeric field declared in the output_schema of the map body's last step",
+	"AWF5009": "map id without reduce requires a final body code/agent/signal step with output_schema",
+	"AWF5010": "map aggregate product may only be referenced outside its producing map",
+	"AWF5011": "map aggregate product id is only supported for a single non-gate non-loop map",
 }

@@ -975,6 +975,126 @@ func TestScopeResolveArtifactPathPrefersReducedFiles(t *testing.T) {
 	}
 }
 
+func namedMapProductWorkflow(reduce bool) *ir.Workflow {
+	m := &ir.Map{
+		ID:        "version_universe",
+		Over:      ir.Expr("{{ input.items }}"),
+		As:        "item",
+		Container: "lab",
+		Body: ir.NodeList{
+			&ir.CodeStep{
+				ID:        "scan",
+				Container: "lab",
+				Run:       "echo scan",
+				OutputSchema: &ir.JSONSchema{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"finding"},
+					"properties":           map[string]any{"finding": map[string]any{"type": "string"}},
+				},
+			},
+		},
+	}
+	if reduce {
+		m.Reduce = &ir.Reduce{
+			Run:          "merge",
+			Container:    "lab",
+			OutputSchema: &ir.JSONSchema{"type": "object", "properties": map[string]any{"total": map[string]any{"type": "integer"}}},
+			OutputFiles:  ir.OutputFiles{{Name: "files", Path: "/out/files.jsonl"}},
+		}
+	}
+	return &ir.Workflow{
+		ID: "test", Version: 1,
+		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
+		Input:      &ir.JSONSchema{"type": "object", "properties": map[string]any{"items": map[string]any{"type": "array"}}},
+		Graph:      ir.NodeList{m},
+	}
+}
+
+func TestScopeResolveNamedReducedMapProduct(t *testing.T) {
+	wf := namedMapProductWorkflow(true)
+	rs := NewRunState(testRunID, testDigest, nil)
+	rs.RecordCompleted("map[0]", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"total": 2.0}})
+	sc := NewScope(rs, wf, "after_map")
+
+	got, err := sc.Resolve(mustParseRef(t, "step.version_universe.total"))
+	if err != nil {
+		t.Fatalf("step.version_universe.total: %v", err)
+	}
+	if got != 2.0 {
+		t.Errorf("got %#v, want 2.0", got)
+	}
+
+	whole, err := sc.Resolve(mustParseRef(t, "step.version_universe"))
+	if err != nil {
+		t.Fatalf("step.version_universe: %v", err)
+	}
+	m, ok := whole.(map[string]any)
+	if !ok || m["total"] != 2.0 {
+		t.Fatalf("whole product = %#v, want {total:2}", whole)
+	}
+}
+
+func TestScopeResolveNamedReducedMapArtifactPath(t *testing.T) {
+	wf := namedMapProductWorkflow(true)
+	rs := NewRunState(testRunID, testDigest, nil)
+	rs.RecordCompleted("map[0]", NodeResult{Outcome: OutcomeOK, Files: map[string]string{"/out/files.jsonl": "reduced-ref"}})
+	sc := NewScope(rs, wf, "after_map")
+
+	cas, err := sc.ResolveArtifactPath("version_universe", "/out/files.jsonl")
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(version_universe): %v", err)
+	}
+	if cas != "reduced-ref" {
+		t.Errorf("cas = %q, want reduced-ref", cas)
+	}
+}
+
+func TestScopeResolveDeclaredNamedReducedMapArtifactPath(t *testing.T) {
+	wf := namedMapProductWorkflow(true)
+	m := wf.Graph[0].(*ir.Map)
+	m.Reduce.OutputFiles = ir.OutputFiles{{Name: "files", Path: "/out/{{ input.suffix }}.jsonl"}}
+	rs := NewRunState(testRunID, testDigest, map[string]any{"suffix": "files"})
+	rs.RecordCompleted("map[0]", NodeResult{Outcome: OutcomeOK, Files: map[string]string{"/out/files.jsonl": "reduced-ref"}})
+	sc := NewScope(rs, wf, "after_map")
+
+	cas, err := sc.ResolveDeclaredArtifactPath("version_universe", "/out/{{ input.suffix }}.jsonl")
+	if err != nil {
+		t.Fatalf("ResolveDeclaredArtifactPath(version_universe): %v", err)
+	}
+	if cas != "reduced-ref" {
+		t.Errorf("cas = %q, want reduced-ref", cas)
+	}
+}
+
+func TestScopeResolveNamedCompactMapProduct(t *testing.T) {
+	wf := namedMapProductWorkflow(false)
+	rs := NewRunState(testRunID, testDigest, nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "a", Status: ItemPassed})
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 2, ItemValue: "c", Status: ItemPassed})
+	rs.RecordCompleted("map[0].item-0.scan", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"finding": "A"}})
+	rs.RecordCompleted("map[0].item-2.scan", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"finding": "C"}})
+	sc := NewScope(rs, wf, "map[1].over")
+
+	whole, err := sc.Resolve(mustParseRef(t, "step.version_universe"))
+	if err != nil {
+		t.Fatalf("step.version_universe: %v", err)
+	}
+	arr, ok := whole.([]any)
+	if !ok || len(arr) != 2 {
+		t.Fatalf("whole product = %#v, want 2 compact entries", whole)
+	}
+
+	proj, err := sc.Resolve(mustParseRef(t, "step.version_universe.finding"))
+	if err != nil {
+		t.Fatalf("step.version_universe.finding: %v", err)
+	}
+	parr, ok := proj.([]any)
+	if !ok || len(parr) != 2 || parr[0] != "A" || parr[1] != "C" {
+		t.Fatalf("field product = %#v, want [A C]", proj)
+	}
+}
+
 func mustParseRef(t *testing.T, src string) *template.Ref {
 	t.Helper()
 	r, err := template.ParseRef(src)

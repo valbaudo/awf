@@ -94,15 +94,11 @@ func resolveArtifactBytes(ref string, scope *Scope, wf *ir.Workflow, blobs state
 		return nil, fmt.Errorf("%q: expected step.<id>.files.<name>", ref)
 	}
 	idx := ir.OutputFilesByStepID(wf)
-	containerPath, ok := idx[id].PathForName(name)
+	declaredPath, ok := idx[id].PathForName(name)
 	if !ok {
 		return nil, fmt.Errorf("step %q has no named output_files artifact %q", id, name)
 	}
-	containerPath, err := template.Substitute(containerPath, scope)
-	if err != nil {
-		return nil, fmt.Errorf("substitute artifact path %q: %w", containerPath, err)
-	}
-	cas, err := scope.ResolveArtifactPath(id, containerPath)
+	cas, err := scope.ResolveDeclaredArtifactPath(id, declaredPath)
 	if err != nil {
 		return nil, err
 	}

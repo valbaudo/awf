@@ -270,18 +270,11 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 		if !ok {
 			return nil, fmt.Errorf("input_files[%s]=%q: expected step.<id>.files.<name> or asset.<id>", dst, rawRef)
 		}
-		containerPath, ok := idx[id].PathForName(name)
+		declaredPath, ok := idx[id].PathForName(name)
 		if !ok {
 			return nil, fmt.Errorf("input_files[%s]: step %q has no named output_files artifact %q", dst, id, name)
 		}
-		// output_files paths are templated at capture (substituteOutputPaths), so the
-		// artifact commits PATH-keyed under the SUBSTITUTED path. Substitute here too
-		// (same input.*/step.* scope → same result) so the ref lookup hits that key.
-		containerPath, err = template.Substitute(containerPath, scope)
-		if err != nil {
-			return nil, fmt.Errorf("input_files[%s]: substitute artifact path %q: %w", dst, containerPath, err)
-		}
-		cas, err := scope.ResolveArtifactPath(id, containerPath)
+		cas, err := scope.ResolveDeclaredArtifactPath(id, declaredPath)
 		if err != nil {
 			return nil, fmt.Errorf("input_files[%s]: %w", dst, err)
 		}
@@ -401,7 +394,7 @@ func isInputFileAncestor(parent, child string) bool {
 // substituted capture path. output_files paths are templated exactly like run:
 // and idempotency_key, so a path such as /work/records/{{ input.cve_id }}.json
 // captures — and commits, PATH-keyed in commit.go — under the substituted name.
-func resolveOutputFiles(ofs ir.OutputFiles, scope *Scope, assets map[string]RunStartedAsset, blobs state.Blobs) ([]string, map[string]OutputFileContract, error) {
+func resolveOutputFiles(ofs ir.OutputFiles, scope template.Scope, assets map[string]RunStartedAsset, blobs state.Blobs) ([]string, map[string]OutputFileContract, error) {
 	if len(ofs) == 0 {
 		return nil, nil, nil
 	}

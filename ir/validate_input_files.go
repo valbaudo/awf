@@ -149,6 +149,10 @@ func validateParsedNamedArtifactRef(
 		c.errf(nodePath, "AWF3007", label+": step "+id+" is not a declared step")
 		return
 	}
+	if p.kind == "map_reduce" && pathWithinScope(nodePath, p.path) {
+		c.errf(nodePath, "AWF3007", label+": reduced map product "+id+" may only be referenced outside its producing map")
+		return
+	}
 	if consumerOrd, ok := order[nodePath]; ok && p.ord >= consumerOrd {
 		c.errf(nodePath, "AWF3007", label+": producer "+id+" must appear before this consumer")
 		return

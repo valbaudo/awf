@@ -97,9 +97,9 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 		checkAssetID(id, c)
 	}
 
-	// (d) Walk the graph: step-id uniqueness, container-ref resolution (missing OR unresolved),
+	// (d) Walk the graph: addressable-id uniqueness, container-ref resolution (missing OR unresolved),
 	// control-node shape, parallel distinct-container rule, expression-size limits, AWF1019.
-	seen := map[string]string{} // step id → first path where seen, for the duplicate diag
+	seen := map[string]string{} // step/map-product id → first path where seen, for the duplicate diag
 	walkStructural(wf.Graph, "", wf, c, seen, nil)
 }
 
@@ -191,6 +191,7 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			// skip has no fields that need structural validation.
 		case *Map:
 			path := PathFor(parent, "map", "", i)
+			checkMapID(v, path, c, seen)
 			if string(v.Over) == "" || v.As == "" || v.Container == "" || v.Concurrency == 0 {
 				c.errf(path, "AWF1012", catalog["AWF1012"])
 			}
@@ -271,8 +272,27 @@ var reservedStepIDTokens = map[string]bool{
 }
 
 func checkStepID(id, path string, c *collector, seen map[string]string) {
+	checkAddressableID(id, path, "step", c, seen)
+}
+
+func checkMapID(m *Map, path string, c *collector, seen map[string]string) {
+	if m == nil || m.ID == "" {
+		return
+	}
+	checkAddressableID(m.ID, path, "map aggregate", c, seen)
+	if !MapProductShape(path) {
+		c.errf(path, "AWF5011", catalog["AWF5011"])
+	}
+	if m.Reduce == nil {
+		if _, _, ok := MapCompactProducer(m); !ok {
+			c.errf(path, "AWF5009", catalog["AWF5009"])
+		}
+	}
+}
+
+func checkAddressableID(id, path, kind string, c *collector, seen map[string]string) {
 	if id == "" {
-		return // empty step id surfaces as AWFxxxx in a later slice / Schema; not our concern here.
+		return // empty step ids surface elsewhere; empty map ids mean "no named aggregate product."
 	}
 	if !stepIDPattern.MatchString(id) {
 		c.errf(path, "AWF1020", fmt.Sprintf("%s: id=%q (must match %s)",
@@ -285,7 +305,11 @@ func checkStepID(id, path string, c *collector, seen map[string]string) {
 			catalog["AWF1020"], id))
 	}
 	if prev, dup := seen[id]; dup {
-		c.errf(path, "AWF1004", fmt.Sprintf("%s (first seen at %s)", catalog["AWF1004"], prev))
+		if kind == "step" {
+			c.errf(path, "AWF1004", fmt.Sprintf("%s (first seen at %s)", catalog["AWF1004"], prev))
+			return
+		}
+		c.errf(path, "AWF1004", fmt.Sprintf("%s (%s id %q first seen at %s)", catalog["AWF1004"], kind, id, prev))
 		return
 	}
 	seen[id] = path

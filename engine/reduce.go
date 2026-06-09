@@ -254,15 +254,15 @@ func runCommandReduce(
 	//    runCode by building a NodeIntent with the reducer's Run/Container/
 	//    OutputSchema/OutputFiles + the staged InputFiles. The dispatcher stages
 	//    InputFiles via Backend.CopyTo (SP1) BEFORE exec — one delivery path.
-	// Template the reducer's run: against the map-path scope — exactly like a code
-	// step's run is templated — so {{ input.x }} / {{ step.y.z }} resolve. Without
-	// this the raw run reached the reducer literally. Container/output paths are
-	// static (no {{ }}), so only the command needs substitution.
-	cmd, terr := template.Substitute(r.Run, NewScope(rs, wf, nodePath))
+	// Template reducer run/output_files against the reducer scope. It behaves like
+	// the map-path scope for ordinary refs, and renders body-step aggregate refs as
+	// canonical JSON for the historical reducer-template contract.
+	reduceScope := newReduceTemplateScope(rs, wf, nodePath)
+	cmd, terr := template.Substitute(r.Run, reduceScope)
 	if terr != nil {
 		return failStep(log, nodePath, OutcomePermanentFailure, fmt.Errorf("engine.runReduce: template reduce run %q: %w", r.Run, terr))
 	}
-	outputFiles, outputFileContracts, oerr := resolveOutputFiles(r.OutputFiles, NewScope(rs, wf, nodePath), rs.Assets, blobs)
+	outputFiles, outputFileContracts, oerr := resolveOutputFiles(r.OutputFiles, reduceScope, rs.Assets, blobs)
 	if oerr != nil {
 		if errors.Is(oerr, errArtifactFetch) {
 			return "", fmt.Errorf("engine.runReduce: resolve output_files contracts at %q: %w", nodePath, oerr)

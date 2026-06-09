@@ -16,8 +16,9 @@ import (
 type producer struct {
 	path   string
 	ord    int
-	kind   string // "code", "agent", "signal", "input"
+	kind   string // "code", "agent", "signal", "input", "map_reduce", "map_compact"
 	schema *JSONSchema
+	reduce *Reduce
 }
 
 // validateRefs runs the AWF3001/AWF3002 pass: walks every ir.Template and ir.Expr field,
@@ -63,9 +64,9 @@ func validateRefs(ld *LoadedDefinition, c *collector) {
 	referenced := map[string]bool{}
 
 	// Walk the graph collecting refs from every Template and Expr field. evaluateAllowed=false
-	// and overSink=false at the top level — only the gate frame's generate/until flip
-	// evaluateAllowed true, and only a map's over: flips overSink true (see walkRefs).
-	walkRefs(wf.Graph, "", c, producers, maps, referenced, false, false)
+	// and no over-sink map at the top level — only the gate frame's generate/until flip
+	// evaluateAllowed true, and only a map's over: carries its map path as the array sink.
+	walkRefs(wf.Graph, "", c, producers, maps, referenced, false, "")
 
 	// AWF3002: any AgentStep with an output_schema but no inbound ref → warning.
 	for id, p := range producers {
@@ -126,6 +127,22 @@ func indexProducers(nodes NodeList, producers map[string]producer) {
 			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "agent", schema: v.OutputSchema}
 		case *SignalStep:
 			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "signal", schema: v.OutputSchema}
+		case *Map:
+			if v.ID == "" {
+				return
+			}
+			if v.Reduce != nil {
+				producers[v.ID] = producer{
+					path:   path,
+					ord:    currentOrd,
+					kind:   "map_reduce",
+					schema: v.Reduce.OutputSchema,
+					reduce: v.Reduce,
+				}
+				return
+			}
+			_, schema, _ := MapCompactProducer(v)
+			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "map_compact", schema: schema}
 		}
 	})
 }
@@ -142,23 +159,24 @@ func indexProducers(nodes NodeList, producers map[string]producer) {
 // unchanged through every non-Gate node, so it represents the innermost gate frame's
 // allow/deny — nested gates OVERRIDE (the inner frame's value is what walkRefs passes down).
 //
-// overSink is true ONLY inside a map's over: expression — the one array-native sink. It is
-// threaded so checkRef's step case can allow an aggregate (array-typed) ref there and emit
-// AWF5004 everywhere else. Every non-over call site passes false (over: is a single Expr with
-// no recursion, so the flag never propagates into a subtree).
-func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed, overSink bool) {
+// overSinkMapPath is non-empty ONLY inside a map's over: expression — the one array-native
+// sink. It is threaded so checkRef's step case can allow an aggregate (array-typed) ref there
+// and emit AWF5004 everywhere else. Every non-over call site passes "" (over: is a single Expr
+// with no recursion, so the sink never propagates into a subtree). Named compact map products
+// also use the path to reject self-references from their own over: expression.
+func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool, overSinkMapPath string) {
 	for i, n := range nodes {
 		switch v := n.(type) {
 		case *CodeStep:
 			path := PathFor(parent, "", v.ID, i)
-			checkTemplateRefs(v.Run, path+".run", c, producers, maps, referenced, evaluateAllowed, false)
+			checkTemplateRefs(v.Run, path+".run", c, producers, maps, referenced, evaluateAllowed, "")
 			if v.IdempotencyKey != nil {
-				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, maps, referenced, evaluateAllowed, false)
+				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, maps, referenced, evaluateAllowed, "")
 			}
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
 			if v.IdempotencyKey != nil {
-				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, maps, referenced, evaluateAllowed, false)
+				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, maps, referenced, evaluateAllowed, "")
 			}
 			// Walk top-level string leaves of v.With in sorted key order (stable diagnostics).
 			// This mirrors engine.substituteRawConfig which templates every top-level string
@@ -175,56 +193,69 @@ func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]
 					if !ok {
 						continue
 					}
-					checkTemplateRefs(sv, path+".with."+k, c, producers, maps, referenced, evaluateAllowed, false)
+					checkTemplateRefs(sv, path+".with."+k, c, producers, maps, referenced, evaluateAllowed, "")
 				}
 			}
 		case *SignalStep:
 			// no Template / Expr fields beyond the schema itself.
 		case *If:
 			path := PathFor(parent, "if", "", i)
-			checkExprRefs(string(v.Cond), path+".cond", c, producers, maps, referenced, evaluateAllowed, false)
-			walkRefs(v.Then, ChildPath(parent, "if", i, "then"), c, producers, maps, referenced, evaluateAllowed, false)
-			walkRefs(v.Else, ChildPath(parent, "if", i, "else"), c, producers, maps, referenced, evaluateAllowed, false)
+			checkExprRefs(string(v.Cond), path+".cond", c, producers, maps, referenced, evaluateAllowed, "")
+			walkRefs(v.Then, ChildPath(parent, "if", i, "then"), c, producers, maps, referenced, evaluateAllowed, "")
+			walkRefs(v.Else, ChildPath(parent, "if", i, "else"), c, producers, maps, referenced, evaluateAllowed, "")
 		case *Loop:
 			path := PathFor(parent, "loop", "", i)
 			if v.Until != nil {
-				checkExprRefs(string(*v.Until), path+".until", c, producers, maps, referenced, evaluateAllowed, false)
+				checkExprRefs(string(*v.Until), path+".until", c, producers, maps, referenced, evaluateAllowed, "")
 			}
-			walkRefs(v.Body, ChildPath(parent, "loop", i, "body"), c, producers, maps, referenced, evaluateAllowed, false)
+			walkRefs(v.Body, ChildPath(parent, "loop", i, "body"), c, producers, maps, referenced, evaluateAllowed, "")
 		case *Try:
-			walkRefs(v.Do, ChildPath(parent, "try", i, "do"), c, producers, maps, referenced, evaluateAllowed, false)
-			walkRefs(v.Catch, ChildPath(parent, "try", i, "catch"), c, producers, maps, referenced, evaluateAllowed, false)
-			walkRefs(v.Finally, ChildPath(parent, "try", i, "finally"), c, producers, maps, referenced, evaluateAllowed, false)
+			walkRefs(v.Do, ChildPath(parent, "try", i, "do"), c, producers, maps, referenced, evaluateAllowed, "")
+			walkRefs(v.Catch, ChildPath(parent, "try", i, "catch"), c, producers, maps, referenced, evaluateAllowed, "")
+			walkRefs(v.Finally, ChildPath(parent, "try", i, "finally"), c, producers, maps, referenced, evaluateAllowed, "")
 		case *Parallel:
-			walkRefs(v.Children, PathFor(parent, "parallel", "", i), c, producers, maps, referenced, evaluateAllowed, false)
+			walkRefs(v.Children, PathFor(parent, "parallel", "", i), c, producers, maps, referenced, evaluateAllowed, "")
 		case *Gate:
 			path := PathFor(parent, "gate", "", i)
 			// gate.until: evaluate.* allowed (single Expr field, no recursion).
-			checkExprRefs(string(v.Until), path+".until", c, producers, maps, referenced, true, false)
+			checkExprRefs(string(v.Until), path+".until", c, producers, maps, referenced, true, "")
 			// gate.generate: evaluate.* allowed (innermost frame OVERRIDES enclosing).
-			walkRefs(v.Generate, ChildPath(parent, "gate", i, "generate"), c, producers, maps, referenced, true, false)
+			walkRefs(v.Generate, ChildPath(parent, "gate", i, "generate"), c, producers, maps, referenced, true, "")
 			// gate.evaluate: evaluate.* REJECTED (the evaluator can't reference its own in-flight output).
-			walkRefs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c, producers, maps, referenced, false, false)
+			walkRefs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c, producers, maps, referenced, false, "")
 		case *Map:
 			path := PathFor(parent, "map", "", i)
 			// over: is the one array-native sink — an aggregate ref is legal here (overSink=true).
-			checkExprRefs(string(v.Over), path+".over", c, producers, maps, referenced, evaluateAllowed, true)
+			checkExprRefs(string(v.Over), path+".over", c, producers, maps, referenced, evaluateAllowed, path)
 			// v.Container is a STATIC container name (AWF §5.7); validated by walkStructural
 			// (AWF1009/AWF1019). Not a Template — no Slots/ParseRef walk here.
-			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, maps, referenced, evaluateAllowed, false)
+			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, maps, referenced, evaluateAllowed, "")
+			checkReduceRefs(v.Reduce, path, c, producers, maps, referenced, evaluateAllowed)
 		case *Compose:
 			path := PathFor(parent, "compose", "", i)
-			checkTemplateRefs(string(v.Service), path+".service", c, producers, maps, referenced, evaluateAllowed, false)
-			walkRefs(v.Body, ChildPath(parent, "compose", i, "body"), c, producers, maps, referenced, evaluateAllowed, false)
+			checkTemplateRefs(string(v.Service), path+".service", c, producers, maps, referenced, evaluateAllowed, "")
+			walkRefs(v.Body, ChildPath(parent, "compose", i, "body"), c, producers, maps, referenced, evaluateAllowed, "")
 		}
 	}
 }
 
-// checkTemplateRefs scans src (an ir.Template field) for `{{ … }}` slots, parses each as a
-// ref via the template package, and runs each through checkRef. evaluateAllowed is propagated
-// to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire. overSink is propagated
-// so the step case can allow an aggregate ref (and emit AWF5004 elsewhere).
-func checkTemplateRefs(src, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed, overSink bool) {
+func checkReduceRefs(r *Reduce, mapPath string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool) {
+	if r == nil {
+		return
+	}
+	if r.Run != "" {
+		checkReduceTemplateRefs(r.Run, mapPath+".reduce.run", c, producers, maps, referenced, evaluateAllowed)
+	}
+	for _, of := range r.OutputFiles {
+		if of.Name == "" {
+			checkReduceTemplateRefs(of.Path, mapPath+".reduce.output_files", c, producers, maps, referenced, evaluateAllowed)
+			continue
+		}
+		checkReduceTemplateRefs(of.Path, mapPath+".reduce.output_files."+of.Name, c, producers, maps, referenced, evaluateAllowed)
+	}
+}
+
+func checkReduceTemplateRefs(src, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool) {
 	if src == "" {
 		return
 	}
@@ -244,15 +275,72 @@ func checkTemplateRefs(src, path string, c *collector, producers map[string]prod
 			c.errf(path, "AWF3001", fmt.Sprintf("invalid reference %q: %s", inner, syntaxMessage(err)))
 			continue
 		}
-		checkRef(*ref, path, c, producers, maps, referenced, evaluateAllowed, overSink)
+		checkReduceRef(*ref, path, c, producers, maps, referenced, evaluateAllowed)
+	}
+}
+
+// Reducer template fields are scanned to catch named map-product self-refs while
+// preserving the historical body-step aggregate contract inside reducers.
+func checkReduceRef(ref template.Ref, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool) {
+	if len(ref.Segments) >= 2 && ref.Segments[0].Ident == "step" && !ref.Segments[1].IsIndex {
+		id := ref.Segments[1].Ident
+		if p, ok := producers[id]; ok {
+			if mapPath, _, isAgg := SingleMapBodyShape(p.path); isAgg && pathWithinScope(path, mapPath+".reduce") {
+				referenced[id] = true
+				if len(ref.Segments) == 2 {
+					return
+				}
+				if ref.Segments[2].IsIndex {
+					c.errf(path, "AWF3001", fmt.Sprintf("malformed step reference (need step.<id>.<field>): %s", renderRef(ref)))
+					return
+				}
+				field := ref.Segments[2].Ident
+				if field == "exit_code" || field == "stdout" {
+					c.errf(path, "AWF5005", fmt.Sprintf("%s: %s", catalog["AWF5005"], renderRef(ref)))
+					return
+				}
+				checkSchemaField(c, path, id, field, p.schema)
+				return
+			}
+		}
+	}
+	checkRef(ref, path, c, producers, maps, referenced, evaluateAllowed, "")
+}
+
+// checkTemplateRefs scans src (an ir.Template field) for `{{ … }}` slots, parses each as a
+// ref via the template package, and runs each through checkRef. evaluateAllowed is propagated
+// to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire. overSinkMapPath is
+// propagated so the step case can allow an aggregate ref (and emit AWF5004 elsewhere).
+func checkTemplateRefs(src, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool, overSinkMapPath string) {
+	if src == "" {
+		return
+	}
+	slots, err := template.Slots(src)
+	if err != nil {
+		c.errf(path, "AWF3001", fmt.Sprintf("malformed template: %s", syntaxMessage(err)))
+		return
+	}
+	for _, sl := range slots {
+		inner := strings.TrimSpace(sl.Inner)
+		if inner == "" {
+			c.errf(path, "AWF3001", "empty {{ }} slot")
+			continue
+		}
+		ref, err := template.ParseRef(inner)
+		if err != nil {
+			c.errf(path, "AWF3001", fmt.Sprintf("invalid reference %q: %s", inner, syntaxMessage(err)))
+			continue
+		}
+		checkRef(*ref, path, c, producers, maps, referenced, evaluateAllowed, overSinkMapPath)
 	}
 }
 
 // checkExprRefs unwraps the outer `{{ }}` envelope (if present), parses the inner as an
 // Expr via the template package, and runs each Ref in the AST through checkRef. evaluateAllowed
-// is propagated to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire. overSink
-// is propagated so the step case can allow an aggregate ref (only a map's over: passes true).
-func checkExprRefs(src, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed, overSink bool) {
+// is propagated to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire.
+// overSinkMapPath is propagated so the step case can allow an aggregate ref (only a map's
+// over: passes a non-empty path).
+func checkExprRefs(src, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool, overSinkMapPath string) {
 	if src == "" {
 		return
 	}
@@ -263,7 +351,7 @@ func checkExprRefs(src, path string, c *collector, producers map[string]producer
 		return
 	}
 	for _, ref := range template.References(e) {
-		checkRef(ref, path, c, producers, maps, referenced, evaluateAllowed, overSink)
+		checkRef(ref, path, c, producers, maps, referenced, evaluateAllowed, overSinkMapPath)
 	}
 }
 
@@ -330,9 +418,10 @@ func checkReducedMapRef(c *collector, path, id string, ref template.Ref, r *Redu
 // checkRef classifies a ref by its first segment and applies the appropriate cross-check.
 // evaluateAllowed controls whether `evaluate.<field>` is legal in this position — false
 // emits AWF5001 (the static counterpart of engine.Scope.resolveEvaluate's runtime check).
-// overSink is true only inside a map's over: expression — the one array-native sink where an
-// aggregate (array-typed) ref is legal; elsewhere an aggregate ref emits AWF5004.
-func checkRef(ref template.Ref, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed, overSink bool) {
+// overSinkMapPath is non-empty only inside a map's over: expression — the one array-native
+// sink where an aggregate (array-typed) ref is legal; elsewhere an aggregate ref emits
+// AWF5004.
+func checkRef(ref template.Ref, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool, overSinkMapPath string) {
 	if len(ref.Segments) == 0 {
 		return
 	}
@@ -349,28 +438,21 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			c.errf(path, "AWF3001", fmt.Sprintf("reference to undeclared step %q", id))
 			return
 		}
-		// Aggregate read: producer inside the v1 single-map shape, ref site OUTSIDE it.
-		if mapPath, _, isAgg := SingleMapBodyShape(p.path); isAgg && !pathWithinScope(path, mapPath) {
-			// Reduce short-circuit (SP2 Task 11, validator half): if the enclosing map
-			// declared a reduce:, the per-item aggregate is REPLACED by the reducer's
-			// single committed output (engine/scope.go aggregateMapOutputs prefers
-			// LookupCompleted(mapStatic) when present). So the ref resolves against the
-			// REDUCER's output shape — a SCALAR object, not an array — and AWF5004 does
-			// NOT apply (it is the wrong diagnostic for a non-aggregate). Validate the
-			// field against the reducer's output shape instead, EXACTLY what the runtime
-			// resolves: a run: reducer → its output_schema; a quorum reducer → the fixed
-			// {passed,votes,agree} verdict shape. Mirrors regardless of overSink because
-			// the reduced output is scalar in both positions.
-			if m, ok := maps[mapPath]; ok && m.Reduce != nil {
-				checkReducedMapRef(c, path, id, ref, m.Reduce, referenced)
-				return
-			}
-			if !overSink {
+		if (p.kind == "map_reduce" || p.kind == "map_compact") && pathWithinScope(path, p.path) {
+			c.errf(path, "AWF5010", fmt.Sprintf("%s: %s", catalog["AWF5010"], renderRef(ref)))
+			return
+		}
+		if p.kind == "map_reduce" {
+			checkReducedMapRef(c, path, id, ref, p.reduce, referenced)
+			return
+		}
+		if p.kind == "map_compact" {
+			if overSinkMapPath == "" || overSinkMapPath == p.path {
 				c.errf(path, "AWF5004", fmt.Sprintf("%s: %s", catalog["AWF5004"], renderRef(ref)))
 				return
 			}
 			referenced[id] = true
-			if len(ref.Segments) == 2 { // step.<id> → []object
+			if len(ref.Segments) == 2 { // step.<map-id> → []object
 				return
 			}
 			if ref.Segments[2].IsIndex {
@@ -384,6 +466,48 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			}
 			checkSchemaField(c, path, id, field, p.schema)
 			return
+		}
+		// Aggregate read: producer inside the v1 single-map shape, ref site OUTSIDE it.
+		if mapPath, _, isAgg := SingleMapBodyShape(p.path); isAgg {
+			if pathWithinScope(path, mapPath) && !pathWithinScope(path, mapPath+".body") {
+				c.errf(path, "AWF5002", fmt.Sprintf("%s: %s", catalog["AWF5002"], renderRef(ref)))
+				return
+			}
+			if !pathWithinScope(path, mapPath) {
+				// Reduce short-circuit (SP2 Task 11, validator half): if the enclosing map
+				// declared a reduce:, the per-item aggregate is REPLACED by the reducer's
+				// single committed output (engine/scope.go aggregateMapOutputs prefers
+				// LookupCompleted(mapStatic) when present). So the ref resolves against the
+				// REDUCER's output shape — a SCALAR object, not an array — and AWF5004 does
+				// NOT apply (it is the wrong diagnostic for a non-aggregate). Validate the
+				// field against the reducer's output shape instead, EXACTLY what the runtime
+				// resolves: a run: reducer → its output_schema; a quorum reducer → the fixed
+				// {passed,votes,agree} verdict shape. Mirrors regardless of overSink because
+				// the reduced output is scalar in both positions.
+				if m, ok := maps[mapPath]; ok && m.Reduce != nil {
+					checkReducedMapRef(c, path, id, ref, m.Reduce, referenced)
+					return
+				}
+				if overSinkMapPath == "" {
+					c.errf(path, "AWF5004", fmt.Sprintf("%s: %s", catalog["AWF5004"], renderRef(ref)))
+					return
+				}
+				referenced[id] = true
+				if len(ref.Segments) == 2 { // step.<id> → []object
+					return
+				}
+				if ref.Segments[2].IsIndex {
+					c.errf(path, "AWF3001", fmt.Sprintf("malformed step reference (need step.<id>.<field>): %s", renderRef(ref)))
+					return
+				}
+				field := ref.Segments[2].Ident
+				if field == "exit_code" || field == "stdout" {
+					c.errf(path, "AWF5005", fmt.Sprintf("%s: %s", catalog["AWF5005"], renderRef(ref)))
+					return
+				}
+				checkSchemaField(c, path, id, field, p.schema)
+				return
+			}
 		}
 		// Non-aggregate: require step.<id>.<field>.
 		if len(ref.Segments) < 3 || ref.Segments[2].IsIndex {

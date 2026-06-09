@@ -109,6 +109,56 @@ graph:
     input_files: { /work/versions.csv: step.row.files.csv }
 `, fakeImageDigest)
 
+// reduceNamedRunWorkflow is the named aggregate product variant of
+// reduceRunWorkflow. It preserves the old body-step fixture above and proves the
+// new `map.id` surface: downstream input_files reads
+// step.<map-id>.files.<name>, and resume re-stages that artifact from the
+// reducer's committed map-path node.completed record.
+var reduceNamedRunWorkflow = fmt.Sprintf(`workflow: conformance-reduce-named-run
+version: 1
+input:
+  type: object
+  required: [items]
+  additionalProperties: false
+  properties:
+    items:
+      type: array
+      items: { type: string }
+containers:
+  c0:
+    image: %[1]s
+  agg:
+    image: %[1]s
+graph:
+  - map:
+      id: version_universe
+      over: "{{ input.items }}"
+      as: x
+      container: c0
+      concurrency: 1
+      body:
+        - id: row
+          container: c0
+          run: "./row.sh {{ x }}"
+          retry: { attempts: 1 }
+          output_files: { csv: /out/versions.csv }
+      reduce:
+        run: "./merge.sh"
+        container: agg
+        output_schema:
+          type: object
+          additionalProperties: false
+          required: [csv_rows]
+          properties:
+            csv_rows: { type: integer }
+        output_files: { files: /out/versions.csv }
+  - id: collect
+    container: c0
+    run: "./collect.sh"
+    retry: { attempts: 1 }
+    input_files: { /work/versions.csv: step.version_universe.files.files }
+`, fakeImageDigest)
+
 // testReduce is the C2a conformance bucket (Task 12): reduce: fan-in on map.
 // Three sub-tests pin the end-to-end behaviour against the fake backend:
 //
@@ -127,6 +177,9 @@ func testReduce(t *testing.T, factory BackendFactory) {
 	t.Run("quorum_pass", func(t *testing.T) { testReduceQuorumPass(t, factory) })
 	t.Run("quorum_fail", func(t *testing.T) { testReduceQuorumFail(t, factory) })
 	t.Run("run_reduce", func(t *testing.T) { testReduceRun(t, factory) })
+	t.Run("named_run_reduce_resume_artifact", func(t *testing.T) {
+		testReduceNamedRunResumeArtifact(t, factory)
+	})
 }
 
 func testReduceQuorumPass(t *testing.T, factory BackendFactory) {
@@ -345,6 +398,93 @@ func testReduceRun(t *testing.T, factory BackendFactory) {
 	postReduceCommits := countNodeCompleted(mustFoldEvents(t, h), "map[0]")
 	if postReduceCommits != preReduceCommits {
 		t.Errorf("run_reduce: map[0] node.completed count changed across resume: %d → %d (replay must not re-commit)",
+			preReduceCommits, postReduceCommits)
+	}
+}
+
+func testReduceNamedRunResumeArtifact(t *testing.T, _ BackendFactory) {
+	t.Helper()
+	merged := []byte("a-row\nb-row\n")
+
+	var runFake, resumeFake *container.Fake
+	var resumeSpy *assetCopyToSpy
+	h := newHarnessWithInput(t, func() container.Backend {
+		f := container.NewFake()
+		if runFake == nil {
+			f.ProgramExecWithFiles("./row.sh a", container.ExecResult{ExitCode: 0}, nil,
+				map[string][]byte{"/out/versions.csv": []byte("a-row")})
+			f.ProgramExecWithFiles("./row.sh b", container.ExecResult{ExitCode: 0}, nil,
+				map[string][]byte{"/out/versions.csv": []byte("b-row")})
+			f.ProgramExecWithFiles("./merge.sh", container.ExecResult{
+				ExitCode:  0,
+				AWFOutput: []byte(`{"csv_rows":2}`),
+			}, nil, map[string][]byte{"/out/versions.csv": merged})
+			f.ProgramExec("./collect.sh", container.ExecResult{ExitCode: 0}, nil)
+			f.FailExecAfterN(3) // crash collect after row,row,merge have committed
+			runFake = f
+			return f
+		}
+		f.ProgramExec("./collect.sh", container.ExecResult{ExitCode: 0}, nil)
+		resumeFake = f
+		resumeSpy = newAssetCopyToSpy(f)
+		return resumeSpy
+	}, reduceNamedRunWorkflow, map[string]any{"items": []any{"a", "b"}})
+
+	oc, _ := h.runWorkflow(t)
+	if oc == "" {
+		t.Fatal("named_run_reduce_resume_artifact: first run produced no outcome")
+	}
+	if oc == engine.OutcomeOK {
+		t.Fatal("named_run_reduce_resume_artifact: first run unexpectedly ok; collect should crash after reducer commit")
+	}
+
+	rs, err := engine.Fold(mustFoldEvents(t, h), h.blobs)
+	if err != nil {
+		t.Fatalf("named_run_reduce_resume_artifact: Fold: %v", err)
+	}
+	reduced, ok := rs.LookupCompleted("map[0]")
+	if !ok {
+		t.Fatal("named_run_reduce_resume_artifact: reducer did not commit at map[0]")
+	}
+	ref, ok := reduced.Files["/out/versions.csv"]
+	if !ok {
+		t.Fatalf("named_run_reduce_resume_artifact: reducer Files missing /out/versions.csv: %v", reduced.Files)
+	}
+	gotBytes, err := h.blobs.Get(ref)
+	if err != nil {
+		t.Fatalf("named_run_reduce_resume_artifact: Blobs.Get(%q): %v", ref, err)
+	}
+	if string(gotBytes) != string(merged) {
+		t.Fatalf("named_run_reduce_resume_artifact: reducer artifact = %q, want %q", gotBytes, merged)
+	}
+	if _, ok := rs.LookupCompleted("collect"); ok {
+		t.Fatal("named_run_reduce_resume_artifact: collect committed in run 1; resume would not re-stage the named aggregate artifact")
+	}
+
+	preReduceCommits := countNodeCompleted(mustFoldEvents(t, h), "map[0]")
+	oc2, err := h.resumeWorkflow(t)
+	if err != nil {
+		t.Fatalf("named_run_reduce_resume_artifact: resume: %v", err)
+	}
+	if oc2 != engine.OutcomeOK {
+		t.Fatalf("named_run_reduce_resume_artifact: resume outcome = %q, want ok", oc2)
+	}
+	if resumeFake == nil || resumeSpy == nil {
+		t.Fatal("named_run_reduce_resume_artifact: resume did not mint the spy fake")
+	}
+	for _, c := range resumeFake.Calls {
+		if c.Run != "./collect.sh" {
+			t.Fatalf("named_run_reduce_resume_artifact: resume re-executed %q; row/merge should replay", c.Run)
+		}
+	}
+	staged := resumeSpy.stagedByPath()
+	if staged["/work/versions.csv"] != string(merged) {
+		t.Fatalf("named_run_reduce_resume_artifact: staged /work/versions.csv = %q, want %q (all staged: %#v)",
+			staged["/work/versions.csv"], merged, staged)
+	}
+	postReduceCommits := countNodeCompleted(mustFoldEvents(t, h), "map[0]")
+	if postReduceCommits != preReduceCommits {
+		t.Fatalf("named_run_reduce_resume_artifact: map[0] commits changed across resume: %d -> %d",
 			preReduceCommits, postReduceCommits)
 	}
 }
