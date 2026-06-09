@@ -8,9 +8,8 @@
 //     POSIX; backslashes have no legitimate use and silently rewriting them hides authoring
 //     mistakes), and paths that escape the workflow directory after filepath.Clean.
 //  2. os.Root (Go 1.24, rooted at the workflow directory) independently confines all opens to
-//     the workflow directory and refuses any symlink in the resolution path — additional
-//     protection beyond gate 1's string-level checks. Load is conservative: symlinks are refused
-//     even when they target a sibling file inside the rooted directory.
+//     the workflow directory. Root follows inside-root symlinks, so Load explicitly rejects
+//     symlink path components before opening files.
 //
 // Load also normalizes each Container.Compose to its cleaned forward-slash form so the IR field
 // and the ComposeFiles map key agree (this matters for the spec §E compose-fold and for any
@@ -72,12 +71,23 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 			wf.Containers[name] = c
 			continue
 		}
-		// os.Root.Open enforces no `..`-escape and refuses every symlink in the resolution
-		// path (even inside-root ones); composeRelPath has already rejected absolute paths
-		// and backslashes. A missing file surfaces here as fs.ErrNotExist.
+		if err := rejectSymlinkComponents(root, rel); err != nil {
+			return nil, fmt.Errorf("container %q compose %q: %w", name, c.Compose, err)
+		}
+		// os.Root.Open enforces no `..`-escape; composeRelPath has already rejected
+		// absolute paths and backslashes. A missing file surfaces here as fs.ErrNotExist.
 		f, err := root.Open(rel)
 		if err != nil {
 			return nil, fmt.Errorf("container %q compose %q: %w", name, c.Compose, err)
+		}
+		info, statErr := f.Stat()
+		if statErr != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("container %q compose %q: stat: %w", name, c.Compose, statErr)
+		}
+		if !info.Mode().IsRegular() {
+			_ = f.Close()
+			return nil, fmt.Errorf("container %q compose %q: not a regular file", name, c.Compose)
 		}
 		b, readErr := io.ReadAll(f)
 		closeErr := f.Close()
@@ -96,10 +106,19 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 		wf.Containers[name] = c
 	}
 
+	assets, err := loadAssets(root, wf.Assets)
+	if err != nil {
+		return nil, err
+	}
+	for id, asset := range assets {
+		wf.Assets[id] = asset.DeclaredPath
+	}
+
 	return &ir.LoadedDefinition{
 		Workflow:     wf,
 		WorkflowPath: abs,
 		ComposeFiles: compose,
+		Assets:       assets,
 	}, nil
 }
 
@@ -111,8 +130,8 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 // and must not escape the workflow directory after Clean (no leading "../"). The returned form
 // is forward-slashed for use both as the os.Root.Open path and as the ComposeFiles map key.
 //
-// os.Root would itself reject `..`-escape and refuse any symlink, but checking here gives clearer,
-// attributed error messages distinct from "file not found".
+// os.Root would itself reject `..`-escape, but checking here gives clearer, attributed error
+// messages distinct from "file not found".
 func composeRelPath(declared string) (string, error) {
 	if filepath.IsAbs(declared) {
 		return "", errors.New("absolute path not permitted (must be relative to the workflow directory)")

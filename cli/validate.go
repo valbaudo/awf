@@ -80,7 +80,7 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 	// If ComputeDigest fails (highly unlikely once the workflow has parsed), surface a
 	// warning to stderr and proceed with an empty digest field — validation diagnostics are
 	// the primary output and shouldn't be lost to a digest-pipeline edge case.
-	digest, digestErr := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	digest, digestErr := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
 	if digestErr != nil {
 		fprintf(stderr, "awf validate: warning: digest unavailable: %v\n", digestErr)
 		digest = ""

@@ -25,7 +25,7 @@ func sampleWorkflow() *Workflow {
 }
 
 func TestDigestIsSelfDescribing(t *testing.T) {
-	d, err := sampleWorkflow().ComputeDigest(nil)
+	d, err := sampleWorkflow().ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,13 +39,13 @@ func TestDigestIsSelfDescribing(t *testing.T) {
 
 func TestDigestExcludesDigestField(t *testing.T) {
 	a := sampleWorkflow()
-	da, err := a.ComputeDigest(nil)
+	da, err := a.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := sampleWorkflow()
 	b.Digest = digestScheme + strings.Repeat("f", sha256.Size*2) // pre-set Digest must not affect the hash
-	db, err := b.ComputeDigest(nil)
+	db, err := b.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,11 +59,11 @@ func TestDigestIndependentOfMapOrder(t *testing.T) {
 	a.Containers = map[string]Container{"z": {Image: "oci://z@sha256:1"}, "a": {Image: "oci://a@sha256:2"}}
 	b := sampleWorkflow()
 	b.Containers = map[string]Container{"a": {Image: "oci://a@sha256:2"}, "z": {Image: "oci://z@sha256:1"}}
-	da, err := a.ComputeDigest(nil)
+	da, err := a.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := b.ComputeDigest(nil)
+	db, err := b.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,13 +76,13 @@ func TestDigestFoldsEnvDeclaration(t *testing.T) {
 	// The top-level env: NAMES are part of the definition: changing the declared
 	// allowlist changes the digest (so resume hard-errors on a changed declaration),
 	// while an absent env: leaves the digest byte-identical (omitempty backwards-compat).
-	base, err := sampleWorkflow().ComputeDigest(nil)
+	base, err := sampleWorkflow().ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	withEnv := sampleWorkflow()
 	withEnv.Env = []string{"OPENAI_API_KEY"}
-	dEnv, err := withEnv.ComputeDigest(nil)
+	dEnv, err := withEnv.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestDigestFoldsEnvDeclaration(t *testing.T) {
 	// A nil/empty env: must NOT change the digest vs. pre-env workflows.
 	empty := sampleWorkflow()
 	empty.Env = nil
-	dEmpty, err := empty.ComputeDigest(nil)
+	dEmpty, err := empty.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestDigestFoldsEnvDeclaration(t *testing.T) {
 	// A different declared name yields a different digest.
 	other := sampleWorkflow()
 	other.Env = []string{"LITELLM_API_KEY"}
-	dOther, err := other.ComputeDigest(nil)
+	dOther, err := other.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestDigestFoldsContinues(t *testing.T) {
 		&AgentStep{ID: "t1", Uses: "awf/llm"},
 		&AgentStep{ID: "t2", Uses: "awf/llm", Continues: "t1"},
 	)
-	dCont, err := withCont.ComputeDigest(nil)
+	dCont, err := withCont.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestDigestFoldsContinues(t *testing.T) {
 		&AgentStep{ID: "t1", Uses: "awf/llm"},
 		&AgentStep{ID: "t2", Uses: "awf/llm"},
 	)
-	dNo, err := noCont.ComputeDigest(nil)
+	dNo, err := noCont.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestDigestFoldsWhere(t *testing.T) {
 	withWhere.Graph = append(withWhere.Graph,
 		&SignalStep{ID: "s1", Await: "oob-hit", Where: "candidate_id == 1"},
 	)
-	dWhere, err := withWhere.ComputeDigest(nil)
+	dWhere, err := withWhere.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestDigestFoldsWhere(t *testing.T) {
 	noWhere.Graph = append(noWhere.Graph,
 		&SignalStep{ID: "s1", Await: "oob-hit"},
 	)
-	dNo, err := noWhere.ComputeDigest(nil)
+	dNo, err := noWhere.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestDigestFoldsAgents(t *testing.T) {
 	// A top-level agents: role is part of the definition: declaring it changes
 	// the digest (so resume hard-errors on a changed role), while a nil agents:
 	// leaves the digest byte-identical (omitempty backwards-compat).
-	base, err := sampleWorkflow().ComputeDigest(nil)
+	base, err := sampleWorkflow().ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestDigestFoldsAgents(t *testing.T) {
 	withRole.Agents = map[string]AgentRole{
 		"auditor": {Uses: "anthropic/claude-code", Model: "opus"},
 	}
-	dRole, err := withRole.ComputeDigest(nil)
+	dRole, err := withRole.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestDigestFoldsAgents(t *testing.T) {
 	// A nil agents: must NOT change the digest vs. pre-SP2 workflows.
 	empty := sampleWorkflow()
 	empty.Agents = nil
-	dEmpty, err := empty.ComputeDigest(nil)
+	dEmpty, err := empty.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestDigestFoldsAgents(t *testing.T) {
 	other.Agents = map[string]AgentRole{
 		"auditor": {Uses: "openai/codex", Model: "gpt-5"},
 	}
-	dOther, err := other.ComputeDigest(nil)
+	dOther, err := other.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestDigestFoldsReduce(t *testing.T) {
 			Body:   NodeList{&CodeStep{ID: "b", Run: "x"}},
 			Reduce: &Reduce{Quorum: &quorum, Over: "vulnerable"}},
 	)
-	dReduce, err := withReduce.ComputeDigest(nil)
+	dReduce, err := withReduce.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestDigestFoldsReduce(t *testing.T) {
 		&Map{Over: "input.items", As: "item", Container: "lab",
 			Body: NodeList{&CodeStep{ID: "b", Run: "x"}}},
 	)
-	dNo, err := noReduce.ComputeDigest(nil)
+	dNo, err := noReduce.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestDigestFoldsReduce(t *testing.T) {
 
 func TestDigestStableAcrossRoundTrip(t *testing.T) {
 	wf := sampleWorkflow()
-	d1, err := wf.ComputeDigest(nil)
+	d1, err := wf.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestDigestStableAcrossRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &wf2); err != nil {
 		t.Fatal(err)
 	}
-	d2, err := wf2.ComputeDigest(nil)
+	d2, err := wf2.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,11 +254,11 @@ func TestDigestStableAcrossRoundTrip(t *testing.T) {
 
 func TestDigestFoldsComposeHashes(t *testing.T) {
 	wf := sampleWorkflow()
-	d1, err := wf.ComputeDigest(map[string][]byte{"lab/compose.yml": []byte("services: {}")})
+	d1, err := wf.ComputeDigest(map[string][]byte{"lab/compose.yml": []byte("services: {}")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := wf.ComputeDigest(map[string][]byte{"lab/compose.yml": []byte("services: {x: {}}")})
+	d2, err := wf.ComputeDigest(map[string][]byte{"lab/compose.yml": []byte("services: {x: {}}")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestDigestFoldsComposeHashes(t *testing.T) {
 // Fail-closed golden: no skip branch. Fill `want` from the value this test prints on first failure.
 func TestGoldenDigest(t *testing.T) {
 	const want = "awf-d1:sha256:073cb3aa4d4a75434f2ef3c247c3efafcb02548d76818870902863bfad31d80e"
-	got, err := sampleWorkflow().ComputeDigest(nil)
+	got, err := sampleWorkflow().ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestGoldenDigest(t *testing.T) {
 
 func TestSetDigestPopulatesField(t *testing.T) {
 	wf := sampleWorkflow()
-	d, err := wf.SetDigest(nil)
+	d, err := wf.SetDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestSetDigestPopulatesField(t *testing.T) {
 		t.Fatalf("Digest field = %q, want %q", wf.Digest, d)
 	}
 	// Idempotence: SetDigest twice yields the same value (and Digest is excluded from its own hash).
-	d2, err := wf.SetDigest(nil)
+	d2, err := wf.SetDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,15 +303,128 @@ func TestDigestSensitiveToComposePath(t *testing.T) {
 	// in ComputeDigest (the path itself is hashed alongside the content's sha256).
 	wf := sampleWorkflow()
 	content := []byte("services: {}")
-	d1, err := wf.ComputeDigest(map[string][]byte{"a/compose.yml": content})
+	d1, err := wf.ComputeDigest(map[string][]byte{"a/compose.yml": content}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := wf.ComputeDigest(map[string][]byte{"b/compose.yml": content})
+	d2, err := wf.ComputeDigest(map[string][]byte{"b/compose.yml": content}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d1 == d2 {
 		t.Fatal("digest ignored compose file path")
+	}
+}
+
+func TestDigestFoldsAssets(t *testing.T) {
+	wf := sampleWorkflow()
+	wf.Assets = map[string]string{"schema": "schema.json"}
+	asset := digestTestAsset("schema", "schema.json", ".", []byte(`{"type":"object"}`))
+	d1, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"schema": asset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"schema": asset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 != d2 {
+		t.Fatalf("same workflow/assets changed digest: %s vs %s", d1, d2)
+	}
+
+	changedBytes := digestTestAsset("schema", "schema.json", ".", []byte(`{"type":"array"}`))
+	dBytes, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"schema": changedBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dBytes == d1 {
+		t.Fatal("digest ignored asset file bytes")
+	}
+
+	changedPath := digestTestAsset("schema", "schemas/input.json", ".", []byte(`{"type":"object"}`))
+	dPath, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"schema": changedPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dPath == d1 {
+		t.Fatal("digest ignored asset declared path")
+	}
+
+	changedManifestPath := digestTestAsset("schema", "schema.json", "renamed.json", []byte(`{"type":"object"}`))
+	dManifestPath, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"schema": changedManifestPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dManifestPath == d1 {
+		t.Fatal("digest ignored asset file manifest path")
+	}
+
+	changedID := digestTestAsset("other", "schema.json", ".", []byte(`{"type":"object"}`))
+	dID, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"other": changedID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dID == d1 {
+		t.Fatal("digest ignored asset id")
+	}
+}
+
+func TestDigestRejectsAssetMapKeyMismatch(t *testing.T) {
+	wf := sampleWorkflow()
+	wf.Assets = map[string]string{"schema": "schema.json"}
+	asset := digestTestAsset("other", "schema.json", ".", []byte(`{"type":"object"}`))
+	_, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"schema": asset})
+	if err == nil {
+		t.Fatal("expected digest error for asset map key/id mismatch")
+	}
+	if !strings.Contains(err.Error(), `asset "schema"`) || !strings.Contains(err.Error(), `id "other"`) {
+		t.Fatalf("error should mention map key and mismatched id: %v", err)
+	}
+}
+
+func digestTestAsset(id, declaredPath, manifestPath string, bytes []byte) LoadedAsset {
+	return LoadedAsset{
+		ID:           id,
+		DeclaredPath: declaredPath,
+		Files: []LoadedAssetFile{{
+			Path:   manifestPath,
+			Bytes:  append([]byte(nil), bytes...),
+			Size:   int64(len(bytes)),
+			SHA256: "will-be-recomputed",
+		}},
+	}
+}
+
+func TestDigestAssetDirectoryOrderingStable(t *testing.T) {
+	wf := sampleWorkflow()
+	wf.Assets = map[string]string{"fixtures": "fixtures"}
+	a := LoadedAsset{
+		ID:           "fixtures",
+		DeclaredPath: "fixtures",
+		IsDir:        true,
+		Files: []LoadedAssetFile{
+			{Path: "b.txt", Bytes: []byte("b"), Size: 1},
+			{Path: "a.txt", Bytes: []byte("a"), Size: 1},
+		},
+	}
+	b := LoadedAsset{
+		ID:           "fixtures",
+		DeclaredPath: "fixtures",
+		IsDir:        true,
+		Files: []LoadedAssetFile{
+			{Path: "a.txt", Bytes: []byte("a"), Size: 1},
+			{Path: "b.txt", Bytes: []byte("b"), Size: 1},
+		},
+	}
+	da, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"fixtures": a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"fixtures": b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if da != db {
+		t.Fatalf("digest depends on loaded directory order: %s vs %s", da, db)
 	}
 }

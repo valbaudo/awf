@@ -177,7 +177,7 @@ func TestCLIResumeHappyPathSkipsCommittedSteps(t *testing.T) {
 	if diags := ir.Validate(ld); ir.HasErrors(diags) {
 		t.Fatalf("fixture invalid: %v", diags)
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
 	if err != nil {
 		t.Fatalf("ComputeDigest: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestCLIResumeDigestMismatchHardError(t *testing.T) {
 	runID := "test-resume-digest-mismatch"
 
 	ld, _ := loader.Load("testdata/phase2/seq.yaml")
-	digest, _ := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	digest, _ := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
 	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	if len(ld.Workflow.Env) == 0 {
 		t.Fatal("fixture lost its env: declaration on load")
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
 	if err != nil {
 		t.Fatalf("ComputeDigest: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestCLIResume_PopulatesResolverFromDefaultAllowlist(t *testing.T) {
 	if diags := ir.Validate(ld); ir.HasErrors(diags) {
 		t.Fatalf("fixture invalid: %v", diags)
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
 	if err != nil {
 		t.Fatalf("ComputeDigest: %v", err)
 	}
@@ -699,7 +699,7 @@ func buildInFlightLogForWF(t *testing.T, wfPath, runID string, runtimes []engine
 	if diags := ir.Validate(ld); ir.HasErrors(diags) {
 		t.Fatalf("fixture invalid: %v", diags)
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles)
+	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
 	if err != nil {
 		t.Fatalf("ComputeDigest: %v", err)
 	}

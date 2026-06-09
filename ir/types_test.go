@@ -6,6 +6,33 @@ import (
 	"time"
 )
 
+func TestWorkflowAssetsJSONRoundTrip(t *testing.T) {
+	raw := []byte(`{"workflow":"asset-demo","version":1,"assets":{"schema":"schemas/in.json"},"containers":{},"graph":[]}`)
+	var wf Workflow
+	if err := json.Unmarshal(raw, &wf); err != nil {
+		t.Fatal(err)
+	}
+	if got := wf.Assets["schema"]; got != "schemas/in.json" {
+		t.Fatalf("Assets[schema] = %q, want schemas/in.json", got)
+	}
+	out, err := json.Marshal(&wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(out) || !containsJSONField(out, "assets") {
+		t.Fatalf("marshaled workflow missing assets field: %s", out)
+	}
+}
+
+func containsJSONField(b []byte, name string) bool {
+	var obj map[string]any
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return false
+	}
+	_, ok := obj[name]
+	return ok
+}
+
 func TestDurationRoundTrip(t *testing.T) {
 	// Integer ns marshal: bare integer, no quotes.
 	d := Duration(5 * time.Second)

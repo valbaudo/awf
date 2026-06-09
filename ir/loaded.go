@@ -19,4 +19,21 @@ type LoadedDefinition struct {
 	// (e.g. "lab/compose.yml") to the raw bytes the loader read. Forward-slashed regardless
 	// of OS so the digest input is portable.
 	ComposeFiles map[string][]byte
+
+	// Assets maps each top-level asset id to the run-start snapshot loaded from disk.
+	Assets map[string]LoadedAsset
+}
+
+type LoadedAssetFile struct {
+	Path   string `json:"path"`
+	Bytes  []byte `json:"bytes"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+type LoadedAsset struct {
+	ID           string            `json:"id"`
+	DeclaredPath string            `json:"declared_path"`
+	IsDir        bool              `json:"is_dir"`
+	Files        []LoadedAssetFile `json:"files"`
 }

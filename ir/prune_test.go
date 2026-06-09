@@ -145,7 +145,7 @@ func TestDigestFoldsPrune(t *testing.T) {
 			Body:  NodeList{&CodeStep{ID: "b", Run: "x"}},
 			Prune: &Prune{Score: "s", Keep: &PruneKeep{K: 2}}},
 	)
-	dPrune, err := withPrune.ComputeDigest(nil)
+	dPrune, err := withPrune.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestDigestFoldsPrune(t *testing.T) {
 		&Map{Over: "input.items", As: "item", Container: "lab",
 			Body: NodeList{&CodeStep{ID: "b", Run: "x"}}},
 	)
-	dNo, err := noPrune.ComputeDigest(nil)
+	dNo, err := noPrune.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestDigestFoldsPrune(t *testing.T) {
 			Body:  NodeList{&CodeStep{ID: "b", Run: "x"}},
 			Prune: &Prune{Score: "s", StopWhen: "{{ best.score >= 0.9 }}"}},
 	)
-	dStop, err := withStop.ComputeDigest(nil)
+	dStop, err := withStop.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestDigestFoldsPrune(t *testing.T) {
 			Body:  NodeList{&CodeStep{ID: "b", Run: "x"}},
 			Prune: &Prune{Score: "s", Keep: &PruneKeep{K: 3}}},
 	)
-	dK3, err := withK3.ComputeDigest(nil)
+	dK3, err := withK3.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

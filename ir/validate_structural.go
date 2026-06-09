@@ -90,6 +90,13 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 		}
 	}
 
+	// (d) Top-level assets use the same identifier charset and reserved-token
+	// restrictions as step ids because `asset.<id>` references share the static
+	// reference namespace shape with `step.<id>`.
+	for id := range wf.Assets {
+		checkAssetID(id, c)
+	}
+
 	// (d) Walk the graph: step-id uniqueness, container-ref resolution (missing OR unresolved),
 	// control-node shape, parallel distinct-container rule, expression-size limits, AWF1019.
 	seen := map[string]string{} // step id → first path where seen, for the duplicate diag
@@ -282,6 +289,18 @@ func checkStepID(id, path string, c *collector, seen map[string]string) {
 		return
 	}
 	seen[id] = path
+}
+
+func checkAssetID(id string, c *collector) {
+	path := "assets." + id
+	if !stepIDPattern.MatchString(id) {
+		c.errf(path, "AWF1020", fmt.Sprintf("%s: id=%q (must match %s)",
+			catalog["AWF1020"], id, stepIDPattern))
+	}
+	if reservedStepIDTokens[id] {
+		c.errf(path, "AWF1020", fmt.Sprintf("%s: id=%q collides with reserved control keyword",
+			catalog["AWF1020"], id))
+	}
 }
 
 func checkContainerRefInScope(name, path string, wf *Workflow, scoped map[string]bool, c *collector, required bool) {

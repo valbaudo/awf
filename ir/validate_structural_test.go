@@ -19,6 +19,19 @@ func TestStructuralStepIDUnique(t *testing.T) {
 	assertOneError(t, Validate(ld), "AWF1004")
 }
 
+func TestStructuralAssetIDUsesStepIDRules(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "asset-id", Version: 1,
+		Assets:     map[string]string{"": "empty.txt", "bad/id": "schema.json", "generate": "prompt.txt"},
+		Containers: map[string]Container{},
+		Graph:      NodeList{},
+	})
+	diags := Validate(ld)
+	assertErrorAt(t, diags, "AWF1020", "assets.")
+	assertErrorAt(t, diags, "AWF1020", "assets.bad/id")
+	assertErrorAt(t, diags, "AWF1020", "assets.generate")
+}
+
 func TestStructuralContainerBothImageAndCompose(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "both", Version: 1,

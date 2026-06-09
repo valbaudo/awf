@@ -113,3 +113,18 @@ graph:
 		t.Fatalf("Timeout = %d ns, want %d (24h)", int64(*sig.Timeout), want)
 	}
 }
+
+func TestDecodeDuplicateAssetsKeyRejected(t *testing.T) {
+	_, err := Decode([]byte(`
+workflow: duplicate-assets
+version: 1
+assets:
+  schema: schema-a.json
+  schema: schema-b.json
+containers: {}
+graph: []
+`))
+	if err == nil {
+		t.Fatal("expected duplicate assets key to be rejected")
+	}
+}

@@ -16,9 +16,10 @@ const digestScheme = "awf-d1:sha256:"
 
 // ComputeDigest returns the self-describing content digest of the workflow, folding in the sha256
 // of each referenced compose file (keyed by cleaned, workflow-relative path supplied by the
-// loader). Pure: does not modify w. The Digest field is excluded (`json:"-"`). composeFiles is
-// nil if none. See (*Workflow).SetDigest for the in-place variant.
-func (w *Workflow) ComputeDigest(composeFiles map[string][]byte) (string, error) {
+// loader) and each loaded asset file. Pure: does not modify w. The Digest field is excluded
+// (`json:"-"`). composeFiles/assets are nil if none. See (*Workflow).SetDigest for the in-place
+// variant.
+func (w *Workflow) ComputeDigest(composeFiles map[string][]byte, assets map[string]LoadedAsset) (string, error) {
 	raw, err := json.Marshal(w) // Node marshalers produce the key-presence shape; Digest is json:"-"
 	if err != nil {
 		return "", fmt.Errorf("marshal workflow: %w", err)
@@ -45,17 +46,52 @@ func (w *Workflow) ComputeDigest(composeFiles map[string][]byte) (string, error)
 		_, _ = fmt.Fprintf(h, "\x00%d:%s\x00", len(p), p)
 		h.Write(fh[:])
 	}
+	assetIDs := make([]string, 0, len(assets))
+	for id := range assets {
+		assetIDs = append(assetIDs, id)
+	}
+	sort.Strings(assetIDs)
+	for _, id := range assetIDs {
+		asset := assets[id]
+		if asset.ID != id {
+			return "", fmt.Errorf("asset %q loaded with id %q", id, asset.ID)
+		}
+		writeDigestFrame(h, "asset")
+		writeDigestFrame(h, asset.ID)
+		writeDigestFrame(h, asset.DeclaredPath)
+		if asset.IsDir {
+			writeDigestFrame(h, "dir")
+		} else {
+			writeDigestFrame(h, "file")
+		}
+		files := append([]LoadedAssetFile(nil), asset.Files...)
+		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+		for _, f := range files {
+			writeDigestFrame(h, "asset-file")
+			writeDigestFrame(h, f.Path)
+			fh := sha256.Sum256(f.Bytes)
+			h.Write(fh[:])
+		}
+	}
 	return digestScheme + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // SetDigest computes the workflow's content digest via ComputeDigest and stores it in w.Digest.
 // Returns the computed value for convenience. Convenient for run-start / loader callers that
 // want both the value and the field populated; ComputeDigest itself remains pure.
-func (w *Workflow) SetDigest(composeFiles map[string][]byte) (string, error) {
-	d, err := w.ComputeDigest(composeFiles)
+func (w *Workflow) SetDigest(composeFiles map[string][]byte, assets map[string]LoadedAsset) (string, error) {
+	d, err := w.ComputeDigest(composeFiles, assets)
 	if err != nil {
 		return "", err
 	}
 	w.Digest = d
 	return d, nil
+}
+
+func writeDigestFrame(h hashWriter, s string) {
+	_, _ = fmt.Fprintf(h, "\x00%d:%s\x00", len(s), s)
+}
+
+type hashWriter interface {
+	Write([]byte) (int, error)
 }
