@@ -89,7 +89,7 @@ func (ld *LoadedDefinition) ComputeDigest() (string, error) {
 	if root == nil || root.Workflow == nil {
 		return "", fmt.Errorf("loaded definition missing root workflow")
 	}
-	rootDigest, err := root.Workflow.ComputeDigest(root.ComposeFiles, root.Assets)
+	rootDigest, err := ld.computeModuleWorkflowDigest(root)
 	if err != nil {
 		return "", fmt.Errorf("compute root workflow digest: %w", err)
 	}
@@ -111,7 +111,7 @@ func (ld *LoadedDefinition) ComputeDigest() (string, error) {
 		if module == nil || module.Workflow == nil {
 			return "", fmt.Errorf("loaded module %q missing workflow", id)
 		}
-		moduleDigest, err := module.Workflow.ComputeDigest(module.ComposeFiles, module.Assets)
+		moduleDigest, err := ld.computeModuleWorkflowDigest(module)
 		if err != nil {
 			return "", fmt.Errorf("compute module %q workflow digest: %w", id, err)
 		}
@@ -132,6 +132,29 @@ func (ld *LoadedDefinition) ComputeDigest() (string, error) {
 	}
 
 	return digestScheme + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (ld *LoadedDefinition) computeModuleWorkflowDigest(module *LoadedModule) (string, error) {
+	wf := module.Workflow
+	if len(wf.Imports) == 0 {
+		return wf.ComputeDigest(module.ComposeFiles, module.Assets)
+	}
+	clone := *wf
+	clone.Imports = ld.normalizedImportsFor(module.ID, wf.Imports)
+	return (&clone).ComputeDigest(module.ComposeFiles, module.Assets)
+}
+
+func (ld *LoadedDefinition) normalizedImportsFor(moduleID string, imports map[string]string) map[string]string {
+	out := make(map[string]string, len(imports))
+	for id, declared := range imports {
+		out[id] = declared
+	}
+	for _, edge := range ld.ImportEdges {
+		if edge.ParentID == moduleID {
+			out[edge.ImportID] = edge.DeclaredPath
+		}
+	}
+	return out
 }
 
 func (ld *LoadedDefinition) hasImportedModules() bool {

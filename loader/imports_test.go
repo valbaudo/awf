@@ -149,6 +149,36 @@ func TestLoadSameFileImportedTwiceCreatesTwoLogicalModules(t *testing.T) {
 	})
 }
 
+func TestLoadedDefinitionDigestIgnoresRawImportPathSpelling(t *testing.T) {
+	loadWithImport := func(t *testing.T, rawImport string) *ir.LoadedDefinition {
+		t.Helper()
+		dir := t.TempDir()
+		mustMkdirAll(t, filepath.Join(dir, "modules"))
+		writeFile(t, filepath.Join(dir, "modules", "scan.awf.yaml"), "workflow: scan\nversion: 1\ncontainers: {}\ngraph: []\n")
+		rootPath := writeWorkflow(t, dir, "workflow: root\nversion: 1\nimports:\n  scan: "+rawImport+"\ncontainers: {}\ngraph: []\n")
+		ld, err := Load(rootPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ld
+	}
+
+	plain := loadWithImport(t, "modules/scan.awf.yaml")
+	withDot := loadWithImport(t, "./modules/scan.awf.yaml")
+
+	plainDigest, err := plain.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dotDigest, err := withDot.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainDigest != dotDigest {
+		t.Fatalf("loaded-definition digest depends on raw import spelling:\n plain = %s\n dot   = %s", plainDigest, dotDigest)
+	}
+}
+
 func TestLoadImportRejectsInvalidImportID(t *testing.T) {
 	for name, id := range map[string]string{
 		"bad_char":  "bad.id",
