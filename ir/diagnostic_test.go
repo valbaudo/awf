@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,9 @@ func TestCatalogCodesAreUnique(t *testing.T) {
 	}
 	// Sanity: every code is "AWFNNNN" (uppercase 'AWF' + 4 digits).
 	for code := range catalog {
+		if strings.HasPrefix(code, "AWF_IMPORT_") {
+			continue
+		}
 		if len(code) != 7 || code[:3] != "AWF" {
 			t.Errorf("code %q does not match AWFNNNN shape", code)
 		}
@@ -51,6 +55,25 @@ func TestCatalogCodesAreUnique(t *testing.T) {
 			if c < '0' || c > '9' {
 				t.Errorf("code %q has non-digit after AWF", code)
 			}
+		}
+	}
+}
+
+func TestCatalogIncludesLoaderDiagnosticCodes(t *testing.T) {
+	for _, code := range []string{
+		"AWF_IMPORT_CYCLE",
+		"AWF_IMPORT_DECODE",
+		"AWF_IMPORT_DEPTH",
+		"AWF_IMPORT_ID_INVALID",
+		"AWF_IMPORT_PATH_ABSOLUTE",
+		"AWF_IMPORT_PATH_BACKSLASH",
+		"AWF_IMPORT_PATH_ESCAPE",
+		"AWF_IMPORT_PATH_INVALID",
+		"AWF_IMPORT_READ",
+		"AWF_IMPORT_SYMLINK",
+	} {
+		if _, ok := catalog[code]; !ok {
+			t.Errorf("catalog missing loader diagnostic code %s", code)
 		}
 	}
 }

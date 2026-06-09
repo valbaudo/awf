@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -704,9 +705,134 @@ func validateCalls(ld *LoadedDefinition, mod validationModule, c *collector) {
 			c.errf(nodePath, "AWF1040", catalog["AWF1040"]+": empty call target")
 		} else if _, ok := targets[call.Call]; !ok {
 			c.errf(nodePath, "AWF1040", fmt.Sprintf("%s: %q", catalog["AWF1040"], call.Call))
+		} else if child, ok := callTargetModule(ld, mod.ModuleID, call.Call); ok && child != nil && child.Workflow != nil {
+			validateCallInputContract(c, nodePath, call.Input, child.Workflow.Input)
 		}
 		validateTemplateValueRefs(c, "AWF1041", nodePath+".input", call.Input, producers, maps)
 	})
+}
+
+func validateCallInputContract(c *collector, nodePath string, input map[string]TemplateValue, schema *JSONSchema) {
+	inputPath := nodePath + ".input"
+	if schema == nil {
+		if len(input) > 0 {
+			c.errf(inputPath, "AWF1041", catalog["AWF1041"]+": child workflow declares no input schema")
+		}
+		return
+	}
+	if schemaType(schema) != "" && schemaType(schema) != "object" {
+		c.errf(inputPath, "AWF1041", catalog["AWF1041"]+": child workflow input schema must describe an object")
+		return
+	}
+	required := schemaRequired(schema)
+	for _, name := range required {
+		if _, ok := input[name]; !ok {
+			c.errf(inputPath, "AWF1041", fmt.Sprintf("%s: missing required input %q", catalog["AWF1041"], name))
+		}
+	}
+	props, _ := (*schema)["properties"].(map[string]any)
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		prop, known := props[key]
+		if !known {
+			if ap, ok := (*schema)["additionalProperties"].(bool); ok && !ap {
+				c.errf(inputPath+"."+key, "AWF1041", fmt.Sprintf("%s: child workflow input schema does not declare %q", catalog["AWF1041"], key))
+			}
+			continue
+		}
+		value, ok := decodeStaticTemplateValue(input[key])
+		if !ok {
+			c.errf(inputPath+"."+key, "AWF1041", fmt.Sprintf("%s: invalid JSON value", catalog["AWF1041"]))
+			continue
+		}
+		if isTemplatedString(value) {
+			continue
+		}
+		if !staticValueMatchesSchemaType(value, prop) {
+			c.errf(inputPath+"."+key, "AWF1041", fmt.Sprintf("%s: input %q has incompatible static JSON type", catalog["AWF1041"], key))
+		}
+	}
+}
+
+func schemaType(schema *JSONSchema) string {
+	if schema == nil {
+		return ""
+	}
+	t, _ := (*schema)["type"].(string)
+	return t
+}
+
+func schemaRequired(schema *JSONSchema) []string {
+	if schema == nil {
+		return nil
+	}
+	raw, _ := (*schema)["required"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func decodeStaticTemplateValue(raw TemplateValue) (any, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func isTemplatedString(value any) bool {
+	s, ok := value.(string)
+	return ok && (strings.Contains(s, "{{") || strings.Contains(s, "}}"))
+}
+
+func staticValueMatchesSchemaType(value any, prop any) bool {
+	spec, ok := prop.(map[string]any)
+	if !ok {
+		return true
+	}
+	t, _ := spec["type"].(string)
+	if t == "" {
+		return true
+	}
+	switch t {
+	case "string":
+		_, ok := value.(string)
+		return ok
+	case "number":
+		_, ok := value.(json.Number)
+		return ok
+	case "integer":
+		n, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		_, err := n.Int64()
+		return err == nil
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "array":
+		_, ok := value.([]any)
+		return ok
+	case "object":
+		_, ok := value.(map[string]any)
+		return ok
+	case "null":
+		return value == nil
+	default:
+		return true
+	}
 }
 
 func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *collector) {

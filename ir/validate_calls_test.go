@@ -40,6 +40,86 @@ func TestValidateCallInputAgainstParentSchema(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF1041", "scan.input.query")
 }
 
+func TestValidateCallInputAgainstChildSchema(t *testing.T) {
+	root := validCallingRoot()
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.Input = objectSchema("query")
+	ld := loadedWithChild(root, child)
+
+	assertErrorAt(t, Validate(ld), "AWF1041", "scan.input")
+}
+
+func TestValidateCallInputRejectsUnknownChildInputKey(t *testing.T) {
+	root := validCallingRoot()
+	root.Graph = NodeList{
+		&CallStep{
+			ID:   "scan",
+			Call: "scan",
+			Input: map[string]TemplateValue{
+				"query": json.RawMessage(`"CVE-2026-0001"`),
+				"extra": json.RawMessage(`"surprise"`),
+			},
+		},
+	}
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.Input = objectSchema("query")
+	ld := loadedWithChild(root, child)
+
+	assertErrorAt(t, Validate(ld), "AWF1041", "scan.input.extra")
+}
+
+func TestValidateCallInputRejectsStaticTypeMismatch(t *testing.T) {
+	root := validCallingRoot()
+	root.Graph = NodeList{
+		&CallStep{
+			ID:   "scan",
+			Call: "scan",
+			Input: map[string]TemplateValue{
+				"query": json.RawMessage(`42`),
+			},
+		},
+	}
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.Input = objectSchema("query")
+	ld := loadedWithChild(root, child)
+
+	assertErrorAt(t, Validate(ld), "AWF1041", "scan.input.query")
+}
+
+func TestValidateCallInputRejectsNonEmptyInputWithoutChildSchema(t *testing.T) {
+	root := validCallingRoot()
+	root.Graph = NodeList{
+		&CallStep{
+			ID:   "scan",
+			Call: "scan",
+			Input: map[string]TemplateValue{
+				"query": json.RawMessage(`"CVE-2026-0001"`),
+			},
+		},
+	}
+	ld := loadedWithChild(root, childWorkflowWithTypedOutput("child", "finding"))
+
+	assertErrorAt(t, Validate(ld), "AWF1041", "scan.input")
+}
+
+func TestValidateCallInputAcceptsValidStaticInput(t *testing.T) {
+	root := validCallingRoot()
+	root.Graph = NodeList{
+		&CallStep{
+			ID:   "scan",
+			Call: "scan",
+			Input: map[string]TemplateValue{
+				"query": json.RawMessage(`"CVE-2026-0001"`),
+			},
+		},
+	}
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.Input = objectSchema("query")
+	ld := loadedWithChild(root, child)
+
+	assertNoErrorCode(t, Validate(ld), "AWF1041")
+}
+
 func TestValidateRejectsParentRefInsideChildExport(t *testing.T) {
 	child := childWorkflowWithTypedOutput("child", "finding")
 	child.Outputs = map[string]TemplateValue{
