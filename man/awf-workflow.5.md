@@ -31,6 +31,8 @@ A workflow document has the following top-level shape:
     version: 1
     input: <json-schema>          # optional; run parameters
     env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent steps
+    assets:                       # optional; local files/dirs folded into the definition
+      <id>: <relative-path>
     agents:
       <role>: { uses: <adapter-ref>, model, system_prompt, with } # optional; reusable roles (see AGENTS)
     containers:
@@ -62,6 +64,25 @@ A workflow document has the following top-level shape:
     only; it does not inject into `run:` steps. (Independently of `env:`, a `run:`
     step inherits the host environment on the native backend but not on docker —
     so do not rely on `env:` to reach a `run:` step.)
+
+**assets**
+:   Optional. A map of stable asset ids to relative local file or directory
+    paths. Asset ids use the same syntax as step ids. Values are resolved
+    relative to the workflow file's directory and must stay inside that directory
+    tree; symlinks are rejected. For example:
+
+        assets:
+          fixtures: ./fixtures
+          schema: ./schemas/result.schema.json
+
+    Asset bytes are part of the workflow definition digest. At run start the
+    loader reads each asset, bounded by implementation limits for per-file bytes,
+    total bytes, and total file count, and snapshots those bytes into the
+    content-addressed blob store. Directories are snapshotted as their contained
+    regular files in deterministic path order. On resume, AWF first verifies that
+    the current workflow document and current asset bytes still match the
+    recorded definition digest; accepted runs then stage assets from the recorded
+    run-start snapshot, not by re-reading the live filesystem.
 
 **agents**
 :   Optional. A map of reusable agent **roles** (see **AGENTS**). Each role is a
@@ -126,6 +147,18 @@ Compose is Docker's job, not AWF's. Networks, `depends_on`, `healthcheck`, and
 multi-service wiring are expressed in the Compose file using Docker's own
 machinery. AWF only validates digest-pinning, brings the project up run-scoped
 (`up --wait`), routes exec to a service, and tears the project down at run end.
+
+Backend selection is a CLI concern, but the workflow determines whether the
+default `--backend auto` can use the native backend. `auto` selects native unless
+Docker-only workflow features are present; static image-backed containers,
+Compose containers, and runtime `map.image` are Docker-only, so they select
+docker. When `auto` records native,
+**awf run** warns that the run cannot be resumed until native resume is supported
+and suggests **--backend docker** for resumable runs. An explicit
+**--backend native** keeps the existing native behavior and does not print that
+auto-selection warning. **awf resume** uses the concrete backend recorded in
+`run.started`; if that backend is native, resume fails with the existing native
+resume limitation and the same **--backend docker** guidance.
 
 Readiness is re-established on every (re)creation, including resume. The runtime
 guarantees a container is healthy before dispatching a step into it; it does not
@@ -242,8 +275,8 @@ inside. A node with more than one, or none, is invalid.
       timeout: <dur>                 # optional; on expiry -> retryable_failure
       output_schema: { ... }         # optional; step writes JSON to $AWF_OUTPUT
       output_files: [<path>, ...]    # optional; bare list -> capture-only
-      # output_files: { <name>: <path> }   # ...or a name->path map -> named, referenceable
-      input_files: { <dst>: step.<id>.files.<name> }   # optional; stage prior artifacts in
+      # output_files: { <name>: <path> }   # ...or a name->path/contract map -> named, referenceable
+      input_files: { <dst>: step.<id>.files.<name> }   # or asset.<id>; optional
       idempotency_key: <template>    # optional; for effects outside the container
       retry: { ... }                 # optional
 
@@ -268,8 +301,8 @@ format never hard-codes one harness's options.
       continues: <id>                # optional; id of a prior agent turn this turn continues
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
-      output_files: [<path>, ...]    # optional; or { <name>: <path> } -> named (see Artifact channel)
-      input_files: { <dst>: step.<id>.files.<name> }   # optional; requires a container
+      output_files: [<path>, ...]    # optional; or { <name>: <path|contract> } -> named
+      input_files: { <dst>: step.<id>.files.<name> }   # or asset.<id>; optional; requires a container
       timeout: <dur>                 # optional
       idempotency_key: <template>    # optional
       retry: { ... }                 # optional
@@ -334,7 +367,7 @@ seam between black boxes: an agent writes a report in one workspace, a code step
 verifies it in a clean one. Both fields appear on code (`run:`) and agent
 (`uses:`) steps.
 
-**output_files (two forms)**
+**output_files (three forms)**
 :   A **bare list** of paths — `output_files: [/out/a, /out/b]` — captures each
     path into the artifact store on commit, capture-only and unchanged from
     earlier versions; those artifacts are durable but not referenceable by a
@@ -345,6 +378,31 @@ verifies it in a clean one. Both fields appear on code (`run:`) and agent
     own destination path. The two forms are mutually exclusive per step (a step's
     `output_files` is either all bare or all named).
 
+    A named entry may also be a **contract object** instead of a string path:
+
+        output_files:
+          summary:
+            path: ./out/summary.json
+            format: json
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string }
+          rows:
+            path: ./out/rows.jsonl
+            format: jsonl
+            schema_ref: asset.row_schema
+
+    Contract objects require `path`. `format`, when present, is `json` or
+    `jsonl`. A contract with `schema` or `schema_ref` must declare `format`;
+    `schema` and `schema_ref` are mutually exclusive. `schema_ref` names a
+    top-level asset containing the schema bytes, using `asset.<id>`. An invalid
+    captured artifact is a mechanical failure at capture time, before the step
+    can produce `ok`. JSONL means UTF-8 text with exactly one valid JSON value
+    per physical line; blank or whitespace-only lines are invalid, CRLF is
+    accepted, and a final trailing newline is allowed.
+
     Both forms' **container paths are `{{ }}`-substituted** from the step's scope
     (exactly like `run:` and `idempotency_key`) before capture, so a path such as
     `/work/records/{{ input.cve_id }}.json` captures — and, for a named form, is
@@ -354,28 +412,31 @@ verifies it in a clean one. Both fields appear on code (`run:`) and agent
 
 **input_files**
 :   A map of *in-container destination path* -> *artifact reference* —
-    `input_files: { /work/report.md: step.recon.files.report }`. Before the step
-    runs, the runtime resolves each reference to its committed, content-addressed
-    blob and writes the bytes to the destination path inside this step's
-    container, creating parent directories as needed and overwriting any existing
-    file. Destination paths are `{{ }}`-substituted from the consumer step's
-    scope before staging, so a path such as
+    `input_files: { /work/report.md: step.recon.files.report }`. The reference
+    may also be `asset.<id>`, which stages the run-start snapshot of a top-level
+    asset. Before the step runs, the runtime resolves each reference to its
+    committed, content-addressed blob and writes the bytes to the destination
+    path inside this step's container, creating parent directories as needed and
+    overwriting any existing file. Destination paths are `{{ }}`-substituted
+    from the consumer step's scope before staging, so a path such as
     `/work/records/{{ input.cve_id }}.json` is valid after substitution. The
     right-hand side is a **static reference**, not a `{{ }}` template (like
     `container:`); the bytes themselves are opaque to the runtime.
 
-    The reference must name a **prior, in-scope** step that declared a *named*
-    `output_files` artifact of that name, exactly as a `step.<id>.<field>`
-    reference must name a declared output field. Scope reachability is mostly the
+    A `step.<id>.files.<name>` reference must name a **prior, in-scope** step
+    that declared a *named* `output_files` artifact of that name, exactly as a
+    `step.<id>.<field>` reference must name a declared output field. Scope
+    reachability is mostly the
     same, with one file-specific exception: after a `gate` passes, a later
     `input_files` reference may point at a producer inside that gate, and the
     runtime resolves it to the accepted attempt's committed artifact. Scalar
     `step.<id>.<field>` references remain gate-scoped; this exception exists only
     for durable files. A producer inside a `map` body is still not referenceable
-    from outside unless the map has a `reduce:` product. Destination paths must be
-    **absolute and clean after substitution** — no `..` segment — and distinct
-    (overlapping parent/child destinations are undefined). A reference that fails
-    any of these — undeclared producer, undeclared artifact name, a templated
+    from outside unless the map has a `reduce:` product. An `asset.<id>` reference
+    must name a declared top-level asset. Destination paths must be **absolute
+    and clean after substitution** — no `..` segment — and distinct (overlapping
+    parent/child destinations are undefined). A reference that fails any of these
+    — undeclared producer, undeclared artifact name, undeclared asset, a templated
     right-hand side, or a non-absolute / `..`-containing destination — is rejected
     at validation (**AWF3007**).
 
@@ -573,6 +634,7 @@ not `break`: it ends the current iteration/branch, not a whole loop.
 ## map
 
     - map:
+        id: <id>                     # optional; named aggregate product
         over: <expr>                 # a typed array, size known only at runtime
         as: <name>                   # each element bound as {{ <name>.<...> }} and {{ <name>.index }}
         container: <name>            # per-item container/compose instance (one per element)
@@ -601,6 +663,11 @@ container instance (the distinct-container rule applied per element), up to
 instead of cancelling every sibling on the first one. Use `parallel` for a
 static, author-known set of distinct branches; use `map` for a runtime-sized set
 of identical ones.
+
+`id` names the map's aggregate product. Step ids and map aggregate ids share one
+namespace: duplicate step/map ids fail validation. Aggregate output ids must not
+duplicate sibling step ids where a downstream `step.<id>` reference would be
+ambiguous.
 
 `image` supplies the per-element container's image from the worklist instead of
 a static `containers:` declaration. Unlike a top-level image it MAY be a template
@@ -644,18 +711,18 @@ is known), **not** as a static-validation guarantee; an optional allowlist of
 permitted registries remains planned.
 
 A later step reads a `map`'s per-item results in aggregate with a `step.<id>`
-reference to a step inside the body, evaluated from outside the map: it lifts that
-step's typed output to an index-ordered array (see TEMPLATING AND TYPED OUTPUTS).
-That array is legal only as a second `map`'s `over:`, which gives the map→map
-chaining shown in EXAMPLE.
+reference to the map aggregate id, or to a step inside the body when the map has
+no reducer, evaluated from outside the map (see TEMPLATING AND TYPED OUTPUTS).
 
 `reduce:` collapses the N fanned-out branch results into ONE. The reduced output
-*replaces* the node's per-item array: a downstream `step.<bodyId>.<field>` then
-resolves to the reducer's typed output, and `step.<bodyId>.files.<name>` to its
-artifacts. The aggregate stays engine-internal — with `reduce:` it never escapes
-as an array, so the array-only-in-`over:` rule (AWF5004) is unaffected. Declare
-**exactly one** of `quorum:` or `run:` (**AWF1035**). `reduce:` is supported on
-`map` only (parallel does not accept it — see *parallel*).
+*replaces* the map's per-item array: a downstream `step.<map-id>.<field>` then
+resolves to the reducer's typed output, and `step.<map-id>.files.<name>` to the
+reducer's named artifacts. The aggregate stays engine-internal — with `reduce:`
+it never escapes as an array, so the array-only-in-`over:` rule (AWF5004) is
+unaffected. Existing body-step references inside the reducer remain valid so the
+reducer can read what the map body produced. Declare **exactly one** of `quorum:`
+or `run:` (**AWF1035**). `reduce:` is supported on `map` only (parallel does not
+accept it — see *parallel*).
 
 `quorum: k` (the debate / cohort case) succeeds iff at least `k` branches produced
 a true `over` field; the reduced output is `{passed, votes, agree}`. `quorum`
@@ -682,6 +749,24 @@ committed-branches-only — via the same content-addressed delivery the artifact
 channel uses (see *Artifact channel*). The reducer reads them and writes its
 declared `output_files` and `$AWF_OUTPUT`, which become the reduced node's
 artifacts and typed output.
+
+Example named aggregate with reducer artifacts:
+
+    steps:
+      - map:
+          id: version_universe
+          over: ${{ step.versions.items }}
+          as: version
+          do:
+            - id: collect
+              run: ./collect.sh
+              output_files:
+                files: ./out/files.jsonl
+          reduce:
+            id: merge
+            run: ./merge.sh
+            output_files:
+              files: ./out/files.jsonl
 
 `prune:` turns a result-blind fan-out into a result-aware *frontier search*. As
 items commit, the engine reads a typed `score` per item and cancels the losers
@@ -851,9 +936,17 @@ instance* — the same gate attempt, or the same map item — because from outsi
 there is no single attempt or item to resolve to; a cross-scope reference is
 rejected at validation. Read a gate's product through `{{ evaluate.<field> }}`.
 
-A `step.<id>` reference to a step inside a `map` body, evaluated from *outside*
-that map, reads the step's per-item outputs in aggregate. It lifts the typed
-output to an array, in item-index order:
+A `step.<map-id>` reference to a map aggregate, evaluated from *outside* that
+map, reads the map product. When the map has `reduce:`, `step.<map-id>.<field>`
+binds the reducer's typed output fields and `step.<map-id>.files.<name>` binds
+the reducer's named artifacts. Body-step references remain valid inside the
+reducer, so the reducer can read the branch outputs it is collapsing.
+
+When the map has no `reduce:`, the aggregate product may expose a compact array
+of the final body step's typed output. A legacy `step.<id>` reference to a step
+inside a `map` body, evaluated from outside that map, reads that step's per-item
+outputs in the same compact aggregate form. The runtime lifts the typed output to
+an array, in item-index order:
 
 - `step.<id>` resolves to the array of that step's whole typed outputs — one
   element per item, each element the full `output_schema` object.
@@ -870,8 +963,9 @@ accessor, so an output field literally named `index` cannot be read back).
 
 Because substitution renders only scalars, an aggregate array cannot fill a `{{ }}`
 slot in a shell host, a prompt, or a condition — that is rejected at validation
-(**AWF5004**). Its one legal use is another `map`'s `over:`, the array-native sink:
-map A produces N typed outputs, map B fans out over them. This is the map→map
+(**AWF5004**). A map without `reduce:` may expose the compact array of the final
+body step's typed output for another `map`'s `over:`, the array-native sink: map
+A produces N typed outputs, map B fans out over them. This is the map→map
 chaining primitive (see EXAMPLE).
 
 Aggregation in v1 is defined only for the single-map case: the producing step is

@@ -11,7 +11,7 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **validate** [**--format** _text_|_json_] _path_
 
-**awf** **run** [**--input** _json_] [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
+**awf** **run** [**--input** _json_] [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _auto_|_fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
 
 **awf** **resume** [**--state-dir** _dir_] _run-id_ _path_
 
@@ -92,12 +92,27 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 :   Base directory for the `runs/` journals and the shared `blobs/` store
     (default `./.awf`).
 
-**--backend** _fake_|_docker_|_native_
-:   Where steps execute (default _native_). _docker_ runs them in real
-    containers and Compose projects with full isolation; _native_ runs them as
-    host processes with no isolation; _fake_ is an in-memory backend for tests.
-    Compose-mode containers require _docker_. Only _docker_ and _fake_ runs are
-    resumable — a _native_ run cannot be resumed.
+**--backend** _auto_|_fake_|_docker_|_native_
+:   Where steps execute (default _auto_). _docker_ runs them in real containers
+    and Compose projects with full isolation; _native_ runs them as host
+    processes with no isolation; _fake_ is an in-memory backend for tests.
+    _auto_ selects _native_ unless the workflow uses Docker-only features such as
+    static image-backed containers, Compose-mode containers, or runtime map
+    images, in which case it selects _docker_. **awf run** records the selected
+    concrete backend in `run.started`;
+    **awf resume** uses that recorded backend and does not re-run auto-selection.
+    Only _docker_ and _fake_ runs are resumable — a _native_ run cannot be
+    resumed.
+
+    When _auto_ selects _native_, **awf run** prints:
+
+        awf run: backend auto selected native; this run cannot be resumed until native resume is supported. Use --backend docker for resumable runs.
+
+    A simple auto run therefore records _native_; because native resume is not
+    supported, **awf resume** rejects that run with the existing native-backend
+    limitation and the same **--backend docker** guidance. An explicit
+    **--backend native** keeps the existing behavior and does not print the
+    auto-selection warning.
 
 **--agent-env** _csv_
 :   Comma-separated allowlist of environment-variable *names* forwarded into
@@ -119,8 +134,10 @@ every resolved agent-runtime version still matches — any drift is a hard error
 never silently adapted. It recreates containers from their recipe and continues
 in a new epoch. Committed steps are replayed from the journal (their recorded
 outputs reused, not recomputed); only the uncommitted frontier re-executes. The
-backend is read back from the journal, so no **--backend** flag is given. Runs
-made with the _native_ backend are not resumable.
+backend is read back from the journal, so no **--backend** flag is given and
+_auto_ is not re-evaluated on resume. Runs made with the _native_ backend are
+not resumable; **resume** rejects them with the native-backend limitation and
+guidance to use **--backend docker** for resumable runs.
 
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).
