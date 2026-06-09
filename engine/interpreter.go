@@ -34,6 +34,17 @@ import (
 //	fmt.Errorf("%w: %s at path %q", ErrNodeNotImplemented, kindName, path)
 var ErrNodeNotImplemented = errors.New("engine: node kind not implemented")
 
+// RunOptions carries optional runtime hooks for Run.
+type RunOptions struct {
+	// Tap, if non-nil, receives the live-tap output: one "[step.id] <chunk>" per
+	// IOChunk produced by each step. nil disables the tap entirely.
+	Tap io.Writer
+
+	// Broker is the signal broker for pause/cancel IPC. nil is valid — signal
+	// steps fail with a clear error when reached with a nil broker.
+	Broker *signal.Broker
+}
+
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
 // recursively; for each node, computes its runtime path; consults runstate to
 // skip committed nodes (the resume invariant — slice 2.6 exercises the
@@ -58,21 +69,6 @@ var ErrNodeNotImplemented = errors.New("engine: node kind not implemented")
 //     step failures via the empty
 //     Outcome (slice 2.5 DQ4).
 //
-// tap, if non-nil, receives the live-tap output: one "[step.id] <chunk>" per
-// IOChunk produced by each step. nil disables the tap entirely (per Phase 2
-// design — Phase 6 will replace this with the obs subsystem).
-//
-// broker is the signal broker for pause/cancel IPC (Phase 3 slice 3.5). nil is
-// valid — signal steps fail with a clear error when reached with a nil broker
-// (Task 7 wires runSignalStep). Task 6 adds the background pollControls goroutine.
-//
-// TODO(phase-5-or-6): when agent.Adapter (Phase 5) OR obs.Exporter (Phase 6)
-// adds the 10th parameter — whichever lands first — refactor to
-// engine.RunOptions struct. Slice 3.5 deliberately accepts the 9-param
-// signature (CLAUDE.md "simplest solution first") — an Options struct now
-// would be 1 caller's worth of speculative refactor; Phase 5 or 6 makes it
-// load-bearing.
-//
 // dispatcher's Handles map MUST be populated for every container the workflow
 // declares; engine.Run is NOT responsible for Backend.Create / Destroy (the
 // CLI owns lifecycle, slice 2.5 DQ3). An unknown-container reference inside
@@ -85,8 +81,7 @@ func Run(
 	log state.Log,
 	blobs state.Blobs,
 	clk clock.Clock,
-	tap io.Writer,
-	broker *signal.Broker, // Phase 3 slice 3.5; may be nil — signal steps fail with a clear error if reached
+	opts RunOptions,
 ) (Outcome, error) {
 	if def == nil || def.Workflow == nil {
 		return "", fmt.Errorf("engine.Run: nil workflow")
@@ -104,13 +99,13 @@ func Run(
 	// Background polling goroutine (slice 3.5). Skip if broker is nil
 	// (tests / no-signal workflows).
 	pollDone := make(chan struct{})
-	if broker != nil {
-		go pollControls(runCtx, broker, runstate, cancel, pollDone)
+	if opts.Broker != nil {
+		go pollControls(runCtx, opts.Broker, runstate, cancel, pollDone)
 	} else {
 		close(pollDone)
 	}
 
-	oc, err := interpNodes(runCtx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, tap, broker)
+	oc, err := interpNodes(runCtx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, opts.Tap, opts.Broker)
 
 	// SkipUnwind reaching Run = workflow-root unwind target (no enclosing
 	// loop/try/parallel/gate/map caught it). Per Phase 3 spec §5.6: "Cleanly

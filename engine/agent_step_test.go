@@ -85,7 +85,7 @@ graph:
 	blobs := state.NewInMemoryBlobs()
 	rs := engine.NewRunState("r1", "d", map[string]any{"topic": "frogs"})
 
-	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if err != nil {
 		t.Fatalf("engine.Run: %v", err)
 	}
@@ -155,7 +155,7 @@ graph:
 	blobs := state.NewInMemoryBlobs()
 	rs := engine.NewRunState("r1", "d", nil)
 
-	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if err != nil {
 		t.Fatalf("engine.Run: %v", err)
 	}
@@ -254,7 +254,7 @@ graph:
 	blobs := state.NewInMemoryBlobs()
 	rs := engine.NewRunState("r1", "d", nil)
 
-	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if err != nil {
 		t.Fatalf("engine.Run: %v", err)
 	}
@@ -373,7 +373,7 @@ graph:
 	blobs := state.NewInMemoryBlobs()
 	rs := engine.NewRunState("r1", "d", nil)
 
-	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if err != nil {
 		t.Fatalf("engine.Run: %v", err)
 	}
@@ -486,7 +486,7 @@ graph:
 	blobs := state.NewInMemoryBlobs()
 	rs := engine.NewRunState("r1", "d", nil)
 
-	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if err != nil {
 		t.Fatalf("engine.Run: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestRunAgentStep_ContainerlessInputFilesRejected(t *testing.T) {
 	blobs := state.NewInMemoryBlobs()
 	rs := engine.NewRunState("r1", "d", nil)
 
-	oc, err := engine.Run(context.Background(), def, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), def, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if oc != engine.OutcomePermanentFailure {
 		t.Fatalf("Outcome = %q, want %q (containerless input_files must be rejected)", oc, engine.OutcomePermanentFailure)
 	}
@@ -634,7 +634,7 @@ func TestRunAgentStep_StagesInputFiles(t *testing.T) {
 	}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -713,7 +713,7 @@ graph:
 	blobs := state.NewInMemoryBlobs()
 	rs := engine.NewRunState("r1", "d", map[string]any{"cve_id": "CVE-2026-0001"})
 
-	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -832,7 +832,7 @@ graph:
 	blobs := state.NewInMemoryBlobs()
 	rs := engine.NewRunState("r1", "d", nil)
 
-	oc, err := engine.Run(context.Background(), ld, rs, cap, log, blobs, clk, io.Discard, nil)
+	oc, err := engine.Run(context.Background(), ld, rs, cap, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if err != nil {
 		t.Fatalf("engine.Run: %v", err)
 	}

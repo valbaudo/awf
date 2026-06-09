@@ -78,7 +78,7 @@ func (r *Runner) runAndFinish(
 		RenderAgentEvent: newAgentEventRenderer(tap),
 		StepCostLine:     true,
 	}
-	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, stdout, broker)
+	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, engine.RunOptions{Tap: stdout, Broker: broker})
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished
 	// event is written; containers stay up; resume continues in a new epoch.

@@ -37,7 +37,7 @@ func TestObsProjectMatchesAddressingTreeRealLog(t *testing.T) {
 		}},
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
-	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil); err != nil {
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	events, err := log.Fold()

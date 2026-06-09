@@ -284,7 +284,7 @@ func TestRuntimeComposeFailureIsCatchable(t *testing.T) {
 	rs := NewRunState(testRunID, testDigest, nil)
 	disp := &LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"runner": runner}}
 
-	oc, err := Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, RunOptions{})
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("Run = (%q, %v), want (ok, nil)", oc, err)
 	}

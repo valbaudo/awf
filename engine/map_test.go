@@ -1445,7 +1445,7 @@ func TestRunInputFilesMapBodyConsumesTopLevelProducer(t *testing.T) {
 	}
 	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
-	oc, err := Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, lg, blobs, clk, nil, nil)
+	oc, err := Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, lg, blobs, clk, RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

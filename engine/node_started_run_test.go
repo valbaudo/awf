@@ -16,7 +16,7 @@ func TestNodeStartedEmittedOncePerExecutedStep(t *testing.T) {
 	wf := &ir.Workflow{Graph: ir.NodeList{&ir.CodeStep{ID: "s1", Container: "lab", Run: "./s.sh"}}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil); err != nil {
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if starts, completes := countNodeEvents(t, log); starts != 1 || completes != 1 {
@@ -33,7 +33,7 @@ func TestNodeStartedEmittedOncePerExecutedStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("engine.Fold: %v", err)
 	}
-	if _, err := engine.Run(context.Background(), def, rs2, disp, log, blobs, clk, nil, nil); err != nil {
+	if _, err := engine.Run(context.Background(), def, rs2, disp, log, blobs, clk, engine.RunOptions{}); err != nil {
 		t.Fatalf("resume Run: %v", err)
 	}
 	if starts, _ := countNodeEvents(t, log); starts != 1 {

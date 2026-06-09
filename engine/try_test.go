@@ -274,7 +274,7 @@ func TestRunTrySkipInDoPropagatesToNextEnclosingScope(t *testing.T) {
 	}
 	def := &ir.LoadedDefinition{Workflow: wf}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, RunOptions{})
 	if err != nil || oc != OutcomeOK {
 		t.Fatalf("Run with skip-in-try.do + sibling-after-try: (oc, err) = (%q, %v), want (ok, nil) — skip should propagate through try to workflow root, terminating siblings", oc, err)
 	}
@@ -368,7 +368,7 @@ func TestRunSkipAtRootEndsRunOK(t *testing.T) {
 	logger := state.NewInMemoryLog(&clock.Fake{})
 	blobs := state.NewInMemoryBlobs()
 
-	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, RunOptions{})
 	if err != nil {
 		t.Errorf("Run with root Skip: err = %v, want nil", err)
 	}
@@ -411,7 +411,7 @@ func TestSkipInsideLoopEndsIterationLoopContinues(t *testing.T) {
 	logger := state.NewInMemoryLog(&clock.Fake{})
 	blobs := state.NewInMemoryBlobs()
 
-	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
+	oc, err := Run(context.Background(), def, rs, disp, logger, blobs, &clock.Fake{}, RunOptions{})
 	if err != nil {
 		t.Errorf("Run with skip-in-loop: err = %v, want nil", err)
 	}

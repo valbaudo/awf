@@ -51,7 +51,7 @@ func TestRunEmptyGraphIsOK(t *testing.T) {
 	wf := &ir.Workflow{Graph: ir.NodeList{}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestRunSingleCodeStepHappyPath(t *testing.T) {
 	def := &ir.LoadedDefinition{Workflow: wf}
 
 	var tap bytes.Buffer
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, &tap, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{Tap: &tap})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRunSequentialCodeStepsResolveCrossStepRefs(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestRunCodeStepIdempotencyKeySubstituted(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil); err != nil {
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	got := fake.Calls[0].Env["AWF_IDEMPOTENCY_KEY"]
@@ -190,7 +190,7 @@ func TestRunCodeStepFailureAppendsNodeFailed(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if oc != engine.OutcomePermanentFailure {
 		t.Errorf("Outcome = %v, want permanent_failure", oc)
 	}
@@ -266,7 +266,7 @@ func TestRunInputFilesCrossContainerHandoff(t *testing.T) {
 	}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestRunCodeStepOutputFilesPathTemplated(t *testing.T) {
 	}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestRunNamedOutputFileRefWithTemplatedPath(t *testing.T) {
 	}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestRunInputFilesDestinationPathTemplated(t *testing.T) {
 	}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestRunCodeStepFailureHaltsSubsequentSteps(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	_, _ = engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	_, _ = engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if len(fake.Calls) != 1 {
 		t.Errorf("fake.Calls len = %d, want 1 (step2 must NOT dispatch after step1 fails)", len(fake.Calls))
 	}
@@ -500,7 +500,7 @@ func TestRunCodeStepTemplateErrorIsPermanent(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if oc != engine.OutcomePermanentFailure {
 		t.Errorf("Outcome = %v, want permanent_failure (template error is author bug, slice 2.5 DQ7)", oc)
 	}
@@ -540,7 +540,7 @@ func TestRunCodeStepLiveTapWritesStepIDPrefixedChunks(t *testing.T) {
 	def := &ir.LoadedDefinition{Workflow: wf}
 
 	var tap bytes.Buffer
-	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, &tap, nil); err != nil {
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{Tap: &tap}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	out := tap.String()
@@ -572,7 +572,7 @@ func TestRunSkipsAlreadyCompletedNodes(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -617,7 +617,7 @@ func TestRunCodeStepRetryableExhaustionAppendsNodeFailed(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if oc != engine.OutcomeRetryableFailure {
 		t.Errorf("Outcome = %v, want retryable_failure", oc)
 	}
@@ -662,7 +662,7 @@ func TestRunUnknownContainerIsInternalError(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if oc != "" {
 		t.Errorf("Outcome = %q, want empty (internal error, not a step outcome)", oc)
 	}
@@ -691,7 +691,7 @@ func TestRunIfThenBranchTaken(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil || oc != engine.OutcomeOK {
 		t.Fatalf("Run: %v / %v", oc, err)
 	}
@@ -744,7 +744,7 @@ func TestRunIfElseBranchTaken(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	_, _ = engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	_, _ = engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if len(fake.Calls) != 1 || fake.Calls[0].Run != "./step_in_else.sh" {
 		t.Errorf("dispatched %+v, want only ./step_in_else.sh", fake.Calls)
 	}
@@ -770,7 +770,7 @@ func TestRunIfNoElseFalseCondIsNoOp(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil || oc != engine.OutcomeOK {
 		t.Fatalf("Run: %v / %v", oc, err)
 	}
@@ -826,7 +826,7 @@ func TestRunIfResumeSkipsCondEvaluation(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil || oc != engine.OutcomeOK {
 		t.Fatalf("Run: %v / %v", oc, err)
 	}
@@ -862,7 +862,7 @@ func TestRunIfCondTypeMismatchIsPermanent(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if oc != engine.OutcomePermanentFailure {
 		t.Errorf("Outcome = %v, want permanent_failure", oc)
 	}
@@ -898,7 +898,7 @@ func TestRunLoopWithMaxItersOnly(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil || oc != engine.OutcomeOK {
 		t.Fatalf("Run: %v / %v", oc, err)
 	}
@@ -950,7 +950,7 @@ func TestRunLoopUntilExitsBeforeMaxIters(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if err != nil || oc != engine.OutcomeOK {
 		t.Fatalf("Run: %v / %v", oc, err)
 	}
@@ -997,7 +997,7 @@ func TestRunLoopUntilEvalErrorIsPermanent(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if oc != engine.OutcomePermanentFailure {
 		t.Errorf("Outcome = %v, want permanent_failure", oc)
 	}
@@ -1048,7 +1048,7 @@ func TestRunLoopBodyFailureDoesNotEmitLoopIter(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, _ := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, _ := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if oc != engine.OutcomePermanentFailure {
 		t.Errorf("Outcome = %v, want permanent_failure", oc)
 	}
@@ -1086,7 +1086,7 @@ func TestRunLoopResumeContinuesFromLastCompletedIter(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil); err != nil {
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(fake.Calls) != 2 {
@@ -1114,7 +1114,7 @@ func TestRunLoopBodyStepPathIncludesIterSuffix(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil); err != nil {
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	events, _ := log.Fold()
@@ -1156,7 +1156,7 @@ func TestRunLoopNeitherUntilNorMaxIsInternalError(t *testing.T) {
 	}}
 	def := &ir.LoadedDefinition{Workflow: wf}
 
-	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, nil, nil)
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
 	if oc != "" {
 		t.Errorf("Outcome = %q, want empty (internal error)", oc)
 	}
