@@ -91,6 +91,9 @@ func (ld *LoadedDefinition) WalkModules(fn func(*LoadedModule) error) error {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool {
+		if ids[i] == ids[j] {
+			return false
+		}
 		if ids[i] == "" {
 			return true
 		}

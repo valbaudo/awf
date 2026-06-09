@@ -60,7 +60,7 @@ func TestImportRelPathRequiresAWFSuffix(t *testing.T) {
 	}
 
 	_, err = importRelPath("child.yaml")
-	assertSafePathCode(t, err, "AWF_PATH_SUFFIX")
+	assertSafePathCode(t, err, "AWF_IMPORT_PATH_INVALID")
 }
 
 func assertSafePathCode(t *testing.T, err error, want string) {

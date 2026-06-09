@@ -3,6 +3,7 @@ package loader
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/valbaudo/awf/ir"
 )
+
+var errSymlinkComponent = errors.New("symlink path component")
 
 const MaxAssetFileBytes int64 = 64 << 20
 const MaxAssetTotalBytes int64 = 256 << 20
@@ -207,7 +210,7 @@ func rejectSymlinkComponents(root *os.Root, rel string) error {
 			return fmt.Errorf("stat path component %q: %w", p, err)
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("symlink not permitted at path component %q", p)
+			return fmt.Errorf("symlink not permitted at path component %q: %w", p, errSymlinkComponent)
 		}
 	}
 	return nil

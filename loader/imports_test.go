@@ -60,7 +60,15 @@ func TestLoadImportRejectsPathEscape(t *testing.T) {
 	rootPath := writeWorkflow(t, dir, "workflow: root\nversion: 1\nimports:\n  recon: ../recon.awf.yaml\ncontainers: {}\ngraph: []\n")
 
 	_, err := Load(rootPath)
-	assertLoadErrorCode(t, err, "AWF_PATH_ESCAPE")
+	assertLoadErrorCode(t, err, "AWF_IMPORT_PATH_ESCAPE")
+}
+
+func TestLoadImportMissingFileIsReadError(t *testing.T) {
+	dir := t.TempDir()
+	rootPath := writeWorkflow(t, dir, "workflow: root\nversion: 1\nimports:\n  recon: missing.awf.yaml\ncontainers: {}\ngraph: []\n")
+
+	_, err := Load(rootPath)
+	assertLoadErrorCode(t, err, "AWF_IMPORT_READ")
 }
 
 func TestLoadImportRejectsSymlinkComponent(t *testing.T) {

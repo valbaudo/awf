@@ -34,9 +34,16 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve workflow path %q: %w", workflowPath, err)
 	}
+	workflowDir := filepath.Dir(abs)
+	rootDir, err := os.OpenRoot(workflowDir)
+	if err != nil {
+		return nil, &LoadError{Code: "AWF_IMPORT_READ", Source: abs, Message: "open workflow directory", Err: err}
+	}
+	defer func() { _ = rootDir.Close() }() // read-only Root; Close error not meaningful
+
 	modules := map[string]*ir.LoadedModule{}
 	var edges []ir.LoadedImportEdge
-	root, err := loadModule(abs, "", nil, 0, modules, &edges)
+	root, err := loadModuleFromRoot(rootDir, filepath.Base(abs), abs, "", nil, 0, modules, &edges)
 	if err != nil {
 		return nil, err
 	}
@@ -50,8 +57,10 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 	}, nil
 }
 
-func loadModule(
-	absPath string,
+func loadModuleFromRoot(
+	root *os.Root,
+	workflowRel string,
+	abs string,
 	moduleID string,
 	stack []string,
 	depth int,
@@ -61,13 +70,9 @@ func loadModule(
 	if depth > maxImportDepth {
 		return nil, &LoadError{
 			Code:    "AWF_IMPORT_DEPTH",
-			Source:  absPath,
+			Source:  abs,
 			Message: fmt.Sprintf("import depth exceeds maximum %d", maxImportDepth),
 		}
-	}
-	abs, err := filepath.Abs(absPath)
-	if err != nil {
-		return nil, &LoadError{Code: "AWF_IMPORT_READ", Source: absPath, Message: "resolve workflow path", Err: err}
 	}
 	for _, seen := range stack {
 		if seen == abs {
@@ -79,14 +84,7 @@ func loadModule(
 		}
 	}
 
-	workflowDir := filepath.Dir(abs)
-	root, err := os.OpenRoot(workflowDir)
-	if err != nil {
-		return nil, &LoadError{Code: "AWF_IMPORT_READ", Source: abs, Message: "open workflow directory", Err: err}
-	}
-	defer func() { _ = root.Close() }() // read-only Root; Close error not meaningful
-
-	wfBytes, err := readRootRegularFile(root, filepath.Base(abs))
+	wfBytes, err := readRootRegularFile(root, workflowRel)
 	if err != nil {
 		return nil, &LoadError{Code: "AWF_IMPORT_READ", Source: abs, Path: "workflow", Message: "read workflow", Err: err}
 	}
