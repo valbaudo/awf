@@ -209,18 +209,11 @@ func runSignalStep(
 	// 7b. Append node.completed + fsync. Reached by both the fresh-receive
 	//     path (above) AND the half-commit-resume path (the if-branch sets
 	//     payloadRef + typedOutputs and falls through).
-	completedData, mErr := json.Marshal(NodeCompletedData{
+	if err := appendNodeCompleted(log, path, NodeCompletedData{
 		Outcome:    string(OutcomeOK),
 		OutputsRef: payloadRef,
-	})
-	if mErr != nil {
-		return "", fmt.Errorf("engine.runSignalStep: marshal node.completed at %q: %w", path, mErr)
-	}
-	if err := log.Append(state.Event{Type: EventNodeCompleted, Path: path, Data: completedData}); err != nil {
-		return "", fmt.Errorf("engine.runSignalStep: append node.completed at %q: %w", path, err)
-	}
-	if err := log.Sync(); err != nil {
-		return "", fmt.Errorf("engine.runSignalStep: sync after node.completed at %q: %w", path, err)
+	}); err != nil {
+		return "", fmt.Errorf("engine.runSignalStep: %w", err)
 	}
 
 	// 7c. Update RunState.Completed mirror.
