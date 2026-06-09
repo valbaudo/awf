@@ -205,11 +205,11 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	}
 	diags := ir.Validate(ld)
 	if ir.HasErrors(diags) {
-		digest, _ := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+		digest, _ := ld.ComputeDigest()
 		printTextResult(stderr, wfPath, digest, diags)
 		return ExitInvalid
 	}
-	currentDigest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	currentDigest, err := ld.ComputeDigest()
 	if err != nil {
 		fprintf(stderr, "awf resume: compute digest: %v\n", err)
 		return ExitUsage

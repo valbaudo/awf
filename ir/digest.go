@@ -76,6 +76,76 @@ func (w *Workflow) ComputeDigest(composeFiles map[string][]byte, assets map[stri
 	return digestScheme + hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// ComputeDigest returns the content digest of the fully loaded definition. For a root-only
+// definition it delegates exactly to Workflow.ComputeDigest to preserve the single-workflow digest
+// contract. When imports are present, it folds the root workflow digest, each imported module's
+// workflow digest, and the import edges into one deterministic loaded-definition digest.
+func (ld *LoadedDefinition) ComputeDigest() (string, error) {
+	if !ld.hasImportedModules() && len(ld.ImportEdges) == 0 {
+		return ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	}
+
+	root := ld.Root()
+	if root == nil || root.Workflow == nil {
+		return "", fmt.Errorf("loaded definition missing root workflow")
+	}
+	rootDigest, err := root.Workflow.ComputeDigest(root.ComposeFiles, root.Assets)
+	if err != nil {
+		return "", fmt.Errorf("compute root workflow digest: %w", err)
+	}
+
+	h := sha256.New()
+	writeDigestFrame(h, "loaded-definition-v1")
+	writeDigestFrame(h, "root")
+	writeDigestFrame(h, rootDigest)
+
+	moduleIDs := make([]string, 0, len(ld.Modules))
+	for id := range ld.Modules {
+		if id != "" {
+			moduleIDs = append(moduleIDs, id)
+		}
+	}
+	sort.Strings(moduleIDs)
+	for _, id := range moduleIDs {
+		module := ld.Modules[id]
+		if module == nil || module.Workflow == nil {
+			return "", fmt.Errorf("loaded module %q missing workflow", id)
+		}
+		moduleDigest, err := module.Workflow.ComputeDigest(module.ComposeFiles, module.Assets)
+		if err != nil {
+			return "", fmt.Errorf("compute module %q workflow digest: %w", id, err)
+		}
+		writeDigestFrame(h, "module")
+		writeDigestFrame(h, id)
+		writeDigestFrame(h, moduleDigest)
+	}
+
+	if err := ld.WalkImportEdges(func(edge LoadedImportEdge) error {
+		writeDigestFrame(h, "import-edge")
+		writeDigestFrame(h, edge.ParentID)
+		writeDigestFrame(h, edge.ImportID)
+		writeDigestFrame(h, edge.DeclaredPath)
+		writeDigestFrame(h, edge.ChildID)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+
+	return digestScheme + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (ld *LoadedDefinition) hasImportedModules() bool {
+	if ld == nil || len(ld.Modules) == 0 {
+		return false
+	}
+	for id := range ld.Modules {
+		if id != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // SetDigest computes the workflow's content digest via ComputeDigest and stores it in w.Digest.
 // Returns the computed value for convenience. Convenient for run-start / loader callers that
 // want both the value and the field populated; ComputeDigest itself remains pure.

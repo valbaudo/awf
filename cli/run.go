@@ -84,11 +84,11 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	diags := ir.Validate(ld)
 	if ir.HasErrors(diags) {
-		digest, _ := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+		digest, _ := ld.ComputeDigest()
 		printTextResult(stderr, path, digest, diags)
 		return ExitInvalid
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, err := ld.ComputeDigest()
 	if err != nil {
 		fprintf(stderr, "awf run: compute digest: %v\n", err)
 		return ExitUsage
