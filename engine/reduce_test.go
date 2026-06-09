@@ -231,8 +231,8 @@ func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
 		t.Fatalf("Put row1: %v", err)
 	}
 	branches := []reduceBranch{
-		{N: 0, Outputs: map[string]any{"k": "a"}, Files: map[string]string{"/out/row.csv": row0}},
-		{N: 1, Outputs: map[string]any{"k": "b"}, Files: map[string]string{"/out/row.csv": row1}},
+		{N: 0, Outputs: map[string]any{"k": "a"}, Files: map[string]string{"row": row0}},
+		{N: 1, Outputs: map[string]any{"k": "b"}, Files: map[string]string{"row": row1}},
 	}
 
 	// Program the reducer command to produce a typed output + one artifact.
@@ -266,8 +266,8 @@ func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
 	h := rig.ld.Handles[reduceContainer]
 	captured, cerr := rig.fake.CaptureFiles(context.Background(), h, []string{
 		reduceManifestPath,
-		"/work/.awf/branch-0/out/row.csv",
-		"/work/.awf/branch-1/out/row.csv",
+		"/work/.awf/branch-0/row",
+		"/work/.awf/branch-1/row",
 	})
 	if cerr != nil {
 		t.Fatalf("CaptureFiles: %v", cerr)

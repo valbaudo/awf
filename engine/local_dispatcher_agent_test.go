@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -187,6 +188,63 @@ func TestRunAgent_Thread_ThreadedAdapter_OK(t *testing.T) {
 	}
 	if dr.Outcome != engine.OutcomeOK {
 		t.Fatalf("Outcome = %q, want %q (Thread + Threaded adapter must pass guard)", dr.Outcome, engine.OutcomeOK)
+	}
+}
+
+func TestRunAgent_OutputFileContractInvalidArtifactRetryable(t *testing.T) {
+	ctx := context.Background()
+
+	cfake := container.NewFake()
+	h, err := cfake.Create(ctx, container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := cfake.WriteFile(h, "/out/report.json", []byte(`{"count":"not-an-integer"}`)); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	fk := agentfake.New("test/agent").Script(0, agentfake.Result{Output: map[string]any{"ok": true}})
+	reg := &agent.Registry{}
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	schema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"count"},
+		"properties": map[string]any{
+			"count": map[string]any{"type": "integer"},
+		},
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  cfake,
+		Handles:  map[string]container.Handle{"lab": h},
+		Resolver: reg,
+	}
+	intent := engine.NodeIntent{
+		Path: "agent_report",
+		Node: &ir.AgentStep{ID: "agent_report", Container: "lab", Uses: "test/agent"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:        "test/agent",
+			OutputFiles: []string{"/out/report.json"},
+			OutputFileContracts: map[string]engine.OutputFileContract{
+				"/out/report.json": {Format: "json", Schema: schema},
+			},
+		},
+	}
+
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned engine-level error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomeRetryableFailure {
+		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeRetryableFailure, dr.Err)
+	}
+	if dr.Err == nil || !strings.Contains(dr.Err.Error(), "artifact contract") || !strings.Contains(dr.Err.Error(), "schema validation") {
+		t.Fatalf("Err = %v, want artifact contract schema validation failure", dr.Err)
 	}
 }
 

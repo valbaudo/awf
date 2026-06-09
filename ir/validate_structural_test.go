@@ -628,6 +628,25 @@ func TestStructuralResourcesOnlyMapImageTargetNoConflict(t *testing.T) {
 	assertNoCode(t, Validate(ld), "AWF1025")
 }
 
+func TestStructuralMapImageTargetContainerRejectedOutsideOwningMapBody(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "p6a-escape", Version: 1,
+		Input: &JSONSchema{"type": "object", "properties": map[string]any{
+			"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+		}},
+		Containers: map[string]Container{"vl": {Resources: &Resources{CPU: "1"}}},
+		Graph: NodeList{
+			&Map{
+				Over: "{{ input.items }}", As: "v", Container: "vl",
+				Image: "{{ v.image }}", Concurrency: 1,
+				Body: NodeList{&CodeStep{ID: "probe", Container: "vl", Run: "true"}},
+			},
+			&CodeStep{ID: "after", Container: "vl", Run: "true"},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1039", "after")
+}
+
 func TestValidateSnapshotField(t *testing.T) {
 	img := "oci://example.com/x@sha256:" + strings.Repeat("0", 64)
 	cases := []struct {

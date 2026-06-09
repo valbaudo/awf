@@ -20,47 +20,47 @@ func validateReduce(ld *LoadedDefinition, c *collector) {
 		return
 	}
 	wf := ld.Workflow
-	walkReduce(wf.Graph, "", wf, nil, c)
+	walkReduce(wf.Graph, "", wf, nil, MapImageTargetOwners(wf), c)
 }
 
-func walkReduce(list NodeList, parent string, wf *Workflow, scoped map[string]bool, c *collector) {
+func walkReduce(list NodeList, parent string, wf *Workflow, scoped map[string]bool, mapImageTargetOwners map[string][]string, c *collector) {
 	for i, n := range list {
 		switch v := n.(type) {
 		case *CodeStep, *AgentStep, *SignalStep, *Skip:
 			// No child maps or reduce clauses.
 		case *If:
-			walkReduce(v.Then, ChildPath(parent, "if", i, "then"), wf, scoped, c)
-			walkReduce(v.Else, ChildPath(parent, "if", i, "else"), wf, scoped, c)
+			walkReduce(v.Then, ChildPath(parent, "if", i, "then"), wf, scoped, mapImageTargetOwners, c)
+			walkReduce(v.Else, ChildPath(parent, "if", i, "else"), wf, scoped, mapImageTargetOwners, c)
 		case *Loop:
-			walkReduce(v.Body, ChildPath(parent, "loop", i, "body"), wf, scoped, c)
+			walkReduce(v.Body, ChildPath(parent, "loop", i, "body"), wf, scoped, mapImageTargetOwners, c)
 		case *Try:
-			walkReduce(v.Do, ChildPath(parent, "try", i, "do"), wf, scoped, c)
-			walkReduce(v.Catch, ChildPath(parent, "try", i, "catch"), wf, scoped, c)
-			walkReduce(v.Finally, ChildPath(parent, "try", i, "finally"), wf, scoped, c)
+			walkReduce(v.Do, ChildPath(parent, "try", i, "do"), wf, scoped, mapImageTargetOwners, c)
+			walkReduce(v.Catch, ChildPath(parent, "try", i, "catch"), wf, scoped, mapImageTargetOwners, c)
+			walkReduce(v.Finally, ChildPath(parent, "try", i, "finally"), wf, scoped, mapImageTargetOwners, c)
 		case *Parallel:
 			path := PathFor(parent, "parallel", "", i)
-			walkReduce(v.Children, path, wf, scoped, c)
+			walkReduce(v.Children, path, wf, scoped, mapImageTargetOwners, c)
 		case *Gate:
-			walkReduce(v.Generate, ChildPath(parent, "gate", i, "generate"), wf, scoped, c)
-			walkReduce(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), wf, scoped, c)
+			walkReduce(v.Generate, ChildPath(parent, "gate", i, "generate"), wf, scoped, mapImageTargetOwners, c)
+			walkReduce(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), wf, scoped, mapImageTargetOwners, c)
 		case *Map:
 			path := PathFor(parent, "map", "", i)
-			validateMapReduce(v, path, wf, scoped, c)
-			walkReduce(v.Body, ChildPath(parent, "map", i, "body"), wf, scoped, c)
+			validateMapReduce(v, path, wf, scoped, mapImageTargetOwners, c)
+			walkReduce(v.Body, ChildPath(parent, "map", i, "body"), wf, scoped, mapImageTargetOwners, c)
 		case *Compose:
 			nextScoped := scoped
 			if v.As != "" {
 				nextScoped = cloneScoped(scoped)
 				nextScoped[v.As] = true
 			}
-			walkReduce(v.Body, ChildPath(parent, "compose", i, "body"), wf, nextScoped, c)
+			walkReduce(v.Body, ChildPath(parent, "compose", i, "body"), wf, nextScoped, mapImageTargetOwners, c)
 		default:
 			panic(fmt.Sprintf("ir.walkReduce: unexpected node type %T", n))
 		}
 	}
 }
 
-func validateMapReduce(m *Map, nodePath string, wf *Workflow, scoped map[string]bool, c *collector) {
+func validateMapReduce(m *Map, nodePath string, wf *Workflow, scoped map[string]bool, mapImageTargetOwners map[string][]string, c *collector) {
 	if m.Reduce == nil {
 		return
 	}
@@ -88,7 +88,7 @@ func validateMapReduce(m *Map, nodePath string, wf *Workflow, scoped map[string]
 			c.errf(rp, "AWF1035", "reduce: run: reducer requires container:")
 			return
 		}
-		checkContainerRefInScope(r.Container, rp, wf, scoped, c, true /* required */)
+		checkContainerRefInScope(r.Container, rp, wf, scoped, mapImageTargetOwners, c, true /* required */)
 	}
 }
 

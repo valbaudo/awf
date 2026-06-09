@@ -256,27 +256,9 @@ func checkReduceRefs(r *Reduce, mapPath string, c *collector, producers map[stri
 }
 
 func checkReduceTemplateRefs(src, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool) {
-	if src == "" {
-		return
-	}
-	slots, err := template.Slots(src)
-	if err != nil {
-		c.errf(path, "AWF3001", fmt.Sprintf("malformed template: %s", syntaxMessage(err)))
-		return
-	}
-	for _, sl := range slots {
-		inner := strings.TrimSpace(sl.Inner)
-		if inner == "" {
-			c.errf(path, "AWF3001", "empty {{ }} slot")
-			continue
-		}
-		ref, err := template.ParseRef(inner)
-		if err != nil {
-			c.errf(path, "AWF3001", fmt.Sprintf("invalid reference %q: %s", inner, syntaxMessage(err)))
-			continue
-		}
-		checkReduceRef(*ref, path, c, producers, maps, referenced, evaluateAllowed)
-	}
+	walkTemplateRefs(src, path, c, func(ref template.Ref) {
+		checkReduceRef(ref, path, c, producers, maps, referenced, evaluateAllowed)
+	})
 }
 
 // Reducer template fields are scanned to catch named map-product self-refs while
@@ -312,6 +294,12 @@ func checkReduceRef(ref template.Ref, path string, c *collector, producers map[s
 // to checkRef so the `evaluate.<field>` scope rule (AWF5001) can fire. overSinkMapPath is
 // propagated so the step case can allow an aggregate ref (and emit AWF5004 elsewhere).
 func checkTemplateRefs(src, path string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool, overSinkMapPath string) {
+	walkTemplateRefs(src, path, c, func(ref template.Ref) {
+		checkRef(ref, path, c, producers, maps, referenced, evaluateAllowed, overSinkMapPath)
+	})
+}
+
+func walkTemplateRefs(src, path string, c *collector, visit func(template.Ref)) {
 	if src == "" {
 		return
 	}
@@ -331,7 +319,7 @@ func checkTemplateRefs(src, path string, c *collector, producers map[string]prod
 			c.errf(path, "AWF3001", fmt.Sprintf("invalid reference %q: %s", inner, syntaxMessage(err)))
 			continue
 		}
-		checkRef(*ref, path, c, producers, maps, referenced, evaluateAllowed, overSinkMapPath)
+		visit(*ref)
 	}
 }
 

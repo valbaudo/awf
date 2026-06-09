@@ -94,6 +94,18 @@ func TestValidateOutputFilesDuplicateLiteralPathsRejected(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
 }
 
+func TestValidateOutputFilesNamedArtifactIDUsesIdentifierRules(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{Name: "../escape", Path: "/out/report.md"}}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
+}
+
 func TestValidateOutputFileContractSchemaRefAssetSchemaWellFormed(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
