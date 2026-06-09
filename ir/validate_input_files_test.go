@@ -63,6 +63,51 @@ func TestInputFilesTemplateRefReportsAWF3007(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
 }
 
+func TestInputFilesAssetRefAcceptedWhenDeclared(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Assets:     map[string]string{"fixture": "fixtures/input.json"},
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "hunt", Container: "c", Run: "true",
+				InputFiles: map[string]string{"/work/input.json": "asset.fixture"}},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF3007")
+}
+
+func TestInputFilesUnknownAssetReportsAWF3007(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Assets:     map[string]string{"fixture": "fixtures/input.json"},
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "hunt", Container: "c", Run: "true",
+				InputFiles: map[string]string{"/work/input.json": "asset.missing"}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
+}
+
+func TestInputFilesAssetRefAcceptedForFileAndDirectoryDeclarations(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Assets: map[string]string{
+			"fixture_file": "fixtures/input.json",
+			"fixtures":     "fixtures",
+		},
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "hunt", Container: "c", Run: "true",
+				InputFiles: map[string]string{
+					"/work/input.json": "asset.fixture_file",
+					"/work/fixtures":   "asset.fixtures",
+				}},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF3007")
+}
+
 func TestInputFilesNonAbsoluteDstReportsAWF3007(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -87,6 +132,34 @@ func TestInputFilesDotDotDstReportsAWF3007(t *testing.T) {
 		},
 	})
 	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
+}
+
+func TestInputFilesOverlappingDstReportsAWF3007(t *testing.T) {
+	for name, inputFiles := range map[string]map[string]string{
+		"parent child": {
+			"/work":        "asset.a",
+			"/work/report": "asset.b",
+		},
+		"root child": {
+			"/":     "asset.a",
+			"/work": "asset.b",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ld := makeLD(&Workflow{
+				ID: "x", Version: 1,
+				Assets: map[string]string{
+					"a": "a.txt",
+					"b": "b.txt",
+				},
+				Containers: awf5003Container(),
+				Graph: NodeList{
+					&CodeStep{ID: "hunt", Container: "c", Run: "true", InputFiles: inputFiles},
+				},
+			})
+			assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
+		})
+	}
 }
 
 // A named artifact produced inside a gate is consumable after the gate. At

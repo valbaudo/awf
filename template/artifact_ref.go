@@ -23,3 +23,20 @@ func ParseArtifactRef(raw string) (id, name string, ok bool) {
 	}
 	return g[1].Ident, g[3].Ident, true
 }
+
+// ParseAssetRef parses a static asset reference "asset.<id>" into id. Trims
+// surrounding whitespace (parity with ParseArtifactRef). ok=false for any other
+// shape.
+func ParseAssetRef(raw string) (id string, ok bool) {
+	r, err := ParseRef(strings.TrimSpace(raw))
+	if err != nil {
+		return "", false
+	}
+	g := r.Segments
+	if len(g) != 2 ||
+		g[0].IsIndex || g[0].Ident != "asset" ||
+		g[1].IsIndex {
+		return "", false
+	}
+	return g[1].Ident, true
+}

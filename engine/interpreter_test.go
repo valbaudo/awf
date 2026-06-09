@@ -3,6 +3,8 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -20,6 +22,11 @@ import (
 func refExpr(s string) *ir.Expr {
 	e := ir.Expr(s)
 	return &e
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // newRunHarness builds the in-mem fakes + a default RunState seeded with
@@ -284,6 +291,310 @@ func TestRunInputFilesCrossContainerHandoff(t *testing.T) {
 	}
 	if len(got) != 1 || string(got[0].Content) != string(sentinel) {
 		t.Errorf("staged into box = %+v, want one file with content %q", got, sentinel)
+	}
+}
+
+func TestRunInputFilesStagesFileAssetFromRunSnapshot(t *testing.T) {
+	t.Parallel()
+	fake, h, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./consume.sh", container.ExecResult{ExitCode: 0}, nil)
+	ref, err := blobs.Put([]byte("run-start bytes\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{
+		ID: "asset-file", Version: 1,
+		Assets:     map[string]string{"prompt": "prompt.txt"},
+		Containers: map[string]ir.Container{"lab": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "consume", Container: "lab", Run: "./consume.sh",
+				InputFiles: map[string]string{"/work/prompt.txt": "asset.prompt"},
+			},
+		},
+	}
+	asset := engine.RunStartedAsset{
+		DeclaredPath: "prompt.txt",
+		Files: []engine.RunStartedAssetFile{{
+			Path: ".", Ref: ref, Size: int64(len("run-start bytes\n")), SHA256: sha256Hex([]byte("run-start bytes\n")),
+		}},
+	}
+	oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{
+		Assets: map[string]engine.RunStartedAsset{"prompt": asset},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+	got, err := fake.CaptureFiles(context.Background(), h, []string{"/work/prompt.txt"})
+	if err != nil {
+		t.Fatalf("CaptureFiles: %v", err)
+	}
+	if string(got[0].Content) != "run-start bytes\n" {
+		t.Fatalf("staged bytes = %q", got[0].Content)
+	}
+}
+
+func TestRunInputFilesStagesDirectoryAssetFromRunSnapshot(t *testing.T) {
+	t.Parallel()
+	fake, h, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./consume.sh", container.ExecResult{ExitCode: 0}, nil)
+	refA, err := blobs.Put([]byte("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refB, err := blobs.Put([]byte("b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{
+		ID: "asset-dir", Version: 1,
+		Assets:     map[string]string{"fixtures": "fixtures"},
+		Containers: map[string]ir.Container{"lab": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "consume", Container: "lab", Run: "./consume.sh",
+				InputFiles: map[string]string{"/work/assets": "asset.fixtures"},
+			},
+		},
+	}
+	asset := engine.RunStartedAsset{
+		DeclaredPath: "fixtures",
+		IsDir:        true,
+		Files: []engine.RunStartedAssetFile{
+			{Path: "a.txt", Ref: refA, Size: 1, SHA256: sha256Hex([]byte("a"))},
+			{Path: "nested/b.txt", Ref: refB, Size: 1, SHA256: sha256Hex([]byte("b"))},
+		},
+	}
+	oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{
+		Assets: map[string]engine.RunStartedAsset{"fixtures": asset},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+	got, err := fake.CaptureFiles(context.Background(), h, []string{"/work/assets/a.txt", "/work/assets/nested/b.txt"})
+	if err != nil {
+		t.Fatalf("CaptureFiles: %v", err)
+	}
+	if string(got[0].Content) != "a" || string(got[1].Content) != "b" {
+		t.Fatalf("staged files = %+v", got)
+	}
+}
+
+func TestRunInputFilesStagesRecordedAssetNotLoadedAssetBytes(t *testing.T) {
+	t.Parallel()
+	fake, h, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./consume.sh", container.ExecResult{ExitCode: 0}, nil)
+	ref, err := blobs.Put([]byte("recorded"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{
+		ID: "asset-recorded", Version: 1,
+		Assets:     map[string]string{"input": "asset.txt"},
+		Containers: map[string]ir.Container{"lab": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "consume", Container: "lab", Run: "./consume.sh",
+				InputFiles: map[string]string{"/work/asset.txt": "asset.input"},
+			},
+		},
+	}
+	ld := &ir.LoadedDefinition{
+		Workflow: wf,
+		Assets: map[string]ir.LoadedAsset{"input": {
+			ID: "input", DeclaredPath: "asset.txt",
+			Files: []ir.LoadedAssetFile{{Path: ".", Bytes: []byte("current checkout")}},
+		}},
+	}
+	asset := engine.RunStartedAsset{
+		DeclaredPath: "asset.txt",
+		Files: []engine.RunStartedAssetFile{{
+			Path: ".", Ref: ref, Size: int64(len("recorded")), SHA256: sha256Hex([]byte("recorded")),
+		}},
+	}
+	oc, err := engine.Run(context.Background(), ld, rs, disp, log, blobs, clk, engine.RunOptions{
+		Assets: map[string]engine.RunStartedAsset{"input": asset},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+	got, err := fake.CaptureFiles(context.Background(), h, []string{"/work/asset.txt"})
+	if err != nil {
+		t.Fatalf("CaptureFiles: %v", err)
+	}
+	if string(got[0].Content) != "recorded" {
+		t.Fatalf("staged bytes = %q, want recorded snapshot bytes", got[0].Content)
+	}
+}
+
+func TestRunInputFilesMissingAssetBlobIsInternalBeforeExec(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./must-not-run.sh", container.ExecResult{ExitCode: 0}, nil)
+	wf := &ir.Workflow{
+		ID: "asset-missing", Version: 1,
+		Assets:     map[string]string{"input": "asset.txt"},
+		Containers: map[string]ir.Container{"lab": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "consume", Container: "lab", Run: "./must-not-run.sh",
+				InputFiles: map[string]string{"/work/asset.txt": "asset.input"},
+			},
+		},
+	}
+	missing := "awf-d1:sha256:" + strings.Repeat("d", 64)
+	asset := engine.RunStartedAsset{
+		DeclaredPath: "asset.txt",
+		Files:        []engine.RunStartedAssetFile{{Path: ".", Ref: missing, Size: 1, SHA256: strings.Repeat("0", 64)}},
+	}
+	oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{
+		Assets: map[string]engine.RunStartedAsset{"input": asset},
+	})
+	if err == nil || !strings.Contains(err.Error(), "input_files artifact fetch failed") {
+		t.Fatalf("Run err = %v, want artifact fetch failure", err)
+	}
+	if oc != "" {
+		t.Fatalf("Outcome = %q, want internal empty outcome", oc)
+	}
+	if len(fake.Calls) != 0 {
+		t.Fatalf("Exec calls = %+v, want none before missing asset blob failure", fake.Calls)
+	}
+	if _, ok := rs.Completed["consume"]; ok {
+		t.Fatal("missing asset blob committed node.completed")
+	}
+}
+
+func TestRunInputFilesMalformedAssetManifestIsInternalBeforeExec(t *testing.T) {
+	t.Parallel()
+	for name, asset := range map[string]engine.RunStartedAsset{
+		"missing from run.started": {},
+		"file wrong shape": {
+			DeclaredPath: "asset.txt",
+			Files:        []engine.RunStartedAssetFile{{Path: "not-dot"}},
+		},
+		"directory unsafe path": {
+			DeclaredPath: "fixtures",
+			IsDir:        true,
+			Files:        []engine.RunStartedAssetFile{{Path: "../escape"}},
+		},
+		"directory empty": {
+			DeclaredPath: "fixtures",
+			IsDir:        true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+			fake.ProgramExec("./must-not-run.sh", container.ExecResult{ExitCode: 0}, nil)
+			wf := &ir.Workflow{
+				ID: "asset-malformed", Version: 1,
+				Assets:     map[string]string{"input": "asset.txt"},
+				Containers: map[string]ir.Container{"lab": {}},
+				Graph: ir.NodeList{
+					&ir.CodeStep{
+						ID: "consume", Container: "lab", Run: "./must-not-run.sh",
+						InputFiles: map[string]string{"/work/asset.txt": "asset.input"},
+					},
+				},
+			}
+			assets := map[string]engine.RunStartedAsset{"input": asset}
+			if name == "missing from run.started" {
+				assets = nil
+			}
+			oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{Assets: assets})
+			if err == nil || !strings.Contains(err.Error(), "input_files artifact fetch failed") {
+				t.Fatalf("Run err = %v, want internal asset manifest failure", err)
+			}
+			if oc != "" {
+				t.Fatalf("Outcome = %q, want internal empty outcome", oc)
+			}
+			if len(fake.Calls) != 0 {
+				t.Fatalf("Exec calls = %+v, want none before malformed asset manifest failure", fake.Calls)
+			}
+			if _, ok := rs.Completed["consume"]; ok {
+				t.Fatal("malformed asset manifest committed node.completed")
+			}
+		})
+	}
+}
+
+func TestRunInputFilesAssetExpansionRejectsPathCollisions(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		inputFiles map[string]string
+		dirPath    string
+	}{
+		"duplicate": {
+			inputFiles: map[string]string{
+				"/work/assets":   "asset.fixtures",
+				"/work/assets/a": "asset.single",
+			},
+			dirPath: "a",
+		},
+		"ancestor-descendant": {
+			inputFiles: map[string]string{
+				"/work/assets": "asset.single",
+				"/work":        "asset.fixtures",
+			},
+			dirPath: "assets/a",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+			fake.ProgramExec("./must-not-run.sh", container.ExecResult{ExitCode: 0}, nil)
+			refSingle, err := blobs.Put([]byte("single"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refDir, err := blobs.Put([]byte("dir"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wf := &ir.Workflow{
+				ID: "asset-collision", Version: 1,
+				Assets:     map[string]string{"single": "single.txt", "fixtures": "fixtures"},
+				Containers: map[string]ir.Container{"lab": {}},
+				Graph: ir.NodeList{
+					&ir.CodeStep{
+						ID: "consume", Container: "lab", Run: "./must-not-run.sh",
+						InputFiles: tc.inputFiles,
+					},
+				},
+			}
+			assets := map[string]engine.RunStartedAsset{
+				"single": {
+					DeclaredPath: "single.txt",
+					Files: []engine.RunStartedAssetFile{{
+						Path: ".", Ref: refSingle, Size: int64(len("single")), SHA256: sha256Hex([]byte("single")),
+					}},
+				},
+				"fixtures": {
+					DeclaredPath: "fixtures",
+					IsDir:        true,
+					Files: []engine.RunStartedAssetFile{{
+						Path: tc.dirPath, Ref: refDir, Size: int64(len("dir")), SHA256: sha256Hex([]byte("dir")),
+					}},
+				},
+			}
+			oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{Assets: assets})
+			if err == nil || !strings.Contains(err.Error(), "input_files") || !strings.Contains(err.Error(), "collide") {
+				t.Fatalf("Run err = %v, want input_files collision", err)
+			}
+			if oc != engine.OutcomePermanentFailure {
+				t.Fatalf("Outcome = %q, want permanent_failure", oc)
+			}
+			if len(fake.Calls) != 0 {
+				t.Fatalf("Exec calls = %+v, want none before collision", fake.Calls)
+			}
+		})
 	}
 }
 

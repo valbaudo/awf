@@ -44,6 +44,9 @@
 //     (after the producer committed) proves resume folds+skips the producer and
 //     RE-STAGES the consumer from the committed CAS ref in the surviving Blobs
 //     store — content-addressed, resume-safe handoff.
+//   - Assets: workflow-declared file and directory assets are snapshotted into
+//     run.started and staged into input_files byte-for-byte from that recorded
+//     manifest before step execution (stage_run_started_snapshot_bytes).
 //   - P6a runtime-image map (Bucket 18): a map whose per-element image: is
 //     runtime-resolved captures each element's content digest into its map.item
 //     commit at first boot (captures_digest_on_first_boot); committed elements
@@ -135,6 +138,7 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("skip", func(t *testing.T) { testSkip(t, factory) })
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
 	t.Run("artifacts", func(t *testing.T) { testArtifacts(t, factory) })
+	t.Run("assets", func(t *testing.T) { testAssets(t, factory) })
 	t.Run("p6a", func(t *testing.T) { testP6a(t, factory) })
 	t.Run("aggregation", func(t *testing.T) { testAggregation(t, factory) })
 	t.Run("signal", func(t *testing.T) { testSignal(t, factory) })

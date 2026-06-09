@@ -158,6 +158,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 	}
 
 	var rs *engine.RunState
+	var recordedAssets map[string]engine.RunStartedAsset
 	if isResume {
 		events, ferr := h.log.Fold()
 		if ferr != nil {
@@ -174,6 +175,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 			}
 		}
 		rs = foldedRS
+		recordedAssets = foldedRS.Assets
 		if err := h.log.Reopen(); err != nil {
 			return "", err
 		}
@@ -207,6 +209,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 		if err != nil {
 			return "", err
 		}
+		recordedAssets = assetSnapshots
 		runStartedData, _ := json.Marshal(engine.RunStartedData{
 			RunID: h.runID, WorkflowDigest: digest, InputRef: inputRef,
 			Assets:   assetSnapshots,
@@ -256,7 +259,10 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 		Resolver:     h.agentRegistry, // empty Registry by default (newHarness init); newHarnessWithAgentRegistry populates it
 		// AgentEventTap: nil — conformance is silent; bucket tests assert log entries, not tap output
 	}
-	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, engine.RunOptions{Broker: h.broker})
+	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, engine.RunOptions{
+		Broker: h.broker,
+		Assets: recordedAssets,
+	})
 	return outcome, runErr
 }
 

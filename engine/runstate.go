@@ -189,6 +189,10 @@ type RunState struct {
 	RunID          string
 	WorkflowDigest string
 	Input          map[string]any // resolved from run.started.Data.input_ref via Blobs.Get
+	// Assets is the recorded run-start asset manifest. Fold restores it from
+	// run.started without dereferencing refs; engine.Run may also seed it from
+	// RunOptions for first-run execution before any resume fold exists.
+	Assets map[string]RunStartedAsset
 	// Epoch is the *runtime* resume-invocation counter — set to 1 on run.started, then
 	// overwritten by each run.resumed event's payload (see Fold). This is NOT the same
 	// counter as state.Event.Epoch (which is auto-stamped by state.Log on each Append

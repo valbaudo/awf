@@ -29,3 +29,37 @@ func TestParseArtifactRef(t *testing.T) {
 		})
 	}
 }
+
+func TestParseArtifactRefRejectsAssetRoot(t *testing.T) {
+	id, name, ok := ParseArtifactRef("asset.fixture")
+	if ok || id != "" || name != "" {
+		t.Fatalf("ParseArtifactRef(%q) = (%q, %q, %v); want empty id/name and ok=false",
+			"asset.fixture", id, name, ok)
+	}
+}
+
+func TestParseAssetRef(t *testing.T) {
+	cases := []struct {
+		name   string
+		raw    string
+		wantID string
+		wantOK bool
+	}{
+		{"canonical", "asset.fixture", "fixture", true},
+		{"whitespace trimmed", "  asset.fixture  ", "fixture", true},
+		{"wrong root", "step.fixture.files.report", "", false},
+		{"extra segment", "asset.fixture.extra", "", false},
+		{"index segment", "asset.0", "", false},
+		{"template envelope rejected", "{{ asset.fixture }}", "", false},
+		{"empty", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, ok := ParseAssetRef(tc.raw)
+			if ok != tc.wantOK || id != tc.wantID {
+				t.Errorf("ParseAssetRef(%q) = (%q, %v); want (%q, %v)",
+					tc.raw, id, ok, tc.wantID, tc.wantOK)
+			}
+		})
+	}
+}

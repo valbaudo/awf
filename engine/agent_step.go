@@ -153,7 +153,7 @@ func runAgentStep(
 	// is an author bug → permanent_failure; a Blobs.Get failure of a committed,
 	// content-addressed artifact is corruption/IO → internal halt ("" outcome),
 	// so resume re-runs the uncommitted step and re-fetches.
-	inputFiles, err := resolveInputFiles(as.InputFiles, scope, wf, blobs)
+	inputFiles, err := resolveInputFiles(as.InputFiles, scope, wf, blobs, runstate.Assets)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			return "", fmt.Errorf("engine.runAgentStep: stage input_files at %q: %w", path, err)
