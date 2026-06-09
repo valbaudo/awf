@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -11,8 +12,11 @@ import (
 // Never struct-marshaled (OutputFiles has a custom MarshalJSON) → no json tags,
 // not in ir/tags_test.go's irTypes().
 type OutputFile struct {
-	Name string
-	Path string
+	Name      string
+	Path      string
+	Format    string
+	Schema    *JSONSchema
+	SchemaRef string
 }
 
 // OutputFiles unmarshals from EITHER a bare list (["/out/a"] → unnamed) OR a
@@ -31,9 +35,9 @@ func (o *OutputFiles) UnmarshalJSON(b []byte) error {
 		*o = out
 		return nil
 	}
-	var m map[string]string
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(b, &m); err != nil {
-		return fmt.Errorf("output_files must be a list of paths or a name→path map: %w", err)
+		return fmt.Errorf("output_files must be a list of paths or a name→path/contract map: %w", err)
 	}
 	names := make([]string, 0, len(m))
 	for k := range m {
@@ -42,7 +46,24 @@ func (o *OutputFiles) UnmarshalJSON(b []byte) error {
 	sort.Strings(names)
 	out := make(OutputFiles, 0, len(m))
 	for _, n := range names {
-		out = append(out, OutputFile{Name: n, Path: m[n]})
+		var path string
+		if err := json.Unmarshal(m[n], &path); err == nil {
+			out = append(out, OutputFile{Name: n, Path: path})
+			continue
+		}
+		var wire outputFileContractWire
+		dec := json.NewDecoder(bytes.NewReader(m[n]))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&wire); err != nil {
+			return fmt.Errorf("output_files[%q] must be a path string or contract object: %w", n, err)
+		}
+		out = append(out, OutputFile{
+			Name:      n,
+			Path:      wire.Path,
+			Format:    wire.Format,
+			Schema:    wire.Schema,
+			SchemaRef: wire.SchemaRef,
+		})
 	}
 	*o = out
 	return nil
@@ -63,11 +84,27 @@ func (o OutputFiles) MarshalJSON() ([]byte, error) {
 		}
 		return json.Marshal(paths)
 	}
-	m := make(map[string]string, len(o))
+	m := make(map[string]any, len(o))
 	for _, e := range o {
-		m[e.Name] = e.Path
+		if e.Format == "" && e.Schema == nil && e.SchemaRef == "" {
+			m[e.Name] = e.Path
+			continue
+		}
+		m[e.Name] = outputFileContractWire{
+			Path:      e.Path,
+			Format:    e.Format,
+			Schema:    e.Schema,
+			SchemaRef: e.SchemaRef,
+		}
 	}
 	return json.Marshal(m)
+}
+
+type outputFileContractWire struct {
+	Path      string      `json:"path"`
+	Format    string      `json:"format,omitempty"`
+	Schema    *JSONSchema `json:"schema,omitempty"`
+	SchemaRef string      `json:"schema_ref,omitempty"`
 }
 
 // Paths returns the in-container paths to capture (Backend.CaptureFiles), in

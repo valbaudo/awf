@@ -161,8 +161,11 @@ func runAgentStep(
 		return failStep(log, path, OutcomePermanentFailure, err)
 	}
 
-	outputFiles, err := substituteOutputPaths(as.OutputFiles, scope)
+	outputFiles, outputFileContracts, err := resolveOutputFiles(as.OutputFiles, scope, runstate.Assets, blobs)
 	if err != nil {
+		if errors.Is(err, errArtifactFetch) {
+			return "", fmt.Errorf("engine.runAgentStep: resolve output_files contracts at %q: %w", path, err)
+		}
 		return failStep(log, path, OutcomePermanentFailure, fmt.Errorf("engine.runAgentStep: substitute output_files at %q: %w", path, err))
 	}
 
@@ -180,6 +183,7 @@ func runAgentStep(
 		Feedback:              feedback,   // slice 5.3
 		Thread:                thread,     // Task 4.5
 		InputFiles:            inputFiles, // SP1 artifact channel
+		OutputFileContracts:   outputFileContracts,
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)

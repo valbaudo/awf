@@ -21,6 +21,28 @@ func TestSchemaWellFormednessAWF2001(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF2001", "a.output_schema")
 }
 
+func TestSchemaExternalRefsDeniedAWF2001(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "external-ref", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{
+				ID: "a", Container: "c", Run: "true",
+				OutputSchema: &JSONSchema{"$ref": "file:///etc/passwd"},
+			},
+		},
+	})
+	found := false
+	for _, d := range Validate(ld) {
+		if d.Code == "AWF2001" && d.Path == "a.output_schema" && strings.Contains(d.Message, "external schema reference") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want AWF2001 external schema reference rejection, got %+v", Validate(ld))
+	}
+}
+
 func TestSchemaFloorOneOfWarnsAWF2002(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "floor", Version: 1,

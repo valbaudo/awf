@@ -656,6 +656,86 @@ func TestRunCodeStepOutputFilesPathTemplated(t *testing.T) {
 	}
 }
 
+func TestRunOutputFileContractSchemaRefUsesRunStartedAsset(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExecWithFiles("./produce.sh", container.ExecResult{ExitCode: 0}, nil,
+		map[string][]byte{"/out/summary.json": []byte(`{"status":42}`)})
+	schemaBytes := []byte(`{"type":"object","required":["status"],"properties":{"status":{"type":"string"}}}`)
+	ref, err := blobs.Put(schemaBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &ir.Workflow{
+		ID: "artifact-contract", Version: 1,
+		Assets:     map[string]string{"summary_schema": "schemas/summary.json"},
+		Containers: map[string]ir.Container{"lab": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "produce", Container: "lab", Run: "./produce.sh",
+				Retry: &ir.RetryPolicy{Attempts: 1},
+				OutputFiles: ir.OutputFiles{{
+					Name:      "summary",
+					Path:      "/out/summary.json",
+					Format:    "json",
+					SchemaRef: "asset.summary_schema",
+				}},
+			},
+		},
+	}
+	asset := engine.RunStartedAsset{
+		DeclaredPath: "schemas/summary.json",
+		Files: []engine.RunStartedAssetFile{{
+			Path: ".", Ref: ref, Size: int64(len(schemaBytes)), SHA256: sha256Hex(schemaBytes),
+		}},
+	}
+	oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{
+		Assets: map[string]engine.RunStartedAsset{"summary_schema": asset},
+	})
+	if err == nil || !strings.Contains(err.Error(), "artifact contract") || !strings.Contains(err.Error(), "schema validation") {
+		t.Fatalf("Run err = %v, want artifact contract schema validation failure", err)
+	}
+	if oc != engine.OutcomeRetryableFailure {
+		t.Fatalf("Outcome = %q, want retryable_failure", oc)
+	}
+	if _, ok := rs.Completed["produce"]; ok {
+		t.Fatal("invalid artifact contract committed node.completed")
+	}
+}
+
+func TestRunOutputFileBadContractDefinitionFailsBeforeExec(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./must-not-run.sh", container.ExecResult{ExitCode: 0}, nil)
+	wf := &ir.Workflow{
+		ID: "artifact-contract", Version: 1,
+		Containers: map[string]ir.Container{"lab": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "produce", Container: "lab", Run: "./must-not-run.sh",
+				OutputFiles: ir.OutputFiles{{
+					Name:   "summary",
+					Path:   "/out/summary.txt",
+					Format: "text",
+				}},
+			},
+		},
+	}
+	oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "format must be json or jsonl") {
+		t.Fatalf("Run err = %v, want bad contract definition failure", err)
+	}
+	if oc != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want permanent_failure", oc)
+	}
+	if len(fake.Calls) != 0 {
+		t.Fatalf("Exec calls = %+v, want none before bad contract definition", fake.Calls)
+	}
+	if _, ok := rs.Completed["produce"]; ok {
+		t.Fatal("bad artifact contract committed node.completed")
+	}
+}
+
 func TestRunNamedOutputFileRefWithTemplatedPath(t *testing.T) {
 	// A NAMED output_files artifact whose path is templated must still resolve when
 	// referenced by a later step's input_files: the capture key (commit.go) and the

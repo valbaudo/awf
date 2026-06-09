@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -261,13 +262,21 @@ func runCommandReduce(
 	if terr != nil {
 		return failStep(log, nodePath, OutcomePermanentFailure, fmt.Errorf("engine.runReduce: template reduce run %q: %w", r.Run, terr))
 	}
+	outputFiles, outputFileContracts, oerr := resolveOutputFiles(r.OutputFiles, NewScope(rs, wf, nodePath), rs.Assets, blobs)
+	if oerr != nil {
+		if errors.Is(oerr, errArtifactFetch) {
+			return "", fmt.Errorf("engine.runReduce: resolve output_files contracts at %q: %w", nodePath, oerr)
+		}
+		return failStep(log, nodePath, OutcomePermanentFailure, fmt.Errorf("engine.runReduce: substitute output_files at %q: %w", nodePath, oerr))
+	}
 	synth := &ir.CodeStep{Run: cmd, Container: r.Container, OutputSchema: r.OutputSchema, OutputFiles: r.OutputFiles}
 	resolved := ResolvedInputs{
-		Command:      cmd,
-		Env:          map[string]string{},
-		OutputFiles:  r.OutputFiles.Paths(),
-		OutputSchema: r.OutputSchema,
-		InputFiles:   inputs,
+		Command:             cmd,
+		Env:                 map[string]string{},
+		OutputFiles:         outputFiles,
+		OutputFileContracts: outputFileContracts,
+		OutputSchema:        r.OutputSchema,
+		InputFiles:          inputs,
 	}
 	intent := NodeIntent{Path: nodePath, Node: synth, ResolvedInputs: resolved}
 

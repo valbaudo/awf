@@ -67,6 +67,7 @@ func checkSchemaWellFormed(schema JSONSchema, path string, c *collector) {
 		return
 	}
 	cm := jsonschema.NewCompiler()
+	cm.UseLoader(denySchemaLoader{})
 	const url = "inline://schema"
 	if err := cm.AddResource(url, decoded); err != nil {
 		c.errf(path, "AWF2001", err.Error())
@@ -75,6 +76,12 @@ func checkSchemaWellFormed(schema JSONSchema, path string, c *collector) {
 	if _, err := cm.Compile(url); err != nil {
 		c.errf(path, "AWF2001", err.Error())
 	}
+}
+
+type denySchemaLoader struct{}
+
+func (denySchemaLoader) Load(url string) (any, error) {
+	return nil, fmt.Errorf("external schema reference %q denied", url)
 }
 
 // Forbidden composition keywords (the §7 floor REJECTS these in agent schemas).

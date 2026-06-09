@@ -56,6 +56,36 @@ func TestOutputFilesMapUnmarshal(t *testing.T) {
 	}
 }
 
+func TestOutputFilesContractMapUnmarshal(t *testing.T) {
+	var o OutputFiles
+	raw := []byte(`{
+		"summary":{"path":"/out/summary.json","format":"json","schema":{"type":"object"}},
+		"rows":{"path":"/out/rows.jsonl","format":"jsonl","schema_ref":"asset.row_schema"}
+	}`)
+	if err := json.Unmarshal(raw, &o); err != nil {
+		t.Fatalf("unmarshal contract map: %v", err)
+	}
+	if len(o) != 2 {
+		t.Fatalf("len = %d, want 2", len(o))
+	}
+	if o[0].Name != "rows" || o[0].Path != "/out/rows.jsonl" || o[0].Format != "jsonl" || o[0].SchemaRef != "asset.row_schema" {
+		t.Fatalf("rows entry = %+v", o[0])
+	}
+	if o[1].Name != "summary" || o[1].Path != "/out/summary.json" || o[1].Format != "json" || o[1].Schema == nil {
+		t.Fatalf("summary entry = %+v", o[1])
+	}
+	if got := o.Paths(); len(got) != 2 || got[0] != "/out/rows.jsonl" || got[1] != "/out/summary.json" {
+		t.Fatalf("Paths() = %v, want sorted contract paths", got)
+	}
+}
+
+func TestOutputFilesContractUnknownKeyRejected(t *testing.T) {
+	var o OutputFiles
+	if err := json.Unmarshal([]byte(`{"summary":{"path":"/out/summary.json","shape":"json"}}`), &o); err == nil {
+		t.Fatal("unmarshal contract object with unknown key succeeded")
+	}
+}
+
 // marshal is shape-preserving: bare list re-emits []string (digest-stable);
 // named map re-emits a name→path object.
 func TestOutputFilesMarshalShape(t *testing.T) {
@@ -76,6 +106,15 @@ func TestOutputFilesMarshalShape(t *testing.T) {
 	// json.Marshal of a map sorts keys; we can assert the exact bytes.
 	if string(b) != `{"poc":"/out/p.py","report":"/out/r.md"}` {
 		t.Fatalf("named marshal = %s, want a name→path object", b)
+	}
+
+	contract := OutputFiles{{Name: "summary", Path: "/out/summary.json", Format: "json", Schema: &JSONSchema{"type": "object"}}}
+	b, err = json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"summary":{"path":"/out/summary.json","format":"json","schema":{"type":"object"}}}` {
+		t.Fatalf("contract marshal = %s, want a contract object", b)
 	}
 }
 

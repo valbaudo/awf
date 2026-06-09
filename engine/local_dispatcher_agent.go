@@ -214,6 +214,14 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 				Err:         captureErr,
 			}, closedChunks(), nil
 		}
+		if err := validateCapturedArtifacts(captured, intent.ResolvedInputs.OutputFileContracts); err != nil {
+			return DispatchResult{
+				Outcome:     OutcomeRetryableFailure,
+				Outputs:     launchOutcome.Result.Output,
+				AgentEvents: bufferedEvents,
+				Err:         err,
+			}, closedChunks(), nil
+		}
 		files = append(files, captured...)
 	}
 

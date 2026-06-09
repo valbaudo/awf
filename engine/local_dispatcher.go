@@ -247,6 +247,14 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 			files = captured
 		}
 	}
+	if err := validateCapturedArtifacts(files, intent.ResolvedInputs.OutputFileContracts); err != nil {
+		return DispatchResult{
+			Outcome:  OutcomeRetryableFailure,
+			ExitCode: copyIntPtr(exec.ExitCode),
+			Stdout:   exec.Stdout,
+			Err:      err,
+		}, chunks, nil
+	}
 
 	// Validate AWFOutput against the schema (if any). If no schema is declared,
 	// slice 1.4's validator rejects step.<id>.<field> refs (AWF3xxx), so any

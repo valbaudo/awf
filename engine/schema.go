@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/valbaudo/awf/ir"
@@ -36,7 +38,7 @@ func ValidateOutputMap(output map[string]any, schema *ir.JSONSchema) error {
 	if err != nil {
 		return fmt.Errorf("engine.ValidateOutputMap: marshal output map: %w", err)
 	}
-	_, err = ValidateAgainstSchema(b, &normalised)
+	_, err = ValidateJSONAgainstSchema(b, &normalised)
 	return err
 }
 
@@ -59,14 +61,57 @@ func ValidateOutputMap(output map[string]any, schema *ir.JSONSchema) error {
 // stays on the YAML-decoded path so this isn't a concern; the docstring
 // preserves the warning for future callers.
 func ValidateAgainstSchema(raw []byte, schema *ir.JSONSchema) (map[string]any, error) {
+	decoded, err := ValidateJSONAgainstSchema(raw, schema)
+	if err != nil {
+		return nil, err
+	}
+	m, ok := decoded.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("ValidateAgainstSchema: decoded value is %T, want JSON object", decoded)
+	}
+	return m, nil
+}
+
+func ValidateJSONAgainstSchema(raw []byte, schema *ir.JSONSchema) (any, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("ValidateAgainstSchema: empty input")
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
+	decoded, err := decodeSingleJSONValue(raw)
+	if err != nil {
 		return nil, fmt.Errorf("ValidateAgainstSchema: decode: %w", err)
 	}
+	if schema == nil {
+		return decoded, nil
+	}
+	compiled, err := compileJSONSchema(schema)
+	if err != nil {
+		return nil, err
+	}
+	if err := compiled.Validate(decoded); err != nil {
+		return nil, fmt.Errorf("ValidateAgainstSchema: schema validation: %w", err)
+	}
+	return decoded, nil
+}
+
+func decodeSingleJSONValue(raw []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	var decoded any
+	if err := dec.Decode(&decoded); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("multiple JSON values")
+		}
+		return nil, err
+	}
+	return decoded, nil
+}
+
+func compileJSONSchema(schema *ir.JSONSchema) (*jsonschema.Schema, error) {
 	c := jsonschema.NewCompiler()
+	c.UseLoader(denySchemaLoader{})
 	if err := c.AddResource("engine://schema", map[string]any(*schema)); err != nil {
 		return nil, fmt.Errorf("ValidateAgainstSchema: schema compile: %w", err)
 	}
@@ -74,8 +119,11 @@ func ValidateAgainstSchema(raw []byte, schema *ir.JSONSchema) (map[string]any, e
 	if err != nil {
 		return nil, fmt.Errorf("ValidateAgainstSchema: schema compile: %w", err)
 	}
-	if err := compiled.Validate(decoded); err != nil {
-		return nil, fmt.Errorf("ValidateAgainstSchema: schema validation: %w", err)
-	}
-	return decoded, nil
+	return compiled, nil
+}
+
+type denySchemaLoader struct{}
+
+func (denySchemaLoader) Load(url string) (any, error) {
+	return nil, fmt.Errorf("external schema reference %q denied", url)
 }

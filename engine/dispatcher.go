@@ -58,6 +58,7 @@ type ResolvedInputs struct {
 	Command               string
 	Env                   map[string]string
 	OutputFiles           []string
+	OutputFileContracts   map[string]OutputFileContract
 	OutputSchema          *ir.JSONSchema
 	NonRetryableExitCodes []int
 	Timeout               time.Duration
@@ -95,6 +96,11 @@ type ResolvedInputs struct {
 	// committed log via stepRuntimePath, copied into AgentInvocation.Thread by runAgent.
 	// The dispatcher has no RunState access, so assembly happens interpreter-side.
 	Thread []agent.ThreadTurn
+}
+
+type OutputFileContract struct {
+	Format string
+	Schema *ir.JSONSchema
 }
 
 // DispatchResult is the pre-commit shape returned by Dispatcher.Run. The

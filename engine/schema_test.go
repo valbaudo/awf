@@ -59,3 +59,12 @@ func TestValidateAgainstSchemaRejectsEmptyInput(t *testing.T) {
 		t.Fatal("err = nil, want error for empty input")
 	}
 }
+
+func TestValidateAgainstSchemaRejectsExternalRefsWithoutLoading(t *testing.T) {
+	t.Parallel()
+	schema := &ir.JSONSchema{"$ref": "file:///etc/passwd"}
+	_, err := engine.ValidateAgainstSchema([]byte(`{}`), schema)
+	if err == nil || !strings.Contains(err.Error(), "external schema reference") {
+		t.Fatalf("err = %v, want external schema reference rejection", err)
+	}
+}

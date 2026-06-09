@@ -1,0 +1,130 @@
+package ir
+
+import "testing"
+
+func TestValidateOutputFileContractRequiresPath(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{Name: "summary", Format: "json"}}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
+}
+
+func TestValidateOutputFileContractFormatValues(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{Name: "summary", Path: "/out/summary.txt", Format: "text"}}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
+}
+
+func TestValidateOutputFileContractSchemaRequiresFormat(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{
+					Name:   "summary",
+					Path:   "/out/summary.json",
+					Schema: &JSONSchema{"type": "object"},
+				}}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
+}
+
+func TestValidateOutputFileContractSchemaAndSchemaRefMutuallyExclusive(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Assets:     map[string]string{"schema": "schema.json"},
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{
+					Name:      "summary",
+					Path:      "/out/summary.json",
+					Format:    "json",
+					Schema:    &JSONSchema{"type": "object"},
+					SchemaRef: "asset.schema",
+				}}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
+}
+
+func TestValidateOutputFileContractSchemaRefMustNameDeclaredAsset(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Assets:     map[string]string{"schema": "schema.json"},
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{
+					Name:      "summary",
+					Path:      "/out/summary.json",
+					Format:    "json",
+					SchemaRef: "asset.missing",
+				}}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
+}
+
+func TestValidateOutputFileContractSchemaRefAssetSchemaWellFormed(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Assets:     map[string]string{"schema": "schema.json"},
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{
+					Name:      "summary",
+					Path:      "/out/summary.json",
+					Format:    "json",
+					SchemaRef: "asset.schema",
+				}}},
+		},
+	})
+	ld.Assets = map[string]LoadedAsset{"schema": {
+		ID:           "schema",
+		DeclaredPath: "schema.json",
+		Files: []LoadedAssetFile{{
+			Path:  ".",
+			Bytes: []byte(`{"type":"object","properties":{"status":{"type":"string"}}}`),
+		}},
+	}}
+	assertNoErrorCode(t, Validate(ld), "AWF3009")
+}
+
+func TestValidateOutputFileContractSchemaRefAssetMustBeSingleFile(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Assets:     map[string]string{"schemas": "schemas"},
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{
+					Name:      "summary",
+					Path:      "/out/summary.json",
+					Format:    "json",
+					SchemaRef: "asset.schemas",
+				}}},
+		},
+	})
+	ld.Assets = map[string]LoadedAsset{"schemas": {
+		ID:           "schemas",
+		DeclaredPath: "schemas",
+		IsDir:        true,
+		Files:        []LoadedAssetFile{{Path: "a.json", Bytes: []byte(`{"type":"object"}`)}},
+	}}
+	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
+}

@@ -165,6 +165,7 @@ var catalog = map[string]string{
 	"AWF3006": "code step declares output_schema but its run script never writes $AWF_OUTPUT",
 	"AWF3007": "input_files reference is not a prior in-scope step output_files artifact or declared workflow asset",
 	"AWF3008": "runtime compose service does not exist in the generated compose project",
+	"AWF3009": "output_files contract metadata is invalid",
 	"AWF5001": "reference to `evaluate.<field>` outside a gate's generate or until",
 	"AWF5002": "map output aggregation across nested or loop-multiplied maps is not yet defined",
 	"AWF5003": "reference to a step inside a gate or map body from outside that scope — gate/map-internal steps resolve only within the same attempt/item (read a gate's product via evaluate.<field>)",

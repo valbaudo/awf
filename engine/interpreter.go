@@ -396,24 +396,86 @@ func isInputFileAncestor(parent, child string) bool {
 	return strings.HasPrefix(child, parent+"/")
 }
 
-// substituteOutputPaths template-substitutes each output_files path against the
-// step's scope, returning the capture paths in declaration order (nil for empty,
-// matching ir.OutputFiles.Paths). output_files paths are templated exactly like
-// run: and idempotency_key, so a path such as /work/records/{{ input.cve_id }}.json
+// resolveOutputFiles template-substitutes each output_files path against the
+// step's scope, returning capture paths plus any contract metadata keyed by the
+// substituted capture path. output_files paths are templated exactly like run:
+// and idempotency_key, so a path such as /work/records/{{ input.cve_id }}.json
 // captures — and commits, PATH-keyed in commit.go — under the substituted name.
-func substituteOutputPaths(ofs ir.OutputFiles, scope *Scope) ([]string, error) {
+func resolveOutputFiles(ofs ir.OutputFiles, scope *Scope, assets map[string]RunStartedAsset, blobs state.Blobs) ([]string, map[string]OutputFileContract, error) {
 	if len(ofs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	paths := make([]string, 0, len(ofs))
+	contracts := map[string]OutputFileContract{}
 	for _, of := range ofs {
 		p, err := template.Substitute(of.Path, scope)
 		if err != nil {
-			return nil, fmt.Errorf("output_files path %q: %w", of.Path, err)
+			return nil, nil, fmt.Errorf("output_files path %q: %w", of.Path, err)
 		}
 		paths = append(paths, p)
+		contract, hasContract, err := resolveOutputFileContract(of, assets, blobs)
+		if err != nil {
+			return nil, nil, err
+		}
+		if hasContract {
+			contracts[p] = contract
+		}
 	}
-	return paths, nil
+	if len(contracts) == 0 {
+		contracts = nil
+	}
+	return paths, contracts, nil
+}
+
+func resolveOutputFileContract(of ir.OutputFile, assets map[string]RunStartedAsset, blobs state.Blobs) (OutputFileContract, bool, error) {
+	if of.Format == "" && of.Schema == nil && of.SchemaRef == "" {
+		return OutputFileContract{}, false, nil
+	}
+	if of.Path == "" {
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: contract object requires path", of.Name)
+	}
+	if of.Format != "" && of.Format != "json" && of.Format != "jsonl" {
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: format must be json or jsonl", of.Name)
+	}
+	if (of.Schema != nil || of.SchemaRef != "") && of.Format == "" {
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema requires format json or jsonl", of.Name)
+	}
+	if of.Schema != nil && of.SchemaRef != "" {
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema and schema_ref are mutually exclusive", of.Name)
+	}
+	contract := OutputFileContract{Format: of.Format, Schema: of.Schema}
+	if of.Schema != nil {
+		if _, err := compileJSONSchema(of.Schema); err != nil {
+			return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema: %w", of.Name, err)
+		}
+	}
+	if of.SchemaRef == "" {
+		return contract, true, nil
+	}
+	id, ok := template.ParseAssetRef(of.SchemaRef)
+	if !ok {
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref must be asset.<id>", of.Name)
+	}
+	asset, ok := assets[id]
+	if !ok {
+		return OutputFileContract{}, false, fmt.Errorf("%w: output_files.%s: schema_ref asset %q was not recorded in run.started", errArtifactFetch, of.Name, id)
+	}
+	if asset.IsDir || len(asset.Files) != 1 || asset.Files[0].Path != "." {
+		return OutputFileContract{}, false, fmt.Errorf("%w: output_files.%s: schema_ref asset %q has invalid run-start manifest", errArtifactFetch, of.Name, id)
+	}
+	raw, err := readRunStartedAssetFile(blobs, asset.Files[0])
+	if err != nil {
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: %w", of.Name, err)
+	}
+	var schema ir.JSONSchema
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref asset %q is not JSON: %w", of.Name, id, err)
+	}
+	if _, err := compileJSONSchema(&schema); err != nil {
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref asset %q: %w", of.Name, id, err)
+	}
+	contract.Schema = &schema
+	return contract, true, nil
 }
 
 // runCodeStep is the CodeStep handler — composes substitution, retry, dispatch,
@@ -481,8 +543,11 @@ func runCodeStep(
 		return failStep(log, path, OutcomePermanentFailure, err)
 	}
 
-	outputFiles, err := substituteOutputPaths(cs.OutputFiles, scope)
+	outputFiles, outputFileContracts, err := resolveOutputFiles(cs.OutputFiles, scope, runstate.Assets, blobs)
 	if err != nil {
+		if errors.Is(err, errArtifactFetch) {
+			return "", fmt.Errorf("engine.Run: resolve output_files contracts at %q: %w", path, err)
+		}
 		return failStep(log, path, OutcomePermanentFailure, fmt.Errorf("engine.Run: substitute output_files at %q: %w", path, err))
 	}
 	snapBare, _ := SplitContainerRef(cs.Container)
@@ -490,6 +555,7 @@ func runCodeStep(
 		Command:               command,
 		Env:                   map[string]string{},
 		OutputFiles:           outputFiles,
+		OutputFileContracts:   outputFileContracts,
 		OutputSchema:          cs.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,
