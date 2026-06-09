@@ -284,16 +284,6 @@ func checkStepID(id, path string, c *collector, seen map[string]string) {
 	seen[id] = path
 }
 
-// checkContainerRef emits AWF1009 if a container reference is missing (when required) or
-// doesn't resolve to a declared container. required is true for CodeStep / AgentStep / Map;
-// false for SignalStep (which has no container by design).
-//
-// Per AWF §3, "lab:db" syntax addresses a sibling service in the same compose project; only
-// the bare name (left of the colon) is checked against the declared container set.
-func checkContainerRef(name, path string, wf *Workflow, c *collector, required bool) {
-	checkContainerRefInScope(name, path, wf, nil, c, required)
-}
-
 func checkContainerRefInScope(name, path string, wf *Workflow, scoped map[string]bool, c *collector, required bool) {
 	if name == "" {
 		if required {
