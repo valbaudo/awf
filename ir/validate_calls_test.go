@@ -149,6 +149,48 @@ func TestValidateCallProducerRefsUseChildExportSchema(t *testing.T) {
 	assertNoErrorCode(t, diags, "AWF1042")
 }
 
+func TestValidateRejectsMissingRequiredWorkflowOutputBinding(t *testing.T) {
+	root := validCallingRoot()
+	root.Containers = map[string]Container{"c": {Image: "oci://x@sha256:abc"}}
+	root.Graph = append(root.Graph, &CodeStep{
+		ID:        "use",
+		Container: "c",
+		Run:       `echo {{ step.scan.finding }}`,
+	})
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.Outputs = nil
+	ld := loadedWithChild(root, child)
+
+	diags := Validate(ld)
+	assertErrorAt(t, diags, "AWF1042", "outputs.finding")
+	if got := diagnosticFor(diags, "AWF1042", "outputs.finding"); got == nil || got.Source != "/repo/modules/scan.awf.yaml" {
+		t.Fatalf("AWF1042 Source = %v, want child workflow path", got)
+	}
+}
+
+func TestValidateRejectsUndeclaredWorkflowOutputKey(t *testing.T) {
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.OutputSchema = &JSONSchema{
+		"type": "object",
+		"properties": map[string]any{
+			"finding": map[string]any{"type": "string"},
+		},
+		"additionalProperties": false,
+	}
+	child.Outputs = map[string]TemplateValue{
+		"extra": json.RawMessage(`"{{ step.produce.finding }}"`),
+	}
+	ld := loadedWithChild(validCallingRoot(), child)
+
+	assertErrorAt(t, Validate(ld), "AWF1042", "outputs.extra")
+}
+
+func TestValidateAcceptsRequiredWorkflowOutputBinding(t *testing.T) {
+	ld := loadedWithChild(validCallingRoot(), childWorkflowWithTypedOutput("child", "finding"))
+
+	assertNoErrorCode(t, Validate(ld), "AWF1042")
+}
+
 func TestValidateCallArtifactRefsUseChildExportFiles(t *testing.T) {
 	root := validCallingRoot()
 	root.Containers = map[string]Container{"c": {Image: "oci://x@sha256:abc"}}

@@ -847,6 +847,13 @@ func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *coll
 	if len(wf.Outputs) > 0 && wf.OutputSchema == nil {
 		c.errf("outputs", "AWF1042", catalog["AWF1042"]+": outputs require output_schema")
 	}
+	if wf.OutputSchema != nil {
+		for _, key := range schemaRequired(wf.OutputSchema) {
+			if _, ok := wf.Outputs[key]; !ok {
+				c.errf("outputs."+key, "AWF1042", fmt.Sprintf("%s: required output %q has no binding", catalog["AWF1042"], key))
+			}
+		}
+	}
 	outputKeys := make([]string, 0, len(wf.Outputs))
 	for key := range wf.Outputs {
 		outputKeys = append(outputKeys, key)
