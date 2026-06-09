@@ -58,13 +58,14 @@ graph:
 `, fakeImageDigest)
 
 // reduceRunWorkflow — C2a (Task 12) author run: reducer form. A map over 2
-// items, each body declaring a NAMED output_files artifact (row → /out/row.csv);
+// items, each body declaring a NAMED output_files artifact (leaf → /out/leaf.csv);
 // reduce: { run: ./merge.sh, container: agg, ... } stages every branch's named
 // artifact + a canonical-JSON manifest into the reducer's REQUIRED container
 // `agg` (via SP1's CopyTo), runs ./merge.sh, and commits its typed output +
 // artifact at the map's OWN path. A downstream `collect` step stages the
-// reducer's artifact via input_files step.row.files.csv — proving
-// step.<bodyId>.files.<name> resolves to the REDUCER's artifact (Task 11 Step 6).
+// reducer's artifact via input_files step.row.files.csv, even though the body
+// step itself declares only leaf — proving step.<bodyId>.files.<reducer-name>
+// resolves to the REDUCER's artifact (Task 11 Step 6).
 var reduceRunWorkflow = fmt.Sprintf(`workflow: conformance-reduce-run
 version: 1
 input:
@@ -91,7 +92,7 @@ graph:
           container: c0
           run: "./row.sh {{ x }}"
           retry: { attempts: 1 }
-          output_files: { csv: /out/versions.csv }
+          output_files: { leaf: /out/leaf.csv }
       reduce:
         run: "./merge.sh"
         container: agg
@@ -299,7 +300,7 @@ func testReduceRun(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	merged := []byte("a-row\nb-row\n")
 
-	// Round 1: program each item's row.sh to PRODUCE /out/row.csv (the named
+	// Round 1: program each item's row.sh to PRODUCE /out/leaf.csv (the named
 	// artifact, via the exec-produces-files affordance) and the reducer's
 	// merge.sh to read the staged manifest+artifacts and emit {csv_rows:2} + write
 	// /out/versions.csv. Round 2 resumes against a BARE fake (no programmed Exec):
@@ -310,9 +311,9 @@ func testReduceRun(t *testing.T, factory BackendFactory) {
 		f := container.NewFake()
 		if runFake == nil {
 			f.ProgramExecWithFiles("./row.sh a", container.ExecResult{ExitCode: 0}, nil,
-				map[string][]byte{"/out/versions.csv": []byte("a-row")})
+				map[string][]byte{"/out/leaf.csv": []byte("a-row")})
 			f.ProgramExecWithFiles("./row.sh b", container.ExecResult{ExitCode: 0}, nil,
-				map[string][]byte{"/out/versions.csv": []byte("b-row")})
+				map[string][]byte{"/out/leaf.csv": []byte("b-row")})
 			f.ProgramExecWithFiles("./merge.sh", container.ExecResult{
 				ExitCode:  0,
 				AWFOutput: []byte(`{"csv_rows":2}`),

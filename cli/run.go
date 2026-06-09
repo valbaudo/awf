@@ -247,7 +247,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		inputRef = ref
 	}
 
-	assetSnapshots, err := storeAssetSnapshots(blobs, ld.Assets)
+	assetSnapshots, err := engine.StoreRunStartedAssets(blobs, ld.Assets)
 	if err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage

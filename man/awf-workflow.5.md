@@ -748,7 +748,10 @@ typed outputs at `/work/.awf/aggregate.json` — deterministic, index-ordered, a
 committed-branches-only — via the same content-addressed delivery the artifact
 channel uses (see *Artifact channel*). The reducer reads them and writes its
 declared `output_files` and `$AWF_OUTPUT`, which become the reduced node's
-artifacts and typed output.
+artifacts and typed output. If a reducer `output_files` path templates a body
+aggregate such as `{{ step.collect.name }}`, the aggregate renders as canonical
+JSON; the resulting container path is literal JSON text, not a sanitized file
+name. Prefer scalar fields or a fixed output path for reducer artifacts.
 
 Example named aggregate with reducer artifacts:
 

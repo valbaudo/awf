@@ -27,6 +27,9 @@ func validateOutputFiles(ld *LoadedDefinition, c *collector) {
 func validateOutputFileContracts(ld *LoadedDefinition, c *collector, nodePath string, ofs OutputFiles) {
 	paths := map[string]string{}
 	for _, of := range ofs {
+		if of.Name != "" && !stepIDPattern.MatchString(of.Name) {
+			c.errf(nodePath, "AWF3009", "output_files."+of.Name+": name must match "+stepIDPattern.String())
+		}
 		if of.Path != "" {
 			if prev, ok := paths[of.Path]; ok {
 				c.errf(nodePath, "AWF3009", "output_files."+of.Name+": duplicate path "+of.Path+" already declared by "+prev)

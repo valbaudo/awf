@@ -25,14 +25,10 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 	// (P6a) Containers named by a map's `image:` receive their image per-element
 	// at runtime; such a container may declare resources alone (no static
 	// image/compose), so it is exempt from the "exactly one of image/compose"
-	// requirement below. NOTE (known limitation): the exemption is NOT path-
-	// aware — if the same resources-only container were also referenced by a
-	// non-map-body step, that step would Create it with an empty image and fail
-	// on docker. Tightening that needs path-aware "is this ref inside the
-	// targeting map's body" validation; tracked as a Follow-up (the naive
-	// "referenced only by map.image" check would wrongly reject the map's OWN
-	// body steps, which legitimately reference this container).
-	mapImageTargets := MapImageTargets(wf)
+	// requirement below. The exemption is path-aware: the target may only be
+	// referenced by the owning map and steps inside that map's body.
+	mapImageTargetOwners := MapImageTargetOwners(wf)
+	mapImageTargets := mapImageTargetsFromOwners(mapImageTargetOwners)
 
 	// (a) Workflow-level: only version 1 is defined (AWF §2 "Current: 1").
 	if wf.Version != 1 {
@@ -100,7 +96,7 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 	// (d) Walk the graph: addressable-id uniqueness, container-ref resolution (missing OR unresolved),
 	// control-node shape, parallel distinct-container rule, expression-size limits, AWF1019.
 	seen := map[string]string{} // step/map-product id → first path where seen, for the duplicate diag
-	walkStructural(wf.Graph, "", wf, c, seen, nil)
+	walkStructural(wf.Graph, "", wf, c, seen, nil, mapImageTargetOwners)
 }
 
 // envNamePattern is the POSIX-portable environment-variable identifier charset. A workflow's
@@ -120,18 +116,18 @@ var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //
 // requireContainer is true for CodeStep / AgentStep (where AWF §4 requires a container) and
 // false for SignalStep (where AWF §4.3 explicitly states "No container needed").
-func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, seen map[string]string, scoped map[string]bool) {
+func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, seen map[string]string, scoped map[string]bool, mapImageTargetOwners map[string][]string) {
 	for i, n := range nodes {
 		switch v := n.(type) {
 		case *CodeStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
-			checkContainerRefInScope(v.Container, path, wf, scoped, c, true /* required */)
+			checkContainerRefInScope(v.Container, path, wf, scoped, mapImageTargetOwners, c, true /* required */)
 			checkFieldSize(v.Run, path, c)
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
-			checkContainerRefInScope(v.Container, path, wf, scoped, c, false /* optional: containerless adapters (awf/llm) need no container; run-start guard enforces it */)
+			checkContainerRefInScope(v.Container, path, wf, scoped, mapImageTargetOwners, c, false /* optional: containerless adapters (awf/llm) need no container; run-start guard enforces it */)
 		case *SignalStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
@@ -150,8 +146,8 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 		case *If:
 			path := PathFor(parent, "if", "", i)
 			checkFieldSize(string(v.Cond), path, c)
-			walkStructural(v.Then, ChildPath(parent, "if", i, "then"), wf, c, seen, scoped)
-			walkStructural(v.Else, ChildPath(parent, "if", i, "else"), wf, c, seen, scoped)
+			walkStructural(v.Then, ChildPath(parent, "if", i, "then"), wf, c, seen, scoped, mapImageTargetOwners)
+			walkStructural(v.Else, ChildPath(parent, "if", i, "else"), wf, c, seen, scoped, mapImageTargetOwners)
 		case *Loop:
 			path := PathFor(parent, "loop", "", i)
 			if v.Until == nil && v.MaxIters == nil {
@@ -160,15 +156,15 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			if v.Until != nil {
 				checkFieldSize(string(*v.Until), path, c)
 			}
-			walkStructural(v.Body, ChildPath(parent, "loop", i, "body"), wf, c, seen, scoped)
+			walkStructural(v.Body, ChildPath(parent, "loop", i, "body"), wf, c, seen, scoped, mapImageTargetOwners)
 		case *Try:
-			walkStructural(v.Do, ChildPath(parent, "try", i, "do"), wf, c, seen, scoped)
-			walkStructural(v.Catch, ChildPath(parent, "try", i, "catch"), wf, c, seen, scoped)
-			walkStructural(v.Finally, ChildPath(parent, "try", i, "finally"), wf, c, seen, scoped)
+			walkStructural(v.Do, ChildPath(parent, "try", i, "do"), wf, c, seen, scoped, mapImageTargetOwners)
+			walkStructural(v.Catch, ChildPath(parent, "try", i, "catch"), wf, c, seen, scoped, mapImageTargetOwners)
+			walkStructural(v.Finally, ChildPath(parent, "try", i, "finally"), wf, c, seen, scoped, mapImageTargetOwners)
 		case *Parallel:
 			path := PathFor(parent, "parallel", "", i)
 			checkParallelDistinctContainers(v.Children, path, c)
-			walkStructural(v.Children, path, wf, c, seen, scoped)
+			walkStructural(v.Children, path, wf, c, seen, scoped, mapImageTargetOwners)
 		case *Gate:
 			path := PathFor(parent, "gate", "", i)
 			if len(v.Generate) == 0 {
@@ -185,8 +181,8 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 					c.errf(path, "AWF1014", catalog["AWF1014"])
 				}
 			}
-			walkStructural(v.Generate, ChildPath(parent, "gate", i, "generate"), wf, c, seen, scoped)
-			walkStructural(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), wf, c, seen, scoped)
+			walkStructural(v.Generate, ChildPath(parent, "gate", i, "generate"), wf, c, seen, scoped, mapImageTargetOwners)
+			walkStructural(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), wf, c, seen, scoped, mapImageTargetOwners)
 		case *Skip:
 			// skip has no fields that need structural validation.
 		case *Map:
@@ -206,7 +202,7 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 				if strings.Contains(v.Container, "{{") {
 					c.errf(path, "AWF1019", catalog["AWF1019"])
 				} else {
-					checkContainerRefInScope(v.Container, path, wf, scoped, c, true /* required */)
+					checkContainerRefInScope(v.Container, path, wf, scoped, mapImageTargetOwners, c, true /* required */)
 				}
 			}
 			// AWF1023: snapshot:workspace on the map's fanned-out container would collide
@@ -221,7 +217,7 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 					c.errf(path, "AWF1023", catalog["AWF1023"])
 				}
 			}
-			walkStructural(v.Body, ChildPath(parent, "map", i, "body"), wf, c, seen, scoped)
+			walkStructural(v.Body, ChildPath(parent, "map", i, "body"), wf, c, seen, scoped, mapImageTargetOwners)
 		case *Compose:
 			path := PathFor(parent, "compose", "", i)
 			if v.As == "" || v.From == "" || v.Service == "" || len(v.Body) == 0 {
@@ -246,7 +242,7 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			if v.As != "" {
 				nextScoped[v.As] = true
 			}
-			walkStructural(v.Body, ChildPath(parent, "compose", i, "body"), wf, c, seen, nextScoped)
+			walkStructural(v.Body, ChildPath(parent, "compose", i, "body"), wf, c, seen, nextScoped, mapImageTargetOwners)
 		}
 	}
 }
@@ -327,7 +323,7 @@ func checkAssetID(id string, c *collector) {
 	}
 }
 
-func checkContainerRefInScope(name, path string, wf *Workflow, scoped map[string]bool, c *collector, required bool) {
+func checkContainerRefInScope(name, path string, wf *Workflow, scoped map[string]bool, mapImageTargetOwners map[string][]string, c *collector, required bool) {
 	if name == "" {
 		if required {
 			c.errf(path, "AWF1009", fmt.Sprintf("%s (container reference is empty)", catalog["AWF1009"]))
@@ -339,15 +335,32 @@ func checkContainerRefInScope(name, path string, wf *Workflow, scoped map[string
 	if strings.Contains(name, "{{") {
 		return // caller emits AWF1019.
 	}
-	bare := name
-	if i := strings.Index(name, ":"); i >= 0 {
-		bare = name[:i]
-	}
+	bare := bareContainerName(name)
 	if scoped[bare] {
 		return
 	}
 	if _, ok := wf.Containers[bare]; !ok {
 		c.errf(path, "AWF1009", fmt.Sprintf("%s (container %q)", catalog["AWF1009"], name))
+		return
+	}
+	checkMapImageTargetRef(path, bare, mapImageTargetOwners, c)
+}
+
+func bareContainerName(name string) string {
+	if i := strings.Index(name, ":"); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
+func checkMapImageTargetRef(path, bare string, owners map[string][]string, c *collector) {
+	for _, owner := range owners[bare] {
+		if path == owner || pathWithinScope(path, owner+".body") {
+			return
+		}
+	}
+	if len(owners[bare]) > 0 {
+		c.errf(path, "AWF1039", fmt.Sprintf("%s: container %q", catalog["AWF1039"], bare))
 	}
 }
 
@@ -502,39 +515,51 @@ func checkWhereExpr(src, path string, c *collector) {
 // capability guard (cli) also uses this to detect a runtime-image workflow.
 // Recurses through every step-bearing control kind.
 func MapImageTargets(wf *Workflow) map[string]bool {
+	return mapImageTargetsFromOwners(MapImageTargetOwners(wf))
+}
+
+func mapImageTargetsFromOwners(owners map[string][]string) map[string]bool {
 	set := map[string]bool{}
-	collectMapImageTargets(wf.Graph, set)
+	for name := range owners {
+		set[name] = true
+	}
 	return set
 }
 
-func collectMapImageTargets(nodes NodeList, set map[string]bool) {
-	for _, n := range nodes {
+func MapImageTargetOwners(wf *Workflow) map[string][]string {
+	owners := map[string][]string{}
+	if wf == nil {
+		return owners
+	}
+	collectMapImageTargetOwners(wf.Graph, "", owners)
+	return owners
+}
+
+func collectMapImageTargetOwners(nodes NodeList, parent string, owners map[string][]string) {
+	for i, n := range nodes {
 		switch v := n.(type) {
 		case *Map:
 			if v.Image != "" && v.Container != "" {
-				bare := v.Container
-				if i := strings.Index(bare, ":"); i >= 0 {
-					bare = bare[:i]
-				}
-				set[bare] = true
+				path := PathFor(parent, "map", "", i)
+				owners[bareContainerName(v.Container)] = append(owners[bareContainerName(v.Container)], path)
 			}
-			collectMapImageTargets(v.Body, set)
+			collectMapImageTargetOwners(v.Body, ChildPath(parent, "map", i, "body"), owners)
 		case *Compose:
-			collectMapImageTargets(v.Body, set)
+			collectMapImageTargetOwners(v.Body, ChildPath(parent, "compose", i, "body"), owners)
 		case *If:
-			collectMapImageTargets(v.Then, set)
-			collectMapImageTargets(v.Else, set)
+			collectMapImageTargetOwners(v.Then, ChildPath(parent, "if", i, "then"), owners)
+			collectMapImageTargetOwners(v.Else, ChildPath(parent, "if", i, "else"), owners)
 		case *Loop:
-			collectMapImageTargets(v.Body, set)
+			collectMapImageTargetOwners(v.Body, ChildPath(parent, "loop", i, "body"), owners)
 		case *Try:
-			collectMapImageTargets(v.Do, set)
-			collectMapImageTargets(v.Catch, set)
-			collectMapImageTargets(v.Finally, set)
+			collectMapImageTargetOwners(v.Do, ChildPath(parent, "try", i, "do"), owners)
+			collectMapImageTargetOwners(v.Catch, ChildPath(parent, "try", i, "catch"), owners)
+			collectMapImageTargetOwners(v.Finally, ChildPath(parent, "try", i, "finally"), owners)
 		case *Parallel:
-			collectMapImageTargets(v.Children, set)
+			collectMapImageTargetOwners(v.Children, PathFor(parent, "parallel", "", i), owners)
 		case *Gate:
-			collectMapImageTargets(v.Generate, set)
-			collectMapImageTargets(v.Evaluate, set)
+			collectMapImageTargetOwners(v.Generate, ChildPath(parent, "gate", i, "generate"), owners)
+			collectMapImageTargetOwners(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), owners)
 		}
 	}
 }

@@ -29,12 +29,12 @@ const reduceStagingDir = "/work/.awf"
 const reduceManifestPath = reduceStagingDir + "/aggregate.json"
 
 // reduceBranch is one committed branch's contribution: its typed outputs + its
-// named artifacts (declared container path → CAS ref), index-ordered by the
-// caller (engine/map.go's collectReduceBranches, Task 11).
+// named artifacts (artifact name → CAS ref), index-ordered by the caller
+// (engine/map.go's collectReduceBranches, Task 11).
 type reduceBranch struct {
 	N       int
 	Outputs map[string]any
-	Files   map[string]string // declared container path → CAS ref (NodeResult.Files)
+	Files   map[string]string // artifact name → CAS ref
 }
 
 // runMapReduce runs a map's reduce: phase after fan-out (SP2 C2a): it collects
@@ -67,7 +67,13 @@ func runMapReduce(
 	if _, ok := runstate.LookupCompleted(mapPath); ok {
 		return OutcomeOK, nil
 	}
-	branches := collectReduceBranches(runstate, n, mapPath)
+	branches, berr := collectReduceBranches(runstate, n, mapPath, wf)
+	if berr != nil {
+		if errors.Is(berr, errArtifactFetch) {
+			return "", fmt.Errorf("engine.runMapReduce: collect reduce branches at %q: %w", mapPath, berr)
+		}
+		return failStep(log, mapPath, OutcomePermanentFailure, berr)
+	}
 	if n.Reduce.IsRun() {
 		// A run reducer is a code step → it needs its container handle. The
 		// reducer's container is a `containers:`-declared name, so it is normally
@@ -227,17 +233,17 @@ func runCommandReduce(
 	dsts := map[string][]byte{}
 	for _, b := range branches {
 		names := make([]string, 0, len(b.Files))
-		for p := range b.Files {
-			names = append(names, p)
+		for name := range b.Files {
+			names = append(names, name)
 		}
 		sort.Strings(names)
-		for _, p := range names {
-			content, gerr := blobs.Get(b.Files[p])
+		for _, name := range names {
+			content, gerr := blobs.Get(b.Files[name])
 			if gerr != nil {
 				// Committed artifact unreadable — internal halt (SP1 errArtifactFetch precedent).
-				return "", fmt.Errorf("engine.runReduce: %w: branch %d file %q: %v", errArtifactFetch, b.N, p, gerr)
+				return "", fmt.Errorf("engine.runReduce: %w: branch %d file %q: %v", errArtifactFetch, b.N, name, gerr)
 			}
-			dst := fmt.Sprintf("%s/branch-%d%s", reduceStagingDir, b.N, ensureLeadingSlash(p))
+			dst := fmt.Sprintf("%s/branch-%d/%s", reduceStagingDir, b.N, name)
 			dsts[dst] = content
 		}
 	}
@@ -310,17 +316,25 @@ func runCommandReduce(
 //
 // The supported (single-producing-step) body shape yields one body NodeResult
 // per item; if a body has multiple producing steps, their Outputs/Files are
-// shallow-merged into the branch (distinct step ids → distinct keys, so no
-// collision in practice).
-func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string) []reduceBranch {
+// shallow-merged into the branch. Files are keyed by declared output_files name,
+// matching the reducer staging contract (/work/.awf/branch-N/<name>).
+func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string, wf *ir.Workflow) ([]reduceBranch, error) {
 	// Body step suffixes (the path tail after ".body."), in walk order.
-	var suffixes []string
+	var producers []reduceBodyProducer
 	ir.WalkNodes(n.Body, "body", func(node ir.Node, path string) {
-		switch node.(type) {
-		case *ir.CodeStep, *ir.AgentStep:
+		switch s := node.(type) {
+		case *ir.CodeStep:
 			// path is "body.<...>"; the per-item runtime path drops the leading
 			// "body." (replaced by ".item-N"), so strip it to the suffix.
-			suffixes = append(suffixes, strings.TrimPrefix(path, "body."))
+			producers = append(producers, reduceBodyProducer{
+				suffix:      strings.TrimPrefix(path, "body."),
+				outputFiles: s.OutputFiles,
+			})
+		case *ir.AgentStep:
+			producers = append(producers, reduceBodyProducer{
+				suffix:      strings.TrimPrefix(path, "body."),
+				outputFiles: s.OutputFiles,
+			})
 		}
 	})
 
@@ -334,8 +348,9 @@ func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string) []reduceBran
 		}
 		b := reduceBranch{N: mr.N, Outputs: map[string]any{}, Files: map[string]string{}}
 		committed := false
-		for _, suffix := range suffixes {
-			nr, ok := rs.LookupCompleted(ItemStepPath(mapPath, mr.N, suffix))
+		for _, producer := range producers {
+			itemStepPath := ItemStepPath(mapPath, mr.N, producer.suffix)
+			nr, ok := rs.LookupCompleted(itemStepPath)
 			if !ok {
 				continue
 			}
@@ -343,8 +358,20 @@ func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string) []reduceBran
 			for k, v := range nr.Outputs {
 				b.Outputs[k] = v
 			}
-			for k, v := range nr.Files {
-				b.Files[k] = v
+			stepScope := NewScope(rs, wf, itemStepPath)
+			for _, of := range producer.outputFiles {
+				if of.Name == "" {
+					continue
+				}
+				containerPath, err := template.Substitute(of.Path, stepScope)
+				if err != nil {
+					return nil, fmt.Errorf("engine.collectReduceBranches: branch %d output_files.%s path %q: %w", mr.N, of.Name, of.Path, err)
+				}
+				ref, ok := nr.Files[containerPath]
+				if !ok {
+					return nil, fmt.Errorf("%w: branch %d output_files.%s not committed at %q", errArtifactFetch, mr.N, of.Name, containerPath)
+				}
+				b.Files[of.Name] = ref
 			}
 		}
 		if !committed {
@@ -352,14 +379,10 @@ func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string) []reduceBran
 		}
 		branches = append(branches, b)
 	}
-	return branches
+	return branches, nil
 }
 
-// ensureLeadingSlash normalizes a branch artifact's declared container path so
-// the staged dst (/work/.awf/branch-<N><path>) is always well-formed.
-func ensureLeadingSlash(p string) string {
-	if len(p) > 0 && p[0] == '/' {
-		return p
-	}
-	return "/" + p
+type reduceBodyProducer struct {
+	suffix      string
+	outputFiles ir.OutputFiles
 }

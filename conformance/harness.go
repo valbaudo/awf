@@ -205,7 +205,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 			}
 			inputRef = ref
 		}
-		assetSnapshots, err := storeHarnessAssetSnapshots(h.blobs, ld.Assets)
+		assetSnapshots, err := engine.StoreRunStartedAssets(h.blobs, ld.Assets)
 		if err != nil {
 			return "", err
 		}
