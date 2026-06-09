@@ -400,11 +400,16 @@ func resolveOutputFiles(ofs ir.OutputFiles, scope template.Scope, assets map[str
 	}
 	paths := make([]string, 0, len(ofs))
 	contracts := map[string]OutputFileContract{}
+	seenPaths := map[string]string{}
 	for _, of := range ofs {
 		p, err := template.Substitute(of.Path, scope)
 		if err != nil {
 			return nil, nil, fmt.Errorf("output_files path %q: %w", of.Path, err)
 		}
+		if prev, ok := seenPaths[p]; ok {
+			return nil, nil, fmt.Errorf("duplicate output_files path %q (declared by %s and %s after template substitution)", p, prev, of.Name)
+		}
+		seenPaths[p] = of.Name
 		paths = append(paths, p)
 		contract, hasContract, err := resolveOutputFileContract(of, assets, blobs)
 		if err != nil {

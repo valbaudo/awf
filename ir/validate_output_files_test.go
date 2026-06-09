@@ -79,6 +79,21 @@ func TestValidateOutputFileContractSchemaRefMustNameDeclaredAsset(t *testing.T) 
 	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
 }
 
+func TestValidateOutputFilesDuplicateLiteralPathsRejected(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&CodeStep{ID: "produce", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{
+					{Name: "strict", Path: "/out/summary.json", Format: "json", Schema: &JSONSchema{"type": "object"}},
+					{Name: "alias", Path: "/out/summary.json", Format: "json"},
+				}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
+}
+
 func TestValidateOutputFileContractSchemaRefAssetSchemaWellFormed(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,

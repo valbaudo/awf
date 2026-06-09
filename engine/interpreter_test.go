@@ -703,6 +703,49 @@ func TestRunOutputFileContractSchemaRefUsesRunStartedAsset(t *testing.T) {
 	}
 }
 
+func TestRunOutputFilesDuplicateSubstitutedPathRejectedBeforeExec(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	rs.Input = map[string]any{"name": "summary"}
+	fake.ProgramExecWithFiles("./produce.sh", container.ExecResult{ExitCode: 0}, nil,
+		map[string][]byte{"/out/summary.json": []byte(`{"id":"bad"}`)})
+	wf := &ir.Workflow{
+		ID: "artifact-contract-duplicate", Version: 1,
+		Containers: map[string]ir.Container{"lab": {}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID: "produce", Container: "lab", Run: "./produce.sh",
+				OutputFiles: ir.OutputFiles{
+					{
+						Name:   "strict",
+						Path:   "/out/{{ input.name }}.json",
+						Format: "json",
+						Schema: &ir.JSONSchema{
+							"type":       "object",
+							"required":   []any{"id"},
+							"properties": map[string]any{"id": map[string]any{"type": "integer"}},
+						},
+					},
+					{Name: "alias", Path: "/out/summary.json", Format: "json"},
+				},
+			},
+		},
+	}
+	oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{})
+	if err == nil || !strings.Contains(err.Error(), "duplicate output_files path") {
+		t.Fatalf("Run err = %v, want duplicate output_files path failure", err)
+	}
+	if oc != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want permanent_failure", oc)
+	}
+	if len(fake.Calls) != 0 {
+		t.Fatalf("Exec calls = %+v, want none before ambiguous artifact contracts dispatch", fake.Calls)
+	}
+	if _, ok := rs.Completed["produce"]; ok {
+		t.Fatal("duplicate output_files path committed node.completed")
+	}
+}
+
 func TestRunOutputFileBadContractDefinitionFailsBeforeExec(t *testing.T) {
 	t.Parallel()
 	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)

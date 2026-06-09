@@ -25,7 +25,15 @@ func validateOutputFiles(ld *LoadedDefinition, c *collector) {
 }
 
 func validateOutputFileContracts(ld *LoadedDefinition, c *collector, nodePath string, ofs OutputFiles) {
+	paths := map[string]string{}
 	for _, of := range ofs {
+		if of.Path != "" {
+			if prev, ok := paths[of.Path]; ok {
+				c.errf(nodePath, "AWF3009", "output_files."+of.Name+": duplicate path "+of.Path+" already declared by "+prev)
+			} else {
+				paths[of.Path] = of.Name
+			}
+		}
 		hasContract := of.Format != "" || of.Schema != nil || of.SchemaRef != ""
 		if !hasContract {
 			continue
