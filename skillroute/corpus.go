@@ -13,6 +13,9 @@ import (
 )
 
 const (
+	LayoutSkillDirs   = "skill_dirs"
+	MaxSelectionLimit = 64
+
 	RouterName      = "bm25"
 	RouterVersion   = "bm25-weighted-v1"
 	SkillMDWeight   = 4
@@ -36,9 +39,11 @@ type Corpus struct {
 }
 
 type Skill struct {
-	ID     string
-	Files  []File
-	Tokens []string
+	ID          string
+	Files       []File
+	Tokens      []string
+	tokenFreq   map[string]int
+	tokenLength int
 }
 
 type Selection struct {
@@ -87,7 +92,7 @@ func (e IssuesError) Error() string {
 	}
 }
 
-func NewCorpus(_ string, files []File) (*Corpus, error) {
+func NewCorpus(files []File) (*Corpus, error) {
 	if issues := ValidateFiles(files); len(issues) > 0 {
 		return nil, IssuesError(issues)
 	}
@@ -114,7 +119,8 @@ func NewCorpus(_ string, files []File) (*Corpus, error) {
 		sort.Slice(skill.Files, func(i, j int) bool {
 			return skill.Files[i].Path < skill.Files[j].Path
 		})
-		skill.Tokens = weightedTokens(skill.Files)
+		skill.tokenFreq, skill.tokenLength = weightedTerms(skill.Files)
+		skill.Tokens = sortedTermKeys(skill.tokenFreq)
 	}
 
 	corpus := &Corpus{

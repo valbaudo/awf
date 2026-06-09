@@ -33,6 +33,8 @@ func testSkillsSelectedSkillStagedFromRunStartedSnapshot(t *testing.T, factory B
 	var spy *assetCopyToSpy
 	var h *harness
 	h = newSkillsHarness(t, func() container.Backend {
+		// runOrResume snapshots assets into run.started before constructing the
+		// backend, so this mutation must not affect selected skill staging.
 		poisonSkillAssets(t, h)
 		b := factory()
 		fakeBackend, ok := b.(*container.Fake)
@@ -104,6 +106,8 @@ func testSkillsResumeReplaysSelectedSkillAndReStages(t *testing.T, factory Backe
 		if runSpy == nil {
 			runSpy = spy
 		} else {
+			// On resume, the log is folded before this second backend is created;
+			// replay must stage the originally recorded skill bytes.
 			poisonSkillAssets(t, h)
 			resumeSpy = spy
 		}

@@ -23,7 +23,7 @@ func validSkillRoutingLD() *LoadedDefinition {
 		ID: "x", Version: 1,
 		Assets: map[string]string{"skill_assets": "skills"},
 		Skills: map[string]SkillCorpus{
-			"skills": {From: "asset.skill_assets", Layout: "skill_dirs", Router: skillroute.RouterName},
+			"skills": {From: "asset.skill_assets", Layout: skillroute.LayoutSkillDirs, Router: skillroute.RouterName},
 		},
 		Containers: awf5003Container(),
 		Graph: NodeList{
@@ -62,7 +62,7 @@ func TestValidateSkillsValidCorpusAndAgentRoutingNoSkillDiagnostics(t *testing.T
 func TestValidateSkillsBadCorpusIDReportsAWF1040(t *testing.T) {
 	ld := validSkillRoutingLD()
 	ld.Workflow.Skills = map[string]SkillCorpus{
-		"bad/id": {From: "asset.skill_assets", Layout: "skill_dirs", Router: skillroute.RouterName},
+		"bad/id": {From: "asset.skill_assets", Layout: skillroute.LayoutSkillDirs, Router: skillroute.RouterName},
 	}
 
 	assertErrorAt(t, Validate(ld), "AWF1040", "skills.bad/id")
@@ -104,7 +104,7 @@ func TestValidateSkillsCorpusFromReportsAWF1040OrAWF1041(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ld := validSkillRoutingLD()
-			ld.Workflow.Skills["skills"] = SkillCorpus{From: tc.from, Layout: "skill_dirs", Router: skillroute.RouterName}
+			ld.Workflow.Skills["skills"] = SkillCorpus{From: tc.from, Layout: skillroute.LayoutSkillDirs, Router: skillroute.RouterName}
 			ld.Assets = tc.assets
 
 			assertErrorAt(t, Validate(ld), tc.code, "skills.skills")
@@ -123,7 +123,7 @@ func TestValidateSkillsUnsupportedLayoutOrRouterReportsAWF1042(t *testing.T) {
 		},
 		{
 			name:   "router",
-			corpus: SkillCorpus{From: "asset.skill_assets", Layout: "skill_dirs", Router: "vector"},
+			corpus: SkillCorpus{From: "asset.skill_assets", Layout: skillroute.LayoutSkillDirs, Router: "vector"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,7 +234,7 @@ func TestValidateSkillsStepShapeReportsAWF1043(t *testing.T) {
 		{name: "empty query", query: Template(" \t\n"), limit: 1, into: "/skills"},
 		{name: "zero limit", query: Template("topic"), limit: 0, into: "/skills"},
 		{name: "negative limit", query: Template("topic"), limit: -1, into: "/skills"},
-		{name: "limit above max", query: Template("topic"), limit: 65, into: "/skills"},
+		{name: "limit above max", query: Template("topic"), limit: skillroute.MaxSelectionLimit + 1, into: "/skills"},
 		{name: "relative into", query: Template("topic"), limit: 1, into: "skills"},
 		{name: "non clean into", query: Template("topic"), limit: 1, into: "/skills/../skills"},
 		{name: "root into", query: Template("topic"), limit: 1, into: "/"},

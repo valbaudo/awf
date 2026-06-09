@@ -309,9 +309,6 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			if _, ok := rs.SelectedSkills[e.Path]; ok {
 				return nil, fmt.Errorf("engine.Fold: %s already recorded for path %q at seq=%d", EventSkillsSelected, e.Path, e.Seq)
 			}
-			if len(d.Selected) == 0 {
-				return nil, fmt.Errorf("engine.Fold: %s at path %q seq=%d has empty selected; selected must be non-empty", EventSkillsSelected, e.Path, e.Seq)
-			}
 			if err := validateSkillsSelectedEventLocal(d); err != nil {
 				return nil, fmt.Errorf("engine.Fold: %s at path %q seq=%d: %w", EventSkillsSelected, e.Path, e.Seq, err)
 			}

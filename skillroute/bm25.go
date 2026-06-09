@@ -70,11 +70,8 @@ func newBM25Index(ids []string, skills map[string]*Skill) bm25Index {
 	for _, id := range ids {
 		skill := skills[id]
 		doc := bm25Doc{
-			length: len(skill.Tokens),
-			tf:     map[string]int{},
-		}
-		for _, tok := range skill.Tokens {
-			doc.tf[tok]++
+			length: skill.tokenLength,
+			tf:     cloneTermFreq(skill.tokenFreq),
 		}
 		for tok := range doc.tf {
 			index.documentFreq[tok]++
@@ -109,21 +106,47 @@ func (idx bm25Index) score(doc bm25Doc, docCount int, queryTokens []string) floa
 	return score
 }
 
-func weightedTokens(files []File) []string {
-	var tokens []string
+func weightedTerms(files []File) (map[string]int, int) {
+	terms := map[string]int{}
+	length := 0
 	for _, f := range files {
-		// Weighting is implemented by token repetition. Changing this changes
-		// scoring semantics and requires a RouterVersion bump.
-		tokens = appendRepeated(tokens, tokenize(f.Path), PathWeight)
+		addWeightedTokens(terms, &length, tokenize(f.Path), PathWeight)
 		if isSkillMD(f.Path) {
-			tokens = appendRepeated(tokens, tokenize(string(f.Content)), SkillMDWeight)
+			addWeightedTokens(terms, &length, tokenize(string(f.Content)), SkillMDWeight)
 			continue
 		}
 		if textLike(f.Content) {
-			tokens = appendRepeated(tokens, tokenize(string(f.Content)), TextFileWeight)
+			addWeightedTokens(terms, &length, tokenize(string(f.Content)), TextFileWeight)
 		}
 	}
-	return tokens
+	return terms, length
+}
+
+func addWeightedTokens(terms map[string]int, length *int, tokens []string, weight int) {
+	if weight <= 0 {
+		return
+	}
+	for _, tok := range tokens {
+		terms[tok] += weight
+		*length += weight
+	}
+}
+
+func sortedTermKeys(terms map[string]int) []string {
+	keys := make([]string, 0, len(terms))
+	for tok := range terms {
+		keys = append(keys, tok)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func cloneTermFreq(in map[string]int) map[string]int {
+	out := make(map[string]int, len(in))
+	for tok, n := range in {
+		out[tok] = n
+	}
+	return out
 }
 
 func tokenize(s string) []string {
@@ -156,13 +179,6 @@ func uniqueTokens(tokens []string) []string {
 		out = append(out, tok)
 	}
 	return out
-}
-
-func appendRepeated(dst, tokens []string, weight int) []string {
-	for i := 0; i < weight; i++ {
-		dst = append(dst, tokens...)
-	}
-	return dst
 }
 
 func isSkillMD(p string) bool {

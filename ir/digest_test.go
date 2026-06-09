@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/valbaudo/awf/skillroute"
 )
 
 // sampleWorkflow includes a nested control node so the digest path exercises recursive marshaling.
@@ -216,7 +218,7 @@ func TestDigestChangesWhenSkillCorpusChanges(t *testing.T) {
 	wf := sampleWorkflow()
 	wf.Assets = map[string]string{"skill_assets": "skills"}
 	wf.Skills = map[string]SkillCorpus{
-		"web": {From: "asset.skill_assets", Layout: "skill_dirs", Router: "bm25"},
+		"web": {From: "asset.skill_assets", Layout: skillroute.LayoutSkillDirs, Router: skillroute.RouterName},
 	}
 	d1, err := wf.ComputeDigest(nil, assets)
 	if err != nil {
@@ -226,7 +228,7 @@ func TestDigestChangesWhenSkillCorpusChanges(t *testing.T) {
 	changed := sampleWorkflow()
 	changed.Assets = map[string]string{"skill_assets": "skills"}
 	changed.Skills = map[string]SkillCorpus{
-		"web": {From: "asset.skill_assets", Layout: "skill_dirs", Router: "bm25-v2"},
+		"web": {From: "asset.skill_assets", Layout: skillroute.LayoutSkillDirs, Router: "bm25-v2"},
 	}
 	d2, err := changed.ComputeDigest(nil, assets)
 	if err != nil {

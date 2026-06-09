@@ -8,6 +8,7 @@ import (
 	goyaml "github.com/goccy/go-yaml"
 
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/skillroute"
 )
 
 const sampleYAML = `
@@ -95,7 +96,7 @@ graph:
 	if !ok {
 		t.Fatalf("Skills[web] missing after decode: %#v", wf.Skills)
 	}
-	if corpus.From != "asset.skill_assets" || corpus.Layout != "skill_dirs" || corpus.Router != "bm25" {
+	if corpus.From != "asset.skill_assets" || corpus.Layout != skillroute.LayoutSkillDirs || corpus.Router != skillroute.RouterName {
 		t.Fatalf("Skills[web] = %+v, want from/layout/router preserved", corpus)
 	}
 	step, ok := wf.Graph[0].(*ir.AgentStep)

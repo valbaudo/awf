@@ -68,6 +68,32 @@ func TestWeightedFullSkillTextUsesSkillMDPathsAndNestedTextFiles(t *testing.T) {
 	assertRouteIDs(t, corpus.Route("examples payload", 10), "sql", "xss")
 }
 
+func TestWeightedTermsRecordCountsAndWeightedLength(t *testing.T) {
+	terms, length := weightedTerms([]File{
+		file("sql/SKILL.md", "sql sql database"),
+		file("sql/examples/payload.txt", "payload"),
+		file("sql/bin/raw.bin", string([]byte{0, 1, 2, 3})),
+	})
+
+	wantTerms := map[string]int{
+		"sql":      14,
+		"skill":    2,
+		"md":       2,
+		"database": 4,
+		"examples": 2,
+		"payload":  3,
+		"txt":      2,
+		"bin":      4,
+		"raw":      2,
+	}
+	if !reflect.DeepEqual(terms, wantTerms) {
+		t.Fatalf("weightedTerms terms = %#v, want %#v", terms, wantTerms)
+	}
+	if length != 35 {
+		t.Fatalf("weightedTerms length = %d, want 35", length)
+	}
+}
+
 func TestRouterParams(t *testing.T) {
 	got := RouterParams()
 	want := map[string]float64{

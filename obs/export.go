@@ -95,6 +95,8 @@ func NewOTLPProvider(ctx context.Context, endpoint string) (*sdktrace.TracerProv
 
 func defaultSpanLimits() sdktrace.SpanLimits {
 	limits := sdktrace.NewSpanLimits()
+	// A skills.selected event can carry two attributes per selected skill plus
+	// routing metadata; IR validation caps selections at skillroute.MaxSelectionLimit.
 	limits.AttributePerEventCountLimit = -1
 	return limits
 }

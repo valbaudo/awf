@@ -15,7 +15,7 @@ func TestNewCorpusExtractsSkillDirs(t *testing.T) {
 		file("xss/SKILL.md", "Find cross-site scripting bugs."),
 	}
 
-	corpus, err := NewCorpus("security", files)
+	corpus, err := NewCorpus(files)
 	if err != nil {
 		t.Fatalf("NewCorpus returned error: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestNewCorpusRejectsInvalidLayout(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewCorpus("security", []File{tc.file})
+			_, err := NewCorpus([]File{tc.file})
 			if err == nil {
 				t.Fatal("NewCorpus returned nil error, want layout error")
 			}
@@ -194,7 +194,7 @@ func assertRouteIDs(t *testing.T, got []Selection, want ...string) {
 
 func mustCorpus(t *testing.T, files ...File) *Corpus {
 	t.Helper()
-	corpus, err := NewCorpus("test", files)
+	corpus, err := NewCorpus(files)
 	if err != nil {
 		t.Fatalf("NewCorpus error: %v", err)
 	}

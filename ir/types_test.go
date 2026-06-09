@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/valbaudo/awf/skillroute"
 )
 
 func TestWorkflowAssetsJSONRoundTrip(t *testing.T) {
@@ -30,7 +32,7 @@ func TestWorkflowSkillsRoundTrip(t *testing.T) {
 		Version: 1,
 		Assets:  map[string]string{"skill_assets": "skills"},
 		Skills: map[string]SkillCorpus{
-			"web": {From: "asset.skill_assets", Layout: "skill_dirs", Router: "bm25"},
+			"web": {From: "asset.skill_assets", Layout: skillroute.LayoutSkillDirs, Router: skillroute.RouterName},
 		},
 		Containers: map[string]Container{"lab": {Image: "oci://x@sha256:abc"}},
 		Graph: NodeList{
@@ -61,7 +63,7 @@ func TestWorkflowSkillsRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("Skills[web] missing after round-trip: %#v", got.Skills)
 	}
-	if corpus.From != "asset.skill_assets" || corpus.Layout != "skill_dirs" || corpus.Router != "bm25" {
+	if corpus.From != "asset.skill_assets" || corpus.Layout != skillroute.LayoutSkillDirs || corpus.Router != skillroute.RouterName {
 		t.Fatalf("Skills[web] = %+v, want from/layout/router preserved", corpus)
 	}
 	step, ok := got.Graph[0].(*AgentStep)

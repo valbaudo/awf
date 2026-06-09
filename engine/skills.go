@@ -97,7 +97,7 @@ func buildSkillCorpus(id string, wf *ir.Workflow, assets map[string]RunStartedAs
 			SHA256:  f.SHA256,
 		})
 	}
-	corpus, err := skillroute.NewCorpus(id, files)
+	corpus, err := skillroute.NewCorpus(files)
 	if err != nil {
 		return nil, err
 	}

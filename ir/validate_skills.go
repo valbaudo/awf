@@ -26,7 +26,7 @@ func validateSkillCorpora(ld *LoadedDefinition, c *collector) {
 		if !ok {
 			c.errf(corpusPath, "AWF1040", fmt.Sprintf("%s: from=%q must be a static asset.<id> reference", catalog["AWF1040"], corpus.From))
 		}
-		if corpus.Layout != "skill_dirs" || corpus.Router != skillroute.RouterName {
+		if corpus.Layout != skillroute.LayoutSkillDirs || corpus.Router != skillroute.RouterName {
 			c.errf(corpusPath, "AWF1042", fmt.Sprintf("%s: layout=%q router=%q", catalog["AWF1042"], corpus.Layout, corpus.Router))
 		}
 		if !ok {
@@ -42,6 +42,8 @@ func validateSkillCorpora(ld *LoadedDefinition, c *collector) {
 }
 
 func checkSkillCorpusID(id, corpusPath string, c *collector) {
+	// Corpus names are workflow identifiers. Skill directory names are validated
+	// separately by skillroute.ValidID when the loaded asset is inspected.
 	if !stepIDPattern.MatchString(id) {
 		c.errf(corpusPath, "AWF1040", fmt.Sprintf("%s: id=%q (must match %s)", catalog["AWF1040"], id, stepIDPattern))
 	}
@@ -83,8 +85,8 @@ func validateAgentSkillRouting(wf *Workflow, c *collector) {
 		if strings.TrimSpace(string(routing.Query)) == "" {
 			c.errf(nodePath, "AWF1043", fmt.Sprintf("%s: query must be non-empty", catalog["AWF1043"]))
 		}
-		if routing.Limit <= 0 || routing.Limit > 64 {
-			c.errf(nodePath, "AWF1043", fmt.Sprintf("%s: limit must be between 1 and 64", catalog["AWF1043"]))
+		if routing.Limit <= 0 || routing.Limit > skillroute.MaxSelectionLimit {
+			c.errf(nodePath, "AWF1043", fmt.Sprintf("%s: limit must be between 1 and %d", catalog["AWF1043"], skillroute.MaxSelectionLimit))
 		}
 		intoOK := validateSkillRoutingInto(nodePath, routing.Into, c)
 		if strings.TrimSpace(step.Container) == "" {
