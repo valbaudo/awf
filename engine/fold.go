@@ -45,6 +45,9 @@ import (
 //     3.5 design Q7). REFS ONLY — no Blobs.Get inside Fold; payloads are
 //     materialized at use to support non-object payloads from unschema'd
 //     signal steps (C6 fix).
+//   - call.started populates CallStarted[path] with the materialized
+//     subworkflow input object, input ref, and per-call runtime resolutions.
+//     Duplicate call.started events for one path are corruption.
 //   - run.paused is OBSERVATIONAL — Fold IGNORES it (default arm, same as
 //     node.failed). rs.Paused is a runtime-only flag set exclusively by
 //     engine.Run's live pollControls goroutine (C7 fix — avoids stale-Paused
@@ -83,6 +86,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 	rs.GateAttempts = make(map[string][]AttemptResult, len(events)/16) // sparse — gates are uncommon
 	rs.MapItems = make(map[string][]MapItemRecord, len(events)/16)     // sparse — maps are uncommon
 	rs.Signals = make(map[string][]SignalEntry, len(events)/16)        // sparse — signals are uncommon
+	rs.CallStarted = make(map[string]CallStartedRecord, len(events)/16)
 	rs.SignalReceivedAt = make(map[string]SignalReceivedEntry, len(events)/16)
 	rs.SnapshotRefs = make(map[string]string) // slice 7.1 — snapshot:workspace containers only; sparse
 
@@ -127,6 +131,36 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			rs.Epoch = d.Epoch
 			// NB: no Paused-clearing here. Paused is no longer Fold-populated
 			// (C7 fix); no clearing needed.
+
+		case EventCallStarted:
+			if _, exists := rs.CallStarted[e.Path]; exists {
+				return nil, fmt.Errorf("engine.Fold: duplicate %s at path=%q seq=%d (corruption or writer bug)",
+					EventCallStarted, e.Path, e.Seq)
+			}
+			var d CallStartedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+					EventCallStarted, e.Seq, e.Path, err)
+			}
+			raw, err := blobs.Get(d.InputRef)
+			if err != nil {
+				return nil, fmt.Errorf("engine.Fold: read call input ref %q at path=%q seq=%d: %w",
+					d.InputRef, e.Path, e.Seq, err)
+			}
+			var in map[string]any
+			if err := json.Unmarshal(raw, &in); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse call input blob %q at path=%q: %w",
+					d.InputRef, e.Path, err)
+			}
+			if in == nil {
+				return nil, fmt.Errorf("engine.Fold: parse call input blob %q at path=%q: expected JSON object",
+					d.InputRef, e.Path)
+			}
+			rs.CallStarted[e.Path] = CallStartedRecord{
+				Input:    in,
+				InputRef: d.InputRef,
+				Runtimes: d.Runtimes,
+			}
 
 		case EventNodeCompleted:
 			var d NodeCompletedData

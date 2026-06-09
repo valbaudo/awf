@@ -150,6 +150,18 @@ type SignalReceivedEntry struct {
 	PayloadRef string
 }
 
+// CallStartedRecord is the folded state for one call.started event. It pins the
+// materialized subworkflow input to the durable CAS ref that was committed in
+// the event, plus the runtime resolutions scoped to that call.
+//
+// Input is the materialized JSON object from InputRef. READ-ONLY (callers MUST
+// NOT mutate — same caveat as NodeResult.Outputs).
+type CallStartedRecord struct {
+	Input    map[string]any
+	InputRef string
+	Runtimes []ResolvedRuntime
+}
+
 // NodeResult is the fold result for one completed node — stored in RunState.Completed
 // keyed by node.path. Phase 2 populates this from a `node.completed` event; Phase 3+
 // adds gate-attempt aggregation but the per-node shape stays the same.
@@ -243,6 +255,12 @@ type RunState struct {
 	// Lookups are safe under the mu.
 	Signals map[string][]SignalEntry
 
+	// CallStarted records durable subworkflow-call input pins. Call path →
+	// materialized input + input ref + per-call runtime resolutions. Built by
+	// Fold from call.started events; runtime writers mirror fresh commits via
+	// RecordCallStarted.
+	CallStarted map[string]CallStartedRecord
+
 	// Paused is the latest non-cleared pause marker. Nil if no pause is
 	// active. Slice 3.5 addition.
 	Paused *PauseMarker
@@ -283,7 +301,8 @@ type RunState struct {
 	threadTargetSet map[string]bool
 
 	// mu serializes access to Completed / Branches / LoopIters / GateAttempts
-	// / MapItems / Signals / SignalReceivedAt / Paused / Cancelled / CancelReason.
+	// / MapItems / Signals / CallStarted / SignalReceivedAt / Paused /
+	// Cancelled / CancelReason.
 	// Phase 2 callers were single-threaded; Phase 3 slice 3.2
 	// (parallel) introduced concurrent branch goroutines, and slice 3.4 (map)
 	// adds concurrent item-body goroutines.
@@ -292,9 +311,10 @@ type RunState struct {
 	// RecordCompleted / LookupBranch / RecordBranch / LookupLoopIters /
 	// RecordLoopIter / LookupGateAttempts / RecordGateAttempt /
 	// LookupMapItems / RecordMapItem / UpdateMapItemValue / AppendSignal /
-	// LookupSignals / LookupSignalReceivedAt / RecordSignalReceivedAt /
-	// SetPaused / LookupPaused / SetCancelled / IsCancelled /
-	// SetCancelReason / LookupCancelReason). Direct field
+	// LookupSignals / LookupCallStarted / RecordCallStarted /
+	// LookupSignalReceivedAt / RecordSignalReceivedAt / SetPaused /
+	// LookupPaused / SetCancelled / IsCancelled / SetCancelReason /
+	// LookupCancelReason). Direct field
 	// access is reserved for engine.Fold —
 	// Fold runs at resume time BEFORE engine.Run, never concurrent with
 	// any goroutine, so its direct map writes are race-free by construction.
@@ -323,6 +343,7 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		GateAttempts:     map[string][]AttemptResult{},
 		MapItems:         map[string][]MapItemRecord{},
 		Signals:          map[string][]SignalEntry{},
+		CallStarted:      map[string]CallStartedRecord{},
 		SignalReceivedAt: map[string]SignalReceivedEntry{},
 		SnapshotRefs:     map[string]string{},
 		// Paused, Cancelled, CancelReason — zero values are correct
@@ -480,6 +501,26 @@ func (rs *RunState) LookupSignals(name string) []SignalEntry {
 	cp := make([]SignalEntry, len(src))
 	copy(cp, src)
 	return cp
+}
+
+// LookupCallStarted returns the call.started record stored for path and a
+// present flag. Thread-safe. READ-ONLY — callers MUST NOT mutate the returned
+// record's Input map or Runtimes slice.
+func (rs *RunState) LookupCallStarted(path string) (CallStartedRecord, bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rec, ok := rs.CallStarted[path]
+	return rec, ok
+}
+
+// RecordCallStarted stores rec for path. The call executor calls this AFTER a
+// successful Log.Append + Log.Sync of the corresponding call.started event —
+// in-memory state mirrors the durable log, not the other way around.
+// Thread-safe.
+func (rs *RunState) RecordCallStarted(path string, rec CallStartedRecord) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.CallStarted[path] = rec
 }
 
 // LookupSignalReceivedAt returns the SignalReceivedEntry stored for path and

@@ -16,6 +16,7 @@ func TestEventTypeConstants(t *testing.T) {
 	// these would invalidate every existing log.
 	cases := map[string]string{
 		EventRunStarted:     "run.started",
+		EventCallStarted:    "call.started",
 		EventRunResumed:     "run.resumed",
 		EventNodeCompleted:  "node.completed",
 		EventBranchTaken:    "branch.taken",
@@ -70,6 +71,41 @@ func TestRunStartedDataRoundTrip(t *testing.T) {
 	if out.RunID != in.RunID || out.WorkflowDigest != in.WorkflowDigest ||
 		out.InputRef != in.InputRef || len(out.Runtimes) != 0 {
 		t.Errorf("round-trip mismatch: in=%+v out=%+v", in, out)
+	}
+}
+
+func TestCallStartedDataRoundTrip(t *testing.T) {
+	in := CallStartedData{
+		InputRef: "awf-d1:sha256:def",
+		Runtimes: []ResolvedRuntime{
+			{Ref: "anthropic/claude-code", Version: "2.1.118", Container: "lab"},
+			{Ref: "openai/codex", Version: "0.31.0"},
+		},
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"input_ref":"awf-d1:sha256:def"`)) {
+		t.Errorf("marshal = %s, want input_ref", b)
+	}
+	if bytes.Contains(b, []byte("workflow_digest")) {
+		t.Errorf("call.started JSON must not contain workflow_digest, got %s", b)
+	}
+	var out CallStartedData
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.InputRef != in.InputRef {
+		t.Errorf("InputRef = %q, want %q", out.InputRef, in.InputRef)
+	}
+	if len(out.Runtimes) != len(in.Runtimes) {
+		t.Fatalf("len(Runtimes) = %d, want %d", len(out.Runtimes), len(in.Runtimes))
+	}
+	for i := range in.Runtimes {
+		if out.Runtimes[i] != in.Runtimes[i] {
+			t.Errorf("Runtimes[%d] = %+v, want %+v", i, out.Runtimes[i], in.Runtimes[i])
+		}
 	}
 }
 

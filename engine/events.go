@@ -13,7 +13,8 @@ import "github.com/valbaudo/awf/agent"
 // "run.cancelled" (3.5). Phase 5 slice 5.2 added "agent.event". Still future:
 // "io.chunk".
 const (
-	EventRunStarted = "run.started"
+	EventRunStarted  = "run.started"
+	EventCallStarted = "call.started"
 	// EventNodeStarted is emitted by the interpreter when a STEP node enters
 	// dispatch (Phase 6 slice 6.1). OBSERVATIONAL — Fold ignores it (default
 	// arm); obs projects it as the START of a two-event span. See NodeStartedData.
@@ -269,6 +270,15 @@ type RunStartedData struct {
 	Backend         string                     `json:"backend,omitempty"`          // slice 4.5; "" → BackendDocker on resume
 	Assets          map[string]RunStartedAsset `json:"assets,omitempty"`
 	Runtimes        []ResolvedRuntime          `json:"runtimes,omitempty"`
+}
+
+// CallStartedData is the durable subworkflow-call input pin. The root
+// run.started.workflow_digest already pins imported workflow canonical IR,
+// compose bytes, and asset bytes; call.started only records the call-specific
+// input and runtime resolutions.
+type CallStartedData struct {
+	InputRef string            `json:"input_ref"`
+	Runtimes []ResolvedRuntime `json:"runtimes,omitempty"`
 }
 
 // RunStartedAsset is the durable run-start manifest for one workflow asset.
