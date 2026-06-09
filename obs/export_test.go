@@ -3,10 +3,13 @@ package obs
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/state"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -122,5 +125,52 @@ func TestExportWithLiftedEventLimitKeepsAllEvents(t *testing.T) {
 	}
 	if n := strings.Count(buf.String(), "evtmarker"); n != totalEvents {
 		t.Errorf("exported %d events, want %d (SDK dropped events past the default 128 cap — limit not lifted)", n, totalEvents)
+	}
+}
+
+func TestExportStdoutKeepsLargeSkillsSelectedEventAttrs(t *testing.T) {
+	const selectedCount = 64
+	t0 := time.Unix(1000, 0).UTC()
+	selected := make([]engine.SelectedSkill, 0, selectedCount)
+	for i := 0; i < selectedCount; i++ {
+		selected = append(selected, engine.SelectedSkill{
+			ID:    fmt.Sprintf("skills/%02d", i),
+			Score: float64(i) / 100,
+		})
+	}
+	events := []state.Event{
+		ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "r1"}),
+		ev(t, engine.EventSkillsSelected, "hunt", t0.Add(time.Second), engine.SkillsSelectedData{
+			Library:       "stdlib",
+			LibraryDigest: "sha256:abc123",
+			Router:        "tfidf",
+			RouterVersion: "v1",
+			RouterParams: map[string]float64{
+				"alpha": 0.1,
+				"beta":  0.2,
+				"gamma": 0.3,
+				"delta": 0.4,
+			},
+			Selected: selected,
+		}),
+		ev(t, engine.EventNodeStarted, "hunt", t0.Add(2*time.Second), engine.NodeStartedData{Kind: "agent"}),
+		ev(t, engine.EventNodeCompleted, "hunt", t0.Add(3*time.Second), engine.NodeCompletedData{Outcome: "ok"}),
+	}
+	spans, err := Project(events, nil)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+
+	var buf bytes.Buffer
+	tp, err := NewStdoutProvider(&buf)
+	if err != nil {
+		t.Fatalf("NewStdoutProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	if err := Export(context.Background(), spans, tp); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if !strings.Contains(buf.String(), "awf.skills.selected.63.score") {
+		t.Fatalf("exported trace missing final selected skill score attr; stdout = %s", buf.String())
 	}
 }

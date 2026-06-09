@@ -82,6 +82,7 @@ The interpreter is the only component that writes to `state`; everything else ei
 | `frontend/yaml` | One frontend: YAML → IR types via **goccy/go-yaml** (`yaml.v3` archived Apr 2025); carries line/column for diagnostics. | `ir` |
 | `loader` | Reads the workflow + referenced compose files and top-level `assets:` → `LoadedDefinition`; the I/O front for `validate`. Compose and asset reads are confined to the workflow dir via Go 1.24 `os.Root` (rejects `..`/symlink escape); asset reads also enforce per-file bytes, total bytes, and file-count bounds. | `ir`, `frontend/yaml` |
 | `template` | §7 mini-language: parser + reference extraction (state-free) + value substitution + bounded boolean evaluator (the evaluator reads state). | `state` (read; evaluator only) |
+| `skillroute` | Deterministic v1 `bm25` router over top-level `skills:` corpora; builds weighted token documents from run-start asset snapshots and returns selected skill ids with finite scores. | `ir`, `state` (read) |
 | `state` | Durability core: append-only `Log` + content-addressed `Blobs`; owns the atomic commit. | — |
 | `container` | `Backend` interface + Docker impl + in-mem fake. `fs` snapshot. | — |
 | `agent` | `Adapter` interface + registry; resolves `uses:` to a base adapter **or a declared `agents:` role** (a `DerivedAdapter` — a base adapter with a key-blind `with:` overlay, registered per role at run start); runs harness; produces typed result + metrics. | `container` |
@@ -99,9 +100,35 @@ Each package has one job and a narrow interface; `engine` is the only one that g
 ## 4. Core data model
 
 ### IR (`ir`)
-A `Workflow{ID, Version, Input *JSONSchema, Assets map[string]Asset, Containers map[string]Container, Graph []Node, Digest string}`. `Digest` is a **self-describing** content hash (`awf-d1:sha256:…`) computed at load: the whole IR marshaled to JSON (explicit `json` tags on every field) then RFC-8785 JCS — so it is independent of Go field/map order — folding in referenced compose-file hashes and asset bytes (spec §8 / Phase-1 design spec). `Node` is a sum type:
+`Workflow.Digest` is a **self-describing** content hash (`awf-d1:sha256:…`) computed at load: the whole IR marshaled to JSON (explicit `json` tags on every field) then RFC-8785 JCS — so it is independent of Go field/map order — folding in referenced compose-file hashes and asset bytes (spec §8 / Phase-1 design spec). `Node` is a sum type:
 
 ```go
+type Workflow struct {
+    ID         string
+    Version    int
+    Input      *JSONSchema
+    Env        []string
+    Assets     map[string]string
+    Skills     map[string]SkillCorpus
+    Agents     map[string]AgentRole
+    Containers map[string]Container
+    Graph      NodeList
+    Digest     string
+}
+
+type SkillCorpus struct {
+    From   string // asset.<id>
+    Layout string // v1: skill_dirs
+    Router string // v1: bm25
+}
+
+type StepSkillRouting struct {
+    From  string   // top-level skills corpus id
+    Query Template // rendered in normal step scope
+    Limit int
+    Into  string   // absolute clean container path, not /
+}
+
 type Node interface{ isNode() }
 
 type CodeStep struct {
@@ -114,11 +141,12 @@ type CodeStep struct {
 }
 type AgentStep struct {
     ID, Container string
-    Uses   string              // agent-runtime ref
-    With   RawConfig           // opaque map; NOT destructured by core
+    Uses   string               // agent-runtime ref
+    With   RawConfig            // opaque map; NOT destructured by core
     OutputSchema *JSONSchema    // required iff outputs referenced downstream
     OutputFiles  []string       // optional; captured into the artifact store on commit
-    Timeout *time.Duration
+    Skills      *StepSkillRouting // optional; route and stage selected skill dirs before launch
+    Timeout     *time.Duration
     IdempotencyKey *Template
     Retry  *RetryPolicy
 }
@@ -159,7 +187,7 @@ Pure function `Path(parent, node, siblingIndex, branch) string` implementing spe
 One instance per declared name, created lazily on first reference and kept for the run (spec §3). The `engine` requests `Create` once per name, reuses the `Handle` across every step naming it, and `Destroy`s at run end or cancellation. Loop iterations on one container accumulate state; parallel branches must name distinct containers (validation rule below).
 
 ### Validation (`ir`)
-Pure over a `LoadedDefinition` the `loader` already read (compose files and asset bytes included) — `validate` itself does no I/O. Enforces: exactly one of `run`/`uses`/`await`; a container declares exactly one of `image`/`compose`, image is a digest not a tag, **every `image:` inside a referenced compose file is digest-pinned**, and `service` is set + resolvable for compose-backed containers; loop has `until` or `max_iters`; map has `over`/`as`/`container`/`concurrency`; gate has non-empty `generate`, an `evaluate` whose final node declares `output_schema`, `until`, and `max_attempts`; unique step ids and map aggregate ids in one namespace, with aggregate output ids rejected where they would duplicate sibling step ids and make `step.<id>` ambiguous; container refs resolve; `output_schema` present iff a `step.<id>.<field>` of this step or map aggregate is referenced; `input_files` refs resolve to either `step.<id>.files.<name>` or `asset.<id>`; named `output_files` contract objects have `path`, use only `format: json|jsonl`, require `format` when schema-bearing, and do not set both `schema` and `schema_ref`; **parallel branches (and `map` items) that run steps use distinct containers / compose projects** (spec §5.4); `input`/`output_schema` are valid **JSON Schema 2020-12**, with a warning when an agent `output_schema` uses features outside the conservative cross-backend floor (spec §7). Well-formedness is checked with `santhosh-tekuri/jsonschema/v6` `Compile()`; the floor is a hand-rolled warning-level check; compose digest-pinning is verified by walking the `compose-go/v2` model. Returns diagnostics with node paths (`Diagnostic{severity, path, code, message}`; collect-all, non-zero exit only on errors). `code` is a stable namespaced enum (`AWF1xxx` structural / `AWF2xxx` schema-floor / `AWF3xxx` digest-loader), an API for `--format json` consumers — never renumbered.
+Pure over a `LoadedDefinition` the `loader` already read (compose files and asset bytes included) — `validate` itself does no I/O. Enforces: exactly one of `run`/`uses`/`await`; a container declares exactly one of `image`/`compose`, image is a digest not a tag, **every `image:` inside a referenced compose file is digest-pinned**, and `service` is set + resolvable for compose-backed containers; loop has `until` or `max_iters`; map has `over`/`as`/`container`/`concurrency`; gate has non-empty `generate`, an `evaluate` whose final node declares `output_schema`, `until`, and `max_attempts`; unique step ids and map aggregate ids in one namespace, with aggregate output ids rejected where they would duplicate sibling step ids and make `step.<id>` ambiguous; container refs resolve; `output_schema` present iff a `step.<id>.<field>` of this step or map aggregate is referenced; `input_files` refs resolve to either `step.<id>.files.<name>` or `asset.<id>`; top-level `skills:` corpora reference directory assets, use only `layout: skill_dirs` and `router: bm25`, and each child skill directory contains `SKILL.md`; agent-step `skills:` refs resolve to a declared corpus, carry a valid `query` template, set `limit` positive and <= 64, set `into` to an absolute clean path other than `/`, require a container, and reject `input_files` destinations that overlap `into` in either direction; named `output_files` contract objects have `path`, use only `format: json|jsonl`, require `format` when schema-bearing, and do not set both `schema` and `schema_ref`; **parallel branches (and `map` items) that run steps use distinct containers / compose projects** (spec §5.4); `input`/`output_schema` are valid **JSON Schema 2020-12**, with a warning when an agent `output_schema` uses features outside the conservative cross-backend floor (spec §7). Well-formedness is checked with `santhosh-tekuri/jsonschema/v6` `Compile()`; the floor is a hand-rolled warning-level check; compose digest-pinning is verified by walking the `compose-go/v2` model. Returns diagnostics with node paths (`Diagnostic{severity, path, code, message}`; collect-all, non-zero exit only on errors). `code` is a stable namespaced enum (`AWF1xxx` structural / `AWF2xxx` schema-floor / `AWF3xxx` digest-loader), an API for `--format json` consumers — never renumbered.
 
 ### Event log (`state.Log`)
 Append-only sequence per run. One event:
@@ -175,9 +203,9 @@ type Event struct {
 }
 ```
 
-Event types: `run.started{input_ref, workflow_digest, backend, runtimes, assets}`, `run.finished`, `run.paused`, `run.skipped{reason}`, `node.started`, `node.completed{outputs_ref, files_ref, snapshot_ref?, outcome}`, `node.failed{outcome, error}`, `branch.taken{which}`, `loop.iter{n}`, `map.item{n, image_digest?, reason?}`, `retry.attempt{n, error, outcome}`, `signal.received{signal, payload_ref}`, `io.chunk{stream, ref}`, `agent.event{ref}`, `agent.tool.call/result`. Control-flow decisions that affect the resume path (`branch.taken`, `loop.iter`, `map.item`, `signal.received`, `run.skipped`) are events so the re-walk is deterministic.
+Event types: `run.started{input_ref, workflow_digest, backend, runtimes, assets}`, `run.finished`, `run.paused`, `run.skipped{reason}`, `skills.selected{library, library_digest, router, router_version, router_params, selected[]}`, `node.started`, `node.completed{outputs_ref, files_ref, snapshot_ref?, outcome}`, `node.failed{outcome, error}`, `branch.taken{which}`, `loop.iter{n}`, `map.item{n, image_digest?, reason?}`, `retry.attempt{n, error, outcome}`, `signal.received{signal, payload_ref}`, `io.chunk{stream, ref}`, `agent.event{ref}`, `agent.tool.call/result`. Control-flow decisions that affect the resume path (`branch.taken`, `loop.iter`, `map.item`, `signal.received`, `run.skipped`) and skill-selection decisions (`skills.selected`) are events so the re-walk is deterministic.
 
-Local impl: one append-only file per run, **etcd-WAL-style framed records** (`[8-byte-aligned length][CRC32C][payload]`). **fsync at durability-critical events** (`node.completed`, `run.*`, `signal.received`); high-frequency stream events (`io.chunk`, `agent.event`) are buffered and ride the next fsync (non-authoritative — a torn tail is dropped on fold). The fold scans from the start and stops at the first short read / CRC mismatch (torn-tail recovery). No persisted offset index — derivable by scanning; rebuild an in-memory index on open only if scan cost bites. Segmenting (etcd rotates its WAL at 64 MB) is deferred — chunk data lives in `Blobs`, so the log grows with event count, not payload.
+Local impl: one append-only file per run, **etcd-WAL-style framed records** (`[8-byte-aligned length][CRC32C][payload]`). **fsync at durability-critical events** (`node.completed`, `run.*`, `signal.received`, `skills.selected`); high-frequency stream events (`io.chunk`, `agent.event`) are buffered and ride the next fsync (non-authoritative — a torn tail is dropped on fold). The fold scans from the start and stops at the first short read / CRC mismatch (torn-tail recovery). No persisted offset index — derivable by scanning; rebuild an in-memory index on open only if scan cost bites. Segmenting (etcd rotates its WAL at 64 MB) is deferred — chunk data lives in `Blobs`, so the log grows with event count, not payload.
 
 ### Blob store (`state.Blobs`)
 Content-addressed; the hash sits **behind the `Blobs` interface** — v1 uses sha256 (OCI-aligned, hardware-accelerated), with BLAKE3 the upgrade path if hashing large blobs dominates profiles. Payload classes, one store: **artifacts** — run input, captured stdout, typed outputs, declared `output_files`, signal payloads, tool args/results, `io.chunk` data; and (only for `snapshot: workspace` containers) CoW FS diffs. Content addressing gives dedup + the "artifact exists" predicate the §8 atomicity guarantee needs.
@@ -214,6 +242,19 @@ artifact refs and recorded run-start asset refs from folded state before
 dispatch. `asset.<id>` always stages the blob refs recorded in `run.started`;
 resume verifies the live definition digest first, then stages from the recorded
 snapshot, not from the current asset path.
+
+For an agent step with `skills:`, the interpreter performs skill routing before
+`RunWithRetry`. On a fresh step it renders `skills.query` with the normal step
+scope, runs `skillroute` against the recorded run-start corpus snapshot, and if
+no skill scores above zero returns a permanent step failure before dispatch and
+before appending `skills.selected`. Otherwise it appends and fsyncs
+`skills.selected`, then uses the recorded ids. On resume it reuses recorded ids
+instead of rerouting, validating replay against the pinned run-start corpus
+digest plus router name, router version, and router params. The interpreter
+materializes selected skill files from the run-start assets under
+`<into>/<skill-id>/...`, merges those files with `input_files`, performs one
+destination collision/overlap check, and passes only resolved bytes to the
+dispatcher for staging.
 
 ### Interpreter ↔ Dispatcher seam
 The interpreter emits a `NodeIntent{path, node, resolvedInputs}` and consumes a `NodeResult`. It never touches Docker or a harness directly.
@@ -378,7 +419,7 @@ Tiny lexer→parser→evaluator. Because refs are typed, comparisons operate on 
 
 A **consumer of the log**, not a parallel path.
 
-- **Trace:** a deterministic projection `obs.Project(events, blobs) → []Span` over the folded log; the span tree mirrors the `engine/path` addressing tree. A **step** span STARTs on `node.started` and FINALIZES on `node.completed`/`node.failed`; an unfinalized `node.started` projects as a **Pending** span (the in-flight or crashed frontier). Control scopes (`if`/`loop`/`try`/`parallel`/`gate`/`map`) are synthesized to enclose their children. AWF-specific attributes live under `awf.*` (the stable contract — `awf.workflow.id/version/digest`, `awf.run.id/epoch`, `awf.node.path/kind/outcome`, `awf.scope.kind`, `awf.exit_code`; agent: `awf.cost.usd`, `awf.cost.source`, `awf.agent.turns`; gate: `awf.gate.attempt`, `awf.gate.attempts`, `awf.gate.outcome`; run root: `awf.run.cost.usd`). GenAI fields reuse OTel **`gen_ai.*`**, confined to one swappable mapping file (`obs/attrs.go`, semconv **v1.41.1** — that file is the single source of truth for the exact attribute set): `gen_ai.usage.input_tokens/output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, plus `gen_ai.conversation.id` + `session.id` (both the run id, for backend grouping). A `gate.attempt` projects a `gen_ai.evaluation.result` event (with `gen_ai.evaluation.name`). Prompts / agent I/O / typed-output *values* are emitted only behind the opt-in `--capture-content` flag (default OFF). `*_ref` are CAS pointers, never inline.
+- **Trace:** a deterministic projection `obs.Project(events, blobs) → []Span` over the folded log; the span tree mirrors the `engine/path` addressing tree. A **step** span STARTs on `node.started` and FINALIZES on `node.completed`/`node.failed`; an unfinalized `node.started` projects as a **Pending** span (the in-flight or crashed frontier). Control scopes (`if`/`loop`/`try`/`parallel`/`gate`/`map`) are synthesized to enclose their children. AWF-specific attributes live under `awf.*` (the stable contract — `awf.workflow.id/version/digest`, `awf.run.id/epoch`, `awf.node.path/kind/outcome`, `awf.scope.kind`, `awf.exit_code`; agent: `awf.cost.usd`, `awf.cost.source`, `awf.agent.turns`; gate: `awf.gate.attempt`, `awf.gate.attempts`, `awf.gate.outcome`; run root: `awf.run.cost.usd`). GenAI fields reuse OTel **`gen_ai.*`**, confined to one swappable mapping file (`obs/attrs.go`, semconv **v1.41.1** — that file is the single source of truth for the exact attribute set): `gen_ai.usage.input_tokens/output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, plus `gen_ai.conversation.id` + `session.id` (both the run id, for backend grouping). A `gate.attempt` projects a `gen_ai.evaluation.result` event (with `gen_ai.evaluation.name`). A `skills.selected` event projects the skill library, router metadata, and selected ids/scores; there is no query or query-hash projection. Prompts / agent I/O / typed-output *values* are emitted only behind the opt-in `--capture-content` flag (default OFF). `*_ref` are CAS pointers, never inline.
 - **Exporters:** default local file/stdout exporter (zero-infra, used by conformance tests); optional OTLP via env/flag.
 - **Live tap:** the CLI subscribes to the dispatcher's `IOChunk`/`AgentEvent` streams and renders them tail-style for the in-flight node. Same streams chunked into the log (large chunks offloaded to Blobs).
 - **Live state / run status:** `obs.DeriveStatus(events)` folds the log to `paused` / `finished` / `failed` / `cancelled` / `incomplete` — pure and OS-free. `awf ls` resolves the `incomplete` (started, no terminal event) case to `running` vs `crashed` via a sidecar advisory `flock` the run process holds for its lifetime (the kernel frees it on any death, incl. crash/SIGKILL), keeping the running-vs-crashed split off the log. In a trace, the same `node.started`-without-terminal case is a **Pending** span.
@@ -436,7 +477,7 @@ Spec §9 leaves secrets open; no subsystem here. Stopgap: named secrets from `--
 
 ## 15. Build phases
 
-**Phase 0 (bootstrap, prerequisite):** `go mod init` + toolchain pin (`go 1.26` / `toolchain go1.26.3`); `make lint test build`; CI green-bar gate; package skeleton.
+**Phase 0 (bootstrap, prerequisite):** `go mod init` + toolchain pin (`go 1.26` / `toolchain go1.26.4`); `make lint test build`; CI green-bar gate; package skeleton.
 
 1. **Skeleton:** `ir` + `frontend/yaml` (goccy) + `loader` + `validate` + digest; `template` parser; `clock`; `state` (log + blobs). (`engine/path` and the fake backend move to Phase 2 — see the Phase-1 design spec.)
 2. **First runnable slice:** tree-walking `engine` + `engine/path` + `LocalDispatcher` for **code steps only** (with `timeout`, `$AWF_OUTPUT` typed outputs, `input`); `template` evaluator; sequential + `if` + `loop`; commit boundary; resume-by-fold + digest check; **fake backend**; conformance suite green on fake backend.

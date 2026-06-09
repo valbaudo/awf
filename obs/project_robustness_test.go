@@ -1,6 +1,7 @@
 package obs
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -18,15 +19,45 @@ func TestProjectMalformedPayloadReturnsError(t *testing.T) {
 		bad  state.Event
 	}{
 		{"gate.attempt", state.Event{Type: engine.EventGateAttempt, Path: "gate[0]", TS: t0, Data: []byte("{")}},
+		{"skills.selected", state.Event{Type: engine.EventSkillsSelected, Path: "hunt", TS: t0, Data: []byte("{")}},
 		{"node.started", state.Event{Type: engine.EventNodeStarted, Path: "s1", TS: t0, Data: []byte("{not json")}},
 		{"node.completed", state.Event{Type: engine.EventNodeCompleted, Path: "s1", TS: t0, Data: []byte("nope")}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := Project([]state.Event{rs, c.bad}, nil); err == nil {
+			_, err := Project([]state.Event{rs, c.bad}, nil)
+			if err == nil {
 				t.Fatalf("Project: want error on malformed %s payload, got nil", c.name)
 			}
+			if c.name == engine.EventSkillsSelected {
+				msg := err.Error()
+				if !strings.Contains(msg, engine.EventSkillsSelected) || !strings.Contains(msg, c.bad.Path) {
+					t.Fatalf("Project error = %q, want mention %q and path %q", msg, engine.EventSkillsSelected, c.bad.Path)
+				}
+			}
 		})
+	}
+}
+
+func TestProjectSkillsSelectedRejectsEmptyPath(t *testing.T) {
+	t0 := time.Unix(1000, 0).UTC()
+	events := []state.Event{
+		ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "r"}),
+		ev(t, engine.EventSkillsSelected, "", t0.Add(time.Second), engine.SkillsSelectedData{
+			Library:       "stdlib",
+			LibraryDigest: "sha256:abc123",
+			Router:        "tfidf",
+			RouterVersion: "v1",
+			Selected:      []engine.SelectedSkill{{ID: "skills/search", Score: 0.9}},
+		}),
+	}
+	_, err := Project(events, nil)
+	if err == nil {
+		t.Fatal("Project: want error on skills.selected with empty path, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, engine.EventSkillsSelected) || !strings.Contains(msg, "empty path") {
+		t.Fatalf("Project error = %q, want mention %q and empty path", msg, engine.EventSkillsSelected)
 	}
 }
 

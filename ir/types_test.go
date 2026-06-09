@@ -24,6 +24,59 @@ func TestWorkflowAssetsJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWorkflowSkillsRoundTrip(t *testing.T) {
+	wf := &Workflow{
+		ID:      "skills-demo",
+		Version: 1,
+		Assets:  map[string]string{"skill_assets": "skills"},
+		Skills: map[string]SkillCorpus{
+			"web": {From: "asset.skill_assets", Layout: "skill_dirs", Router: "bm25"},
+		},
+		Containers: map[string]Container{"lab": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&AgentStep{
+				ID:        "route",
+				Container: "lab",
+				Uses:      "awf/native",
+				Skills: &StepSkillRouting{
+					From:  "web",
+					Query: Template("{{ input.target }}"),
+					Limit: 5,
+					Into:  "/work/.awf/skills",
+				},
+			},
+		},
+	}
+
+	raw, err := json.Marshal(wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Workflow
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	corpus, ok := got.Skills["web"]
+	if !ok {
+		t.Fatalf("Skills[web] missing after round-trip: %#v", got.Skills)
+	}
+	if corpus.From != "asset.skill_assets" || corpus.Layout != "skill_dirs" || corpus.Router != "bm25" {
+		t.Fatalf("Skills[web] = %+v, want from/layout/router preserved", corpus)
+	}
+	step, ok := got.Graph[0].(*AgentStep)
+	if !ok {
+		t.Fatalf("Graph[0] = %#v, want *AgentStep", got.Graph[0])
+	}
+	if step.Skills == nil {
+		t.Fatal("AgentStep.Skills is nil after round-trip")
+	}
+	if step.Skills.From != "web" || step.Skills.Query != Template("{{ input.target }}") ||
+		step.Skills.Limit != 5 || step.Skills.Into != "/work/.awf/skills" {
+		t.Fatalf("AgentStep.Skills = %+v, want from/query/limit/into preserved", step.Skills)
+	}
+}
+
 func containsJSONField(b []byte, name string) bool {
 	var obj map[string]any
 	if err := json.Unmarshal(b, &obj); err != nil {

@@ -178,6 +178,10 @@ func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]
 			if v.IdempotencyKey != nil {
 				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, maps, referenced, evaluateAllowed, "")
 			}
+			if v.Skills != nil {
+				checkFieldSize(string(v.Skills.Query), path+".skills.query", c)
+				checkTemplateRefs(string(v.Skills.Query), path+".skills.query", c, producers, maps, referenced, evaluateAllowed, "")
+			}
 			// Walk top-level string leaves of v.With in sorted key order (stable diagnostics).
 			// This mirrors engine.substituteRawConfig which templates every top-level string
 			// value — key-agnostic and opacity-preserving: we inspect only strings, never

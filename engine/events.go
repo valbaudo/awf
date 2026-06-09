@@ -10,8 +10,8 @@ import "github.com/valbaudo/awf/agent"
 // is the natural consumer; the Fold's default-switch-arm means a later writer can land
 // additively without breaking old logs). Phase 3 adds "node.skipped" (3.1),
 // "gate.attempt" (3.3), "map.item" (3.4), and "signal.received" / "run.paused" /
-// "run.cancelled" (3.5). Phase 5 slice 5.2 added "agent.event". Still future:
-// "io.chunk".
+// "run.cancelled" (3.5). Phase 5 slice 5.2 added "agent.event". Native skill
+// routing adds "skills.selected". Still future: "io.chunk".
 const (
 	EventRunStarted = "run.started"
 	// EventNodeStarted is emitted by the interpreter when a STEP node enters
@@ -31,6 +31,12 @@ const (
 	// for a root skip, etc.). Phase 6 obs will project node.skipped as a "skipped"
 	// span marker; cli inspect/trace renders it.
 	EventNodeSkipped = "node.skipped"
+
+	// EventSkillsSelected is the deterministic routing decision for an agent
+	// step's skills: block. It is written by runAgentStep before dispatch and
+	// folded on resume so the step reuses the recorded skill IDs rather than
+	// re-running the router.
+	EventSkillsSelected = "skills.selected"
 )
 
 const (
@@ -446,6 +452,25 @@ type AgentEventData struct {
 // offloaded to Blobs for > 4 KiB, mirrors io.chunk's threshold"). Private
 // because slice 5.2 is the only consumer (engine/agent_step.go in Task 8).
 const agentEventInlineThreshold = 4096
+
+// SkillsSelectedData is the payload of skills.selected. The metadata pins the
+// exact corpus/router snapshot used to produce Selected; on resume, runAgentStep
+// validates it against the current run-start asset snapshot before reusing the
+// recorded IDs.
+type SkillsSelectedData struct {
+	Library       string             `json:"library"`
+	LibraryDigest string             `json:"library_digest"`
+	Router        string             `json:"router"`
+	RouterVersion string             `json:"router_version"`
+	RouterParams  map[string]float64 `json:"router_params"`
+	Selected      []SelectedSkill    `json:"selected"`
+}
+
+// SelectedSkill is one routed skill ID and its router score.
+type SelectedSkill struct {
+	ID    string  `json:"id"`
+	Score float64 `json:"score"`
+}
 
 // NodeSkippedData is the observational marker emitted as a Skip unwinds
 // through a scope (Phase 3 design §B). Path is the path of the skipped scope

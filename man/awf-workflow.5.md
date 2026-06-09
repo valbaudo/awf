@@ -33,6 +33,11 @@ A workflow document has the following top-level shape:
     env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent steps
     assets:                       # optional; local files/dirs folded into the definition
       <id>: <relative-path>
+    skills:                       # optional; local skill corpora for agent-step routing
+      <corpus-id>:
+        from: asset.<id>
+        layout: skill_dirs
+        router: bm25
     agents:
       <role>: { uses: <adapter-ref>, model, system_prompt, with } # optional; reusable roles (see AGENTS)
     containers:
@@ -83,6 +88,22 @@ A workflow document has the following top-level shape:
     the current workflow document and current asset bytes still match the
     recorded definition digest; accepted runs then stage assets from the recorded
     run-start snapshot, not by re-reading the live filesystem.
+
+**skills**
+:   Optional. A map of local skill corpora used by agent-step skill routing. Each
+    corpus references a directory asset and is part of the definition digest
+    through the existing asset snapshot:
+
+        skills:
+          project-skills:
+            from: asset.skills_dir
+            layout: skill_dirs
+            router: bm25
+
+    The v1 layout is `skill_dirs`: each child directory is one skill and must
+    contain `SKILL.md`. The v1 router is `bm25`: a deterministic weighted
+    full-text router over `SKILL.md`, relative file paths, and text-like nested
+    files.
 
 **agents**
 :   Optional. A map of reusable agent **roles** (see **AGENTS**). Each role is a
@@ -303,6 +324,11 @@ format never hard-codes one harness's options.
       output_schema: { ... }         # required iff outputs are referenced downstream
       output_files: [<path>, ...]    # optional; or { <name>: <path|contract> } -> named
       input_files: { <dst>: step.<id>.files.<name> }   # or asset.<id>; optional; requires a container
+      skills:
+        from: <corpus-id>
+        query: <template>
+        limit: <positive-int>
+        into: <absolute-container-path>
       timeout: <dur>                 # optional
       idempotency_key: <template>    # optional
       retry: { ... }                 # optional
@@ -353,9 +379,60 @@ value within the retry budget the step is a `retryable_failure`. References bind
 only to typed fields, so `**verdict: pass**` versus `verdict: pass` can never
 silently break a gate.
 
+**skills**
+:   Optional. Routes a runtime query against a declared top-level skill corpus
+    and stages only selected skill directories into the step container before the
+    adapter launches. `query` is substituted using the normal step scope and must
+    render to a string. `limit` must be positive and no more than 64. `into` must
+    be an absolute clean container path, and it must not be `/`; selected files
+    land under `<into>/<skill-id>/...`. A step using `skills:` must have a
+    container; containerless skill delivery is not part of v1. `input_files`
+    destinations must not overlap `into` in either direction.
+
 Agent steps are atomic: one invocation is one checkpoint boundary, and resume
 re-runs the whole step from its pre-step snapshot. The agent's internal loop is
 its own business.
+
+## Skill routing
+
+Skill routing selects a small local skill library for one agent step.
+
+The v1 `bm25` router builds a weighted token stream for each skill directory:
+`SKILL.md` body tokens have weight 4, relative file-path tokens have weight 2,
+and text-like nested file body tokens have weight 1. A nested file is text-like
+when it is valid UTF-8, contains no NUL bytes, and at least 85% of its runes are
+printable or whitespace. `SKILL.md` contributes only as weight-4 `SKILL.md` body
+tokens plus the path tokens for `SKILL.md`; it is not also counted as a nested
+text-like file.
+
+Tokenization is deterministic: the tokenizer lowercases Unicode letters and
+digits, treats any non-letter/non-digit as a separator, and emits non-empty
+tokens. Relative file paths are tokenized the same way as text. Repeated query
+tokens count once.
+
+`bm25` uses `k1=1.2`, `b=0.75`, and the standard Robertson/Sparck Jones IDF
+variant used by Lucene-style BM25:
+`log(1 + (N - df + 0.5)/(df + 0.5))`, where `N` is the corpus size and `df` is
+the number of skill documents containing the query token. Document length is the
+length of the weighted token stream, so token repetition from weights affects
+length. Results sort by score descending, then by skill id ascending, and AWF
+returns only skills with a positive score. Scores must be finite JSON numbers.
+
+If no skill scores above zero, AWF treats routing as a permanent step failure
+before dispatch and before appending `skills.selected`. It never silently
+delivers an empty skill directory set.
+
+For a successful fresh selection, AWF appends and fsyncs
+`skills.selected{library, library_digest, router, router_version, router_params,
+selected[]}` before dispatch. `selected[]` records selected ids and scores. AWF
+does not store the rendered query text or a query hash.
+
+On resume, AWF reuses the recorded selected ids instead of routing again. Replay
+validates the pinned run-start corpus, router name, router version, and router
+params before staging the recorded skill directories.
+
+Deterministic BM25 v1 is inspired by SkillRouter full-body retrieval. It is not a
+neural encoder/reranker, and it is not the paper-level 80K registry behavior.
 
 ## Artifact channel (output_files, input_files)
 

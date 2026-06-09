@@ -85,6 +85,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 	rs.Signals = make(map[string][]SignalEntry, len(events)/16)        // sparse — signals are uncommon
 	rs.SignalReceivedAt = make(map[string]SignalReceivedEntry, len(events)/16)
 	rs.SnapshotRefs = make(map[string]string) // slice 7.1 — snapshot:workspace containers only; sparse
+	rs.SelectedSkills = make(map[string]SkillsSelectedData, len(events)/16)
 
 	seenRunStarted := false
 	for _, e := range events {
@@ -295,6 +296,26 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 					PayloadRef: d.PayloadRef,
 				}
 			}
+
+		case EventSkillsSelected:
+			var d SkillsSelectedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+					EventSkillsSelected, e.Seq, e.Path, err)
+			}
+			if e.Path == "" {
+				return nil, fmt.Errorf("engine.Fold: %s at seq=%d has empty path", EventSkillsSelected, e.Seq)
+			}
+			if _, ok := rs.SelectedSkills[e.Path]; ok {
+				return nil, fmt.Errorf("engine.Fold: %s already recorded for path %q at seq=%d", EventSkillsSelected, e.Path, e.Seq)
+			}
+			if len(d.Selected) == 0 {
+				return nil, fmt.Errorf("engine.Fold: %s at path %q seq=%d has empty selected; selected must be non-empty", EventSkillsSelected, e.Path, e.Seq)
+			}
+			if err := validateSkillsSelectedEventLocal(d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: %s at path %q seq=%d: %w", EventSkillsSelected, e.Path, e.Seq, err)
+			}
+			rs.SelectedSkills[e.Path] = cloneSkillsSelectedData(d)
 
 		case EventRunCancelled:
 			// Terminal — set the flag. cli/resume.go's 4-class refusal catches

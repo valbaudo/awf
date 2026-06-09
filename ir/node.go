@@ -37,13 +37,14 @@ type CodeStep struct {
 }
 
 type AgentStep struct {
-	ID           string      `json:"id"`
-	Container    string      `json:"container,omitempty"`
-	Uses         string      `json:"uses"`
-	With         RawConfig   `json:"with,omitempty"`
-	Continues    string      `json:"continues,omitempty"` // id of the prior agent turn to continue (engine-owned thread)
-	OutputSchema *JSONSchema `json:"output_schema,omitempty"`
-	OutputFiles  OutputFiles `json:"output_files,omitempty"`
+	ID           string            `json:"id"`
+	Container    string            `json:"container,omitempty"`
+	Uses         string            `json:"uses"`
+	With         RawConfig         `json:"with,omitempty"`
+	Continues    string            `json:"continues,omitempty"` // id of the prior agent turn to continue (engine-owned thread)
+	OutputSchema *JSONSchema       `json:"output_schema,omitempty"`
+	OutputFiles  OutputFiles       `json:"output_files,omitempty"`
+	Skills       *StepSkillRouting `json:"skills,omitempty"`
 	// InputFiles maps an in-container destination path → a static artifact or asset
 	// reference (step.<id>.files.<name> or asset.<id>). The engine resolves each to
 	// a CAS blob from a prior named output_files commit or run-start asset snapshot

@@ -63,6 +63,54 @@ func TestDecodeValidWorkflow(t *testing.T) {
 	}
 }
 
+func TestDecodeSkillRouting(t *testing.T) {
+	in := []byte(`
+workflow: skills-demo
+version: 1
+assets:
+  skill_assets: skills
+skills:
+  web:
+    from: asset.skill_assets
+    layout: skill_dirs
+    router: bm25
+containers:
+  lab:
+    image: oci://x@sha256:abc
+graph:
+  - id: route
+    container: lab
+    uses: awf/native
+    skills:
+      from: web
+      query: "{{ input.target }}"
+      limit: 5
+      into: /work/.awf/skills
+`)
+	wf, err := Decode(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpus, ok := wf.Skills["web"]
+	if !ok {
+		t.Fatalf("Skills[web] missing after decode: %#v", wf.Skills)
+	}
+	if corpus.From != "asset.skill_assets" || corpus.Layout != "skill_dirs" || corpus.Router != "bm25" {
+		t.Fatalf("Skills[web] = %+v, want from/layout/router preserved", corpus)
+	}
+	step, ok := wf.Graph[0].(*ir.AgentStep)
+	if !ok {
+		t.Fatalf("Graph[0] = %#v, want *ir.AgentStep", wf.Graph[0])
+	}
+	if step.Skills == nil {
+		t.Fatal("AgentStep.Skills is nil after decode")
+	}
+	if step.Skills.From != "web" || step.Skills.Query != ir.Template("{{ input.target }}") ||
+		step.Skills.Limit != 5 || step.Skills.Into != "/work/.awf/skills" {
+		t.Fatalf("AgentStep.Skills = %+v, want from/query/limit/into preserved", step.Skills)
+	}
+}
+
 func TestDecodeYAMLSyntaxError(t *testing.T) {
 	// A malformed YAML — goccy must surface a *goyaml.SyntaxError with a precise line so
 	// downstream validation can report it as a position-aware diagnostic. Bare-string match

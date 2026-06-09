@@ -33,6 +33,14 @@ var errArtifactFetch = errors.New("engine: input_files artifact fetch failed")
 // permanent_failure); a Blobs.Get failure is wrapped with errArtifactFetch
 // (caller → internal halt). Sorted by dst for determinism.
 func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blobs state.Blobs, assets map[string]RunStartedAsset) ([]container.InputFile, error) {
+	expanded, err := resolveInputFileEntries(in, scope, wf, blobs, assets)
+	if err != nil {
+		return nil, err
+	}
+	return inputFilesFromResolvedEntries(expanded)
+}
+
+func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow, blobs state.Blobs, assets map[string]RunStartedAsset) ([]resolvedInputFile, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
@@ -76,6 +84,15 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 			source: rawRef,
 		})
 	}
+	return expanded, nil
+}
+
+type resolvedInputFile struct {
+	file   container.InputFile
+	source string
+}
+
+func inputFilesFromResolvedEntries(expanded []resolvedInputFile) ([]container.InputFile, error) {
 	if err := rejectInputFilePathCollisions(expanded); err != nil {
 		return nil, err
 	}
@@ -84,11 +101,6 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 		out = append(out, e.file)
 	}
 	return out, nil
-}
-
-type resolvedInputFile struct {
-	file   container.InputFile
-	source string
 }
 
 func resolveAssetInputFiles(dst, rawRef, id string, assets map[string]RunStartedAsset, blobs state.Blobs) ([]resolvedInputFile, error) {

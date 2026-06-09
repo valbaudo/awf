@@ -73,7 +73,10 @@ func NewStdoutProvider(w io.Writer) (*sdktrace.TracerProvider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("obs.NewStdoutProvider: %w", err)
 	}
-	return sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp))), nil
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+		sdktrace.WithRawSpanLimits(defaultSpanLimits()),
+	), nil
 }
 
 // NewOTLPProvider builds a TracerProvider exporting to an OTLP/HTTP endpoint
@@ -84,7 +87,16 @@ func NewOTLPProvider(ctx context.Context, endpoint string) (*sdktrace.TracerProv
 	if err != nil {
 		return nil, fmt.Errorf("obs.NewOTLPProvider: %w", err)
 	}
-	return sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp))), nil
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+		sdktrace.WithRawSpanLimits(defaultSpanLimits()),
+	), nil
+}
+
+func defaultSpanLimits() sdktrace.SpanLimits {
+	limits := sdktrace.NewSpanLimits()
+	limits.AttributePerEventCountLimit = -1
+	return limits
 }
 
 // NewStdoutProviderWithLimits is NewStdoutProvider with caller-supplied span

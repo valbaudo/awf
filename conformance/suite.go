@@ -47,6 +47,10 @@
 //   - Assets: workflow-declared file and directory assets are snapshotted into
 //     run.started and staged into input_files byte-for-byte from that recorded
 //     manifest before step execution (stage_run_started_snapshot_bytes).
+//   - Skills: native skill routing selects from the run-start asset snapshot,
+//     stages only selected skill files, and on resume replays/re-stages the
+//     recorded selection without rerouting (selected_skill_staged_from_run_started_snapshot,
+//     resume_replays_selected_skill_and_re_stages).
 //   - Artifact contracts: named output_files contract metadata validates captured
 //     artifacts before commit, including schema_ref assets resolved from the
 //     run-start snapshot (jsonl_schema_ref_rejects_invalid_capture).
@@ -142,6 +146,7 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("map", func(t *testing.T) { testMap(t, factory) })
 	t.Run("artifacts", func(t *testing.T) { testArtifacts(t, factory) })
 	t.Run("assets", func(t *testing.T) { testAssets(t, factory) })
+	t.Run("skills", func(t *testing.T) { testSkills(t, factory) })
 	t.Run("artifact_contracts", func(t *testing.T) { testArtifactContracts(t, factory) })
 	t.Run("p6a", func(t *testing.T) { testP6a(t, factory) })
 	t.Run("aggregation", func(t *testing.T) { testAggregation(t, factory) })

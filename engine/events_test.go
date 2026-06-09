@@ -27,6 +27,7 @@ func TestEventTypeConstants(t *testing.T) {
 		EventSignalReceived: "signal.received",
 		EventRunPaused:      "run.paused",
 		EventRunCancelled:   "run.cancelled",
+		EventSkillsSelected: "skills.selected",
 	}
 	for got, want := range cases {
 		if got != want {

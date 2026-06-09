@@ -273,6 +273,11 @@ type RunState struct {
 	// omitempty, so the Fold guard skips them).
 	SnapshotRefs map[string]string
 
+	// SelectedSkills records skills.selected decisions by runtime node path.
+	// Agent steps consult it on resume to replay routed skill IDs without
+	// re-running the router against a possibly changed query.
+	SelectedSkills map[string]SkillsSelectedData
+
 	// continues: threading derivations — built once per run from wf (whole-graph
 	// walks), reused by every runAgentStep that assembles a thread. Guarded by
 	// their own sync.Once so a parallel/map fan-out computes each once, race-free
@@ -283,7 +288,8 @@ type RunState struct {
 	threadTargetSet map[string]bool
 
 	// mu serializes access to Completed / Branches / LoopIters / GateAttempts
-	// / MapItems / Signals / SignalReceivedAt / Paused / Cancelled / CancelReason.
+	// / MapItems / Signals / SignalReceivedAt / SelectedSkills / Paused /
+	// Cancelled / CancelReason.
 	// Phase 2 callers were single-threaded; Phase 3 slice 3.2
 	// (parallel) introduced concurrent branch goroutines, and slice 3.4 (map)
 	// adds concurrent item-body goroutines.
@@ -325,6 +331,7 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		Signals:          map[string][]SignalEntry{},
 		SignalReceivedAt: map[string]SignalReceivedEntry{},
 		SnapshotRefs:     map[string]string{},
+		SelectedSkills:   map[string]SkillsSelectedData{},
 		// Paused, Cancelled, CancelReason — zero values are correct
 	}
 }
@@ -490,6 +497,31 @@ func (rs *RunState) LookupSignalReceivedAt(path string) (SignalReceivedEntry, bo
 	defer rs.mu.Unlock()
 	e, ok := rs.SignalReceivedAt[path]
 	return e, ok
+}
+
+// LookupSelectedSkills returns the skills.selected payload recorded for path.
+// The returned value is a defensive copy; callers may inspect it but must not
+// mutate RunState through it.
+func (rs *RunState) LookupSelectedSkills(path string) (SkillsSelectedData, bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	d, ok := rs.SelectedSkills[path]
+	if !ok {
+		return SkillsSelectedData{}, false
+	}
+	return cloneSkillsSelectedData(d), true
+}
+
+// RecordSelectedSkills stores the skills.selected payload for path. The
+// interpreter calls this only after the corresponding event has been appended
+// and synced; Fold uses it when reconstructing state on resume.
+func (rs *RunState) RecordSelectedSkills(path string, data SkillsSelectedData) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.SelectedSkills == nil {
+		rs.SelectedSkills = map[string]SkillsSelectedData{}
+	}
+	rs.SelectedSkills[path] = cloneSkillsSelectedData(data)
 }
 
 // RecordSignalReceivedAt stores e for path. Used by Fold (engine/fold.go's

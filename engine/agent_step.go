@@ -13,6 +13,7 @@ import (
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/retry"
 	"github.com/valbaudo/awf/signal"
+	"github.com/valbaudo/awf/skillroute"
 	"github.com/valbaudo/awf/state"
 	"github.com/valbaudo/awf/template"
 )
@@ -78,6 +79,25 @@ func runAgentStep(
 	policy, err := retry.Merge(retry.Default, as.Retry)
 	if err != nil {
 		return "", fmt.Errorf("engine.runAgentStep: build retry policy at path %q: %w", path, err)
+	}
+
+	if as.Container == "" && as.Skills != nil {
+		return failStep(log, path, OutcomePermanentFailure,
+			fmt.Errorf("engine.runAgentStep: skills requires a container; agent step %q is containerless", as.ID))
+	}
+
+	var selectedSkills SkillsSelectedData
+	var skillCorpus *skillroute.Corpus
+	if as.Skills != nil {
+		var oc Outcome
+		selectedSkills, skillCorpus, oc, err = selectAgentStepSkills(as, path, wf, runstate, log, blobs, scope)
+		if err != nil {
+			err = fmt.Errorf("engine.runAgentStep: select skills at %q: %w", path, err)
+			if oc == OutcomePermanentFailure {
+				return failStep(log, path, OutcomePermanentFailure, err)
+			}
+			return "", err
+		}
 	}
 
 	// Slice 5.3: populate Feedback from the enclosing gate's prior verdict.
@@ -153,11 +173,22 @@ func runAgentStep(
 	// is an author bug → permanent_failure; a Blobs.Get failure of a committed,
 	// content-addressed artifact is corruption/IO → internal halt ("" outcome),
 	// so resume re-runs the uncommitted step and re-fetches.
-	inputFiles, err := resolveInputFiles(as.InputFiles, scope, wf, blobs, runstate.Assets)
+	inputFileEntries, err := resolveInputFileEntries(as.InputFiles, scope, wf, blobs, runstate.Assets)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			return "", fmt.Errorf("engine.runAgentStep: stage input_files at %q: %w", path, err)
 		}
+		return failStep(log, path, OutcomePermanentFailure, err)
+	}
+	if as.Skills != nil {
+		skillFiles, err := resolveSelectedSkillFiles(selectedSkills, skillCorpus, string(as.Skills.Into))
+		if err != nil {
+			return failStep(log, path, OutcomePermanentFailure, err)
+		}
+		inputFileEntries = append(inputFileEntries, skillFiles...)
+	}
+	inputFiles, err := inputFilesFromResolvedEntries(inputFileEntries)
+	if err != nil {
 		return failStep(log, path, OutcomePermanentFailure, err)
 	}
 

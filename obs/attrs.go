@@ -44,6 +44,17 @@ const (
 	// awf.agent.event span-event name (slice 6.2 content capture).
 	EventNameAgentContent = "awf.agent.event"
 
+	// awf.skills.selected span-event name (native skill routing metadata).
+	EventNameSkillsSelected = "awf.skills.selected"
+
+	AttrSkillsLibrary        = "awf.skills.library"
+	AttrSkillsLibraryDigest  = "awf.skills.library_digest"
+	AttrSkillsRouter         = "awf.skills.router"
+	AttrSkillsRouterVersion  = "awf.skills.router_version"
+	AttrSkillsSelectedCount  = "awf.skills.selected.count"
+	AttrSkillsRouterParamPre = "awf.skills.router_param."
+	AttrSkillsSelectedPre    = "awf.skills.selected."
+
 	// Content-capture attribute names (slice 6.2). STABLE wire contract — never renamed.
 	AttrNodeOutput               = "awf.node.output"
 	AttrNodeOutputRef            = "awf.node.output_ref"

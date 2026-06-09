@@ -11,15 +11,29 @@ import (
 // (*Workflow).SetDigest) or compared on resume; it is excluded from its own hash input
 // (`json:"-"`). After json.Unmarshal, Digest is empty until set.
 type Workflow struct {
-	ID         string               `json:"workflow"`
-	Version    int                  `json:"version"`
-	Input      *JSONSchema          `json:"input,omitempty"`
-	Env        []string             `json:"env,omitempty"`
-	Assets     map[string]string    `json:"assets,omitempty"`
-	Agents     map[string]AgentRole `json:"agents,omitempty"`
-	Containers map[string]Container `json:"containers"`
-	Graph      NodeList             `json:"graph"`
-	Digest     string               `json:"-"`
+	ID         string                 `json:"workflow"`
+	Version    int                    `json:"version"`
+	Input      *JSONSchema            `json:"input,omitempty"`
+	Env        []string               `json:"env,omitempty"`
+	Assets     map[string]string      `json:"assets,omitempty"`
+	Skills     map[string]SkillCorpus `json:"skills,omitempty"`
+	Agents     map[string]AgentRole   `json:"agents,omitempty"`
+	Containers map[string]Container   `json:"containers"`
+	Graph      NodeList               `json:"graph"`
+	Digest     string                 `json:"-"`
+}
+
+type SkillCorpus struct {
+	From   string `json:"from"`
+	Layout string `json:"layout"`
+	Router string `json:"router"`
+}
+
+type StepSkillRouting struct {
+	From  string   `json:"from"`
+	Query Template `json:"query"`
+	Limit int      `json:"limit"`
+	Into  string   `json:"into"`
 }
 
 // Container is backed by exactly one of Image or Compose (structural validation per the standard §3).

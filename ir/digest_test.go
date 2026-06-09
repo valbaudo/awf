@@ -200,6 +200,43 @@ func TestDigestFoldsAgents(t *testing.T) {
 	}
 }
 
+func TestDigestChangesWhenSkillCorpusChanges(t *testing.T) {
+	asset := LoadedAsset{
+		ID:           "skill_assets",
+		DeclaredPath: "skills",
+		IsDir:        true,
+		Files: []LoadedAssetFile{{
+			Path:  "alpha/SKILL.md",
+			Bytes: []byte("# Alpha\n"),
+			Size:  int64(len("# Alpha\n")),
+		}},
+	}
+	assets := map[string]LoadedAsset{"skill_assets": asset}
+
+	wf := sampleWorkflow()
+	wf.Assets = map[string]string{"skill_assets": "skills"}
+	wf.Skills = map[string]SkillCorpus{
+		"web": {From: "asset.skill_assets", Layout: "skill_dirs", Router: "bm25"},
+	}
+	d1, err := wf.ComputeDigest(nil, assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed := sampleWorkflow()
+	changed.Assets = map[string]string{"skill_assets": "skills"}
+	changed.Skills = map[string]SkillCorpus{
+		"web": {From: "asset.skill_assets", Layout: "skill_dirs", Router: "bm25-v2"},
+	}
+	d2, err := changed.ComputeDigest(nil, assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 == d2 {
+		t.Fatalf("digest ignored skill corpus router change: %s", d1)
+	}
+}
+
 func TestDigestFoldsReduce(t *testing.T) {
 	// A reduce: clause on a map is part of the definition: declaring it changes
 	// the digest (so resume hard-errors on a changed reducer), while a nil

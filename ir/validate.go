@@ -12,6 +12,8 @@ package ir
 //   - agents     (AWF1033/4) — top-level agents: role-definition shape (non-empty
 //     uses:, role name not in the <vendor>/<name> adapter-ref form) and every
 //     uses: ref resolving to a declared role OR a syntactically-valid base ref
+//   - skills     (AWF1040-45, AWF3010-11) — native skill corpus declarations,
+//     loaded directory layout, and agent-step routing shape/staging constraints
 //   - reduce     (AWF1035, AWF5006, AWF1009) — map reduce: fan-in shape (exactly one
 //     of run:/quorum:; quorum needs over:; a run: reducer needs a resolvable
 //     container:) and quorum/over aggregation scope (over: names a real body field;
@@ -45,6 +47,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 	c := &collector{}
 	validateStructural(ld, c)
 	validateAgents(ld, c)
+	validateSkills(ld, c)
 	validateContinues(ld, c)
 	validateReduce(ld, c)
 	validatePrune(ld, c)

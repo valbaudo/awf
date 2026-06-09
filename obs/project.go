@@ -159,6 +159,20 @@ func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOpt
 			}
 			attachAgentEventContent(ensureSpan(byPath, e.Path), d, blobs, e.TS)
 
+		case engine.EventSkillsSelected:
+			var d engine.SkillsSelectedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("obs.Project: skills.selected at %q: %w", e.Path, err)
+			}
+			if e.Path == "" {
+				return nil, fmt.Errorf("obs.Project: skills.selected has empty path")
+			}
+			s := ensureSpan(byPath, e.Path)
+			if s.Start.IsZero() {
+				s.Start = e.TS
+			}
+			attachSkillsSelectedEvent(s, d, e.TS)
+
 		case engine.EventNodeSkipped:
 			// node.skipped is emitted for a `skip` node (skip.go:65); it is NOT a
 			// dispatched step so it has no node.started. Project it as a short
