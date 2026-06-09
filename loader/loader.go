@@ -1,12 +1,12 @@
-// Package loader reads a workflow YAML file and its referenced compose files into an
+// Package loader reads workflow YAML files and their referenced compose files/assets into an
 // ir.LoadedDefinition. The I/O front for validation: file reads happen here so validation itself
 // can be pure over an already-loaded snapshot.
 //
-// Compose paths declared by containers go through two independent gates:
+// Paths declared by containers, imports, and assets go through two independent gates:
 //
-//  1. composeRelPath rejects absolute paths, paths containing backslashes (compose paths are
-//     POSIX; backslashes have no legitimate use and silently rewriting them hides authoring
-//     mistakes), and paths that escape the workflow directory after filepath.Clean.
+//  1. safeRootRelPath rejects absolute paths, paths containing backslashes (manifest paths are
+//     slash-separated; silently rewriting them hides authoring mistakes), control characters, and
+//     paths that escape the workflow directory after path.Clean.
 //  2. os.Root (Go 1.24, rooted at the workflow directory) independently confines all opens to
 //     the workflow directory. Root follows inside-root symlinks, so Load explicitly rejects
 //     symlink path components before opening files.
@@ -17,42 +17,113 @@
 package loader
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/valbaudo/awf/frontend/yaml"
 	"github.com/valbaudo/awf/ir"
 )
 
-// Load reads the workflow file at workflowPath, parses it into the IR, then reads each referenced
-// compose file. Returns an error on the first failure (workflow unreadable, YAML parse error,
-// compose-path escape, compose missing/unreadable). Slice 1.4 may later map these to typed
-// diagnostics; for now they propagate as Go errors with attribution.
+// Load reads the root workflow file at workflowPath, parses it into the IR, reads each referenced
+// compose file and asset snapshot, then recursively loads local workflow imports. Root-level
+// Workflow, WorkflowPath, ComposeFiles, and Assets fields remain aliases for the root module.
 func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 	abs, err := filepath.Abs(workflowPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workflow path %q: %w", workflowPath, err)
 	}
-	wfBytes, err := os.ReadFile(abs)
+	modules := map[string]*ir.LoadedModule{}
+	var edges []ir.LoadedImportEdge
+	root, err := loadModule(abs, "", nil, 0, modules, &edges)
 	if err != nil {
-		return nil, fmt.Errorf("read workflow %q: %w", abs, err)
+		return nil, err
 	}
-	wf, err := yaml.Decode(wfBytes)
+	return &ir.LoadedDefinition{
+		Workflow:     root.Workflow,
+		WorkflowPath: root.WorkflowPath,
+		ComposeFiles: root.ComposeFiles,
+		Assets:       root.Assets,
+		Modules:      modules,
+		ImportEdges:  edges,
+	}, nil
+}
+
+func loadModule(
+	absPath string,
+	moduleID string,
+	stack []string,
+	depth int,
+	modules map[string]*ir.LoadedModule,
+	edges *[]ir.LoadedImportEdge,
+) (*ir.LoadedModule, error) {
+	if depth > maxImportDepth {
+		return nil, &LoadError{
+			Code:    "AWF_IMPORT_DEPTH",
+			Source:  absPath,
+			Message: fmt.Sprintf("import depth exceeds maximum %d", maxImportDepth),
+		}
+	}
+	abs, err := filepath.Abs(absPath)
 	if err != nil {
-		return nil, fmt.Errorf("decode %q: %w", abs, err)
+		return nil, &LoadError{Code: "AWF_IMPORT_READ", Source: absPath, Message: "resolve workflow path", Err: err}
+	}
+	for _, seen := range stack {
+		if seen == abs {
+			return nil, &LoadError{
+				Code:    "AWF_IMPORT_CYCLE",
+				Source:  abs,
+				Message: "workflow import cycle detected",
+			}
+		}
 	}
 
 	workflowDir := filepath.Dir(abs)
 	root, err := os.OpenRoot(workflowDir)
 	if err != nil {
-		return nil, fmt.Errorf("open workflow dir %q as root: %w", workflowDir, err)
+		return nil, &LoadError{Code: "AWF_IMPORT_READ", Source: abs, Message: "open workflow directory", Err: err}
 	}
 	defer func() { _ = root.Close() }() // read-only Root; Close error not meaningful
 
+	wfBytes, err := readRootRegularFile(root, filepath.Base(abs))
+	if err != nil {
+		return nil, &LoadError{Code: "AWF_IMPORT_READ", Source: abs, Path: "workflow", Message: "read workflow", Err: err}
+	}
+	wf, err := yaml.Decode(wfBytes)
+	if err != nil {
+		return nil, &LoadError{Code: "AWF_IMPORT_DECODE", Source: abs, Message: "decode workflow YAML", Err: err}
+	}
+
+	compose, err := loadComposeFiles(root, wf)
+	if err != nil {
+		return nil, err
+	}
+
+	assets, err := loadAssets(root, wf.Assets)
+	if err != nil {
+		return nil, err
+	}
+	for id, asset := range assets {
+		wf.Assets[id] = asset.DeclaredPath
+	}
+
+	module := &ir.LoadedModule{
+		ID:           moduleID,
+		Workflow:     wf,
+		WorkflowPath: abs,
+		ComposeFiles: compose,
+		Assets:       assets,
+	}
+	modules[moduleID] = module
+	nextStack := append(append([]string(nil), stack...), abs)
+	if err := loadImports(module, root, nextStack, depth, modules, edges); err != nil {
+		return nil, err
+	}
+	return module, nil
+}
+
+func loadComposeFiles(root *os.Root, wf *ir.Workflow) (map[string][]byte, error) {
 	compose := map[string][]byte{}
 	for name, c := range wf.Containers {
 		if c.Compose == "" {
@@ -105,43 +176,35 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 		c.Compose = rel
 		wf.Containers[name] = c
 	}
+	return compose, nil
+}
 
-	assets, err := loadAssets(root, wf.Assets)
+func readRootRegularFile(root *os.Root, rel string) ([]byte, error) {
+	f, err := root.Open(rel)
 	if err != nil {
 		return nil, err
 	}
-	for id, asset := range assets {
-		wf.Assets[id] = asset.DeclaredPath
+	info, statErr := f.Stat()
+	if statErr != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("stat: %w", statErr)
 	}
-
-	return &ir.LoadedDefinition{
-		Workflow:     wf,
-		WorkflowPath: abs,
-		ComposeFiles: compose,
-		Assets:       assets,
-	}, nil
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, fmt.Errorf("not a regular file")
+	}
+	b, readErr := io.ReadAll(f)
+	closeErr := f.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("read: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close: %w", closeErr)
+	}
+	return b, nil
 }
 
-// composeRelPath validates and normalizes a compose path declared in a container. The path must
-// be relative (no absolute), must not contain backslashes (compose paths are POSIX; on darwin/
-// linux filepath.IsAbs is false for "\foo" and filepath.Clean leaves backslashes alone, so a
-// "..\..\escape" string would otherwise survive the prefix check and reach os.Root with only an
-// opaque "no such file" error — reject it up front for honest attribution and cross-OS parity),
-// and must not escape the workflow directory after Clean (no leading "../"). The returned form
-// is forward-slashed for use both as the os.Root.Open path and as the ComposeFiles map key.
-//
-// os.Root would itself reject `..`-escape, but checking here gives clearer, attributed error
-// messages distinct from "file not found".
+// composeRelPath validates and normalizes a compose path declared in a container.
 func composeRelPath(declared string) (string, error) {
-	if filepath.IsAbs(declared) {
-		return "", errors.New("absolute path not permitted (must be relative to the workflow directory)")
-	}
-	if strings.ContainsRune(declared, '\\') {
-		return "", errors.New("backslash not permitted in compose paths; use forward slash")
-	}
-	clean := filepath.ToSlash(filepath.Clean(declared))
-	if clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", fmt.Errorf("path escapes the workflow directory after cleaning: %q", clean)
-	}
-	return clean, nil
+	return safeRootRelPath(declared, safePathPolicy{kind: "compose"})
 }
