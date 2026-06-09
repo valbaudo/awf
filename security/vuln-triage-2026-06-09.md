@@ -1,11 +1,22 @@
 # Vulnerability Triage - 2026-06-09
 
 Scope: `govulncheck ./...` after the minimal dependency refresh for the AWF
-subworkflow preflight. The refresh updates the Go toolchain to 1.26.4 for
-reachable standard-library findings and updates the compatible `x/crypto` and
-`moby/spdystream` fixed lines. The scan still reports reachable Docker/Moby
-findings with no fixed version and Docker/BuildKit fixed-version findings whose
-available fixes require a broader Docker CLI/Compose migration.
+subworkflow preflight. The refresh updates the Go toolchain to 1.26.4 for the
+reachable standard-library findings below, and updates the compatible
+`x/crypto`, `moby/spdystream`, and `containerd/containerd/v2` fixed lines. The
+scan still reports reachable Docker/Moby findings with no fixed version and
+Docker/BuildKit fixed-version findings whose available fixes require a broader
+Docker CLI/Compose migration.
+
+## Fixed By This Refresh
+
+| ID | Module | Found in | Fixed in | Affected package/symbols | Fix applied |
+| --- | --- | --- | --- | --- | --- |
+| GO-2026-5037 | standard library | Go 1.26.3 | Go 1.26.4 | `crypto/x509`: `Certificate.Verify`, `Certificate.VerifyHostname`, `HostnameError.Error` | `toolchain go1.26.4` |
+| GO-2026-5038 | standard library | Go 1.26.3 | Go 1.26.4 | `mime`: `WordDecoder.DecodeHeader` | `toolchain go1.26.4` |
+| GO-2026-5039 | standard library | Go 1.26.3 | Go 1.26.4 | `net/textproto`: `Error.Error`, `Reader.ReadCodeLine`, `Reader.ReadMIMEHeader`, `Reader.ReadResponse` | `toolchain go1.26.4` |
+| GO-2025-4108 | `github.com/containerd/containerd/v2` | `v2.1.4` | `v2.1.5` | Reachable through Docker/Compose module graph. | `github.com/containerd/containerd/v2 v2.1.5` |
+| GO-2025-4100 | `github.com/containerd/containerd/v2` | `v2.1.4` | `v2.1.5` | Reachable through Docker/Compose module graph. | `github.com/containerd/containerd/v2 v2.1.5` |
 
 ## Reachable Fixed:N/A Findings
 
