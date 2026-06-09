@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -16,12 +17,12 @@ import (
 type producer struct {
 	path   string
 	ord    int
-	kind   string // "code", "agent", "signal", "input", "map_reduce", "map_compact"
+	kind   string // "code", "agent", "signal", "call", "input", "map_reduce", "map_compact"
 	schema *JSONSchema
 	reduce *Reduce
 }
 
-// validateRefs runs the AWF3001/AWF3002 pass: walks every ir.Template and ir.Expr field,
+// validateRefsModule runs the AWF3001/AWF3002 pass: walks every ir.Template and ir.Expr field,
 // extracts references via the template package, and cross-checks them against the
 // producers' output_schemas — extended to also cross-check `input.<field>` against the
 // workflow's input schema.
@@ -41,12 +42,12 @@ type producer struct {
 // `evaluate.<field>` (legal only inside gate.generate or gate.until — enforced statically by
 // AWF5001 via the evaluateAllowed bool threaded through walkRefs), `run.id` (always OK),
 // `<as>.<field>` (only meaningful inside a map; deferred to Phase 2's evaluator scope check).
-func validateRefs(ld *LoadedDefinition, c *collector) {
-	wf := ld.Workflow
+func validateRefsModule(ld *LoadedDefinition, mod validationModule, c *collector) {
+	wf := mod.Workflow
 
 	// Build the producer index: step.id → (kind, output_schema). Used to check AWF3001.
 	producers := map[string]producer{}
-	indexProducers(wf.Graph, producers)
+	indexModuleProducers(ld, mod.ModuleID, wf.Graph, producers)
 
 	// Synthetic "input" producer so the same checkRef machinery can validate input.<field>
 	// against wf.Input. Path "input" mirrors what TestSchemaInputSchemaAlsoValidated uses.
@@ -115,7 +116,7 @@ func mapsByPath(nodes NodeList) map[string]*Map {
 	return out
 }
 
-func indexProducers(nodes NodeList, producers map[string]producer) {
+func indexModuleProducers(ld *LoadedDefinition, moduleID string, nodes NodeList, producers map[string]producer) {
 	ord := 0
 	WalkNodes(nodes, "", func(n Node, path string) {
 		currentOrd := ord
@@ -127,6 +128,13 @@ func indexProducers(nodes NodeList, producers map[string]producer) {
 			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "agent", schema: v.OutputSchema}
 		case *SignalStep:
 			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "signal", schema: v.OutputSchema}
+		case *CallStep:
+			child, ok := callTargetModule(ld, moduleID, v.Call)
+			if ok && child != nil && child.Workflow != nil {
+				producers[v.ID] = producer{path: path, ord: currentOrd, kind: "call", schema: child.Workflow.OutputSchema}
+			} else {
+				producers[v.ID] = producer{path: path, ord: currentOrd, kind: "call"}
+			}
 		case *Map:
 			if v.ID == "" {
 				return
@@ -145,6 +153,29 @@ func indexProducers(nodes NodeList, producers map[string]producer) {
 			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "map_compact", schema: schema}
 		}
 	})
+}
+
+func callTargets(ld *LoadedDefinition, parentID string) map[string]string {
+	out := map[string]string{}
+	if ld == nil {
+		return out
+	}
+	_ = ld.WalkImportEdges(func(edge LoadedImportEdge) error {
+		if edge.ParentID == parentID {
+			out[edge.ImportID] = edge.ChildID
+		}
+		return nil
+	})
+	return out
+}
+
+func callTargetModule(ld *LoadedDefinition, parentID, importID string) (*LoadedModule, bool) {
+	targets := callTargets(ld, parentID)
+	childID, ok := targets[importID]
+	if !ok {
+		return nil, false
+	}
+	return ld.Module(childID)
 }
 
 // NOTE: not built on ir.WalkNodes — walkRefs threads gate-asymmetric
@@ -652,4 +683,145 @@ func syntaxMessage(err error) string {
 		return se.Msg
 	}
 	return err.Error()
+}
+
+func validateCalls(ld *LoadedDefinition, mod validationModule, c *collector) {
+	wf := mod.Workflow
+	targets := callTargets(ld, mod.ModuleID)
+	producers := map[string]producer{}
+	indexModuleProducers(ld, mod.ModuleID, wf.Graph, producers)
+	if wf.Input != nil {
+		producers["input"] = producer{path: "input", kind: "input", schema: wf.Input}
+	}
+	maps := mapsByPath(wf.Graph)
+
+	WalkNodes(wf.Graph, "", func(n Node, nodePath string) {
+		call, ok := n.(*CallStep)
+		if !ok {
+			return
+		}
+		if call.Call == "" {
+			c.errf(nodePath, "AWF1040", catalog["AWF1040"]+": empty call target")
+		} else if _, ok := targets[call.Call]; !ok {
+			c.errf(nodePath, "AWF1040", fmt.Sprintf("%s: %q", catalog["AWF1040"], call.Call))
+		}
+		validateTemplateValueRefs(c, "AWF1041", nodePath+".input", call.Input, producers, maps)
+	})
+}
+
+func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *collector) {
+	wf := mod.Workflow
+	producers := map[string]producer{}
+	indexModuleProducers(ld, mod.ModuleID, wf.Graph, producers)
+	if wf.Input != nil {
+		producers["input"] = producer{path: "input", kind: "input", schema: wf.Input}
+	}
+	maps := mapsByPath(wf.Graph)
+
+	if len(wf.Outputs) > 0 && wf.OutputSchema == nil {
+		c.errf("outputs", "AWF1042", catalog["AWF1042"]+": outputs require output_schema")
+	}
+	outputKeys := make([]string, 0, len(wf.Outputs))
+	for key := range wf.Outputs {
+		outputKeys = append(outputKeys, key)
+	}
+	sort.Strings(outputKeys)
+	for _, key := range outputKeys {
+		path := "outputs." + key
+		if wf.OutputSchema != nil {
+			props, _ := (*wf.OutputSchema)["properties"].(map[string]any)
+			if _, ok := props[key]; !ok {
+				c.errf(path, "AWF1042", fmt.Sprintf("%s: output %q is not declared in output_schema", catalog["AWF1042"], key))
+			}
+		}
+		validateTemplateValueRefs(c, "AWF1042", path, map[string]TemplateValue{"": wf.Outputs[key]}, producers, maps)
+	}
+
+	if len(wf.ArtifactExports) == 0 {
+		return
+	}
+	order := nodeOrder(wf.Graph)
+	outFiles := outputFilesByStepIDForModule(ld, mod.ModuleID, wf)
+	exportKeys := make([]string, 0, len(wf.ArtifactExports))
+	for key := range wf.ArtifactExports {
+		exportKeys = append(exportKeys, key)
+	}
+	sort.Strings(exportKeys)
+	for _, key := range exportKeys {
+		path := "output_files." + key
+		if !stepIDPattern.MatchString(key) {
+			c.errf(path, "AWF1043", "workflow output_files."+key+": name must match "+stepIDPattern.String())
+			continue
+		}
+		tmp := &collector{source: c.source}
+		validateNamedArtifactRef(tmp, path, "output_files."+key, wf.ArtifactExports[key], producers, order, outFiles, maps)
+		reemitDiagnosticsAs(c, tmp.out, "AWF1043")
+	}
+}
+
+func validateTemplateValueRefs(
+	c *collector,
+	code, basePath string,
+	values map[string]TemplateValue,
+	producers map[string]producer,
+	maps map[string]*Map,
+) {
+	if len(values) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		path := basePath
+		if key != "" {
+			path += "." + key
+		}
+		var decoded any
+		if err := json.Unmarshal(values[key], &decoded); err != nil {
+			c.errf(path, code, fmt.Sprintf("%s: invalid JSON value: %s", catalog[code], err))
+			continue
+		}
+		walkTemplateValueStrings(c, code, path, decoded, producers, maps)
+	}
+}
+
+func walkTemplateValueStrings(
+	c *collector,
+	code, path string,
+	value any,
+	producers map[string]producer,
+	maps map[string]*Map,
+) {
+	switch v := value.(type) {
+	case string:
+		tmp := &collector{source: c.source}
+		referenced := map[string]bool{}
+		checkTemplateRefs(v, path, tmp, producers, maps, referenced, false, "")
+		reemitDiagnosticsAs(c, tmp.out, code)
+	case []any:
+		for i, elem := range v {
+			walkTemplateValueStrings(c, code, fmt.Sprintf("%s[%d]", path, i), elem, producers, maps)
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			walkTemplateValueStrings(c, code, path+"."+key, v[key], producers, maps)
+		}
+	}
+}
+
+func reemitDiagnosticsAs(c *collector, diags []Diagnostic, code string) {
+	for _, d := range diags {
+		if d.Severity != Error {
+			continue
+		}
+		c.errf(d.Path, code, fmt.Sprintf("%s: %s", catalog[code], d.Message))
+	}
 }

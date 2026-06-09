@@ -70,6 +70,35 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 
 	ld, loadErr := loader.Load(path)
 	if loadErr != nil {
+		var le *loader.LoadError
+		if errors.As(loadErr, &le) {
+			msg := le.Message
+			if msg == "" && le.Err != nil {
+				msg = le.Err.Error()
+			}
+			diags := []ir.Diagnostic{{
+				Severity: ir.Error,
+				Source:   le.Source,
+				Path:     le.Path,
+				Code:     le.Code,
+				Message:  msg,
+			}}
+			switch *format {
+			case "json":
+				enc := json.NewEncoder(stdout)
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(validateResult{Path: path, Diagnostics: diags}); err != nil {
+					fprintf(stderr, "awf validate: json encode: %v\n", err)
+					return ExitUsage
+				}
+			case "text":
+				printTextResult(stdout, path, "", diags)
+			default:
+				fprintf(stderr, "awf validate: unknown --format %q (want text or json)\n", *format)
+				return ExitUsage
+			}
+			return ExitInvalid
+		}
 		fprintf(stderr, "awf validate: %v\n", loadErr)
 		return ExitUsage
 	}

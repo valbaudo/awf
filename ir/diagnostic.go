@@ -56,6 +56,7 @@ func (s *Severity) UnmarshalJSON(b []byte) error {
 // the exit code via HasErrors.
 type Diagnostic struct {
 	Severity Severity
+	Source   string `json:",omitempty"`
 	Path     string
 	Code     string
 	Message  string
@@ -68,6 +69,12 @@ type Diagnostic struct {
 // The JSON projection (slice 1.6's `--format json`) marshals the struct directly with the
 // default Go field names.
 func (d Diagnostic) String() string {
+	if d.Source != "" && d.Path != "" {
+		return fmt.Sprintf("%s %s at %s:%s: %s", d.Severity, d.Code, d.Source, d.Path, d.Message)
+	}
+	if d.Source != "" {
+		return fmt.Sprintf("%s %s at %s: %s", d.Severity, d.Code, d.Source, d.Message)
+	}
 	if d.Path == "" {
 		return fmt.Sprintf("%s %s: %s", d.Severity, d.Code, d.Message)
 	}
@@ -85,7 +92,7 @@ func HasErrors(ds []Diagnostic) bool {
 	return false
 }
 
-// sortDiagnostics sorts ds in place by (Code, Path, Message) so golden-file comparisons are
+// sortDiagnostics sorts ds in place by (Code, Source, Path, Message) so golden-file comparisons are
 // stable. Uses a hand-rolled insertion sort to avoid importing "sort" for a single call
 // site — diagnostic counts are tiny (≤ low hundreds even for a large workflow).
 func sortDiagnostics(ds []Diagnostic) {
@@ -99,6 +106,9 @@ func sortDiagnostics(ds []Diagnostic) {
 func less(a, b Diagnostic) bool {
 	if a.Code != b.Code {
 		return a.Code < b.Code
+	}
+	if a.Source != b.Source {
+		return a.Source < b.Source
 	}
 	if a.Path != b.Path {
 		return a.Path < b.Path
@@ -176,6 +186,10 @@ var catalog = map[string]string{
 	"AWF1037": "prune must declare a `score` field name and exactly one of `keep`/`stop_when` (`keep` must be top(<positive int>), `stop_when` must be a non-empty bounded boolean expression)",
 	"AWF1038": "compose block is invalid (requires static as/from/service/body, non-empty body, and a scoped handle that does not collide)",
 	"AWF1039": "runtime map image target container may only be referenced by its owning map and that map's body",
+	"AWF1040": "unknown or invalid call target",
+	"AWF1041": "call input contract invalid",
+	"AWF1042": "workflow outputs/export contract invalid",
+	"AWF1043": "workflow artifact export invalid",
 	"AWF5006": "reduce quorum/over names a body output field that no branch declares, or min_success and reduce:{quorum} are both declared on the same node",
 	"AWF5008": "prune.score must name a numeric field declared in the output_schema of the map body's last step",
 	"AWF5009": "map id without reduce requires a final body code/agent/signal step with output_schema",

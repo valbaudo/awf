@@ -63,6 +63,37 @@ func TestDiagnosticErrorRenders(t *testing.T) {
 	}
 }
 
+func TestDiagnosticSourceRenders(t *testing.T) {
+	cases := []struct {
+		name string
+		in   Diagnostic
+		want string
+	}{
+		{
+			name: "source-and-path",
+			in:   Diagnostic{Severity: Error, Source: "/tmp/child.awf.yaml", Path: "graph[0].run", Code: "AWF1005", Message: "image is a tag"},
+			want: "error AWF1005 at /tmp/child.awf.yaml:graph[0].run: image is a tag",
+		},
+		{
+			name: "source-only",
+			in:   Diagnostic{Severity: Error, Source: "/tmp/child.awf.yaml", Code: "AWF_IMPORT_READ", Message: "read workflow"},
+			want: "error AWF_IMPORT_READ at /tmp/child.awf.yaml: read workflow",
+		},
+		{
+			name: "root-shape-unchanged",
+			in:   Diagnostic{Severity: Error, Code: "AWF1003", Message: "nil or empty LoadedDefinition"},
+			want: "error AWF1003: nil or empty LoadedDefinition",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.in.String(); got != tc.want {
+				t.Errorf("String() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSeverityJSONRoundTrip locks the wire format the slice-1.6 CLI's `--format json` emits:
 // severities are STRINGS ("error"/"warning"), not opaque ints. Round-trip via Unmarshal so
 // the same byte stream is consumable by another Go process.

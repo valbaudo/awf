@@ -26,7 +26,7 @@ func validateReduce(ld *LoadedDefinition, c *collector) {
 func walkReduce(list NodeList, parent string, wf *Workflow, scoped map[string]bool, mapImageTargetOwners map[string][]string, c *collector) {
 	for i, n := range list {
 		switch v := n.(type) {
-		case *CodeStep, *AgentStep, *SignalStep, *Skip:
+		case *CodeStep, *AgentStep, *SignalStep, *CallStep, *Skip:
 			// No child maps or reduce clauses.
 		case *If:
 			walkReduce(v.Then, ChildPath(parent, "if", i, "then"), wf, scoped, mapImageTargetOwners, c)
