@@ -74,3 +74,12 @@ func TestChildPath(t *testing.T) {
 		}
 	}
 }
+
+func TestCallWorkflowParentPath(t *testing.T) {
+	if got := CallWorkflowParentPath(""); got != "workflow" {
+		t.Errorf("CallWorkflowParentPath(empty) = %q, want workflow", got)
+	}
+	if got := CallWorkflowParentPath("recon_result"); got != "recon_result.workflow" {
+		t.Errorf("CallWorkflowParentPath(parent) = %q, want recon_result.workflow", got)
+	}
+}

@@ -17,7 +17,7 @@ var controlKeys = map[string]func() Node{
 }
 var stepKeys = map[string]func() Node{
 	"run": func() Node { return &CodeStep{} }, "uses": func() Node { return &AgentStep{} },
-	"await": func() Node { return &SignalStep{} },
+	"await": func() Node { return &SignalStep{} }, "call": func() Node { return &CallStep{} },
 }
 
 // unmarshalNode decodes one node by key-presence. Exactly one kind key must be present.
@@ -43,7 +43,7 @@ func unmarshalNode(raw json.RawMessage) (Node, error) {
 	sort.Strings(found)
 	switch len(found) {
 	case 0:
-		return nil, fmt.Errorf("node has no kind key (need one of run/uses/await or a control keyword)")
+		return nil, fmt.Errorf("node has no kind key (need one of run/uses/await/call or a control keyword)")
 	case 1:
 		// ok
 	default:

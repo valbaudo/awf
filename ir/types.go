@@ -11,15 +11,19 @@ import (
 // (*Workflow).SetDigest) or compared on resume; it is excluded from its own hash input
 // (`json:"-"`). After json.Unmarshal, Digest is empty until set.
 type Workflow struct {
-	ID         string               `json:"workflow"`
-	Version    int                  `json:"version"`
-	Input      *JSONSchema          `json:"input,omitempty"`
-	Env        []string             `json:"env,omitempty"`
-	Assets     map[string]string    `json:"assets,omitempty"`
-	Agents     map[string]AgentRole `json:"agents,omitempty"`
-	Containers map[string]Container `json:"containers"`
-	Graph      NodeList             `json:"graph"`
-	Digest     string               `json:"-"`
+	ID              string                   `json:"workflow"`
+	Version         int                      `json:"version"`
+	Input           *JSONSchema              `json:"input,omitempty"`
+	Env             []string                 `json:"env,omitempty"`
+	Assets          map[string]string        `json:"assets,omitempty"`
+	Imports         map[string]string        `json:"imports,omitempty"`
+	Agents          map[string]AgentRole     `json:"agents,omitempty"`
+	Containers      map[string]Container     `json:"containers"`
+	OutputSchema    *JSONSchema              `json:"output_schema,omitempty"`
+	Outputs         map[string]TemplateValue `json:"outputs,omitempty"`
+	ArtifactExports ArtifactExports          `json:"output_files,omitempty"`
+	Graph           NodeList                 `json:"graph"`
+	Digest          string                   `json:"-"`
 }
 
 // Container is backed by exactly one of Image or Compose (structural validation per the standard §3).
@@ -75,6 +79,10 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // Template is an unparsed templated string (e.g. "{{ input.cve_id }}:pr"). Parsed in the template package.
 type Template string
+
+type TemplateValue = json.RawMessage
+
+type ArtifactExports map[string]string
 
 // Expr is an unparsed condition expression (if.cond / loop.until / gate.until).
 type Expr string

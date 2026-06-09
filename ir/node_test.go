@@ -28,6 +28,58 @@ func TestStepRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCallStepDecode(t *testing.T) {
+	in := `{"workflow":"parent","version":1,"imports":{"scan":"./scan.awf.yaml"},"containers":{},"graph":[{"id":"reuse","call":"scan","input":{"target":"{{ input.target }}","payload":{"nested":true}}}]}`
+	var wf Workflow
+	if err := json.Unmarshal([]byte(in), &wf); err != nil {
+		t.Fatal(err)
+	}
+	if wf.Imports["scan"] != "./scan.awf.yaml" {
+		t.Fatalf("Imports[scan] = %q, want ./scan.awf.yaml", wf.Imports["scan"])
+	}
+	if len(wf.Graph) != 1 {
+		t.Fatalf("graph len = %d, want 1", len(wf.Graph))
+	}
+	call, ok := wf.Graph[0].(*CallStep)
+	if !ok {
+		t.Fatalf("graph[0] = %T, want *CallStep", wf.Graph[0])
+	}
+	if call.ID != "reuse" || call.Call != "scan" {
+		t.Fatalf("bad call step decode: %+v", call)
+	}
+	if got := string(call.Input["target"]); got != `"{{ input.target }}"` {
+		t.Fatalf("input[target] = %s, want raw template string", got)
+	}
+	if got := string(call.Input["payload"]); got != `{"nested":true}` {
+		t.Fatalf("input[payload] = %s, want raw object preserved", got)
+	}
+}
+
+func TestCallStepRoundTrip(t *testing.T) {
+	in := `{"id":"reuse","call":"scan","input":{"target":"{{ input.target }}"}}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, ok := n.(*CallStep)
+	if !ok {
+		t.Fatalf("got %T, want *CallStep", n)
+	}
+	if call.ID != "reuse" || call.Call != "scan" {
+		t.Fatalf("bad decode: %+v", call)
+	}
+	if got := string(call.Input["target"]); got != `"{{ input.target }}"` {
+		t.Fatalf("input[target] = %s, want raw template string", got)
+	}
+	out, err := json.Marshal(call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
 func TestControlMarshalShape(t *testing.T) {
 	b, err := json.Marshal(&Gate{Until: "x", MaxAttempts: 3})
 	if err != nil {
@@ -49,7 +101,7 @@ func TestZeroKindKeysIsError(t *testing.T) {
 }
 
 func TestMultipleKindKeysIsError(t *testing.T) {
-	if _, err := unmarshalNode(json.RawMessage(`{"id":"x","run":"a","uses":"b"}`)); err == nil {
+	if _, err := unmarshalNode(json.RawMessage(`{"id":"x","run":"a","uses":"b","call":"c"}`)); err == nil {
 		t.Fatal("expected error for node with multiple kind keys")
 	}
 }
@@ -394,7 +446,7 @@ func TestComposeRoundTrip(t *testing.T) {
 // control type to the factory but forgets the switch case lands in the "unknown control" branch,
 // which this test catches before it can ship.
 func TestNodeRegistryExhaustive(t *testing.T) {
-	const wantKinds = 11 // 3 step + 8 control; update when (the standard's set of) node kinds changes.
+	const wantKinds = 12 // 4 step + 8 control; update when (the standard's set of) node kinds changes.
 	if got := len(controlKeys) + len(stepKeys); got != wantKinds {
 		t.Fatalf("registries cover %d kinds, want %d", got, wantKinds)
 	}

@@ -128,3 +128,40 @@ graph: []
 		t.Fatal("expected duplicate assets key to be rejected")
 	}
 }
+
+func TestDecodeWorkflowArtifactExportsKeepsStepOutputFiles(t *testing.T) {
+	wf, err := Decode([]byte(`
+workflow: exports
+version: 1
+containers:
+  lab: {image: alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+output_files:
+  report: step.final.files.report
+graph:
+  - id: final
+    container: lab
+    run: ./final
+    output_files:
+      report:
+        path: /out/report.jsonl
+        format: jsonl
+        schema_ref: asset.row_schema
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.ArtifactExports["report"] != "step.final.files.report" {
+		t.Fatalf("ArtifactExports[report] = %q, want step.final.files.report", wf.ArtifactExports["report"])
+	}
+	step, ok := wf.Graph[0].(*ir.CodeStep)
+	if !ok {
+		t.Fatalf("Graph[0] = %#v, want *ir.CodeStep", wf.Graph[0])
+	}
+	if len(step.OutputFiles) != 1 {
+		t.Fatalf("OutputFiles len = %d, want 1", len(step.OutputFiles))
+	}
+	got := step.OutputFiles[0]
+	if got.Name != "report" || got.Path != "/out/report.jsonl" || got.Format != "jsonl" || got.SchemaRef != "asset.row_schema" {
+		t.Fatalf("OutputFiles[0] = %+v, want named report contract", got)
+	}
+}
