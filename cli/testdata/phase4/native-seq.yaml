@@ -1,15 +1,6 @@
-workflow: native-seq
+workflow: native-empty
 version: 1
 
-containers:
-  workspace:
-    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+containers: {}
 
-graph:
-  - id: write_marker
-    container: workspace
-    run: "echo hello > marker.txt"
-
-  - id: read_marker
-    container: workspace
-    run: "cat marker.txt"
+graph: []

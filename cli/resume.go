@@ -267,22 +267,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// are reconstructed from their image/compose recipe on every (re)creation,
 	// including resume").
 	//
-	// Slice 7.1 capability guard (parallels cli/run.go): refuse to resume a
-	// snapshot:workspace workflow on a backend that can't snapshot. Resume
-	// already reads the backend kind from the log (native is rejected upstream
-	// in readBackendKindFromLog), so this is a cheap consistency check before
-	// the create/restore loop.
-	if err := checkSnapshotCapability(ld.Workflow, backend); err != nil {
-		fprintf(stderr, "awf resume: %v\n", err)
-		return ExitUsage
-	}
-	// P6a capability guard (parallels the snapshot guard above): a runtime-image
-	// map on a backend that ignores image: (native) cannot be honored.
-	if err := checkRuntimeImageCapability(ld.Workflow, backend); err != nil {
-		fprintf(stderr, "awf resume: %v\n", err)
-		return ExitUsage
-	}
-	if err := checkRuntimeComposeCapability(ld.Workflow, string(kind), backend); err != nil {
+	if err := checkWorkflowBackendCapabilities(ld.Workflow, kind, backend); err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}

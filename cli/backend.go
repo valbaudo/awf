@@ -106,7 +106,9 @@ func readBackendKindFromLog(events []state.Event) (string, error) {
 			}
 			switch kind {
 			case engine.BackendNative:
-				return "", fmt.Errorf("cli: runs with --backend native are not resumable (no infra recipe to reconstruct host state). Delete the run directory and start fresh with 'awf run --backend native ...', or use 'awf run --backend docker' for resumable runs")
+				return "", fmt.Errorf("cli: runs with --backend native are not resumable (no infra recipe to reconstruct host state). Delete the run directory and start fresh with 'awf run --backend native ...', or use --backend docker for resumable runs")
+			case backendAuto:
+				return "", fmt.Errorf("cli: run log records unresolved backend %q", backendAuto)
 			case engine.BackendFake, engine.BackendDocker:
 				return kind, nil
 			default:

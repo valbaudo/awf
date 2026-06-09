@@ -9,6 +9,7 @@ import (
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -159,4 +160,131 @@ func TestReadBackendKindFromLogRejectsNative(t *testing.T) {
 	if !strings.Contains(err.Error(), "native") {
 		t.Errorf("err = %q, want to mention 'native'", err)
 	}
+	if !strings.Contains(err.Error(), "--backend docker") {
+		t.Errorf("err = %q, want --backend docker guidance", err)
+	}
+}
+
+func TestReadBackendKindFromLogRejectsAuto(t *testing.T) {
+	t.Parallel()
+	payload, err := json.Marshal(engine.RunStartedData{
+		RunID:          "r1",
+		WorkflowDigest: "sha256:x",
+		Backend:        "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []state.Event{{Type: engine.EventRunStarted, Data: payload}}
+	_, err = cli.ReadBackendKindFromLogForTest(events)
+	if err == nil {
+		t.Fatal("err = nil, want non-nil (auto must not be recorded)")
+	}
+	if !strings.Contains(err.Error(), `unresolved backend "auto"`) {
+		t.Errorf("err = %q, want unresolved auto diagnostic", err)
+	}
+}
+
+func TestSelectRunBackendAutoDefaultsToNative(t *testing.T) {
+	t.Parallel()
+	got, err := cli.SelectRunBackendForTest("auto", simpleBackendWF())
+	if err != nil {
+		t.Fatalf("SelectRunBackend(auto): %v", err)
+	}
+	if got != engine.BackendNative {
+		t.Errorf("selected backend = %q, want %q", got, engine.BackendNative)
+	}
+}
+
+func TestSelectRunBackendAutoChoosesDockerForDockerOnlyFeatures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		wf   *ir.Workflow
+	}{
+		{
+			name: "static image",
+			wf: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {Image: "oci://example.com/lab@sha256:" + strings.Repeat("0", 64)},
+			}},
+		},
+		{
+			name: "static compose",
+			wf: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {Compose: "lab/compose.yml", Service: "runner"},
+			}},
+		},
+		{
+			name: "workspace snapshot",
+			wf: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {Snapshot: "workspace"},
+			}},
+		},
+		{
+			name: "runtime compose",
+			wf: &ir.Workflow{
+				Containers: map[string]ir.Container{},
+				Graph: ir.NodeList{&ir.Compose{
+					As: "lab", From: "step.compose.files.compose", Service: "runner",
+					Body: ir.NodeList{},
+				}},
+			},
+		},
+		{
+			name: "runtime map image",
+			wf: &ir.Workflow{
+				Containers: map[string]ir.Container{"lab": {}},
+				Graph: ir.NodeList{&ir.Map{
+					Container: "lab", Image: "{{ item.image }}", Body: ir.NodeList{},
+				}},
+			},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := cli.SelectRunBackendForTest("auto", tc.wf)
+			if err != nil {
+				t.Fatalf("SelectRunBackend(auto): %v", err)
+			}
+			if got != engine.BackendDocker {
+				t.Errorf("selected backend = %q, want %q", got, engine.BackendDocker)
+			}
+		})
+	}
+}
+
+func TestSelectRunBackendExplicitNativeRejectsDockerOnlyFeature(t *testing.T) {
+	t.Parallel()
+	_, err := cli.SelectRunBackendForTest(engine.BackendNative, &ir.Workflow{
+		Containers: map[string]ir.Container{
+			"lab": {Image: "oci://example.com/lab@sha256:" + strings.Repeat("0", 64)},
+		},
+	})
+	if err == nil {
+		t.Fatal("err = nil, want native rejection for Docker-only feature")
+	}
+	if !strings.Contains(err.Error(), "--backend native") || !strings.Contains(err.Error(), "--backend docker") {
+		t.Errorf("err = %q, want native rejection with docker guidance", err)
+	}
+}
+
+func TestSelectRunBackendExplicitFakeRemainsExplicit(t *testing.T) {
+	t.Parallel()
+	got, err := cli.SelectRunBackendForTest(engine.BackendFake, &ir.Workflow{
+		Containers: map[string]ir.Container{
+			"lab": {Image: "oci://example.com/lab@sha256:" + strings.Repeat("0", 64)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SelectRunBackend(fake): %v", err)
+	}
+	if got != engine.BackendFake {
+		t.Errorf("selected backend = %q, want %q", got, engine.BackendFake)
+	}
+}
+
+func simpleBackendWF() *ir.Workflow {
+	return &ir.Workflow{Containers: map[string]ir.Container{}}
 }

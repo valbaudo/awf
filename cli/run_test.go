@@ -1192,6 +1192,52 @@ func TestCLIRunPropagatesComposeBytesToBackend(t *testing.T) {
 
 func TestCLIRunWritesBackendNativeOnRunStartedByDefault(t *testing.T) {
 	t.Parallel()
+	stateDir := t.TempDir()
+	wfPath := writeEmptyWorkflow(t, t.TempDir())
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, wfPath},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
+	if backendField != engine.BackendNative {
+		t.Errorf("run.started.Backend = %q, want %q (default auto selection)", backendField, engine.BackendNative)
+	}
+	wantWarning := "awf run: backend auto selected native; this run cannot be resumed until native resume is supported. Use --backend docker for resumable runs."
+	if got := strings.Count(stderr.String(), wantWarning); got != 1 {
+		t.Errorf("native auto warning count = %d, want 1; stderr:\n%s", got, stderr.String())
+	}
+}
+
+func TestCLIRunBackendAutoFlagAcceptedAndRecordsConcreteBackend(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	wfPath := writeEmptyWorkflow(t, t.TempDir())
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "--backend", "auto", wfPath},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
+	if backendField != engine.BackendNative {
+		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
+	}
+	wantWarning := "awf run: backend auto selected native; this run cannot be resumed until native resume is supported. Use --backend docker for resumable runs."
+	if got := strings.Count(stderr.String(), wantWarning); got != 1 {
+		t.Errorf("native auto warning count = %d, want 1; stderr:\n%s", got, stderr.String())
+	}
+}
+
+func TestCLIRunBackendAutoSelectsDockerForStaticImage(t *testing.T) {
+	t.Parallel()
 	fake := container.NewFake()
 	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
 	fake.ProgramExec("echo step2", container.ExecResult{
@@ -1210,8 +1256,11 @@ func TestCLIRunWritesBackendNativeOnRunStartedByDefault(t *testing.T) {
 		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
 	}
 	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
-	if backendField != engine.BackendNative {
-		t.Errorf("run.started.Backend = %q, want %q (default)", backendField, engine.BackendNative)
+	if backendField != engine.BackendDocker {
+		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendDocker)
+	}
+	if strings.Contains(stderr.String(), "backend auto selected native") {
+		t.Errorf("docker auto selection printed native warning: %s", stderr.String())
 	}
 }
 
@@ -1242,18 +1291,12 @@ func TestCLIRunBackendDockerFlagWritesBackendDocker(t *testing.T) {
 
 func TestCLIRunBackendNativeFlagWritesBackendNative(t *testing.T) {
 	t.Parallel()
-	fake := container.NewFake()
-	fake.ProgramExec("touch /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
-	fake.ProgramExec("echo step2", container.ExecResult{
-		ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`),
-	}, nil)
-	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
-
 	stateDir := t.TempDir()
-	runner := newTestRunner(t, fake)
+	wfPath := writeEmptyWorkflow(t, t.TempDir())
+	runner := newTestRunner(t, container.NewFake())
 	var stdout, stderr bytes.Buffer
 	rc := runner.Run(
-		[]string{"run", "--state-dir", stateDir, "--backend", "native", "testdata/phase2/seq.yaml"},
+		[]string{"run", "--state-dir", stateDir, "--backend", "native", wfPath},
 		&stdout, &stderr,
 	)
 	if rc != cli.ExitOK {
@@ -1262,6 +1305,9 @@ func TestCLIRunBackendNativeFlagWritesBackendNative(t *testing.T) {
 	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
+	}
+	if strings.Contains(stderr.String(), "backend auto selected native") {
+		t.Errorf("explicit native printed auto warning: %s", stderr.String())
 	}
 }
 
@@ -1281,11 +1327,14 @@ func TestCLIRunRejectsComposeWithNativeBackend(t *testing.T) {
 	if rc != cli.ExitUsage {
 		t.Errorf("rc = %d, want ExitUsage (compose+native rejected)", rc)
 	}
-	if !strings.Contains(stderr.String(), "compose-mode") {
-		t.Errorf("stderr missing 'compose-mode': %s", stderr.String())
+	if !strings.Contains(stderr.String(), "static compose") {
+		t.Errorf("stderr missing 'static compose': %s", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "native") {
 		t.Errorf("stderr missing 'native': %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--backend docker") {
+		t.Errorf("stderr missing docker guidance: %s", stderr.String())
 	}
 }
 
@@ -1328,6 +1377,32 @@ func TestCLIRunBackendInvalidValueIsExitUsage(t *testing.T) {
 	if !strings.Contains(stderr.String(), "containerd") {
 		t.Errorf("stderr missing offending kind: %q", stderr.String())
 	}
+}
+
+func TestCLIRunUsageListsBackendAuto(t *testing.T) {
+	t.Parallel()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--help"}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "--backend <auto|native|docker|fake>") {
+		t.Errorf("usage missing backend auto choices:\n%s", stdout.String())
+	}
+}
+
+func writeEmptyWorkflow(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "empty.yaml")
+	if err := os.WriteFile(path, []byte(`workflow: empty
+version: 1
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // readRunStartedBackendField is a test helper that opens the log at
@@ -1496,13 +1571,11 @@ func TestRunReleasesRunLockOnExit(t *testing.T) {
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
 
-// TestRunRejectsSnapshotWorkspaceOnNativeBackend exercises the slice 7.1
-// capability guard (cli/snapshotguard.go): a container declaring
-// snapshot: workspace cannot run on the native backend, which advertises
-// container.SnapshotNone. The guard must fail fast with ExitUsage and a
-// message naming "snapshot: workspace". No backend is injected so the real
-// native backend is constructed (its Capabilities() is what the guard reads).
-func TestRunRejectsSnapshotWorkspaceOnNativeBackend(t *testing.T) {
+// TestRunRejectsSnapshotWorkspaceOnNativeSelection exercises the run-backend
+// selector: snapshot: workspace is a Docker-only workflow feature, so explicit
+// --backend native fails before backend construction. The diagnostic must still
+// name "snapshot: workspace" for operators.
+func TestRunRejectsSnapshotWorkspaceOnNativeSelection(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	wf := filepath.Join(t.TempDir(), "ws.yaml")
@@ -1518,16 +1591,16 @@ graph:
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
-	// Backend is left nil so the real native backend is constructed (its
-	// Capabilities() == SnapshotNone is what the guard reads). IDGen is set so
-	// the run-id mint step (which precedes backend construction) doesn't nil-panic.
+	// Backend is left nil; the selector rejects before constructing native.
+	// IDGen is set so the run-id mint step never needs the production generator
+	// if ordering changes.
 	r := &cli.Runner{IDGen: &clock.Fake{IDs: []string{"test-run-1"}}}
 	rc := r.Run([]string{"run", "--backend", "native", "--state-dir", stateDir, wf}, &out, &errb)
 	if rc != cli.ExitUsage {
 		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, errb.String())
 	}
 	if !strings.Contains(errb.String(), "snapshot: workspace") {
-		t.Errorf("expected a capability-guard message, got: %s", errb.String())
+		t.Errorf("expected selector diagnostic naming snapshot: workspace, got: %s", errb.String())
 	}
 }
 

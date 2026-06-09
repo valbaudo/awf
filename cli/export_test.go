@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -24,6 +25,10 @@ func NewBackendForTest(ctx context.Context, kind, runID, workdirRoot string, blo
 
 func ReadBackendKindFromLogForTest(events []state.Event) (string, error) {
 	return readBackendKindFromLog(events)
+}
+
+func SelectRunBackendForTest(requested string, wf *ir.Workflow) (string, error) {
+	return selectRunBackend(requested, wf)
 }
 
 // PrintUsageForTest exposes printUsage for the external cli_test package.

@@ -1,7 +1,7 @@
 // Package cli assembles the command-line surface. Slice 1.6 shipped
 // `awf validate <path>`; slice 2.5 added `awf run`; slice 2.6 added
 // `awf resume`; Phase 3 added `signal` / `pause` / `cancel`; slice 4.5
-// added `--backend {fake,docker,native}` on `awf run` (default native; slice 4.7) +
+// added `--backend {auto,native,docker,fake}` on `awf run` +
 // log-driven backend selection on `awf resume`. Later phases add
 // `inspect` / `trace` / `ls` (Phase 6). The entry point is Runner.Run,
 // not init() or a package-level CLI framework, so tests drive the full
@@ -45,8 +45,8 @@ type Runner struct {
 	// Backend is the container.Backend the run subcommand passes to
 	// engine.LocalDispatcher. Production: left nil — the run/resume
 	// subcommands construct on-demand via newBackend (cli/backend.go),
-	// choosing fake/docker/native based on the --backend flag (default
-	// native; slice 4.7). Tests: inject any container.Backend (typically
+	// choosing a concrete fake/docker/native backend from the --backend flag
+	// after resolving auto. Tests: inject any container.Backend (typically
 	// a pre-programmed *container.Fake) to short-circuit construction
 	// via (*Runner).resolveBackend.
 	Backend container.Backend
@@ -162,7 +162,7 @@ func printUsage(w io.Writer) {
 	fprintln(w, "                              --input <json>     run-input JSON (validated vs workflow.input)")
 	fprintln(w, "                              --run-id <id>      override the minted run id")
 	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")
-	fprintln(w, "                              --backend <kind>   container backend: fake|docker|native (default: native)")
+	fprintln(w, "                              --backend <kind>   container backend: auto|native|docker|fake (default: auto)")
 	fprintln(w, "                              --agent-env <csv>  env-var name allowlist forwarded to agent CLIs")
 	fprintln(w, "  resume <run-id> <path>    re-enter an interrupted run against the same workflow file")
 	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")

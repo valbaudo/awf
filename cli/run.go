@@ -25,12 +25,12 @@ import (
 
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
-	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] [--backend <fake|docker|native>] [--agent-env <CSV>] <path>")
+	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] [--backend <auto|native|docker|fake>] [--agent-env <CSV>] <path>")
 	fprintln(w, "")
 	fprintln(w, "  --input <json>     run-input as a JSON object (validated against workflow.input schema if declared)")
 	fprintln(w, "  --run-id <id>      override the minted run id (testing aid)")
 	fprintln(w, "  --state-dir <dir>  base directory for .awf/runs and .awf/blobs (default: ./.awf)")
-	fprintln(w, "  --backend <kind>   container backend: \"fake\", \"docker\", or \"native\" (default: native)")
+	fprintln(w, "  --backend <kind>   container backend: \"auto\", \"native\", \"docker\", or \"fake\" (default: auto)")
 	fprintln(w, "  --agent-env <CSV>  env-var allowlist forwarded into agent CLIs (default: "+strings.Join(defaultAgentEnv, ",")+")")
 }
 
@@ -51,7 +51,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	inputJSON := flags.String("input", "", "run-input JSON")
 	runID := flags.String("run-id", "", "override the run id")
 	stateDir := flags.String("state-dir", ".awf", "base directory for runs/ and blobs/")
-	backendKind := flags.String("backend", engine.BackendNative, "container backend: fake, docker, or native")
+	backendKind := flags.String("backend", backendAuto, "container backend: auto, native, docker, or fake")
 	agentEnv := flags.String("agent-env", strings.Join(defaultAgentEnv, ","),
 		"CSV allowlist of env-var names forwarded into each agent CLI invocation")
 	if err := flags.Parse(args); err != nil {
@@ -68,10 +68,10 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	switch *backendKind {
-	case engine.BackendFake, engine.BackendDocker, engine.BackendNative:
+	case backendAuto, engine.BackendNative, engine.BackendDocker, engine.BackendFake:
 		// ok
 	default:
-		fprintf(stderr, "awf run: invalid --backend value %q; want %q, %q, or %q\n", *backendKind, engine.BackendFake, engine.BackendDocker, engine.BackendNative)
+		fprintf(stderr, "awf run: invalid --backend value %q; want %q, %q, %q, or %q\n", *backendKind, backendAuto, engine.BackendNative, engine.BackendDocker, engine.BackendFake)
 		return ExitUsage
 	}
 	path := flags.Arg(0)
@@ -94,18 +94,12 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Slice 4.7 decision 1 + H8 fix: if --backend native is selected but
-	// any container declares compose: mode, fail-fast at the CLI layer
-	// (defense-in-depth: Backend.Create also rejects). Friendlier than
-	// a mid-run error after partial setup.
-	if *backendKind == engine.BackendNative {
-		for name, c := range ld.Workflow.Containers {
-			if c.Compose != "" {
-				fprintf(stderr, "awf run: --backend native cannot run workflows with compose-mode containers (container %q declares compose: %q). Use --backend docker.\n", name, c.Compose)
-				return ExitUsage
-			}
-		}
+	concreteBackendKind, err := selectRunBackend(*backendKind, ld.Workflow)
+	if err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
 	}
+	autoSelectedNative := *backendKind == backendAuto && concreteBackendKind == engine.BackendNative
 
 	// Step 2: mint run.id.
 	id := *runID
@@ -150,29 +144,14 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// The result is held in a LOCAL variable (NEVER assigned to r.Backend)
 	// so sequential runner.Run(...) calls don't leak a constructed Backend.
 	workdirRoot := filepath.Join(*stateDir, "work")
-	backend, cleanup, err := r.resolveBackend(ctx, *backendKind, id, workdirRoot, blobs)
+	backend, cleanup, err := r.resolveBackend(ctx, concreteBackendKind, id, workdirRoot, blobs)
 	if err != nil {
-		fprintf(stderr, "awf run: construct backend %q: %v\n", *backendKind, err)
+		fprintf(stderr, "awf run: construct backend %q: %v\n", concreteBackendKind, err)
 		return ExitUsage
 	}
 	defer cleanup()
 
-	// Slice 7.1 capability guard: a snapshot:workspace container on a backend
-	// that can't snapshot (native: no CoW) must fail-fast here — same fail-fast
-	// posture as the compose+native rejection above — rather than mid-run at
-	// the dispatcher's Snapshot call.
-	if err := checkSnapshotCapability(ld.Workflow, backend); err != nil {
-		fprintf(stderr, "awf run: %v\n", err)
-		return ExitUsage
-	}
-	// P6a capability guard (parallels the snapshot guard above): a runtime-
-	// resolved map image: on a backend that ignores image: (native) would run
-	// bodies on the host — fail-fast here rather than silently mis-execute.
-	if err := checkRuntimeImageCapability(ld.Workflow, backend); err != nil {
-		fprintf(stderr, "awf run: %v\n", err)
-		return ExitUsage
-	}
-	if err := checkRuntimeComposeCapability(ld.Workflow, *backendKind, backend); err != nil {
+	if err := checkWorkflowBackendCapabilities(ld.Workflow, concreteBackendKind, backend); err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
@@ -307,15 +286,18 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	defer lock.Release()
 
-	// Step 10: append run.started + fsync. Backend field carries the slice-
-	// 4.5 --backend kind so resume can pick the same backend without a flag.
+	// Step 10: append run.started + fsync. Backend field carries the selected
+	// concrete backend kind so resume can pick the same backend without a flag.
+	if autoSelectedNative {
+		fprintf(stderr, "awf run: backend auto selected native; this run cannot be resumed until native resume is supported. Use --backend docker for resumable runs.\n")
+	}
 	runStartedData, err := json.Marshal(engine.RunStartedData{
 		RunID:           id,
 		WorkflowDigest:  digest,
 		WorkflowID:      ld.Workflow.ID,      // slice 6.1 — obs awf.workflow.id (standard §9)
 		WorkflowVersion: ld.Workflow.Version, // slice 6.1 — obs awf.workflow.version
 		InputRef:        inputRef,
-		Backend:         *backendKind,
+		Backend:         concreteBackendKind,
 		Runtimes:        resolvedRuntimes, // Phase 5 slice 5.1
 	})
 	if err != nil {

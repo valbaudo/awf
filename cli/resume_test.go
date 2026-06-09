@@ -349,6 +349,49 @@ func TestCLIResumeRejectsBackendFlag(t *testing.T) {
 	}
 }
 
+func TestCLIResumeRejectsNativeLogWithDockerGuidance(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runID := "native-open"
+	runDir := filepath.Join(stateDir, "runs", runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log, err := state.OpenLog(filepath.Join(runDir, "log"), clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	startedData, err := json.Marshal(engine.RunStartedData{
+		RunID:   runID,
+		Backend: engine.BackendNative,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: startedData}); err != nil {
+		t.Fatalf("Append run.started: %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	runner := &cli.Runner{}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not resumable") {
+		t.Errorf("stderr missing native-resume limitation: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--backend docker") {
+		t.Errorf("stderr missing docker guidance: %s", stderr.String())
+	}
+}
+
 func TestCLIResumeDigestMismatchHardError(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()

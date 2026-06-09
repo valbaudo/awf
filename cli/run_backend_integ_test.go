@@ -423,9 +423,11 @@ graph:
 	}
 }
 
-// Slice 4.7: native backend end-to-end via `awf run --backend native`.
-// Uses real shell execution; gated //go:build integ.
-func TestCLIRunNativeBackendEndToEnd(t *testing.T) {
+// Slice 4.7 + backend-auto follow-up: explicit native still records a native
+// run when the workflow does not require Docker. Static image-backed code-step
+// workflows are now Docker-only, so host-exec coverage lives in
+// container/native/... rather than this CLI fixture.
+func TestCLIRunNativeBackendContainerlessRunRecordsNative(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	runner := &cli.Runner{IDGen: &clock.Fake{IDs: []string{"native-e2e-1"}}}
