@@ -3,10 +3,10 @@
 Scope: `govulncheck ./...` after the minimal dependency refresh for the AWF
 subworkflow preflight. The refresh updates the Go toolchain to 1.26.4 for the
 reachable standard-library findings below, and updates the compatible
-`x/crypto`, `moby/spdystream`, and `containerd/containerd/v2` fixed lines. The
-scan still reports reachable Docker/Moby findings with no fixed version and
-Docker/BuildKit fixed-version findings whose available fixes require a broader
-Docker CLI/Compose migration.
+`x/crypto`, `moby/spdystream`, `containerd/containerd/v2`, and OpenTelemetry OTLP
+exporter fixed lines. The scan still reports reachable Docker/Moby findings with
+no fixed version and Docker/BuildKit fixed-version findings whose available fixes
+require a broader Docker CLI/Compose migration.
 
 ## Fixed By This Refresh
 
@@ -17,6 +17,7 @@ Docker CLI/Compose migration.
 | GO-2026-5039 | standard library | Go 1.26.3 | Go 1.26.4 | `net/textproto`: `Error.Error`, `Reader.ReadCodeLine`, `Reader.ReadMIMEHeader`, `Reader.ReadResponse` | `toolchain go1.26.4` |
 | GO-2025-4108 | `github.com/containerd/containerd/v2` | `v2.1.4` | `v2.1.5` | Reachable through Docker/Compose module graph. | `github.com/containerd/containerd/v2 v2.1.5` |
 | GO-2025-4100 | `github.com/containerd/containerd/v2` | `v2.1.4` | `v2.1.5` | Reachable through Docker/Compose module graph. | `github.com/containerd/containerd/v2 v2.1.5` |
+| GO-2026-4985 | `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp` | `v1.35.0` | `v1.43.0` | Imported through Docker Compose/BuildKit tracing, not called by AWF code. | Align OTLP metric/trace exporters to `v1.43.0` |
 
 ## Reachable Fixed:N/A Findings
 
