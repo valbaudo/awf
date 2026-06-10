@@ -20,6 +20,9 @@ func evaluateWorkflowExports(parent *RunState, wf *ir.Workflow, callPath string,
 	scope := NewScopeWithInput(child, wf, ir.CallWorkflowParentPath(callPath), input)
 
 	var out WorkflowExportResult
+	if wf.OutputSchema != nil {
+		out.Outputs = map[string]any{}
+	}
 	if len(wf.Outputs) > 0 {
 		out.Outputs = make(map[string]any, len(wf.Outputs))
 		keys := make([]string, 0, len(wf.Outputs))
@@ -34,10 +37,10 @@ func evaluateWorkflowExports(parent *RunState, wf *ir.Workflow, callPath string,
 			}
 			out.Outputs[key] = value
 		}
-		if wf.OutputSchema != nil {
-			if err := ValidateOutputMap(out.Outputs, wf.OutputSchema); err != nil {
-				return WorkflowExportResult{}, fmt.Errorf("workflow output_schema validation: %w", err)
-			}
+	}
+	if wf.OutputSchema != nil {
+		if err := ValidateOutputMap(out.Outputs, wf.OutputSchema); err != nil {
+			return WorkflowExportResult{}, fmt.Errorf("workflow output_schema validation: %w", err)
 		}
 	}
 

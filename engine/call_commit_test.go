@@ -2,7 +2,9 @@ package engine
 
 import (
 	"encoding/json"
-	"os"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,26 +75,57 @@ func TestCommitCallProductStoresOutputsAndAppendsNodeCompleted(t *testing.T) {
 }
 
 func TestNodeCompletedAppendAllowlist(t *testing.T) {
+	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("Glob: %v", err)
 	}
 	var offenders []string
-	for _, file := range files {
-		if strings.HasSuffix(file, "_test.go") || file == "commit.go" {
+	for _, filename := range files {
+		base := filepath.Base(filename)
+		if strings.HasSuffix(base, "_test.go") || base == "commit.go" {
 			continue
 		}
-		body, err := os.ReadFile(file)
+		file, err := parser.ParseFile(fset, filename, nil, 0)
 		if err != nil {
-			t.Fatalf("ReadFile %s: %v", file, err)
+			t.Fatalf("ParseFile %s: %v", filename, err)
 		}
-		if strings.Contains(string(body), "state.Event{Type: EventNodeCompleted") ||
-			strings.Contains(string(body), "state.Event{\n\t\tType: EventNodeCompleted") ||
-			strings.Contains(string(body), "state.Event{\n\tType: EventNodeCompleted") {
-			offenders = append(offenders, file)
-		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.CompositeLit)
+			if !ok || !isStateEventComposite(lit) || !setsNodeCompletedType(lit) {
+				return true
+			}
+			pos := fset.Position(lit.Pos())
+			offenders = append(offenders, pos.String())
+			return true
+		})
 	}
 	if len(offenders) > 0 {
 		t.Fatalf("node.completed state.Event construction outside commit.go: %v", offenders)
 	}
+}
+
+func isStateEventComposite(lit *ast.CompositeLit) bool {
+	sel, ok := lit.Type.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Event" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "state"
+}
+
+func setsNodeCompletedType(lit *ast.CompositeLit) bool {
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Type" {
+			continue
+		}
+		value, ok := kv.Value.(*ast.Ident)
+		return ok && value.Name == "EventNodeCompleted"
+	}
+	return false
 }

@@ -127,6 +127,31 @@ func TestEvaluateWorkflowOutputsSchemaFailure(t *testing.T) {
 	}
 }
 
+func TestEvaluateWorkflowOutputsSchemaFailureWhenOutputsEmpty(t *testing.T) {
+	tests := []struct {
+		name    string
+		outputs map[string]ir.TemplateValue
+	}{
+		{name: "nil", outputs: nil},
+		{name: "empty", outputs: map[string]ir.TemplateValue{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wf := awfChildWorkflowWithOutput("child", "summary")
+			wf.Outputs = tt.outputs
+			rs := NewRunState("run-1", "digest-1", nil)
+
+			_, err := evaluateWorkflowExports(rs, wf, "scan", nil, state.NewInMemoryBlobs())
+			if err == nil {
+				t.Fatal("evaluateWorkflowExports succeeded, want output_schema required-field failure")
+			}
+			if !strings.Contains(err.Error(), "output_schema") {
+				t.Fatalf("error = %v, want output_schema context", err)
+			}
+		})
+	}
+}
+
 func awfChildWorkflowWithOutput(id, field string) *ir.Workflow {
 	return &ir.Workflow{
 		ID:           id,
