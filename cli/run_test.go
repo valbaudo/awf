@@ -1842,8 +1842,9 @@ func TestCLIRun_WorkflowEnv_ExtendsAgentEnvAllowlist(t *testing.T) {
 	// Gap-1: the workflow's top-level env: names extend the --agent-env allowlist.
 	// Proof by isolation: pass --agent-env "" (empty base, so no adapter would be
 	// registered) but declare env: [ANTHROPIC_API_KEY] in the workflow with the var
-	// present in the host. The claude adapter must end up registered — which can only
-	// happen if ld.Workflow.Env flowed through mergeWorkflowEnv into buildAgentRegistry.
+	// present in the host. The claude-backed agent step must resolve and run — which
+	// can only happen if ld.Workflow.Env flowed through mergeLoadedWorkflowEnv into
+	// buildAgentRegistry.
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
 	tmpDir := t.TempDir()
 	wfPath := filepath.Join(tmpDir, "wf.yaml")
@@ -1854,9 +1855,11 @@ containers:
   lab:
     image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
 graph:
-  - id: noop
+  - id: ask
     container: lab
-    run: "true"
+    uses: anthropic/claude-code
+    with:
+      prompt: say ok
 `
 	if err := os.WriteFile(wfPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write workflow: %v", err)
@@ -1864,7 +1867,12 @@ graph:
 	stateDir := filepath.Join(tmpDir, ".awf")
 
 	fake := container.NewFake()
-	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("claude --version", container.ExecResult{ExitCode: 0, Stdout: []byte("2.1.0\n")}, nil)
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{}}
+`)
+	fake.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
 	var stdout, stderr bytes.Buffer
 	r := &cli.Runner{
 		IDGen:   &clock.Fake{IDs: []string{"wf-env-run"}},
@@ -1874,6 +1882,9 @@ graph:
 	exit := r.Run([]string{"run", "--state-dir", stateDir, "--backend", "fake", "--agent-env", "", wfPath}, &stdout, &stderr)
 	if exit != cli.ExitOK {
 		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "run wf-env-run: ok") {
+		t.Fatalf("stdout = %q, want successful run line", stdout.String())
 	}
 	if r.Resolver != nil {
 		t.Error("Resolver was cached after Run; want production registry scoped to the invocation")

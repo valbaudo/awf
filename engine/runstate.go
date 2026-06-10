@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/valbaudo/awf/agent"
@@ -511,6 +512,22 @@ func (rs *RunState) LookupCallStarted(path string) (CallStartedRecord, bool) {
 	defer rs.mu.Unlock()
 	rec, ok := rs.CallStarted[path]
 	return rec, ok
+}
+
+// CallStartedPaths returns the recorded call.started paths in deterministic
+// order. Thread-safe; the returned slice is a copy.
+func (rs *RunState) CallStartedPaths() []string {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if len(rs.CallStarted) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(rs.CallStarted))
+	for path := range rs.CallStarted {
+		out = append(out, path)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // RecordCallStarted stores rec for path. The call executor calls this AFTER a

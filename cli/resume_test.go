@@ -622,7 +622,7 @@ func TestResumeRefusesWhenRunLockHeld(t *testing.T) {
 // the load+digest checks so ld.Workflow.Env can extend the allowlist. If env: were
 // folded asymmetrically, or the registry build were misordered, this fails.
 func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
+	t.Setenv("CUSTOM_AGENT_TOKEN", "custom-secret")
 	stateDir := t.TempDir()
 	runID := "test-resume-workflow-env"
 
@@ -633,8 +633,30 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenBlobs: %v", err)
 	}
+	tmpDir := t.TempDir()
+	wfPath := filepath.Join(tmpDir, "resume-env.awf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: resume-env
+version: 1
+env: [CUSTOM_AGENT_TOKEN]
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: touch_marker
+    container: lab
+    run: "true"
+  - id: ask
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: resume please
+      bare: false
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
 	// Digest is computed from the env:-bearing fixture — the env names fold in.
-	ld, err := loader.Load("testdata/phase2/seq-with-env.yaml")
+	ld, err := loader.Load(wfPath)
 	if err != nil {
 		t.Fatalf("Load fixture: %v", err)
 	}
@@ -655,6 +677,9 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	}
 	runStartedData, _ := json.Marshal(engine.RunStartedData{
 		RunID: runID, WorkflowDigest: digest, Backend: "fake",
+		Runtimes: []engine.ResolvedRuntime{
+			{Ref: "anthropic/claude-code", Version: "2.1.0", Container: "lab"},
+		},
 	})
 	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
 		t.Fatalf("Append run.started: %v", err)
@@ -678,15 +703,35 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	}
 
 	fake := container.NewFake()
-	fake.ProgramExec("echo step2", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`)}, nil)
-	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("claude --version", container.ExecResult{ExitCode: 0, Stdout: []byte("2.1.0\n")}, nil)
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{}}
+`)
+	fake.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
 	r := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{"unused"}}}
 	var stdout, stderr bytes.Buffer
-	_ = r.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq-with-env.yaml"}, &stdout, &stderr)
+	exit := r.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
 	// The digest matched (env: folded symmetrically) so resume did NOT refuse;
-	// the reordered registry build then populated the Resolver.
+	// the invocation-local registry build then forwards the workflow env name
+	// into the resumed agent launch.
 	if strings.Contains(stderr.String(), "digest mismatch") {
 		t.Fatalf("resume refused on digest mismatch with env: present — env names folded asymmetrically: %s", stderr.String())
+	}
+	if exit != cli.ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
+	}
+	var sawCustomEnv bool
+	for _, call := range fake.Calls {
+		if call.Run == "claude --version" {
+			continue
+		}
+		if call.Env["CUSTOM_AGENT_TOKEN"] == "custom-secret" {
+			sawCustomEnv = true
+		}
+	}
+	if !sawCustomEnv {
+		t.Fatalf("resumed agent launch did not receive workflow env CUSTOM_AGENT_TOKEN; calls=%+v", fake.Calls)
 	}
 	if r.Resolver != nil {
 		t.Error("Resolver was cached after resume of an env:-bearing workflow; want production registry scoped to the invocation")

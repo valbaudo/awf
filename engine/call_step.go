@@ -110,7 +110,8 @@ func runCallStep(ctx context.Context, call *ir.CallStep, path string, ictx inter
 }
 
 func preflightCallStartedRuntimes(ctx context.Context, ictx interpreterContext) error {
-	if len(ictx.runstate.CallStarted) == 0 {
+	paths := ictx.runstate.CallStartedPaths()
+	if len(paths) == 0 {
 		return nil
 	}
 	ld, ok := ictx.dispatcher.(*LocalDispatcher)
@@ -121,7 +122,7 @@ func preflightCallStartedRuntimes(ctx context.Context, ictx interpreterContext) 
 	if err := preflightCallStartedRuntimesInWorkflow(ctx, ld, ictx.def, ictx.runstate, ictx.moduleID, ictx.wf, ictx.runtimeParent, checked); err != nil {
 		return err
 	}
-	for path := range ictx.runstate.CallStarted {
+	for _, path := range paths {
 		if _, ok := checked[path]; !ok {
 			return fmt.Errorf("engine.Run: call.started at %q no longer maps to a call step", path)
 		}

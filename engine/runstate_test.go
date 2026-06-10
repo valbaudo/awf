@@ -194,6 +194,22 @@ func TestRunStateMethodsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunStateCallStartedPathsSortedCopy(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordCallStarted("z.call", CallStartedRecord{})
+	rs.RecordCallStarted("a.call", CallStartedRecord{})
+
+	got := rs.CallStartedPaths()
+	want := []string{"a.call", "z.call"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("CallStartedPaths = %v, want %v", got, want)
+	}
+	got[0] = "mutated"
+	if again := rs.CallStartedPaths(); !reflect.DeepEqual(again, want) {
+		t.Fatalf("CallStartedPaths returned aliased slice: after mutation got %v, want %v", again, want)
+	}
+}
+
 func TestRunStateConcurrentAccessAllMaps(t *testing.T) {
 	// Stresses Completed + Branches + LoopIters concurrently. Run with
 	// `go test -race ./engine/` to verify race-freedom — Phase 3 slice 3.2
