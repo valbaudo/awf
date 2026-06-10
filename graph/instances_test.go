@@ -104,3 +104,52 @@ func TestBuildWithRunInstances(t *testing.T) {
 		t.Errorf("overlay item-0.work = %q, want completed", st)
 	}
 }
+
+func TestBuildWithRunLoadedMapsCallChildOverlay(t *testing.T) {
+	child := &ir.Workflow{
+		ID: "child",
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "leaf", Run: "true"},
+		},
+	}
+	root := &ir.Workflow{
+		ID: "root",
+		Graph: ir.NodeList{
+			&ir.CallStep{ID: "recon", Call: "child"},
+		},
+	}
+	ld := &ir.LoadedDefinition{
+		Workflow: root,
+		Modules: map[string]*ir.LoadedModule{
+			"":          {ID: "", Workflow: root},
+			"mod-child": {ID: "mod-child", Workflow: child},
+		},
+		ImportEdges: []ir.LoadedImportEdge{{ParentID: "", ImportID: "child", ChildID: "mod-child"}},
+	}
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	events := []state.Event{
+		{Type: engine.EventRunStarted, Data: d(engine.RunStartedData{RunID: "r1"})},
+		{Type: engine.EventCallStarted, Path: "recon", Data: d(engine.CallStartedData{InputRef: "sha256:call-input"})},
+		{Type: engine.EventNodeStarted, Path: "recon.workflow.leaf", Data: d(engine.NodeStartedData{Kind: "code"})},
+		{Type: engine.EventNodeFailed, Path: "recon.workflow.leaf", Data: d(engine.NodeFailedData{Outcome: "permanent_failure", Error: "boom"})},
+		{Type: engine.EventNodeFailed, Path: "recon", Data: d(engine.NodeFailedData{Outcome: "permanent_failure", Error: "call failed"})},
+	}
+
+	p, err := BuildWithRunLoaded(ld, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]Node{}
+	for _, n := range p.Nodes {
+		byPath[n.Path] = n
+	}
+	if n := byPath["recon.workflow.leaf"]; n.Kind != "code" || n.NodeClass != "template" {
+		t.Fatalf("missing static child template node under call: %+v", n)
+	}
+	if st := p.RunOverlay["recon.workflow.leaf"]; st.State != "failed" || st.Outcome != "permanent_failure" {
+		t.Errorf("child overlay = %+v, want failed/permanent_failure", st)
+	}
+	if st := p.RunOverlay["recon"]; st.State != "failed" || st.Outcome != "permanent_failure" {
+		t.Errorf("call overlay = %+v, want failed/permanent_failure", st)
+	}
+}

@@ -39,6 +39,38 @@ func TestTraceOutputJSON(t *testing.T) {
 	}
 }
 
+func TestTraceShowsCallBoundaryAndChildFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	writeRunLog(t, stateDir, "r-call",
+		state.Event{Type: engine.EventRunStarted, Data: d(engine.RunStartedData{RunID: "r-call", WorkflowID: "wf"})},
+		state.Event{Type: engine.EventCallStarted, Path: "recon", Data: d(engine.CallStartedData{InputRef: "sha256:call-input"})},
+		state.Event{Type: engine.EventNodeStarted, Path: "recon.workflow.leaf", Data: d(engine.NodeStartedData{Kind: "code"})},
+		state.Event{Type: engine.EventNodeFailed, Path: "recon.workflow.leaf", Data: d(engine.NodeFailedData{Outcome: "permanent_failure", Error: "leaf boom"})},
+		state.Event{Type: engine.EventNodeFailed, Path: "recon", Data: d(engine.NodeFailedData{Outcome: "permanent_failure", Error: "call failed: recon.workflow.leaf"})},
+		state.Event{Type: engine.EventRunFinished, Data: d(engine.RunFinishedData{Outcome: "permanent_failure"})},
+	)
+
+	var out, errb bytes.Buffer
+	if rc := cliTrace([]string{"r-call", "--state-dir", stateDir, "--output", "json"}, &out, &errb); rc != ExitOK {
+		t.Fatalf("trace rc = %d, stderr: %s", rc, errb.String())
+	}
+	var spans []obs.Span
+	if err := json.Unmarshal(out.Bytes(), &spans); err != nil {
+		t.Fatalf("trace json: %v\n%s", err, out.String())
+	}
+	byPath := map[string]obs.Span{}
+	for _, s := range spans {
+		byPath[s.Path] = s
+	}
+	if s := byPath["recon"]; s.Kind != "call" || s.Status != obs.StatusError || s.Attributes["awf.call.input_ref"] != "sha256:call-input" {
+		t.Errorf("call boundary span = %+v, want failed call with input ref", s)
+	}
+	if s := byPath["recon.workflow.leaf"]; s.Status != obs.StatusError || s.StatusMsg != "leaf boom" {
+		t.Errorf("child failure span = %+v, want leaf boom failure", s)
+	}
+}
+
 func TestTraceStdoutExporter(t *testing.T) {
 	stateDir := t.TempDir()
 	traceFixture(t, stateDir)

@@ -9,7 +9,7 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
-// TestKindOfExhaustive pins the kind string for every one of ir.Node's 10 kinds. If a
+// TestKindOfExhaustive pins the kind string for every one of ir.Node's 12 kinds. If a
 // new kind is added to ir without a case here (and in kindOf), this is the first place
 // it should be noticed; kindOf itself panics on an unmapped kind.
 func TestKindOfExhaustive(t *testing.T) {
@@ -20,6 +20,7 @@ func TestKindOfExhaustive(t *testing.T) {
 		{&ir.CodeStep{}, "code"},
 		{&ir.AgentStep{}, "agent"},
 		{&ir.SignalStep{}, "signal"},
+		{&ir.CallStep{}, "call"},
 		{&ir.If{}, "if"},
 		{&ir.Loop{}, "loop"},
 		{&ir.Try{}, "try"},
@@ -27,9 +28,10 @@ func TestKindOfExhaustive(t *testing.T) {
 		{&ir.Gate{}, "gate"},
 		{&ir.Skip{}, "skip"},
 		{&ir.Map{}, "map"},
+		{&ir.Compose{}, "compose"},
 	}
-	if len(cases) != 10 {
-		t.Fatalf("expected 10 node kinds, listed %d", len(cases))
+	if len(cases) != 12 {
+		t.Fatalf("expected 12 node kinds, listed %d", len(cases))
 	}
 	for _, c := range cases {
 		if got := kindOf(c.n); got != c.want {
@@ -143,6 +145,62 @@ func TestBuildStaticSkipOmitted(t *testing.T) {
 	}
 	if len(got.Edges) != 1 || got.Edges[0] != (Edge{From: "a", To: "b", Kind: "control"}) {
 		t.Errorf("want single control edge a->b, got %+v", got.Edges)
+	}
+}
+
+func TestGraphIncludesImportedChildNodesUnderCall(t *testing.T) {
+	ld := &ir.LoadedDefinition{
+		Workflow: &ir.Workflow{
+			ID: "root",
+			Graph: ir.NodeList{
+				&ir.CodeStep{ID: "prep", Run: "true"},
+				&ir.CallStep{ID: "recon", Call: "child"},
+			},
+		},
+		Modules: map[string]*ir.LoadedModule{
+			"": {
+				ID: "",
+				Workflow: &ir.Workflow{
+					ID: "root",
+					Graph: ir.NodeList{
+						&ir.CodeStep{ID: "prep", Run: "true"},
+						&ir.CallStep{ID: "recon", Call: "child"},
+					},
+				},
+			},
+			"mod-child": {
+				ID: "mod-child",
+				Workflow: &ir.Workflow{
+					ID: "child",
+					Graph: ir.NodeList{
+						&ir.CodeStep{ID: "leaf", Run: "true"},
+					},
+				},
+			},
+		},
+		ImportEdges: []ir.LoadedImportEdge{{ParentID: "", ImportID: "child", ChildID: "mod-child"}},
+	}
+
+	got := BuildStaticLoaded(ld)
+	byPath := map[string]Node{}
+	for _, n := range got.Nodes {
+		byPath[n.Path] = n
+	}
+	if n := byPath["recon"]; n.Kind != "call" || n.ID != "recon" || n.Parent != "" || n.NodeClass != "template" {
+		t.Errorf("call node recon = %+v, want call template", n)
+	}
+	if n := byPath["recon.workflow.leaf"]; n.Kind != "code" || n.ID != "leaf" || n.Parent != "recon.workflow" || n.NodeClass != "template" {
+		t.Errorf("imported child node = %+v, want code leaf under recon.workflow", n)
+	}
+	hasControl := false
+	for _, e := range got.Edges {
+		if e == (Edge{From: "prep", To: "recon", Kind: "control"}) {
+			hasControl = true
+			break
+		}
+	}
+	if !hasControl {
+		t.Errorf("missing root control edge prep->recon; edges=%+v", got.Edges)
 	}
 }
 

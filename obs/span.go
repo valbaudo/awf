@@ -30,7 +30,7 @@ type SpanEvent struct {
 // (deterministic "as-of" bound), and Attributes["awf.node.outcome"]="incomplete".
 //
 // Scope distinguishes a real node (a leaf step built from node.started/
-// completed/failed — Scope=false, carries awf.node.kind ∈ the 10 real kinds)
+// completed/failed — Scope=false, carries awf.node.kind ∈ the 12 real kinds)
 // from a synthesized control-scope (Scope=true, carries awf.scope.kind). It is
 // the single discriminant for the leaf/scope tests in the bounds fold and the
 // cost rollup — decoupled from the Kind string so structural roles can grow

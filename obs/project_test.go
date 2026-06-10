@@ -169,6 +169,57 @@ func TestProjectSkippedSpan(t *testing.T) {
 	}
 }
 
+func TestObsProjectsCallStartedAndChildPaths(t *testing.T) {
+	t0 := time.Unix(1000, 0).UTC()
+	inputRef := "sha256:call-input"
+	runtimes := []engine.ResolvedRuntime{{Ref: "claude", Version: "1.2.3", Container: "lab"}}
+	events := []state.Event{
+		ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "r1", WorkflowID: "wf"}),
+		ev(t, engine.EventCallStarted, "recon", t0.Add(time.Second), engine.CallStartedData{InputRef: inputRef, Runtimes: runtimes}),
+		ev(t, engine.EventNodeStarted, "recon.workflow.leaf", t0.Add(2*time.Second), engine.NodeStartedData{Kind: "code"}),
+		ev(t, engine.EventNodeCompleted, "recon.workflow.leaf", t0.Add(3*time.Second), engine.NodeCompletedData{Outcome: "ok"}),
+		ev(t, engine.EventNodeCompleted, "recon", t0.Add(4*time.Second), engine.NodeCompletedData{Outcome: "ok"}),
+		ev(t, engine.EventRunFinished, "", t0.Add(5*time.Second), engine.RunFinishedData{Outcome: "ok"}),
+	}
+
+	spans, err := Project(events, nil)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	call, ok := findSpan(spans, "recon")
+	if !ok {
+		t.Fatal("no span for call boundary recon")
+	}
+	if call.Kind != "call" {
+		t.Errorf("call Kind = %q, want call", call.Kind)
+	}
+	if call.Pending {
+		t.Error("completed call boundary must not be pending")
+	}
+	if call.Attributes["awf.call.path"] != "recon" {
+		t.Errorf("call path attr = %v, want recon", call.Attributes["awf.call.path"])
+	}
+	if call.Attributes["awf.call.input_ref"] != inputRef {
+		t.Errorf("call input ref attr = %v, want %s", call.Attributes["awf.call.input_ref"], inputRef)
+	}
+	if call.Attributes["awf.call.runtime.0.ref"] != "claude" ||
+		call.Attributes["awf.call.runtime.0.version"] != "1.2.3" ||
+		call.Attributes["awf.call.runtime.0.container"] != "lab" {
+		t.Errorf("call runtime attrs = %+v", call.Attributes)
+	}
+
+	child, ok := findSpan(spans, "recon.workflow.leaf")
+	if !ok {
+		t.Fatal("no child span for recon.workflow.leaf")
+	}
+	if child.ParentPath != "recon.workflow" {
+		t.Errorf("child ParentPath = %q, want recon.workflow", child.ParentPath)
+	}
+	if _, ok := findSpan(spans, "recon.workflow"); !ok {
+		t.Fatal("no synthesized workflow scope under call")
+	}
+}
+
 func TestProjectResumeDoubleStartLastWins(t *testing.T) {
 	// Uncommitted-frontier re-run after a crash: two node.started for one path,
 	// then a node.completed. The span reflects the LAST (committed) execution.

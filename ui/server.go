@@ -48,6 +48,7 @@ func Listen(port int) (net.Listener, error) {
 // loaded once at startup (editing the file requires a restart -- documented).
 type Server struct {
 	wf       *ir.Workflow
+	ld       *ir.LoadedDefinition
 	digest   string
 	stateDir string
 
@@ -66,11 +67,25 @@ type cachedProjection struct {
 // New builds a Server for an already-loaded workflow. digest is the workflow's content
 // digest (used to filter /api/runs); stateDir is the runs/ base.
 func New(wf *ir.Workflow, digest, stateDir string) *Server {
+	return NewLoaded(&ir.LoadedDefinition{Workflow: wf}, digest, stateDir)
+}
+
+// NewLoaded builds a Server for a loaded workflow definition, preserving imported
+// workflow modules for graph projection under call sites.
+func NewLoaded(ld *ir.LoadedDefinition, digest, stateDir string) *Server {
+	var wf *ir.Workflow
+	if ld != nil {
+		wf = ld.Workflow
+		if root := ld.Root(); root != nil && root.Workflow != nil {
+			wf = root.Workflow
+		}
+	}
 	return &Server{
 		wf:       wf,
+		ld:       ld,
 		digest:   digest,
 		stateDir: stateDir,
-		static:   graph.BuildStatic(wf),
+		static:   graph.BuildStaticLoaded(ld),
 		cache:    map[string]cachedProjection{},
 	}
 }
@@ -119,7 +134,7 @@ func (s *Server) projectionFor(runID string) (graph.Projection, error) {
 		return graph.Projection{}, err
 	}
 	// Full run projection: static graph + runtime instance nodes/edges + overlay.
-	proj, err := graph.BuildWithRun(s.wf, events)
+	proj, err := graph.BuildWithRunLoaded(s.ld, events)
 	if err != nil {
 		return graph.Projection{}, err
 	}

@@ -58,7 +58,7 @@ func cliGraph(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	proj := graph.BuildStatic(ld.Workflow)
+	proj := graph.BuildStaticLoaded(ld)
 
 	if *runID != "" {
 		logPath := filepath.Join(*stateDir, "runs", *runID, "log")
@@ -71,12 +71,12 @@ func cliGraph(args []string, stdout, stderr io.Writer) int {
 			}
 			return ExitUsage
 		}
-		overlay, projErr := graph.Overlay(events)
+		runProj, projErr := graph.BuildWithRunLoaded(ld, events)
 		if projErr != nil {
 			fprintf(stderr, "awf graph: project log: %v\n", projErr)
 			return ExitUsage
 		}
-		proj.RunOverlay = overlay
+		proj = runProj
 	}
 
 	enc := json.NewEncoder(stdout)

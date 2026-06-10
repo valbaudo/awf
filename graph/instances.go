@@ -19,8 +19,17 @@ import (
 // Both the instance set and the overlay come from a single obs.Project of the event log
 // (the source that carries running/failed/timing, which engine.Fold's RunState does not).
 func BuildWithRun(wf *ir.Workflow, events []state.Event) (Projection, error) {
-	p := BuildStatic(wf)
+	return buildWithRunProjection(BuildStatic(wf), events)
+}
 
+// BuildWithRunLoaded returns the loaded static graph plus runtime instance nodes and
+// overlay state. Imported child workflow template nodes are preserved under call sites,
+// so callID.workflow.* runtime events overlay the corresponding template paths.
+func BuildWithRunLoaded(ld *ir.LoadedDefinition, events []state.Event) (Projection, error) {
+	return buildWithRunProjection(BuildStaticLoaded(ld), events)
+}
+
+func buildWithRunProjection(p Projection, events []state.Event) (Projection, error) {
 	spans, err := obs.Project(events, nil)
 	if err != nil {
 		return Projection{}, err
