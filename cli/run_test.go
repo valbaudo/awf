@@ -1867,12 +1867,7 @@ graph:
 	stateDir := filepath.Join(tmpDir, ".awf")
 
 	fake := container.NewFake()
-	fake.ProgramExec("claude --version", container.ExecResult{ExitCode: 0, Stdout: []byte("2.1.0\n")}, nil)
-	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{}}
-`)
-	fake.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
-		{Stream: "stdout", Data: streamLines},
-	})
+	programClaudeSuccess(fake)
 	var stdout, stderr bytes.Buffer
 	r := &cli.Runner{
 		IDGen:   &clock.Fake{IDs: []string{"wf-env-run"}},
@@ -1931,12 +1926,7 @@ graph:
 
 	fake := container.NewFake()
 	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
-	fake.ProgramExec("claude --version", container.ExecResult{ExitCode: 0, Stdout: []byte("2.1.0\n")}, nil)
-	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{}}
-`)
-	fake.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
-		{Stream: "stdout", Data: streamLines},
-	})
+	programClaudeSuccess(fake)
 	r := &cli.Runner{
 		IDGen:   &clock.Fake{IDs: []string{"fresh-registry-first", "fresh-registry-second"}},
 		Backend: fake,

@@ -27,14 +27,9 @@ type agentRef struct {
 }
 
 // resolverOrEmpty returns resolver if set, else a freshly-allocated empty
-// *agent.Registry. The empty fallback exists so workflows without any
-// `uses:` step (every Phase 2-4 fixture) work unchanged — they trigger zero
-// Lookup calls. Workflows WITH a `uses:` step, run against an empty Resolver,
-// fail at run-start with *ErrAdapterNotFound (resolveRuntimes wraps this).
-// Production wiring lives in slice 5.3 (cli/agent_registry.go), which
-// constructs a populated *agent.Registry for each invocation. Called by both
-// cli/run.go (run-start resolution) and cli/resume.go (resume-side
-// re-resolution for the drift check).
+// *agent.Registry. The empty fallback exists for non-agent workflows and for
+// tests that intentionally exercise Lookup-miss behavior; normal production
+// run/resume paths build an invocation-local registry before calling this.
 func resolverOrEmpty(resolver agent.Resolver) agent.Resolver {
 	if resolver != nil {
 		return resolver

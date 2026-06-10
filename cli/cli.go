@@ -51,18 +51,15 @@ type Runner struct {
 	// via (*Runner).resolveBackend.
 	Backend container.Backend
 	// Resolver is the agent.Adapter registry the CLI uses to look up `uses:`
-	// refs at run-start (Task 12) and resume (Task 14). Test-injection point:
+	// refs at run-start and resume. Test-injection point:
 	// tests assign a *agent.Registry populated with agent/fake adapters and
 	// drive workflows that exercise the version-pinning + drift-check paths.
 	//
-	// In slice 5.1, this field is the ONLY way a real adapter could reach the
-	// CLI — there's no production wiring that constructs one. The empty
-	// fallback (via resolverOrEmpty(), Task 12) means any workflow using a
-	// `uses:` step fails at run-start with *ErrAdapterNotFound. That's the
-	// correct behavior for slice 5.1: no real adapter ships until slice 5.3
-	// (cli/agent_registry.go), at which point cli/run.go grows production
-	// code that constructs and assigns *agent.Registry into this field
-	// before dispatching engine.Run.
+	// Production leaves this nil. cli/run.go and cli/resume.go then build a
+	// fresh *agent.Registry for the current invocation from --agent-env/default
+	// env allowlists plus workflow env: declarations, and pass that registry
+	// down without caching it here. This matters for long-lived Runner values:
+	// imported workflow roles and env allowlists must not leak across runs.
 	//
 	// Workflows that don't reference any `uses:` step (every Phase 2-4
 	// fixture) run unaffected — they hit zero Lookup calls regardless of

@@ -703,12 +703,7 @@ graph:
 	}
 
 	fake := container.NewFake()
-	fake.ProgramExec("claude --version", container.ExecResult{ExitCode: 0, Stdout: []byte("2.1.0\n")}, nil)
-	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{}}
-`)
-	fake.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
-		{Stream: "stdout", Data: streamLines},
-	})
+	programClaudeSuccess(fake)
 	r := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{"unused"}}}
 	var stdout, stderr bytes.Buffer
 	exit := r.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
