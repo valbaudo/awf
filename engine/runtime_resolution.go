@@ -38,12 +38,25 @@ func (e *ErrRuntimeDrift) Error() string {
 	return fmt.Sprintf("engine: agent runtime drift for %q in container %q: recorded %q, now %q", e.Ref, e.Container, e.Recorded, e.Current)
 }
 
+func AgentRuntimeRef(wf *ir.Workflow, moduleID, uses string) string {
+	if wf == nil {
+		return uses
+	}
+	if _, ok := wf.RoleByName(uses); !ok {
+		return uses
+	}
+	if moduleID == RootModuleID {
+		return uses
+	}
+	return fmt.Sprintf("awf:role:%d:%s:%s", len(moduleID), moduleID, uses)
+}
+
 func WalkRuntimeRefs(moduleID, runtimeParent string, wf *ir.Workflow) []RuntimeRef {
 	if wf == nil {
 		return nil
 	}
 	seen := map[runtimeRefKey]RuntimeRef{}
-	walkRuntimeRefsNodes(moduleID, runtimeParent, wf.Graph, "", seen)
+	walkRuntimeRefsNodes(wf, moduleID, runtimeParent, wf.Graph, "", seen)
 	if len(seen) == 0 {
 		return nil
 	}
@@ -73,36 +86,37 @@ type runtimeRefKey struct {
 	container     string
 }
 
-func walkRuntimeRefsNodes(moduleID, runtimeParent string, nodes ir.NodeList, parent string, seen map[runtimeRefKey]RuntimeRef) {
+func walkRuntimeRefsNodes(wf *ir.Workflow, moduleID, runtimeParent string, nodes ir.NodeList, parent string, seen map[runtimeRefKey]RuntimeRef) {
 	for i, n := range nodes {
 		switch v := n.(type) {
 		case *ir.AgentStep:
 			path := ir.PathFor(parent, "", v.ID, i)
-			ref := RuntimeRef{ModuleID: moduleID, NodePath: path, RuntimeParent: runtimeParent, Uses: v.Uses, Container: v.Container}
-			key := runtimeRefKey{moduleID: moduleID, runtimeParent: runtimeParent, uses: v.Uses, container: v.Container}
+			uses := AgentRuntimeRef(wf, moduleID, v.Uses)
+			ref := RuntimeRef{ModuleID: moduleID, NodePath: path, RuntimeParent: runtimeParent, Uses: uses, Container: v.Container}
+			key := runtimeRefKey{moduleID: moduleID, runtimeParent: runtimeParent, uses: uses, container: v.Container}
 			if _, ok := seen[key]; !ok {
 				seen[key] = ref
 			}
 		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip:
 		case *ir.If:
 			base := ir.PathFor(parent, "if", "", i)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Then, base+".then", seen)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Else, base+".else", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Then, base+".then", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Else, base+".else", seen)
 		case *ir.Loop:
 			base := ir.PathFor(parent, "loop", "", i)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Body, base+".body", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Body, base+".body", seen)
 		case *ir.Try:
 			base := ir.PathFor(parent, "try", "", i)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Do, base+".do", seen)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Catch, base+".catch", seen)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Finally, base+".finally", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Do, base+".do", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Catch, base+".catch", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Finally, base+".finally", seen)
 		case *ir.Parallel:
 			base := ir.PathFor(parent, "parallel", "", i)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Children, base, seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Children, base, seen)
 		case *ir.Gate:
 			base := ir.PathFor(parent, "gate", "", i)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Generate, base+".generate", seen)
-			walkRuntimeRefsNodes(moduleID, runtimeParent, v.Evaluate, base+".evaluate", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Generate, base+".generate", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Evaluate, base+".evaluate", seen)
 		case *ir.Map:
 		case *ir.Compose:
 		default:

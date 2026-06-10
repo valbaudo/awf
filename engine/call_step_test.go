@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
+	agentfake "github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
@@ -314,6 +316,66 @@ func TestRunCallStepChildStepRefsResolveWithinChildWorkflow(t *testing.T) {
 	}
 	if len(rig.fake.Calls) != 2 || rig.fake.Calls[1].Run != "consume child-value" {
 		t.Fatalf("fake calls = %+v, want second command consume child-value", rig.fake.Calls)
+	}
+}
+
+func TestRunCallStepChildLocalRoleDispatchesWithChildRoleConfig(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	base := agentfake.New("test/base").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true}).
+		Script(0, agentfake.Result{Output: map[string]any{"summary": "child"}})
+	var reg agent.Registry
+	if err := reg.Register(base); err != nil {
+		t.Fatalf("Register base: %v", err)
+	}
+
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Agents: map[string]ir.AgentRole{
+			"auditor": {Uses: "test/base", With: ir.RawConfig{"scope": "root"}},
+		},
+		Graph: ir.NodeList{&ir.CallStep{ID: "recon", Call: "scan"}},
+	}
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Agents: map[string]ir.AgentRole{
+			"auditor": {Uses: "test/base", With: ir.RawConfig{"scope": "child"}},
+		},
+		Graph: ir.NodeList{
+			&ir.AgentStep{ID: "audit", Uses: "auditor"},
+		},
+	}
+	if err := reg.Register(agent.NewDerivedAdapter(AgentRuntimeRef(root, "", "auditor"), base, root.Agents["auditor"].With)); err != nil {
+		t.Fatalf("Register root role: %v", err)
+	}
+	childRef := AgentRuntimeRef(child, "mod-scan", "auditor")
+	if err := reg.Register(agent.NewDerivedAdapter(childRef, base, child.Agents["auditor"].With)); err != nil {
+		t.Fatalf("Register child role: %v", err)
+	}
+	rig.disp.Resolver = &reg
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	calls := base.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("base calls len = %d, want 1", len(calls))
+	}
+	if calls[0].Uses != childRef {
+		t.Fatalf("AgentInvocation.Uses = %q, want child role ref %q", calls[0].Uses, childRef)
+	}
+	if got := calls[0].With["scope"]; got != "child" {
+		t.Fatalf("AgentInvocation.With[scope] = %v, want child role config", got)
 	}
 }
 

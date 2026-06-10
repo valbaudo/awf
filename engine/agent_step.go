@@ -166,8 +166,9 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// (engine/interpreter.go:283): ir.AgentStep.Timeout is *ir.Duration where
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
 	snapBare, _ := SplitContainerRef(as.Container)
+	uses := AgentRuntimeRef(wf, ictx.moduleID, as.Uses)
 	resolved := ResolvedInputs{
-		Uses:                  as.Uses,
+		Uses:                  uses,
 		With:                  resolvedWith,
 		OutputFiles:           outputFiles,
 		OutputSchema:          as.OutputSchema,

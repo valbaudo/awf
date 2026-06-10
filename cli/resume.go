@@ -239,7 +239,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// so a changed env: declaration has already hard-errored at the mismatch
 	// check; the host VALUES are not pinned and re-resolve here).
 	if r.Resolver == nil {
-		reg, err := buildAgentRegistry(mergeWorkflowEnv(defaultAgentEnv, ld.Workflow.Env), backend)
+		reg, err := buildAgentRegistry(mergeLoadedWorkflowEnv(defaultAgentEnv, ld), backend)
 		if err != nil {
 			fprintf(stderr, "awf resume: build agent registry: %v\n", err)
 			return ExitUsage
@@ -249,7 +249,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		// definition digest already pinned the role bindings (a changed agents:
 		// has hard-errored at the digest mismatch above), so re-registration is
 		// the same deterministic resolution as run-start.
-		if err := registerRoles(reg, ld.Workflow); err != nil {
+		if err := registerRolesForLoadedDefinition(reg, ld); err != nil {
 			fprintf(stderr, "awf resume: register agent roles: %v\n", err)
 			return ExitUsage
 		}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/fake"
+	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 )
 
@@ -50,6 +51,32 @@ func TestCheckThreaded_ContinuesAgainstThreaded_OK(t *testing.T) {
 	}}
 	if err := checkThreadedAdapters(wf, reg); err != nil {
 		t.Fatalf("checkThreadedAdapters: %v, want nil", err)
+	}
+}
+
+func TestCheckThreaded_LoadedDefinitionUsesChildQualifiedRoleRef(t *testing.T) {
+	child := &ir.Workflow{
+		Agents: map[string]ir.AgentRole{
+			"auditor": {Uses: "awf/llm"},
+		},
+		Graph: ir.NodeList{
+			&ir.AgentStep{ID: "draft", Uses: "auditor"},
+			&ir.AgentStep{ID: "refine", Uses: "auditor", Continues: "draft"},
+		},
+	}
+	fk := fake.New(engine.AgentRuntimeRef(child, "mod-scan", "auditor")).
+		WithCaps(agent.Caps{Containerless: true, Threaded: true})
+	reg := regWith(t, fk)
+	ld := &ir.LoadedDefinition{
+		Workflow: &ir.Workflow{},
+		Modules: map[string]*ir.LoadedModule{
+			"":         {ID: "", Workflow: &ir.Workflow{}},
+			"mod-scan": {ID: "mod-scan", Workflow: child},
+		},
+	}
+
+	if err := checkThreadedAdaptersForLoadedDefinition(ld, reg); err != nil {
+		t.Fatalf("checkThreadedAdaptersForLoadedDefinition: %v, want nil", err)
 	}
 }
 

@@ -163,7 +163,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		// The forwarded allowlist is the --agent-env flag (or its default) plus
 		// the workflow's own top-level env: names (awf-workflow(5)). Names only —
 		// values resolve from the host inside buildAgentRegistry.
-		envNames := mergeWorkflowEnv(parseCSV(*agentEnv), ld.Workflow.Env)
+		envNames := mergeLoadedWorkflowEnv(parseCSV(*agentEnv), ld)
 		reg, err := buildAgentRegistry(envNames, backend)
 		if err != nil {
 			fprintf(stderr, "awf run: build agent registry: %v\n", err)
@@ -172,7 +172,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		// C3: register one DerivedAdapter per declared agents: role on top of the
 		// base adapters, so `uses: <role>` resolves and the role is pinned as a
 		// first-class runtime. Same fail-loud path as an unknown adapter.
-		if err := registerRoles(reg, ld.Workflow); err != nil {
+		if err := registerRolesForLoadedDefinition(reg, ld); err != nil {
 			fprintf(stderr, "awf run: register agent roles: %v\n", err)
 			return ExitUsage
 		}

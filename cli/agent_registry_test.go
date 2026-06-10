@@ -8,22 +8,13 @@ import (
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/agent/droid"
+	agentfake "github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 )
 
 func TestMergeWorkflowEnv(t *testing.T) {
-	eq := func(a, b []string) bool {
-		if len(a) != len(b) {
-			return false
-		}
-		for i := range a {
-			if a[i] != b[i] {
-				return false
-			}
-		}
-		return true
-	}
 	cases := []struct {
 		name     string
 		base     []string
@@ -40,11 +31,23 @@ func TestMergeWorkflowEnv(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := mergeWorkflowEnv(tc.base, tc.workflow)
-			if !eq(got, tc.want) {
+			if !stringSlicesEqual(got, tc.want) {
 				t.Errorf("mergeWorkflowEnv(%v, %v) = %v, want %v", tc.base, tc.workflow, got, tc.want)
 			}
 		})
 	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestMergeWorkflowEnv_DoesNotAliasBase(t *testing.T) {
@@ -57,6 +60,32 @@ func TestMergeWorkflowEnv_DoesNotAliasBase(t *testing.T) {
 	}
 	if base[0] != "A" {
 		t.Errorf("mergeWorkflowEnv aliased base: mutating the result changed base to %v", base)
+	}
+}
+
+func TestMergeLoadedWorkflowEnvIncludesImportedModulesInWalkOrder(t *testing.T) {
+	ld := &ir.LoadedDefinition{
+		Workflow: &ir.Workflow{Env: []string{"ROOT_TOKEN", "SHARED_TOKEN"}},
+		Modules: map[string]*ir.LoadedModule{
+			"": {
+				ID:       "",
+				Workflow: &ir.Workflow{Env: []string{"ROOT_TOKEN", "SHARED_TOKEN"}},
+			},
+			"mod-a": {
+				ID:       "mod-a",
+				Workflow: &ir.Workflow{Env: []string{"CHILD_A_TOKEN", "SHARED_TOKEN"}},
+			},
+			"mod-b": {
+				ID:       "mod-b",
+				Workflow: &ir.Workflow{Env: []string{"CHILD_B_TOKEN"}},
+			},
+		},
+	}
+
+	got := mergeLoadedWorkflowEnv([]string{"BASE_TOKEN"}, ld)
+	want := []string{"BASE_TOKEN", "ROOT_TOKEN", "SHARED_TOKEN", "CHILD_A_TOKEN", "CHILD_B_TOKEN"}
+	if !stringSlicesEqual(got, want) {
+		t.Fatalf("mergeLoadedWorkflowEnv = %v, want %v", got, want)
 	}
 }
 
@@ -242,6 +271,45 @@ func TestRegisterRoles_RegistersDerivedAdapter(t *testing.T) {
 	}
 	if a.Ref() != "auditor" {
 		t.Errorf("Ref = %q, want %q", a.Ref(), "auditor")
+	}
+}
+
+func TestRegisterRolesForLoadedDefinitionScopesChildRoleNames(t *testing.T) {
+	base := agentfake.New("test/base").WithCaps(agent.Caps{Containerless: true})
+	var reg agent.Registry
+	if err := reg.Register(base); err != nil {
+		t.Fatalf("Register base: %v", err)
+	}
+	root := &ir.Workflow{
+		Agents: map[string]ir.AgentRole{
+			"auditor": {Uses: "test/base", With: ir.RawConfig{"scope": "root"}},
+		},
+	}
+	child := &ir.Workflow{
+		Agents: map[string]ir.AgentRole{
+			"auditor": {Uses: "test/base", With: ir.RawConfig{"scope": "child"}},
+		},
+	}
+	ld := &ir.LoadedDefinition{
+		Workflow: root,
+		Modules: map[string]*ir.LoadedModule{
+			"":         {ID: "", Workflow: root},
+			"mod-scan": {ID: "mod-scan", Workflow: child},
+		},
+	}
+
+	if err := registerRolesForLoadedDefinition(&reg, ld); err != nil {
+		t.Fatalf("registerRolesForLoadedDefinition: %v", err)
+	}
+	if _, ok := reg.Lookup("auditor"); !ok {
+		t.Fatal("Lookup missed root auditor role")
+	}
+	childRef := engine.AgentRuntimeRef(child, "mod-scan", "auditor")
+	if childRef == "auditor" {
+		t.Fatalf("child role ref stayed raw %q, want qualified internal ref", childRef)
+	}
+	if _, ok := reg.Lookup(childRef); !ok {
+		t.Fatalf("Lookup missed child auditor role under %q", childRef)
 	}
 }
 
