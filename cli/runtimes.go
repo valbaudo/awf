@@ -102,29 +102,18 @@ func resolveRuntimes(ctx context.Context, refs []agentRef, resolver agent.Resolv
 //   - Different (Ref, Container) pair present
 //   - Different length (workflow added or removed a `uses:` ref)
 func checkRuntimesDrift(recorded, current []engine.ResolvedRuntime) error {
-	if len(recorded) != len(current) {
-		return fmt.Errorf(
-			"cli: agent runtime set drift: recorded %d runtime(s), now %d — cannot resume (spec §8 pinning hard error)",
-			len(recorded), len(current),
-		)
+	err := engine.CheckRuntimesDrift(recorded, current)
+	var drift *engine.ErrRuntimeDrift
+	if errors.As(err, &drift) {
+		return &ErrRuntimeDrift{
+			Ref:       drift.Ref,
+			Container: drift.Container,
+			Recorded:  drift.Recorded,
+			Current:   drift.Current,
+		}
 	}
-	for i := range recorded {
-		r := recorded[i]
-		c := current[i]
-		if r.Ref != c.Ref || r.Container != c.Container {
-			return fmt.Errorf(
-				"cli: agent runtime set drift: recorded (ref=%q, container=%q), now (ref=%q, container=%q)",
-				r.Ref, r.Container, c.Ref, c.Container,
-			)
-		}
-		if r.Version != c.Version {
-			return &ErrRuntimeDrift{
-				Ref:       r.Ref,
-				Container: r.Container,
-				Recorded:  r.Version,
-				Current:   c.Version,
-			}
-		}
+	if err != nil {
+		return fmt.Errorf("cli: %w", err)
 	}
 	return nil
 }

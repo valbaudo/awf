@@ -27,6 +27,17 @@ func (e *ErrContainerRequired) Error() string {
 	return fmt.Sprintf("engine: agent runtime %q requires a container, but the step declares none (only Containerless adapters may omit `container:`)", e.Ref)
 }
 
+type ErrRuntimeDrift struct {
+	Ref       string
+	Container string
+	Recorded  string
+	Current   string
+}
+
+func (e *ErrRuntimeDrift) Error() string {
+	return fmt.Sprintf("engine: agent runtime drift for %q in container %q: recorded %q, now %q", e.Ref, e.Container, e.Recorded, e.Current)
+}
+
 func WalkRuntimeRefs(moduleID, runtimeParent string, wf *ir.Workflow) []RuntimeRef {
 	if wf == nil {
 		return nil
@@ -157,7 +168,7 @@ func CheckRuntimesDrift(recorded, current []ResolvedRuntime) error {
 			return fmt.Errorf("engine: agent runtime set drift: recorded (ref=%q, container=%q), now (ref=%q, container=%q)", r.Ref, r.Container, c.Ref, c.Container)
 		}
 		if r.Version != c.Version {
-			return fmt.Errorf("engine: agent runtime drift for %q in container %q: recorded %q, now %q", r.Ref, r.Container, r.Version, c.Version)
+			return &ErrRuntimeDrift{Ref: r.Ref, Container: r.Container, Recorded: r.Version, Current: c.Version}
 		}
 	}
 	return nil

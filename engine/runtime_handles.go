@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/valbaudo/awf/container"
@@ -15,7 +16,12 @@ const callTeardownGrace = 30 * time.Second
 func createRuntimeHandles(ctx context.Context, ld *LocalDispatcher, wf *ir.Workflow, composeFiles map[string][]byte, runtimeParent string) (map[string]container.Handle, error) {
 	handles := make(map[string]container.Handle, len(wf.Containers))
 	mapImageTargets := ir.MapImageTargets(wf)
+	names := make([]string, 0, len(wf.Containers))
 	for name := range wf.Containers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		if mapImageTargets[name] {
 			continue
 		}
@@ -23,6 +29,10 @@ func createRuntimeHandles(ctx context.Context, ld *LocalDispatcher, wf *ir.Workf
 		spec.Name = QualifiedContainerKey(runtimeParent, name)
 		h, err := ld.Backend.Create(ctx, spec)
 		if err != nil {
+			destroyErr := destroyRuntimeHandles(ld.Backend, handles)
+			if destroyErr != nil {
+				err = errors.Join(err, destroyErr)
+			}
 			return handles, fmt.Errorf("create child container %q: %w", name, err)
 		}
 		handles[QualifiedContainerKey(runtimeParent, name)] = h

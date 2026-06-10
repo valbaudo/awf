@@ -223,6 +223,98 @@ func TestRunCallStepChildFailureFailsCallBoundary(t *testing.T) {
 	}
 }
 
+func TestRunCallStepChildInternalErrorDoesNotFailCallBoundary(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Graph: ir.NodeList{&ir.CallStep{ID: "recon", Call: "scan"}},
+	}
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "broken", Container: "missing", Run: "never"},
+		},
+	}
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if oc != "" {
+		t.Fatalf("Outcome = %q, want empty for internal child error", oc)
+	}
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("err = %v, want missing-container internal error", err)
+	}
+	if got := countEvents(callEvents(t, rig.log), EventNodeFailed, "recon"); got != 0 {
+		t.Fatalf("parent call node.failed count = %d, want 0 for child internal error", got)
+	}
+}
+
+func TestRunCallStepDestroysPartialChildHandlesOnCreateFailure(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rig.disp.Backend = &failSecondCreateBackend{Fake: rig.fake}
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Containers: map[string]ir.Container{
+			"a": {Image: "oci://ok@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			"b": {Image: "oci://fail@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		},
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "work", Container: "a", Run: "never"},
+		},
+	}
+
+	oc, err := Run(context.Background(), simpleCallNoInputDefinition(child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if oc != OutcomeRetryableFailure {
+		t.Fatalf("Outcome = %q, want %q (err=%v)", oc, OutcomeRetryableFailure, err)
+	}
+	if err == nil {
+		t.Fatalf("Run err = nil, want create failure")
+	}
+	if len(rig.fake.DestroyCalls) != 1 {
+		t.Fatalf("DestroyCalls len = %d, want 1 for partial child handle cleanup", len(rig.fake.DestroyCalls))
+	}
+	if rig.fake.DestroyCalls[0].Name != "recon.workflow::a" {
+		t.Fatalf("destroyed handle name = %q, want recon.workflow::a", rig.fake.DestroyCalls[0].Name)
+	}
+}
+
+func TestRunCallStepChildStepRefsResolveWithinChildWorkflow(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rig.fake.ProgramExec("produce", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"value":"child-value"}`),
+	}, nil)
+	rig.fake.ProgramExec("consume child-value", container.ExecResult{ExitCode: 0}, nil)
+	child := &ir.Workflow{
+		ID:         "scan",
+		Version:    1,
+		Containers: map[string]ir.Container{"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "produce", Container: "c", Run: "produce", OutputSchema: awfStringObjectSchema("value")},
+			&ir.CodeStep{ID: "consume", Container: "c", Run: "consume {{ step.produce.value }}"},
+		},
+	}
+
+	oc, err := Run(context.Background(), simpleCallNoInputDefinition(child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	if len(rig.fake.Calls) != 2 || rig.fake.Calls[1].Run != "consume child-value" {
+		t.Fatalf("fake calls = %+v, want second command consume child-value", rig.fake.Calls)
+	}
+}
+
 func TestRunCallStepRepeatedCallsHaveIsolatedContainers(t *testing.T) {
 	rig := newCallRunRig(t)
 	rig.seedRunStarted(t)
@@ -358,6 +450,18 @@ func simpleCallDefinition(child *ir.Workflow) *ir.LoadedDefinition {
 	return callLoadedDefinition(root, child)
 }
 
+func simpleCallNoInputDefinition(child *ir.Workflow) *ir.LoadedDefinition {
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Graph: ir.NodeList{&ir.CallStep{ID: "recon", Call: "scan"}},
+	}
+	return callLoadedDefinition(root, child)
+}
+
 func callLoadedDefinition(root, child *ir.Workflow) *ir.LoadedDefinition {
 	return &ir.LoadedDefinition{
 		Workflow:     root,
@@ -379,6 +483,28 @@ func callLoadedDefinition(root, child *ir.Workflow) *ir.LoadedDefinition {
 		},
 		ImportEdges: []ir.LoadedImportEdge{{ParentID: "", ImportID: "scan", ChildID: "mod-scan"}},
 	}
+}
+
+type failSecondCreateBackend struct {
+	*container.Fake
+	creates int
+}
+
+func (b *failSecondCreateBackend) Create(ctx context.Context, spec container.ContainerSpec) (container.Handle, error) {
+	b.creates++
+	if b.creates == 2 {
+		b.CreateSpecs = append(b.CreateSpecs, spec)
+		return container.Handle{}, assertCreateFailure{spec: spec.Name}
+	}
+	return b.Fake.Create(ctx, spec)
+}
+
+type assertCreateFailure struct {
+	spec string
+}
+
+func (e assertCreateFailure) Error() string {
+	return "programmed create failure for " + e.spec
 }
 
 func childSummaryWorkflow(id, run string) *ir.Workflow {

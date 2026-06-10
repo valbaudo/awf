@@ -78,17 +78,18 @@ func runCallStep(ctx context.Context, call *ir.CallStep, path string, ictx inter
 	childCtx.moduleID = child.ID
 	childCtx.wf = child.Workflow
 	childCtx.input = callInput
+	childCtx.runtimeParent = runtimeParent
 	childCtx.dispatcher = childDispatcher
 	oc, childErr := interpNodes(ctx, child.Workflow.Graph, runtimeParent, childCtx)
 	if childErr != nil || oc != OutcomeOK {
+		if oc == "" {
+			return "", childErr
+		}
 		childPath := lastFailedChildPath(ictx.log, runtimeParent)
 		if childPath == "" {
 			childPath = runtimeParent
 		}
 		boundaryOutcome := oc
-		if boundaryOutcome == "" {
-			boundaryOutcome = OutcomeRetryableFailure
-		}
 		cause := childErr
 		if cause == nil {
 			cause = fmt.Errorf("child workflow returned outcome %q", oc)
