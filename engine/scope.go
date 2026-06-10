@@ -31,12 +31,14 @@ import (
 // stepRuntimePath errors with a clear "nested loops not supported" message
 // rather than silently computing a wrong path.
 type Scope struct {
-	rs              *RunState
-	ctxPath         string
-	stepIndex       map[string]string // step id → static IR path (computed at NewScope; one IR walk per scope)
-	mapProducts     map[string]mapProduct
-	verdictOverride map[string]any
-	wfRef           *ir.Workflow // slice 3.4 — needed by resolveAsBinding's mapPathIndex
+	rs               *RunState
+	ctxPath          string
+	stepIndex        map[string]string // step id → static IR path (computed at NewScope; one IR walk per scope)
+	mapProducts      map[string]mapProduct
+	verdictOverride  map[string]any
+	inputOverride    map[string]any
+	hasInputOverride bool
+	wfRef            *ir.Workflow // slice 3.4 — needed by resolveAsBinding's mapPathIndex
 }
 
 // NewScope wires the inputs into a Scope. ctxPath is the runtime path of the
@@ -68,6 +70,21 @@ func NewScopeWithVerdict(rs *RunState, wf *ir.Workflow, ctxPath string, verdict 
 		mapProducts:     mapProductIndex(wf),
 		verdictOverride: verdict,
 		wfRef:           wf,
+	}
+}
+
+// NewScopeWithInput constructs a Scope whose input.* refs resolve against input
+// instead of the run's top-level input. Used for child workflows with typed call
+// inputs.
+func NewScopeWithInput(rs *RunState, wf *ir.Workflow, ctxPath string, input map[string]any) *Scope {
+	return &Scope{
+		rs:               rs,
+		ctxPath:          ctxPath,
+		stepIndex:        StepPathIndex(wf),
+		mapProducts:      mapProductIndex(wf),
+		inputOverride:    input,
+		hasInputOverride: true,
+		wfRef:            wf,
 	}
 }
 
@@ -119,7 +136,11 @@ func (s *Scope) resolveInput(ref *template.Ref) (any, error) {
 	if len(ref.Segments) < 2 {
 		return nil, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: "`input` requires a field selector"}
 	}
-	return descendPath(s.rs.Input, ref.Segments[1:], "input.")
+	input := s.rs.Input
+	if s.hasInputOverride {
+		input = s.inputOverride
+	}
+	return descendPath(input, ref.Segments[1:], "input.")
 }
 
 // mustIdent returns an AWF4002 EvalError if seg is an index segment; nil otherwise.

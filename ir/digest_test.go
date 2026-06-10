@@ -306,6 +306,140 @@ func TestDigestFoldsComposeHashes(t *testing.T) {
 	}
 }
 
+func TestLoadedDefinitionDigestFoldsImportedWorkflowCanonicalIR(t *testing.T) {
+	ld := digestLoadedDefinition()
+	d1, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed := digestLoadedDefinition()
+	changed.Modules["scan"].Workflow.Graph = append(changed.Modules["scan"].Workflow.Graph,
+		&CodeStep{ID: "extra", Container: "lab", Run: "echo changed"},
+	)
+	d2, err := changed.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d1 == d2 {
+		t.Fatal("loaded-definition digest ignored imported workflow canonical IR")
+	}
+}
+
+func TestLoadedDefinitionDigestFoldsImportedAssets(t *testing.T) {
+	ld := digestLoadedDefinition()
+	d1, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed := digestLoadedDefinition()
+	changed.Modules["scan"].Assets["schema"] = digestTestAsset("schema", "schema.json", ".", []byte(`{"type":"array"}`))
+	d2, err := changed.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d1 == d2 {
+		t.Fatal("loaded-definition digest ignored imported asset bytes")
+	}
+}
+
+func TestLoadedDefinitionDigestFoldsImportedComposeBytes(t *testing.T) {
+	ld := digestLoadedDefinition()
+	d1, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed := digestLoadedDefinition()
+	changed.Modules["scan"].ComposeFiles["compose.yml"] = []byte("services: {lab: {image: busybox:1.37}}\n")
+	d2, err := changed.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d1 == d2 {
+		t.Fatal("loaded-definition digest ignored imported compose bytes")
+	}
+}
+
+func TestLoadedDefinitionDigestFoldsImportIDAndNormalizedImportPath(t *testing.T) {
+	ld := digestLoadedDefinition()
+	d1, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changedID := digestLoadedDefinition()
+	changedID.ImportEdges[0].ImportID = "audit"
+	dID, err := changedID.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 == dID {
+		t.Fatal("loaded-definition digest ignored import edge logical id")
+	}
+
+	changedPath := digestLoadedDefinition()
+	changedPath.ImportEdges[0].DeclaredPath = "modules/audit.awf.yaml"
+	dPath, err := changedPath.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 == dPath {
+		t.Fatal("loaded-definition digest ignored normalized declared import path")
+	}
+}
+
+func TestLoadedDefinitionDigestUsesNoAbsoluteWorkflowPaths(t *testing.T) {
+	ld := digestLoadedDefinition()
+	ld.WorkflowPath = "/tmp/a/root.awf.yaml"
+	ld.Modules[""].WorkflowPath = "/tmp/a/root.awf.yaml"
+	ld.Modules["scan"].WorkflowPath = "/tmp/a/modules/scan.awf.yaml"
+	d1, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := digestLoadedDefinition()
+	other.WorkflowPath = "/var/folders/b/root.awf.yaml"
+	other.Modules[""].WorkflowPath = "/var/folders/b/root.awf.yaml"
+	other.Modules["scan"].WorkflowPath = "/var/folders/b/modules/scan.awf.yaml"
+	d2, err := other.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d1 != d2 {
+		t.Fatalf("loaded-definition digest used absolute workflow paths: %s vs %s", d1, d2)
+	}
+}
+
+func TestLoadedDefinitionDigestUnchangedForWorkflowWithoutImports(t *testing.T) {
+	ld := &LoadedDefinition{
+		Workflow:     sampleWorkflow(),
+		WorkflowPath: "/tmp/root.awf.yaml",
+	}
+	got, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("root-only loaded-definition digest changed:\n got  = %s\n want = %s", got, want)
+	}
+
+	const golden = "awf-d1:sha256:073cb3aa4d4a75434f2ef3c247c3efafcb02548d76818870902863bfad31d80e"
+	if got != golden {
+		t.Fatalf("root-only loaded-definition digest changed golden:\n got  = %s\n want = %s", got, golden)
+	}
+}
+
 // Fail-closed golden: no skip branch. Fill `want` from the value this test prints on first failure.
 func TestGoldenDigest(t *testing.T) {
 	const want = "awf-d1:sha256:073cb3aa4d4a75434f2ef3c247c3efafcb02548d76818870902863bfad31d80e"
@@ -430,6 +564,48 @@ func digestTestAsset(id, declaredPath, manifestPath string, bytes []byte) Loaded
 			Bytes:  append([]byte(nil), bytes...),
 			Size:   int64(len(bytes)),
 			SHA256: "will-be-recomputed",
+		}},
+	}
+}
+
+func digestLoadedDefinition() *LoadedDefinition {
+	root := sampleWorkflow()
+	root.ID = "root"
+	root.Imports = map[string]string{"scan": "modules/scan.awf.yaml"}
+
+	module := sampleWorkflow()
+	module.ID = "scan"
+	module.Assets = map[string]string{"schema": "schema.json"}
+	module.Containers = map[string]Container{"lab": {Compose: "compose.yml", Service: "lab"}}
+
+	rootModule := &LoadedModule{
+		ID:           "",
+		Workflow:     root,
+		WorkflowPath: "/work/root.awf.yaml",
+	}
+	childModule := &LoadedModule{
+		ID:           "scan",
+		Workflow:     module,
+		WorkflowPath: "/work/modules/scan.awf.yaml",
+		ComposeFiles: map[string][]byte{
+			"compose.yml": []byte("services: {lab: {image: busybox:1.36}}\n"),
+		},
+		Assets: map[string]LoadedAsset{
+			"schema": digestTestAsset("schema", "schema.json", ".", []byte(`{"type":"object"}`)),
+		},
+	}
+	return &LoadedDefinition{
+		Workflow:     root,
+		WorkflowPath: rootModule.WorkflowPath,
+		Modules: map[string]*LoadedModule{
+			"":     rootModule,
+			"scan": childModule,
+		},
+		ImportEdges: []LoadedImportEdge{{
+			ParentID:     "",
+			ImportID:     "scan",
+			DeclaredPath: "modules/scan.awf.yaml",
+			ChildID:      "scan",
 		}},
 	}
 }

@@ -77,36 +77,80 @@ type NodeState struct {
 // errors and never touches a run log. A nil workflow yields an empty (but well-formed)
 // projection. Nodes/Edges are always non-nil so the JSON emits [] rather than null.
 func BuildStatic(wf *ir.Workflow) Projection {
+	return BuildStaticLoaded(&ir.LoadedDefinition{Workflow: wf})
+}
+
+// BuildStaticLoaded projects a loaded workflow definition, expanding imported child
+// workflow templates under each concrete call site using runtime-shaped
+// <call>.workflow.* paths.
+func BuildStaticLoaded(ld *ir.LoadedDefinition) Projection {
 	p := Projection{
 		SchemaVersion: SchemaVersion,
 		Nodes:         []Node{},
 		Edges:         []Edge{},
 	}
+	if ld == nil {
+		return p
+	}
+	wf := ld.Workflow
+	if root := ld.Root(); root != nil && root.Workflow != nil {
+		wf = root.Workflow
+	}
 	if wf != nil {
 		p.Workflow = wf.ID
-		walk(wf.Graph, "", &p, stepPathIndex(wf))
+		walk(wf.Graph, "", &p, stepPathIndex(wf.Graph, ""), ld, "")
 	}
 	return p
 }
 
 // stepPathIndex maps every step id to its static node path, used to resolve data-edge
 // references (`step.<id>.…`) to producer node paths. Reuses the canonical ir.WalkNodes.
-func stepPathIndex(wf *ir.Workflow) map[string]string {
+func stepPathIndex(list ir.NodeList, parent string) map[string]string {
 	idx := map[string]string{}
-	ir.WalkNodes(wf.Graph, "", func(n ir.Node, path string) {
+	walkNodes(list, parent, func(n ir.Node, path string) {
 		switch n.(type) {
-		case *ir.CodeStep, *ir.AgentStep, *ir.SignalStep:
+		case *ir.CodeStep, *ir.AgentStep, *ir.SignalStep, *ir.CallStep:
 			idx[stepID(n)] = path
 		}
 	})
 	return idx
 }
 
+func walkNodes(list ir.NodeList, parent string, visit func(ir.Node, string)) {
+	for i, n := range list {
+		if _, isSkip := n.(*ir.Skip); isSkip {
+			continue
+		}
+		path := staticPath(parent, n, i)
+		visit(n, path)
+		switch v := n.(type) {
+		case *ir.If:
+			walkNodes(v.Then, ir.ChildPath(parent, "if", i, "then"), visit)
+			walkNodes(v.Else, ir.ChildPath(parent, "if", i, "else"), visit)
+		case *ir.Loop:
+			walkNodes(v.Body, ir.ChildPath(parent, "loop", i, "body"), visit)
+		case *ir.Try:
+			walkNodes(v.Do, ir.ChildPath(parent, "try", i, "do"), visit)
+			walkNodes(v.Catch, ir.ChildPath(parent, "try", i, "catch"), visit)
+			walkNodes(v.Finally, ir.ChildPath(parent, "try", i, "finally"), visit)
+		case *ir.Parallel:
+			walkNodes(v.Children, path, visit)
+		case *ir.Gate:
+			walkNodes(v.Generate, ir.ChildPath(parent, "gate", i, "generate"), visit)
+			walkNodes(v.Evaluate, ir.ChildPath(parent, "gate", i, "evaluate"), visit)
+		case *ir.Map:
+			walkNodes(v.Body, ir.ChildPath(parent, "map", i, "body"), visit)
+		case *ir.Compose:
+			walkNodes(v.Body, ir.ChildPath(parent, "compose", i, "body"), visit)
+		}
+	}
+}
+
 // walk emits one Node per non-Skip node in declaration order, a control Edge between
 // consecutive emitted siblings, and recurses into each control node's child branches.
 // Paths come from ir.PathFor / ir.ChildPath — the single source for the addressing
 // grammar — so they can never drift from the runtime/validator forms.
-func walk(list ir.NodeList, parent string, p *Projection, idx map[string]string) {
+func walk(list ir.NodeList, parent string, p *Projection, idx map[string]string, ld *ir.LoadedDefinition, moduleID string) {
 	prev := ""
 	havePrev := false
 	for i, n := range list {
@@ -137,23 +181,29 @@ func walk(list ir.NodeList, parent string, p *Projection, idx map[string]string)
 
 		switch v := n.(type) {
 		case *ir.If:
-			walk(v.Then, ir.ChildPath(parent, "if", i, "then"), p, idx)
-			walk(v.Else, ir.ChildPath(parent, "if", i, "else"), p, idx)
+			walk(v.Then, ir.ChildPath(parent, "if", i, "then"), p, idx, ld, moduleID)
+			walk(v.Else, ir.ChildPath(parent, "if", i, "else"), p, idx, ld, moduleID)
 		case *ir.Loop:
-			walk(v.Body, ir.ChildPath(parent, "loop", i, "body"), p, idx)
+			walk(v.Body, ir.ChildPath(parent, "loop", i, "body"), p, idx, ld, moduleID)
 		case *ir.Try:
-			walk(v.Do, ir.ChildPath(parent, "try", i, "do"), p, idx)
-			walk(v.Catch, ir.ChildPath(parent, "try", i, "catch"), p, idx)
-			walk(v.Finally, ir.ChildPath(parent, "try", i, "finally"), p, idx)
+			walk(v.Do, ir.ChildPath(parent, "try", i, "do"), p, idx, ld, moduleID)
+			walk(v.Catch, ir.ChildPath(parent, "try", i, "catch"), p, idx, ld, moduleID)
+			walk(v.Finally, ir.ChildPath(parent, "try", i, "finally"), p, idx, ld, moduleID)
 		case *ir.Parallel:
-			walk(v.Children, path, p, idx) // bare parallel[i] — no branch label
+			walk(v.Children, path, p, idx, ld, moduleID) // bare parallel[i] — no branch label
 		case *ir.Gate:
-			walk(v.Generate, ir.ChildPath(parent, "gate", i, "generate"), p, idx)
-			walk(v.Evaluate, ir.ChildPath(parent, "gate", i, "evaluate"), p, idx)
+			walk(v.Generate, ir.ChildPath(parent, "gate", i, "generate"), p, idx, ld, moduleID)
+			walk(v.Evaluate, ir.ChildPath(parent, "gate", i, "evaluate"), p, idx, ld, moduleID)
 		case *ir.Map:
-			walk(v.Body, ir.ChildPath(parent, "map", i, "body"), p, idx)
+			walk(v.Body, ir.ChildPath(parent, "map", i, "body"), p, idx, ld, moduleID)
 		case *ir.Compose:
-			walk(v.Body, ir.ChildPath(parent, "compose", i, "body"), p, idx)
+			walk(v.Body, ir.ChildPath(parent, "compose", i, "body"), p, idx, ld, moduleID)
+		case *ir.CallStep:
+			child, ok := callTargetModule(ld, moduleID, v.Call)
+			if ok && child != nil && child.Workflow != nil {
+				childParent := ir.CallWorkflowParentPath(path)
+				walk(child.Workflow.Graph, childParent, p, stepPathIndex(child.Workflow.Graph, childParent), ld, child.ID)
+			}
 		}
 	}
 }
@@ -167,6 +217,8 @@ func staticPath(parent string, n ir.Node, i int) string {
 	case *ir.AgentStep:
 		return ir.PathFor(parent, "", v.ID, i)
 	case *ir.SignalStep:
+		return ir.PathFor(parent, "", v.ID, i)
+	case *ir.CallStep:
 		return ir.PathFor(parent, "", v.ID, i)
 	case *ir.If:
 		return ir.PathFor(parent, "if", "", i)
@@ -199,6 +251,8 @@ func kindOf(n ir.Node) string {
 		return "agent"
 	case *ir.SignalStep:
 		return "signal"
+	case *ir.CallStep:
+		return "call"
 	case *ir.If:
 		return "if"
 	case *ir.Loop:
@@ -229,6 +283,8 @@ func stepID(n ir.Node) string {
 		return v.ID
 	case *ir.SignalStep:
 		return v.ID
+	case *ir.CallStep:
+		return v.ID
 	default:
 		return ""
 	}
@@ -240,4 +296,16 @@ func withOf(n ir.Node) ir.RawConfig {
 		return a.With
 	}
 	return nil
+}
+
+func callTargetModule(ld *ir.LoadedDefinition, parentID, importID string) (*ir.LoadedModule, bool) {
+	if ld == nil {
+		return nil, false
+	}
+	for _, edge := range ld.ImportEdges {
+		if edge.ParentID == parentID && edge.ImportID == importID {
+			return ld.Module(edge.ChildID)
+		}
+	}
+	return nil, false
 }

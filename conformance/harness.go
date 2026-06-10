@@ -152,7 +152,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 	if diags := ir.Validate(ld); ir.HasErrors(diags) {
 		t.Fatalf("harness: workflow invalid: %v", diags)
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, err := ld.ComputeDigest()
 	if err != nil {
 		return "", err
 	}
@@ -205,7 +205,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 			}
 			inputRef = ref
 		}
-		assetSnapshots, err := engine.StoreRunStartedAssets(h.blobs, ld.Assets)
+		assetSnapshots, err := engine.StoreRunStartedAssetsForLoadedDefinition(h.blobs, ld)
 		if err != nil {
 			return "", err
 		}

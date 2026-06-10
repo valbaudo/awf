@@ -2,6 +2,8 @@ package ir
 
 import "fmt"
 
+const CallWorkflowSegment = "workflow"
+
 // PathFor computes the static IR path of a node for use in a Diagnostic. parent is the path
 // of the enclosing node (empty at the top level); keyword is the control-node keyword (e.g.
 // "if", "loop", "gate") and stepID is the step's id — exactly one of {keyword, stepID} is
@@ -59,4 +61,11 @@ func ContainerPath(name, field string) string {
 // produce a divergent path for the same node in different passes.
 func ChildPath(parent, keyword string, idx int, branch string) string {
 	return PathFor(parent, keyword, "", idx) + "." + branch
+}
+
+func CallWorkflowParentPath(callPath string) string {
+	if callPath == "" {
+		return CallWorkflowSegment
+	}
+	return callPath + "." + CallWorkflowSegment
 }

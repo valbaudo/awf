@@ -82,6 +82,9 @@ func TestRunStateZeroValueIsUsable(t *testing.T) {
 	if rs.GateAttempts["nope"] != nil {
 		t.Errorf("zero-value RunState.GateAttempts[\"nope\"] = non-nil, want nil")
 	}
+	if _, ok := rs.LookupCallStarted("nope"); ok {
+		t.Errorf("zero-value RunState LookupCallStarted ok=true, want false")
+	}
 }
 
 func TestNewRunStateAllocatesMaps(t *testing.T) {
@@ -100,6 +103,7 @@ func TestNewRunStateAllocatesMaps(t *testing.T) {
 	rs.Branches["y"] = "then"
 	rs.LoopIters["z"] = 1
 	rs.GateAttempts["z"] = nil // must not panic — map is allocated
+	rs.CallStarted["call.z"] = CallStartedRecord{}
 }
 
 func TestNewRunStateNilInputIsValid(t *testing.T) {
@@ -187,6 +191,22 @@ func TestRunStateMethodsRoundTrip(t *testing.T) {
 	}
 	if got := rs.LookupLoopIters("loop[nope]"); got != 0 {
 		t.Errorf("LoopIters lookup for missing path: got %d, want 0 (zero value)", got)
+	}
+}
+
+func TestRunStateCallStartedPathsSortedCopy(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordCallStarted("z.call", CallStartedRecord{})
+	rs.RecordCallStarted("a.call", CallStartedRecord{})
+
+	got := rs.CallStartedPaths()
+	want := []string{"a.call", "z.call"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("CallStartedPaths = %v, want %v", got, want)
+	}
+	got[0] = "mutated"
+	if again := rs.CallStartedPaths(); !reflect.DeepEqual(again, want) {
+		t.Fatalf("CallStartedPaths returned aliased slice: after mutation got %v, want %v", again, want)
 	}
 }
 
@@ -520,6 +540,34 @@ func TestRunStateSignalReceivedAtRoundTrip(t *testing.T) {
 	}
 	if _, ok := rs.LookupSignalReceivedAt("step.other"); ok {
 		t.Errorf("LookupSignalReceivedAt(other): ok=true, want false")
+	}
+}
+
+func TestRunStateCallStartedRoundTrip(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	if _, ok := rs.LookupCallStarted("call.review"); ok {
+		t.Errorf("empty LookupCallStarted: ok=true, want false")
+	}
+	rec := CallStartedRecord{
+		Input:    map[string]any{"task": "audit"},
+		InputRef: "awf-d1:sha256:abc",
+		Runtimes: []ResolvedRuntime{
+			{Ref: "anthropic/claude-code", Version: "2.1.118", Container: "lab"},
+		},
+	}
+	rs.RecordCallStarted("call.review", rec)
+	got, ok := rs.LookupCallStarted("call.review")
+	if !ok {
+		t.Fatal("after record: ok=false, want true")
+	}
+	if got.InputRef != rec.InputRef || got.Input["task"] != "audit" {
+		t.Errorf("got %+v, want InputRef=%q task=audit", got, rec.InputRef)
+	}
+	if len(got.Runtimes) != 1 || got.Runtimes[0] != rec.Runtimes[0] {
+		t.Errorf("Runtimes = %+v, want %+v", got.Runtimes, rec.Runtimes)
+	}
+	if _, ok := rs.LookupCallStarted("call.other"); ok {
+		t.Errorf("LookupCallStarted(other): ok=true, want false")
 	}
 }
 

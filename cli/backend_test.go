@@ -255,6 +255,26 @@ func TestSelectRunBackendAutoChoosesDockerForDockerOnlyFeatures(t *testing.T) {
 	}
 }
 
+func TestSelectRunBackendAutoChoosesDockerForImportedFeature(t *testing.T) {
+	t.Parallel()
+	ld := &ir.LoadedDefinition{
+		Workflow: simpleBackendWF(),
+		Modules: map[string]*ir.LoadedModule{
+			"": {ID: "", Workflow: simpleBackendWF()},
+			"recon": {ID: "recon", Workflow: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {Compose: "lab/compose.yml", Service: "runner"},
+			}}},
+		},
+	}
+	got, err := cli.SelectRunBackendForLoadedDefinitionForTest("auto", ld)
+	if err != nil {
+		t.Fatalf("SelectRunBackendForLoadedDefinition(auto): %v", err)
+	}
+	if got != engine.BackendDocker {
+		t.Errorf("selected backend = %q, want %q", got, engine.BackendDocker)
+	}
+}
+
 func TestSelectRunBackendExplicitNativeRejectsDockerOnlyFeature(t *testing.T) {
 	t.Parallel()
 	_, err := cli.SelectRunBackendForTest(engine.BackendNative, &ir.Workflow{
@@ -267,6 +287,26 @@ func TestSelectRunBackendExplicitNativeRejectsDockerOnlyFeature(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--backend native") || !strings.Contains(err.Error(), "--backend docker") {
 		t.Errorf("err = %q, want native rejection with docker guidance", err)
+	}
+}
+
+func TestSelectRunBackendExplicitNativeRejectsImportedDockerOnlyFeature(t *testing.T) {
+	t.Parallel()
+	ld := &ir.LoadedDefinition{
+		Workflow: simpleBackendWF(),
+		Modules: map[string]*ir.LoadedModule{
+			"": {ID: "", Workflow: simpleBackendWF()},
+			"recon": {ID: "recon", Workflow: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {Image: "oci://example.com/lab@sha256:" + strings.Repeat("0", 64)},
+			}}},
+		},
+	}
+	_, err := cli.SelectRunBackendForLoadedDefinitionForTest(engine.BackendNative, ld)
+	if err == nil {
+		t.Fatal("err = nil, want native rejection for imported Docker-only feature")
+	}
+	if !strings.Contains(err.Error(), "module recon") || !strings.Contains(err.Error(), "containers.lab.image") {
+		t.Errorf("err = %q, want imported module/path diagnostic", err)
 	}
 }
 

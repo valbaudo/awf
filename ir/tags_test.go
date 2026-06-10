@@ -12,6 +12,7 @@ func irTypes() []reflect.Type {
 		reflect.TypeOf(Workflow{}), reflect.TypeOf(Container{}), reflect.TypeOf(Resources{}),
 		reflect.TypeOf(RetryPolicy{}), reflect.TypeOf(SkillCorpus{}), reflect.TypeOf(StepSkillRouting{}),
 		reflect.TypeOf(CodeStep{}), reflect.TypeOf(AgentStep{}), reflect.TypeOf(SignalStep{}),
+		reflect.TypeOf(CallStep{}),
 		reflect.TypeOf(If{}), reflect.TypeOf(Loop{}), reflect.TypeOf(Try{}),
 		reflect.TypeOf(Parallel{}), reflect.TypeOf(Gate{}), reflect.TypeOf(Skip{}), reflect.TypeOf(Map{}),
 		reflect.TypeOf(Compose{}),

@@ -72,6 +72,19 @@ func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOpt
 			s.Start = e.TS // last-wins on resume
 			started[e.Path] = true
 
+		case engine.EventCallStarted:
+			var d engine.CallStartedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("obs.Project: call.started at %q: %w", e.Path, err)
+			}
+			s := ensureSpan(byPath, e.Path)
+			s.Kind = "call"
+			if !started[e.Path] {
+				s.Start = e.TS
+				started[e.Path] = true
+			}
+			attachCallStartedAttrs(s, e.Path, d)
+
 		case engine.EventNodeCompleted:
 			var d engine.NodeCompletedData
 			if err := json.Unmarshal(e.Data, &d); err != nil {
@@ -176,7 +189,7 @@ func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOpt
 		case engine.EventNodeSkipped:
 			// node.skipped is emitted for a `skip` node (skip.go:65); it is NOT a
 			// dispatched step so it has no node.started. Project it as a short
-			// "skipped" leaf span (skip is one of the 10 real node kinds).
+			// "skipped" leaf span (skip is one of the 12 real node kinds).
 			var d engine.NodeSkippedData
 			if err := json.Unmarshal(e.Data, &d); err != nil {
 				return nil, fmt.Errorf("obs.Project: node.skipped at %q: %w", e.Path, err)

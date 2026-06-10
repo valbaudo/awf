@@ -13,6 +13,7 @@ import (
 	"github.com/valbaudo/awf/agent/droid"
 	"github.com/valbaudo/awf/agent/goose"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 )
 
@@ -73,6 +74,21 @@ func mergeWorkflowEnv(base, workflowEnv []string) []string {
 		return nil
 	}
 	return out
+}
+
+func mergeLoadedWorkflowEnv(base []string, ld *ir.LoadedDefinition) []string {
+	if ld == nil {
+		return mergeWorkflowEnv(base, nil)
+	}
+	workflowEnv := []string{}
+	_ = ld.WalkModules(func(module *ir.LoadedModule) error {
+		if module == nil || module.Workflow == nil {
+			return nil
+		}
+		workflowEnv = append(workflowEnv, module.Workflow.Env...)
+		return nil
+	})
+	return mergeWorkflowEnv(base, workflowEnv)
 }
 
 // buildAgentRegistry constructs the production *agent.Registry for a CLI
@@ -173,6 +189,28 @@ func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agen
 // (defense — AWF1033 already rejects '/' role names statically, but a bare
 // collision must still fail loud rather than silently overwrite a base adapter).
 func registerRoles(reg *agent.Registry, wf *ir.Workflow) error {
+	return registerRolesForModule(reg, wf, engine.RootModuleID)
+}
+
+func registerRolesForLoadedDefinition(reg *agent.Registry, ld *ir.LoadedDefinition) error {
+	if ld == nil {
+		return nil
+	}
+	return ld.WalkModules(func(module *ir.LoadedModule) error {
+		if module == nil {
+			return nil
+		}
+		if err := registerRolesForModule(reg, module.Workflow, module.ID); err != nil {
+			if module.ID != "" {
+				return fmt.Errorf("module %s: %w", module.ID, err)
+			}
+			return err
+		}
+		return nil
+	})
+}
+
+func registerRolesForModule(reg *agent.Registry, wf *ir.Workflow, moduleID string) error {
 	if wf == nil || len(wf.Agents) == 0 {
 		return nil
 	}
@@ -188,7 +226,8 @@ func registerRoles(reg *agent.Registry, wf *ir.Workflow) error {
 		if !ok {
 			return &agent.ErrAdapterNotFound{Ref: role.Uses}
 		}
-		if err := reg.Register(agent.NewDerivedAdapter(name, base, roleWithFor(role))); err != nil {
+		ref := engine.AgentRuntimeRef(wf, moduleID, name)
+		if err := reg.Register(agent.NewDerivedAdapter(ref, base, roleWithFor(role))); err != nil {
 			return fmt.Errorf("cli: register role %q: %w", name, err)
 		}
 	}

@@ -142,15 +142,51 @@ func TestValidateUnknownFormatExitsUsage(t *testing.T) {
 	}
 }
 
-func TestValidateNonexistentFileExitsUsage(t *testing.T) {
+func TestValidateLoadErrorExitsInvalidText(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"validate", "/no/such/file.yaml"}, &stdout, &stderr)
-	if code != ExitUsage {
-		t.Errorf("Run(validate /no/such/file) = %d, want %d", code, ExitUsage)
+	path := "/no/such/file.yaml"
+	code := Run([]string{"validate", path}, &stdout, &stderr)
+	if code != ExitInvalid {
+		t.Errorf("Run(validate /no/such/file) = %d, want %d", code, ExitInvalid)
 	}
-	// Error message attribution should mention the path.
-	if !strings.Contains(stderr.String(), "/no/such/file.yaml") {
-		t.Errorf("expected stderr to mention path; got %q", stderr.String())
+	if stderr.Len() > 0 {
+		t.Errorf("expected loader diagnostic on stdout, got stderr %q", stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "AWF_IMPORT_READ") {
+		t.Errorf("expected load error code on stdout; got %q", out)
+	}
+	if !strings.Contains(out, "at "+path+": open workflow directory") {
+		t.Errorf("expected source attribution in stdout; got %q", out)
+	}
+}
+
+func TestValidateLoadErrorJSONDiagnostic(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	path := "/no/such/file.yaml"
+	code := Run([]string{"validate", "--format", "json", path}, &stdout, &stderr)
+	if code != ExitInvalid {
+		t.Errorf("Run(validate --format json /no/such/file) = %d, want %d", code, ExitInvalid)
+	}
+	if stderr.Len() > 0 {
+		t.Errorf("expected loader diagnostic JSON on stdout, got stderr %q", stderr.String())
+	}
+	var got struct {
+		Path        string          `json:"path"`
+		Diagnostics []ir.Diagnostic `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v; stdout=%q", err, stdout.String())
+	}
+	if got.Path != path {
+		t.Errorf("Path = %q, want %q", got.Path, path)
+	}
+	if len(got.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v, want 1 diagnostic", got.Diagnostics)
+	}
+	d := got.Diagnostics[0]
+	if d.Code != "AWF_IMPORT_READ" || d.Source != path {
+		t.Errorf("diagnostic = %+v, want AWF_IMPORT_READ with Source", d)
 	}
 }
 

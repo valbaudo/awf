@@ -40,7 +40,8 @@ func TestWalkNodesVisitsEveryNodeWithCanonicalPaths(t *testing.T) {
 		},
 		&AgentStep{ID: "a0"},  // index 7
 		&SignalStep{ID: "s0"}, // index 8
-		&Skip{Reason: "done"}, // index 9 — must NOT be visited (no skip[N])
+		&CallStep{ID: "c0"},   // index 9
+		&Skip{Reason: "done"}, // index 10 — must NOT be visited (no skip[N])
 	}
 
 	type visited struct {
@@ -77,6 +78,7 @@ func TestWalkNodesVisitsEveryNodeWithCanonicalPaths(t *testing.T) {
 		{"*ir.CodeStep", "compose[6].body.smoke"},
 		{"*ir.AgentStep", "a0"},
 		{"*ir.SignalStep", "s0"},
+		{"*ir.CallStep", "c0"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("traversal mismatch:\n got=%v\nwant=%v", got, want)

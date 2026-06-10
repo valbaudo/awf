@@ -24,6 +24,9 @@ func testAssets(t *testing.T, factory BackendFactory) {
 	t.Run("resume_re_stages_run_started_snapshot", func(t *testing.T) {
 		testAssetsResumeReStagesRunStartedSnapshot(t, factory)
 	})
+	t.Run("imported_child_assets_are_module_qualified", func(t *testing.T) {
+		testAssetsImportedChildAssetsAreModuleQualified(t, factory)
+	})
 }
 
 func testAssetsStageRunStartedSnapshotBytes(t *testing.T, factory BackendFactory) {
@@ -142,6 +145,56 @@ func testAssetsResumeReStagesRunStartedSnapshot(t *testing.T, factory BackendFac
 	}
 }
 
+func testAssetsImportedChildAssetsAreModuleQualified(t *testing.T, factory BackendFactory) {
+	t.Helper()
+
+	var spy *assetCopyToSpy
+	h := newHarness(t, func() container.Backend {
+		b := factory()
+		fake, ok := b.(*container.Fake)
+		if !ok {
+			t.Fatalf("assets bucket factory returned %T, want *container.Fake", b)
+		}
+		fake.ProgramExec("./consume-child.sh", container.ExecResult{ExitCode: 0}, nil)
+		spy = newAssetCopyToSpy(fake)
+		return spy
+	}, assetImportedRootWorkflow)
+
+	writeAssetFile(t, filepath.Join(h.baseDir, "child.awf.yaml"), []byte(assetImportedChildWorkflow))
+	writeAssetFile(t, filepath.Join(h.baseDir, "child", "schema.json"), []byte("child schema\n"))
+
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("outcome = %q, want ok", oc)
+	}
+	if spy == nil {
+		t.Fatal("workflow did not create a fake backend")
+	}
+
+	started, err := engine.RunStartedDataFromEvents(mustFoldEvents(t, h))
+	if err != nil {
+		t.Fatalf("run.started: %v", err)
+	}
+	childAsset, ok := started.Assets["recon/schema"]
+	if !ok {
+		t.Fatalf("run.started assets missing recon/schema: %#v", started.Assets)
+	}
+	if childAsset.DeclaredPath != "child/schema.json" {
+		t.Fatalf("recon/schema DeclaredPath = %q, want child/schema.json", childAsset.DeclaredPath)
+	}
+
+	got := spy.stagedByPath()
+	want := map[string]string{
+		"/work/schema.json": "child schema\n",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("staged files = %#v, want %#v", got, want)
+	}
+}
+
 func writeAssetFile(t *testing.T, p string, b []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -168,6 +221,32 @@ graph:
     input_files:
       /work/prompt.txt: asset.prompt
       /work/fixtures: asset.fixtures
+`, fakeImageDigest)
+
+var assetImportedRootWorkflow = `workflow: conformance-imported-assets-root
+version: 1
+imports:
+  recon: child.awf.yaml
+containers: {}
+graph:
+  - id: recon
+    call: recon
+`
+
+var assetImportedChildWorkflow = fmt.Sprintf(`workflow: conformance-imported-assets-child
+version: 1
+assets:
+  schema: child/schema.json
+containers:
+  lab:
+    image: %s
+graph:
+  - id: consume
+    container: lab
+    run: "./consume-child.sh"
+    retry: { attempts: 1 }
+    input_files:
+      /work/schema.json: asset.schema
 `, fakeImageDigest)
 
 type assetCopyToSpy struct {

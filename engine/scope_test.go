@@ -115,6 +115,47 @@ func TestScopeResolveRunAndInput(t *testing.T) {
 	}
 }
 
+func TestScopeResolveInputOverride(t *testing.T) {
+	rs := &RunState{
+		RunID: testRunID,
+		Input: map[string]any{"target": "parent", "parent_only": true},
+	}
+	sc := NewScopeWithInput(rs, minimalWorkflow(), "triage", map[string]any{"target": "child"})
+
+	ref := mustParseRef(t, "input.target")
+	v, err := sc.Resolve(ref)
+	if err != nil {
+		t.Fatalf("Resolve(input.target): %v", err)
+	}
+	if v != "child" {
+		t.Errorf("input.target = %v, want %q", v, "child")
+	}
+
+	ref = mustParseRef(t, "input.parent_only")
+	_, err = sc.Resolve(ref)
+	var ee *template.EvalError
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("input.parent_only err = %v, want AWF4002 from override scope", err)
+	}
+}
+
+func TestScopeResolveInputFallsBackToRunState(t *testing.T) {
+	rs := &RunState{
+		RunID: testRunID,
+		Input: map[string]any{"target": "parent"},
+	}
+	sc := NewScope(rs, minimalWorkflow(), "triage")
+
+	ref := mustParseRef(t, "input.target")
+	v, err := sc.Resolve(ref)
+	if err != nil {
+		t.Fatalf("Resolve(input.target): %v", err)
+	}
+	if v != "parent" {
+		t.Errorf("input.target = %v, want %q", v, "parent")
+	}
+}
+
 func TestScopeResolveInputIndexSegment(t *testing.T) {
 	// Index segments (`input.list.0.field`) — for inputs containing arrays.
 	rs := &RunState{

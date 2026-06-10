@@ -1,6 +1,10 @@
 package obs
 
-import "github.com/valbaudo/awf/engine"
+import (
+	"strconv"
+
+	"github.com/valbaudo/awf/engine"
+)
 
 // Attribute names. awf.* is the STABLE contract (never renamed). gen_ai.* names
 // follow OTel semantic-conventions spec v1.41.1 and are hand-defined here as raw
@@ -14,7 +18,7 @@ const (
 	AttrRunID           = "awf.run.id"
 	AttrRunEpoch        = "awf.run.epoch"
 	AttrNodePath        = "awf.node.path"
-	AttrNodeKind        = "awf.node.kind"  // leaf step spans only — one of the 10 real node kinds
+	AttrNodeKind        = "awf.node.kind"  // leaf step spans only — one of the 12 real node kinds
 	AttrScopeKind       = "awf.scope.kind" // synthesized control-scope spans only — structural role (M1)
 	AttrNodeOutcome     = "awf.node.outcome"
 	AttrExitCode        = "awf.exit_code"
@@ -29,6 +33,8 @@ const (
 	AttrGateAttempts    = "awf.gate.attempts"
 	AttrGateOutcome     = "awf.gate.outcome"
 	AttrRunCostUSD      = "awf.run.cost.usd"
+	AttrCallPath        = "awf.call.path"
+	AttrCallInputRef    = "awf.call.input_ref"
 
 	AttrGenAIInputTokens  = "gen_ai.usage.input_tokens"
 	AttrGenAIOutputTokens = "gen_ai.usage.output_tokens"
@@ -107,4 +113,23 @@ func stepAttributes(path, kind string, nc engine.NodeCompletedData) map[string]a
 		attrs[AttrAgentTurns] = int64(m.Turns)
 	}
 	return attrs
+}
+
+func attachCallStartedAttrs(s *Span, path string, d engine.CallStartedData) {
+	s.Attributes[AttrCallPath] = path
+	if d.InputRef != "" {
+		s.Attributes[AttrCallInputRef] = d.InputRef
+	}
+	for i, r := range d.Runtimes {
+		prefix := "awf.call.runtime." + strconv.Itoa(i)
+		if r.Ref != "" {
+			s.Attributes[prefix+".ref"] = r.Ref
+		}
+		if r.Version != "" {
+			s.Attributes[prefix+".version"] = r.Version
+		}
+		if r.Container != "" {
+			s.Attributes[prefix+".container"] = r.Container
+		}
+	}
 }

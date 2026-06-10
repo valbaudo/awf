@@ -38,6 +38,8 @@ func WalkNodes(list NodeList, parent string, visit func(n Node, path string)) {
 			visit(v, PathFor(parent, "", v.ID, i))
 		case *SignalStep:
 			visit(v, PathFor(parent, "", v.ID, i))
+		case *CallStep:
+			visit(v, PathFor(parent, "", v.ID, i))
 		case *Skip:
 			// No step/map identity, no addressable child, not in the §8 grammar —
 			// an explicit no-op (NOT fall-through) so the default arm stays a true

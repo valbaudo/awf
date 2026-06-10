@@ -11,12 +11,51 @@ func resolveNamedArtifactRef(scope *Scope, wf *ir.Workflow, id, name string) (st
 	if cas, handled, err := resolveReducedBodyArtifactRef(scope, wf, id, name); handled || err != nil {
 		return cas, err
 	}
+	if cas, handled, err := resolveCallArtifactRef(scope, wf, id, name); handled || err != nil {
+		return cas, err
+	}
 	idx := ir.OutputFilesByStepID(wf)
 	declaredPath, ok := idx[id].PathForName(name)
 	if !ok {
 		return "", fmt.Errorf("step %q has no named output_files artifact %q", id, name)
 	}
 	return scope.ResolveDeclaredArtifactPath(id, declaredPath)
+}
+
+func resolveCallArtifactRef(scope *Scope, wf *ir.Workflow, id, name string) (string, bool, error) {
+	if scope == nil {
+		return "", false, nil
+	}
+	if wf == nil {
+		wf = scope.wfRef
+	}
+	staticPath, ok := callStepPathIndex(wf)[id]
+	if !ok {
+		return "", false, nil
+	}
+	runtimePath, err := scope.stepRuntimePath(staticPath)
+	if err != nil {
+		return "", true, &template.EvalError{Code: template.EvalCodeRefUnresolved, Msg: err.Error()}
+	}
+	nr, ok := scope.rs.LookupCompleted(runtimePath)
+	if !ok {
+		return "", true, template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: call step %q not yet committed (%s)", id, runtimePath)
+	}
+	cas, ok := nr.Files[name]
+	if !ok {
+		return "", true, template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: call step %q has no exported artifact %q", id, name)
+	}
+	return cas, true, nil
+}
+
+func callStepPathIndex(wf *ir.Workflow) map[string]string {
+	out := map[string]string{}
+	ir.WalkNodes(wf.Graph, "", func(n ir.Node, path string) {
+		if call, ok := n.(*ir.CallStep); ok {
+			out[call.ID] = path
+		}
+	})
+	return out
 }
 
 func resolveReducedBodyArtifactRef(scope *Scope, wf *ir.Workflow, id, name string) (string, bool, error) {

@@ -31,6 +31,8 @@ A workflow document has the following top-level shape:
     version: 1
     input: <json-schema>          # optional; run parameters
     env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent steps
+    imports:                      # optional; local subworkflows
+      <id>: <relative-path.awf.yaml>
     assets:                       # optional; local files/dirs folded into the definition
       <id>: <relative-path>
     skills:                       # optional; local skill corpora for agent-step routing
@@ -43,6 +45,9 @@ A workflow document has the following top-level shape:
     containers:
       <name>: { image: <oci-ref>, resources: { cpu, mem } }   # or compose (see CONTAINERS)
     graph: [ <node>, ... ]
+    output_schema: <json-schema>  # optional; required for imported workflow outputs
+    outputs: { <field>: <template> }      # optional; typed workflow exports
+    output_files: { <name>: step.<id>.files.<name> } # optional; artifact aliases
 
 **workflow**
 :   Required. A stable identifier for the workflow.
@@ -69,6 +74,18 @@ A workflow document has the following top-level shape:
     only; it does not inject into `run:` steps. (Independently of `env:`, a `run:`
     step inherits the host environment on the native backend but not on docker —
     so do not rely on `env:` to reach a `run:` step.)
+
+## Imports
+
+`imports:` maps local import ids to relative `.awf.yaml` files. Import paths are
+resolved relative to the declaring workflow file, must stay within that module
+directory, are interpreted as slash paths, and must not traverse symlink path
+components. Remote imports, absolute paths, backslashes, control characters, and
+`..` escape are not supported. The resolved import graph is part of the
+workflow definition digest: every imported workflow file, and each imported
+workflow's own imports, assets, and Compose dependencies, are content-addressed
+with the root definition. Resume against a changed imported workflow is a hard
+error, just like drift in the root workflow.
 
 **assets**
 :   Optional. A map of stable asset ids to relative local file or directory
@@ -281,12 +298,13 @@ allowlist, not a value map, so it cannot carry a templated value — do not use
 
 # STEPS
 
-A step node is exactly one of three black boxes; AWF runs it and does not look
+A step node is exactly one of four black boxes; AWF runs it and does not look
 inside. A node with more than one, or none, is invalid.
 
 - Code step (`run:`) — a shell command.
 - Agent step (`uses:`) — an external agent-runtime invocation.
 - Signal step (`await:`) — block until an external signal.
+- Call step (`call:`) — run an imported workflow.
 
 ## Code step (run)
 
@@ -433,6 +451,41 @@ params before staging the recorded skill directories.
 
 Deterministic BM25 v1 is inspired by SkillRouter full-body retrieval. It is not a
 neural encoder/reranker, and it is not the paper-level 80K registry behavior.
+
+## Call Steps
+
+A call step runs an imported workflow and exposes only that workflow's declared
+exports.
+
+    - id: <id>
+      call: <import-id>
+      input: { ... }                 # optional; default {}
+      timeout: <dur>                 # optional
+      retry: { ... }                 # optional
+
+**call**
+:   Required. Must reference an id declared in top-level `imports:`. Remote or
+    dynamic workflow references are not supported.
+
+**input**
+:   Optional. Defaults to `{}`. Each value is evaluated with the same typed
+    template rules as step input values, then the resulting object is validated
+    against the imported workflow's top-level `input` schema. If the imported
+    workflow has no `input` schema, only `{}` is valid.
+
+Call steps may set only the common step fields that apply to a black-box
+execution boundary: `id`, `call`, `input`, `timeout`, and `retry`. They must not
+set `container`, `run`, `uses`, `await`, `continues`, `with`, `output_schema`,
+`output_files`, `input_files`, or `idempotency_key`; those belong to the caller's
+other step kinds or to the imported workflow's own exports.
+
+The call product is addressable as `step.<id>.<field>` and
+`step.<id>.files.<name>`, using only the imported workflow's declared
+`output_schema`, `outputs:`, and workflow-level `output_files:` aliases. Imported
+internals are private: callers cannot reference child steps, child containers,
+or child artifacts except through those exports. Mechanical failures inside the
+imported workflow propagate as the call node's mechanical outcome; quality
+decisions remain the called workflow's own gate responsibility.
 
 ## Artifact channel (output_files, input_files)
 
@@ -1076,6 +1129,31 @@ constrained-decoding backend enforces. The all-properties-`required` and
 `additionalProperties: false` rules are required. Schemas outside the floor are
 validated post-hoc, not constraint-enforced.
 
+## Workflow Exports
+
+Imported workflows return explicit typed outputs and named artifact aliases.
+`output_schema` declares the exported typed object, `outputs:` binds each field
+to an in-scope typed reference, and top-level `output_files:` maps public artifact
+names to named artifacts produced inside the workflow.
+
+    output_schema:
+      type: object
+      required: [summary]
+      additionalProperties: false
+      properties:
+        summary: { type: string }
+    outputs:
+      summary: "{{ step.final.summary }}"
+    output_files:
+      report: step.final.files.report
+
+The evaluated `outputs:` object must satisfy `output_schema`. Missing required
+fields, extra fields when the schema disallows them, and type/schema mismatches
+follow normal JSON Schema validation. Each workflow-level `output_files:` alias
+must resolve to an in-scope named artifact (`step.<id>.files.<name>` or another
+valid aggregate artifact reference); aliases cannot expose bare capture-only
+artifacts or arbitrary paths.
+
 # CHECKPOINTING AND RESUME
 
 AWF persists progress so a re-run does not redo expensive stages — *not* to
@@ -1100,10 +1178,12 @@ content-addressed artifact, never a live container's process state.
     re-run, which is correct — its work was never committed.
 
 **Pinning**
-:   The workflow definition (by digest, including any Compose files) and each
-    resolved agent-runtime identity and version are recorded at run start. Resume
-    against a changed definition or runtime is a hard error: a changed definition
-    shifts step addressing; a changed runtime changes behavior.
+:   The workflow definition (by digest, including the resolved import graph,
+    assets, and any Compose files) and each resolved agent-runtime identity and
+    version are recorded at run start. Resume against a changed definition or
+    runtime is a hard error: a changed definition shifts step addressing; a
+    changed runtime changes behavior. Imported workflow drift is definition
+    drift and hard-errors on resume.
     A `map`'s runtime-resolved element image is recorded not at run start but at
     each element's first boot (the earliest point it is known) and folded into
     that element's journal entry; the definition still pins the template *text*,
@@ -1119,10 +1199,13 @@ content-addressed artifact, never a live container's process state.
 :   Interrupts in-flight steps, runs enclosing `finally` blocks, tears down
     containers/projects, and marks the run terminal (not resumable).
 
-Step addressing, used for resume and traces, names step nodes by `id` and control
-nodes positionally, joined from the root: `try[0].catch`, `if[1].then`,
-`loop[0].body.iter-3`, `gate[0].attempt-2.generate`, `parallel[2]`,
-`map[0].item-3`.
+Step addressing, used for resume and traces, names step nodes by `id`, call
+children by `<call-id>.workflow.<child-path>`, and control nodes positionally,
+joined from the root: `try[0].catch`, `if[1].then`, `loop[0].body.iter-3`,
+`gate[0].attempt-2.generate`, `parallel[2]`, `map[0].item-3`,
+`recon_result.workflow.extract`. The runtime computes every address, including
+call paths, through the single `engine/path` function; implementations must not
+construct journal keys or `awf.node.path` values ad hoc.
 
 # EXTERNAL EFFECTS AND IDEMPOTENCY
 

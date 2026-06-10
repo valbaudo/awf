@@ -6,6 +6,7 @@ import (
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/fake"
+	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 )
 
@@ -53,6 +54,32 @@ func TestCheckThreaded_ContinuesAgainstThreaded_OK(t *testing.T) {
 	}
 }
 
+func TestCheckThreaded_LoadedDefinitionUsesChildQualifiedRoleRef(t *testing.T) {
+	child := &ir.Workflow{
+		Agents: map[string]ir.AgentRole{
+			"auditor": {Uses: "awf/llm"},
+		},
+		Graph: ir.NodeList{
+			&ir.AgentStep{ID: "draft", Uses: "auditor"},
+			&ir.AgentStep{ID: "refine", Uses: "auditor", Continues: "draft"},
+		},
+	}
+	fk := fake.New(engine.AgentRuntimeRef(child, "mod-scan", "auditor")).
+		WithCaps(agent.Caps{Containerless: true, Threaded: true})
+	reg := regWith(t, fk)
+	ld := &ir.LoadedDefinition{
+		Workflow: &ir.Workflow{},
+		Modules: map[string]*ir.LoadedModule{
+			"":         {ID: "", Workflow: &ir.Workflow{}},
+			"mod-scan": {ID: "mod-scan", Workflow: child},
+		},
+	}
+
+	if err := checkThreadedAdaptersForLoadedDefinition(ld, reg); err != nil {
+		t.Fatalf("checkThreadedAdaptersForLoadedDefinition: %v, want nil", err)
+	}
+}
+
 // TestCheckThreaded_NoContinues_NotThreaded_OK: a non-Threaded adapter with NO
 // continues: anywhere is fine — the guard only fires on a continues: step.
 func TestCheckThreaded_NoContinues_NotThreaded_OK(t *testing.T) {
@@ -67,8 +94,8 @@ func TestCheckThreaded_NoContinues_NotThreaded_OK(t *testing.T) {
 }
 
 // TestCheckThreaded_ContinuesInsideMapBody_Errors: the walk descends into
-// map.body (unlike walkAgentRefsNodes, which skips it) — a continues: inside a
-// map body against a non-Threaded adapter is still rejected.
+// map.body — a continues: inside a map body against a non-Threaded adapter is
+// still rejected.
 func TestCheckThreaded_ContinuesInsideMapBody_Errors(t *testing.T) {
 	fk := fake.New("anthropic/claude-code") // Threaded false
 	reg := regWith(t, fk)

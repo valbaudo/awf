@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/agent"
-	"github.com/valbaudo/awf/agent/claude"
 	agentfake "github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/clock"
@@ -1381,6 +1380,89 @@ func TestCLIRunBackendInvalidValueIsExitUsage(t *testing.T) {
 	}
 }
 
+func TestRunBackendAutoScansImportedWorkflows(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	childPath := filepath.Join(dir, "child.awf.yaml")
+	if err := os.WriteFile(childPath, []byte(`workflow: child
+version: 1
+containers:
+  lab:
+    image: oci://example.com/lab@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: child.awf.yaml
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--backend", "auto", "--state-dir", stateDir, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
+	if backendField != engine.BackendDocker {
+		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendDocker)
+	}
+}
+
+func TestRunBackendNativeRejectsImportedDockerOnlyFeature(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	childPath := filepath.Join(dir, "child.awf.yaml")
+	if err := os.WriteFile(childPath, []byte(`workflow: child
+version: 1
+containers:
+  lab:
+    compose: lab/compose.yml
+    service: runner
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "lab"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lab", "compose.yml"), []byte("services:\n  runner:\n    image: example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: child.awf.yaml
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--backend", "native", "--state-dir", stateDir, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "module recon") || !strings.Contains(stderr.String(), "containers.lab.compose") {
+		t.Fatalf("stderr = %q, want imported module/path diagnostic", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "runs", "test-run-1", "log")); !os.IsNotExist(err) {
+		t.Fatalf("log exists after native import rejection; err = %v, want ErrNotExist", err)
+	}
+}
+
 func TestCLIRunRunStartedRecordsAssetSnapshots(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1437,6 +1519,136 @@ graph: []
 	}
 	assertRunStartedAssetFile(t, stateDir, fixtures.Files[0], "nested/a.txt", []byte("a"))
 	assertRunStartedAssetFile(t, stateDir, fixtures.Files[1], "z.txt", []byte("z"))
+}
+
+func TestRunStartedAssetsAreModuleQualified(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "root.schema.json"), []byte(`{"title":"root"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "recon.schema.json"), []byte(`{"title":"recon"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "outer", "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "outer", "inner", "inner.schema.json"), []byte(`{"title":"inner"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "recon.awf.yaml"), []byte(`workflow: recon
+version: 1
+assets:
+  schema: recon.schema.json
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "outer", "outer.awf.yaml"), []byte(`workflow: outer
+version: 1
+imports:
+  inner: inner/inner.awf.yaml
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "outer", "inner", "inner.awf.yaml"), []byte(`workflow: inner
+version: 1
+assets:
+  schema: inner.schema.json
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: recon.awf.yaml
+  outer: outer/outer.awf.yaml
+assets:
+  schema: root.schema.json
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	started := readRunStartedData(t, stateDir, "test-run-1")
+	if len(started.Assets) != 3 {
+		t.Fatalf("run.started.Assets len = %d, want 3: %#v", len(started.Assets), started.Assets)
+	}
+	assertRunStartedAssetFile(t, stateDir, started.Assets["schema"].Files[0], ".", []byte(`{"title":"root"}`))
+	assertRunStartedAssetFile(t, stateDir, started.Assets["recon/schema"].Files[0], ".", []byte(`{"title":"recon"}`))
+	assertRunStartedAssetFile(t, stateDir, started.Assets["outer.inner/schema"].Files[0], ".", []byte(`{"title":"inner"}`))
+}
+
+func TestThreadedGuardScansCallWorkflows(t *testing.T) {
+	t.Parallel()
+	fk := agentfake.New("anthropic/claude-code")
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dir := t.TempDir()
+	childPath := filepath.Join(dir, "child.awf.yaml")
+	if err := os.WriteFile(childPath, []byte(`workflow: child
+version: 1
+containers:
+  lab:
+    image: oci://example.com/lab@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    uses: anthropic/claude-code
+    container: lab
+  - id: refine
+    uses: anthropic/claude-code
+    container: lab
+    continues: draft
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: child.awf.yaml
+containers: {}
+graph:
+  - id: recon
+    call: recon
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := &cli.Runner{
+		Backend:  container.NewFake(),
+		IDGen:    &clock.Fake{IDs: []string{"test-threaded-import-run"}},
+		Resolver: &reg,
+	}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--backend", "fake", "--state-dir", stateDir, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does not support engine-threaded conversations") {
+		t.Fatalf("stderr = %q, want threaded guard diagnostic", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "runs", "test-threaded-import-run", "log")); !os.IsNotExist(err) {
+		t.Fatalf("log exists after threaded import rejection; err = %v, want ErrNotExist", err)
+	}
 }
 
 func TestCLIRunAssetBlobPutFailureDoesNotAppendRunStarted(t *testing.T) {
@@ -1600,8 +1812,8 @@ func TestCLIRun_AgentEnvFlag_DefaultPopulatesResolver(t *testing.T) {
 	if exit != cli.ExitOK {
 		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
 	}
-	if r.Resolver == nil {
-		t.Error("Resolver still nil after Run; want populated by --agent-env default")
+	if r.Resolver != nil {
+		t.Error("Resolver was cached after Run; want production registry scoped to the invocation")
 	}
 }
 
@@ -1621,13 +1833,8 @@ func TestCLIRun_AgentEnvFlag_EmptyValue_NoClaudeAdapter(t *testing.T) {
 	if exit != cli.ExitOK {
 		t.Fatalf("exit = %d, stderr=%s", exit, stderr.String())
 	}
-	if r.Resolver == nil {
-		t.Fatal("Resolver nil after Run with --agent-env=''; want non-nil but empty Registry")
-	}
-	if reg, ok := r.Resolver.(*agent.Registry); ok {
-		if _, found := reg.Lookup(claude.AdapterRef); found {
-			t.Error("Claude adapter registered with --agent-env=''; want absent")
-		}
+	if r.Resolver != nil {
+		t.Fatal("Resolver was cached after Run with --agent-env=''; want production registry scoped to the invocation")
 	}
 }
 
@@ -1635,8 +1842,9 @@ func TestCLIRun_WorkflowEnv_ExtendsAgentEnvAllowlist(t *testing.T) {
 	// Gap-1: the workflow's top-level env: names extend the --agent-env allowlist.
 	// Proof by isolation: pass --agent-env "" (empty base, so no adapter would be
 	// registered) but declare env: [ANTHROPIC_API_KEY] in the workflow with the var
-	// present in the host. The claude adapter must end up registered — which can only
-	// happen if ld.Workflow.Env flowed through mergeWorkflowEnv into buildAgentRegistry.
+	// present in the host. The claude-backed agent step must resolve and run — which
+	// can only happen if ld.Workflow.Env flowed through mergeLoadedWorkflowEnv into
+	// buildAgentRegistry.
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
 	tmpDir := t.TempDir()
 	wfPath := filepath.Join(tmpDir, "wf.yaml")
@@ -1647,9 +1855,11 @@ containers:
   lab:
     image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
 graph:
-  - id: noop
+  - id: ask
     container: lab
-    run: "true"
+    uses: anthropic/claude-code
+    with:
+      prompt: say ok
 `
 	if err := os.WriteFile(wfPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write workflow: %v", err)
@@ -1657,7 +1867,7 @@ graph:
 	stateDir := filepath.Join(tmpDir, ".awf")
 
 	fake := container.NewFake()
-	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	programClaudeSuccess(fake)
 	var stdout, stderr bytes.Buffer
 	r := &cli.Runner{
 		IDGen:   &clock.Fake{IDs: []string{"wf-env-run"}},
@@ -1668,12 +1878,75 @@ graph:
 	if exit != cli.ExitOK {
 		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
 	}
-	reg, ok := r.Resolver.(*agent.Registry)
-	if !ok {
-		t.Fatalf("Resolver type = %T, want *agent.Registry", r.Resolver)
+	if !strings.Contains(stdout.String(), "run wf-env-run: ok") {
+		t.Fatalf("stdout = %q, want successful run line", stdout.String())
 	}
-	if _, found := reg.Lookup(claude.AdapterRef); !found {
-		t.Error("claude adapter absent despite workflow env: [ANTHROPIC_API_KEY] with --agent-env=''; workflow env: did not extend the allowlist")
+	if r.Resolver != nil {
+		t.Error("Resolver was cached after Run; want production registry scoped to the invocation")
+	}
+}
+
+func TestCLIRun_ReusedRunnerBuildsFreshProductionRegistryPerInvocation(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
+	tmpDir := t.TempDir()
+	firstPath := filepath.Join(tmpDir, "first.awf.yaml")
+	if err := os.WriteFile(firstPath, []byte(`workflow: first
+version: 1
+agents:
+  reviewer:
+    uses: anthropic/claude-code
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: noop
+    container: lab
+    run: "true"
+`), 0o644); err != nil {
+		t.Fatalf("write first workflow: %v", err)
+	}
+	secondPath := filepath.Join(tmpDir, "second.awf.yaml")
+	if err := os.WriteFile(secondPath, []byte(`workflow: second
+version: 1
+agents:
+  writer:
+    uses: anthropic/claude-code
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    uses: writer
+    container: lab
+    with:
+      prompt: write the draft
+`), 0o644); err != nil {
+		t.Fatalf("write second workflow: %v", err)
+	}
+
+	fake := container.NewFake()
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	programClaudeSuccess(fake)
+	r := &cli.Runner{
+		IDGen:   &clock.Fake{IDs: []string{"fresh-registry-first", "fresh-registry-second"}},
+		Backend: fake,
+	}
+	var firstStdout, firstStderr bytes.Buffer
+	firstExit := r.Run([]string{"run", "--state-dir", filepath.Join(tmpDir, "state1"), "--backend", "fake", "--agent-env", "ANTHROPIC_API_KEY", firstPath}, &firstStdout, &firstStderr)
+	if firstExit != cli.ExitOK {
+		t.Fatalf("first exit = %d, want %d; stderr=%s", firstExit, cli.ExitOK, firstStderr.String())
+	}
+
+	var secondStdout, secondStderr bytes.Buffer
+	secondExit := r.Run([]string{"run", "--state-dir", filepath.Join(tmpDir, "state2"), "--backend", "fake", "--agent-env", "ANTHROPIC_API_KEY", secondPath}, &secondStdout, &secondStderr)
+	if secondExit != cli.ExitOK {
+		t.Fatalf("second exit = %d, want %d; stderr=%s", secondExit, cli.ExitOK, secondStderr.String())
+	}
+	if strings.Contains(secondStderr.String(), "adapter not found") || strings.Contains(secondStderr.String(), "writer") {
+		t.Fatalf("second run used stale first registry instead of registering writer role; stderr=%s", secondStderr.String())
+	}
+	if r.Resolver != nil {
+		t.Fatal("Resolver was cached on reused Runner; want production registries local per invocation")
 	}
 }
 

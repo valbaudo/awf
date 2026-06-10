@@ -68,7 +68,7 @@ func TestRunReduceQuorumMet(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestQuorumReduceOutputMatchesVerdictFields(t *testing.T) {
 	q := ir.Ratio("1")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	if _, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil); err != nil {
+	if _, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil); err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
 	nr, ok := rig.rs.LookupCompleted(testMapPath)
@@ -130,7 +130,7 @@ func TestRunReduceQuorumNotMet(t *testing.T) {
 	q := ir.Ratio("3")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeRetryableFailure {
 		t.Fatalf("Outcome = %q (err=%v), want retryable_failure", oc, err)
 	}
@@ -157,7 +157,7 @@ func TestRunReduceQuorumThresholdIsCohortNotSurvivors(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, 3 /* cohort */, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeRetryableFailure {
 		t.Fatalf("quorum 2 over cohort 3 with 1 agreeing survivor: outcome = %q (err=%v), want retryable_failure", oc, err)
 	}
@@ -178,7 +178,7 @@ func TestRunReduceQuorumAllBranchesCrashedIsNotVacuousPass(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, nil /* all crashed */, 3 /* cohort */, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, nil /* all crashed */, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeRetryableFailure {
 		t.Fatalf("quorum 2 over cohort 3 with 0 survivors: outcome = %q (err=%v), want retryable_failure", oc, err)
 	}
@@ -197,7 +197,7 @@ func TestRunReduceResumeReplays(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, nil, 0, minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, nil, 0, minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if err != nil {
 		t.Fatalf("runReduce (resume): %v", err)
 	}
@@ -254,7 +254,7 @@ func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
 		OutputFiles:  ir.OutputFiles{{Name: "csv", Path: "/out/versions.csv"}},
 	}
 
-	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if err != nil {
 		t.Fatalf("runReduce (run): %v", err)
 	}
@@ -357,7 +357,7 @@ func TestRunReduceTemplatesBodyStepRefsAsJSON(t *testing.T) {
 		OutputSchema: reduceSchema,
 		OutputFiles:  ir.OutputFiles{{Name: "json", Path: "/out/{{ step.scan.k }}.json"}},
 	}
-	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), wf, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), wf, RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestRunCommandReduceTemplatesRun(t *testing.T) {
 	r := &ir.Reduce{Run: "echo {{ input.cve_id }}", Container: reduceContainer}
 	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"k": "a"}}}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), wf, RootModuleID, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("runReduce: (%q, %v), want (ok, nil)", oc, err)
 	}

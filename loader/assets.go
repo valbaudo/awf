@@ -15,6 +15,8 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
+var errSymlinkComponent = errors.New("symlink path component")
+
 const MaxAssetFileBytes int64 = 64 << 20
 const MaxAssetTotalBytes int64 = 256 << 20
 const MaxAssetFiles = 10000
@@ -193,23 +195,7 @@ func readAssetFile(root *os.Root, id, rootPath, manifestPath string, tracker *as
 }
 
 func assetRelPath(declared string) (string, error) {
-	if declared == "" {
-		return "", errors.New("empty path not permitted")
-	}
-	if filepath.IsAbs(declared) {
-		return "", errors.New("absolute path not permitted (must be relative to the workflow directory)")
-	}
-	if strings.ContainsRune(declared, '\\') {
-		return "", errors.New("backslash not permitted in asset paths; use forward slash")
-	}
-	if strings.ContainsAny(declared, "\x00\t\r\n") {
-		return "", errors.New("NUL, tab, carriage return, and line feed are not permitted in asset paths")
-	}
-	clean := filepath.ToSlash(filepath.Clean(declared))
-	if clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", fmt.Errorf("path escapes the workflow directory after cleaning: %q", clean)
-	}
-	return clean, nil
+	return safeRootRelPath(declared, safePathPolicy{kind: "asset", allowDot: true})
 }
 
 func rejectSymlinkComponents(root *os.Root, rel string) error {
@@ -224,7 +210,7 @@ func rejectSymlinkComponents(root *os.Root, rel string) error {
 			return fmt.Errorf("stat path component %q: %w", p, err)
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("symlink not permitted at path component %q", p)
+			return fmt.Errorf("symlink not permitted at path component %q: %w", p, errSymlinkComponent)
 		}
 	}
 	return nil

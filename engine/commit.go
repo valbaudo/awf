@@ -7,11 +7,25 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
-// Commit is the only function in the engine that appends a node.completed
-// event. The order — Blobs.Put each artifact FIRST, then Log.Append, then
-// Log.Sync — is the spec §8 + CLAUDE.md "content-address-then-pointer-swap"
-// invariant in code. A crash between Blobs.Put and Log.Append leaves orphan
-// blobs only; no node.completed event ever references a missing artifact.
+func appendNodeCompleted(log state.Log, path string, data NodeCompletedData) error {
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal node.completed for %q: %w", path, err)
+	}
+	if err := log.Append(state.Event{Type: EventNodeCompleted, Path: path, Data: dataJSON}); err != nil {
+		return fmt.Errorf("append node.completed for %q: %w", path, err)
+	}
+	if err := log.Sync(); err != nil {
+		return fmt.Errorf("sync node.completed for %q: %w", path, err)
+	}
+	return nil
+}
+
+// Commit persists a successful node result. The order — Blobs.Put each artifact
+// FIRST, then Log.Append, then Log.Sync through appendNodeCompleted — is the
+// spec §8 + CLAUDE.md "content-address-then-pointer-swap" invariant in code. A
+// crash between Blobs.Put and Log.Append leaves orphan blobs only; no
+// node.completed event ever references a missing artifact.
 //
 // Commit takes the pre-commit DispatchResult and returns the post-commit
 // NodeResult (refs filled, original materialized values preserved for callers
@@ -112,22 +126,8 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		Container:     dr.Container,
 		TranscriptRef: transcriptRef,
 	}
-	dataJSON, err := json.Marshal(data)
-	if err != nil {
-		return NodeResult{}, fmt.Errorf("engine.Commit: marshal node.completed at path %q: %w", path, err)
-	}
-	if err := log.Append(state.Event{
-		Type: EventNodeCompleted,
-		Path: path,
-		Data: dataJSON,
-	}); err != nil {
-		return NodeResult{}, fmt.Errorf("engine.Commit: append node.completed at path %q: %w", path, err)
-	}
-
-	// 3. fsync. node.completed is the spec §8 durability-critical event;
-	// retry.attempt and the rest ride the next fsync.
-	if err := log.Sync(); err != nil {
-		return NodeResult{}, fmt.Errorf("engine.Commit: sync log after node.completed at path %q: %w", path, err)
+	if err := appendNodeCompleted(log, path, data); err != nil {
+		return NodeResult{}, fmt.Errorf("engine.Commit: %w", err)
 	}
 
 	return nr, nil

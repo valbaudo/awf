@@ -132,6 +132,85 @@ func TestFold_RunStartedWithoutInput(t *testing.T) {
 	}
 }
 
+func TestFoldCallStartedMaterializesInputAndRuntimes(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	inputRef, err := blobs.Put([]byte(`{"task":"audit","deep":true}`))
+	if err != nil {
+		t.Fatalf("seed call input: %v", err)
+	}
+	runtimes := []ResolvedRuntime{
+		{Ref: "anthropic/claude-code", Version: "2.1.118", Container: "lab"},
+		{Ref: "openai/codex", Version: "0.31.0"},
+	}
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Path: "call.review", Type: EventCallStarted,
+			Data: marshalOrFatal(t, CallStartedData{InputRef: inputRef, Runtimes: runtimes})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got, ok := rs.LookupCallStarted("call.review")
+	if !ok {
+		t.Fatal("LookupCallStarted(call.review): ok=false")
+	}
+	if got.InputRef != inputRef {
+		t.Errorf("InputRef = %q, want %q", got.InputRef, inputRef)
+	}
+	if got.Input["task"] != "audit" || got.Input["deep"] != true {
+		t.Errorf("Input = %+v, want task=audit deep=true", got.Input)
+	}
+	if len(got.Runtimes) != len(runtimes) {
+		t.Fatalf("len(Runtimes) = %d, want %d", len(got.Runtimes), len(runtimes))
+	}
+	for i := range runtimes {
+		if got.Runtimes[i] != runtimes[i] {
+			t.Errorf("Runtimes[%d] = %+v, want %+v", i, got.Runtimes[i], runtimes[i])
+		}
+	}
+}
+
+func TestFoldCallStartedMissingInputBlobIsError(t *testing.T) {
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Path: "call.review", Type: EventCallStarted,
+			Data: marshalOrFatal(t, CallStartedData{
+				InputRef: "awf-d1:sha256:" + strings.Repeat("ab", 32),
+			})},
+	}
+	if _, err := Fold(events, state.NewInMemoryBlobs()); err == nil {
+		t.Errorf("Fold with missing call input blob should error, got nil")
+	}
+}
+
+func TestFoldDuplicateCallStartedFails(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	inputRef, err := blobs.Put([]byte(`{"task":"audit"}`))
+	if err != nil {
+		t.Fatalf("seed call input: %v", err)
+	}
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Path: "call.review", Type: EventCallStarted,
+			Data: marshalOrFatal(t, CallStartedData{InputRef: inputRef})},
+		{Seq: 3, TS: fixedTS, Path: "call.review", Type: EventCallStarted,
+			Data: marshalOrFatal(t, CallStartedData{
+				InputRef: "awf-d1:sha256:" + strings.Repeat("cd", 32),
+			})},
+	}
+	_, err = Fold(events, blobs)
+	if err == nil {
+		t.Fatal("Fold accepted duplicate call.started: want error")
+	}
+	if !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), EventCallStarted) {
+		t.Errorf("err = %v, want duplicate call.started", err)
+	}
+}
+
 func TestFold_RunResumedBumpsEpoch(t *testing.T) {
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,

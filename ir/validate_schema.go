@@ -29,6 +29,9 @@ func validateSchema(ld *LoadedDefinition, c *collector) {
 	if wf.Input != nil {
 		checkSchemaWellFormed(*wf.Input, "input", c)
 	}
+	if wf.OutputSchema != nil {
+		checkSchemaWellFormed(*wf.OutputSchema, "output_schema", c)
+	}
 	walkSchemas(wf.Graph, c)
 }
 

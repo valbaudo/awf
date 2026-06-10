@@ -8,7 +8,7 @@ import (
 	"github.com/valbaudo/awf/template"
 )
 
-// validateInputFiles checks every step's input_files: each value must be either
+// validateInputFilesModule checks every step's input_files: each value must be either
 // a static step.<id>.files.<name> reference (AWF3007) naming a prior reachable
 // named output_files artifact, or asset.<id> naming a declared workflow asset.
 // Map bodies remain opaque except for reduce: promotion. Gate bodies are special:
@@ -16,15 +16,15 @@ import (
 // attempt's artifact at runtime. Scalar step refs remain gate-scoped. Each
 // destination path must also be absolute and clean (a format contract for the
 // new field).
-func validateInputFiles(ld *LoadedDefinition, c *collector) {
-	if ld == nil || ld.Workflow == nil {
+func validateInputFilesModule(ld *LoadedDefinition, mod validationModule, c *collector) {
+	if mod.Workflow == nil {
 		return
 	}
-	wf := ld.Workflow
+	wf := mod.Workflow
 	producers := map[string]producer{}
-	indexProducers(wf.Graph, producers)
+	indexModuleProducers(ld, mod.ModuleID, wf.Graph, producers)
 	order := nodeOrder(wf.Graph)
-	outFiles := OutputFilesByStepID(wf)
+	outFiles := outputFilesByStepIDForModule(ld, mod.ModuleID, wf)
 	// Index maps by static path so a ref into a reduce-declaring map validates against
 	// the REDUCER's output_files (SP2 Task 11, validator half — mirrors
 	// engine/scope.go ResolveArtifactPath's reduce branch).
@@ -59,6 +59,31 @@ func validateInputFiles(ld *LoadedDefinition, c *collector) {
 		}
 		validateInputFileDestinationOverlap(c, nodePath, validDsts)
 	})
+}
+
+func outputFilesByStepIDForModule(ld *LoadedDefinition, moduleID string, wf *Workflow) map[string]OutputFiles {
+	out := OutputFilesByStepID(wf)
+	WalkNodes(wf.Graph, "", func(n Node, _ string) {
+		call, ok := n.(*CallStep)
+		if !ok {
+			return
+		}
+		child, ok := callTargetModule(ld, moduleID, call.Call)
+		if !ok || child == nil || child.Workflow == nil || len(child.Workflow.ArtifactExports) == 0 {
+			return
+		}
+		names := make([]string, 0, len(child.Workflow.ArtifactExports))
+		for name := range child.Workflow.ArtifactExports {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		ofs := make(OutputFiles, 0, len(names))
+		for _, name := range names {
+			ofs = append(ofs, OutputFile{Name: name, Path: child.Workflow.ArtifactExports[name]})
+		}
+		out[call.ID] = ofs
+	})
+	return out
 }
 
 func validateInputFileDestinationOverlap(c *collector, nodePath string, dsts []string) {

@@ -42,7 +42,7 @@ func cliUI(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf ui: %v\n", err)
 		return ExitUsage
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, err := ld.ComputeDigest()
 	if err != nil {
 		fprintf(stderr, "awf ui: compute digest: %v\n", err)
 		return ExitUsage
@@ -56,7 +56,7 @@ func cliUI(args []string, stdout, stderr io.Writer) int {
 	url := "http://" + ln.Addr().String()
 	fprintf(stdout, "awf ui: serving %s on %s\n", path, url)
 
-	srv := ui.New(ld.Workflow, digest, *stateDir)
+	srv := ui.NewLoaded(ld, digest, *stateDir)
 	if *open {
 		openBrowser(url) // best-effort; the URL is already printed
 	}

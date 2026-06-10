@@ -33,32 +33,43 @@ func runCompose(
 	tap io.Writer,
 	broker *signal.Broker,
 ) (Outcome, error) {
-	ld, ok := dispatcher.(*LocalDispatcher)
+	return runComposeWithContext(ctx, n, path, interpreterContext{
+		wf: wf, runstate: runstate, dispatcher: dispatcher, log: log, blobs: blobs, clk: clk, tap: tap, broker: broker,
+	})
+}
+
+func runComposeWithContext(
+	ctx context.Context,
+	n *ir.Compose,
+	path string,
+	ictx interpreterContext,
+) (Outcome, error) {
+	ld, ok := ictx.dispatcher.(*LocalDispatcher)
 	if !ok {
-		return "", fmt.Errorf("engine.runCompose: compose at %q requires *LocalDispatcher for runtime compose promotion (got %T)", path, dispatcher)
+		return "", fmt.Errorf("engine.runCompose: compose at %q requires *LocalDispatcher for runtime compose promotion (got %T)", path, ictx.dispatcher)
 	}
 
-	scope := NewScope(runstate, wf, path)
-	composeBytes, err := resolveArtifactBytes(n.From, scope, wf, blobs)
+	scope := ictx.scope(path)
+	composeBytes, err := resolveArtifactBytes(n.From, scope, ictx.wf, ictx.blobs)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			return "", fmt.Errorf("engine.Run: promote compose at %q: %w", path, err)
 		}
-		return failStep(log, path, OutcomePermanentFailure, fmt.Errorf("runtime compose from: %w", err))
+		return failStep(ictx.log, path, OutcomePermanentFailure, fmt.Errorf("runtime compose from: %w", err))
 	}
 
 	service, err := template.Substitute(string(n.Service), scope)
 	if err != nil {
-		return failStep(log, path, OutcomePermanentFailure, fmt.Errorf("runtime compose service: %w", err))
+		return failStep(ictx.log, path, OutcomePermanentFailure, fmt.Errorf("runtime compose service: %w", err))
 	}
 	service = strings.TrimSpace(service)
 	if service == "" {
-		return failStep(log, path, OutcomePermanentFailure, fmt.Errorf("runtime compose service rendered empty"))
+		return failStep(ictx.log, path, OutcomePermanentFailure, fmt.Errorf("runtime compose service rendered empty"))
 	}
 
 	requiredServices := append([]string{service}, composeServiceOverrides(n.As, n.Body)...)
 	if errs := ir.ValidateComposeBytes(runtimeComposeFilename(path, n.As), composeBytes, requiredServices...); len(errs) > 0 {
-		return failStep(log, path, OutcomePermanentFailure, formatComposeValidationErrors(errs))
+		return failStep(ictx.log, path, OutcomePermanentFailure, formatComposeValidationErrors(errs))
 	}
 
 	spec := container.ContainerSpec{
@@ -69,11 +80,13 @@ func runCompose(
 	}
 	h, err := ld.Backend.Create(ctx, spec)
 	if err != nil {
-		return failStep(log, path, OutcomeRetryableFailure, fmt.Errorf("runtime compose create: %w", err))
+		return failStep(ictx.log, path, OutcomeRetryableFailure, fmt.Errorf("runtime compose create: %w", err))
 	}
 
 	scopedDispatcher := ld.WithItemHandle(n.As, h)
-	bodyOC, bodyErr := interpNodes(ctx, n.Body, path+".body", wf, runstate, scopedDispatcher, log, blobs, clk, tap, broker)
+	bodyCtx := ictx
+	bodyCtx.dispatcher = scopedDispatcher
+	bodyOC, bodyErr := interpNodes(ctx, n.Body, path+".body", bodyCtx)
 
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), runtimeComposeTeardownGrace)
 	destroyErr := ld.Backend.Destroy(cleanupCtx, h)
@@ -83,7 +96,7 @@ func runCompose(
 		if bodyErr != nil || bodyOC != OutcomeOK {
 			return bodyOC, errors.Join(bodyErr, destroyErr)
 		}
-		return failStep(log, path, OutcomeRetryableFailure, destroyErr)
+		return failStep(ictx.log, path, OutcomeRetryableFailure, destroyErr)
 	}
 	return bodyOC, bodyErr
 }

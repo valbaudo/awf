@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,9 @@ func TestCatalogCodesAreUnique(t *testing.T) {
 	}
 	// Sanity: every code is "AWFNNNN" (uppercase 'AWF' + 4 digits).
 	for code := range catalog {
+		if strings.HasPrefix(code, "AWF_IMPORT_") {
+			continue
+		}
 		if len(code) != 7 || code[:3] != "AWF" {
 			t.Errorf("code %q does not match AWFNNNN shape", code)
 		}
@@ -55,11 +59,61 @@ func TestCatalogCodesAreUnique(t *testing.T) {
 	}
 }
 
+func TestCatalogIncludesLoaderDiagnosticCodes(t *testing.T) {
+	for _, code := range []string{
+		"AWF_IMPORT_CYCLE",
+		"AWF_IMPORT_DECODE",
+		"AWF_IMPORT_DEPTH",
+		"AWF_IMPORT_ID_INVALID",
+		"AWF_IMPORT_PATH_ABSOLUTE",
+		"AWF_IMPORT_PATH_BACKSLASH",
+		"AWF_IMPORT_PATH_ESCAPE",
+		"AWF_IMPORT_PATH_INVALID",
+		"AWF_IMPORT_READ",
+		"AWF_IMPORT_SYMLINK",
+	} {
+		if _, ok := catalog[code]; !ok {
+			t.Errorf("catalog missing loader diagnostic code %s", code)
+		}
+	}
+}
+
 func TestDiagnosticErrorRenders(t *testing.T) {
 	d := Diagnostic{Severity: Error, Path: "graph[0].run", Code: "AWF1005", Message: "image is a tag, not a digest"}
 	want := "error AWF1005 at graph[0].run: image is a tag, not a digest"
 	if got := d.String(); got != want {
 		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+func TestDiagnosticSourceRenders(t *testing.T) {
+	cases := []struct {
+		name string
+		in   Diagnostic
+		want string
+	}{
+		{
+			name: "source-and-path",
+			in:   Diagnostic{Severity: Error, Source: "/tmp/child.awf.yaml", Path: "graph[0].run", Code: "AWF1005", Message: "image is a tag"},
+			want: "error AWF1005 at /tmp/child.awf.yaml:graph[0].run: image is a tag",
+		},
+		{
+			name: "source-only",
+			in:   Diagnostic{Severity: Error, Source: "/tmp/child.awf.yaml", Code: "AWF_IMPORT_READ", Message: "read workflow"},
+			want: "error AWF_IMPORT_READ at /tmp/child.awf.yaml: read workflow",
+		},
+		{
+			name: "root-shape-unchanged",
+			in:   Diagnostic{Severity: Error, Code: "AWF1003", Message: "nil or empty LoadedDefinition"},
+			want: "error AWF1003: nil or empty LoadedDefinition",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.in.String(); got != tc.want {
+				t.Errorf("String() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

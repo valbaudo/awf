@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -58,6 +59,7 @@ func (r *Runner) agentEventTap(stderr io.Writer) io.Writer {
 func (r *Runner) runAndFinish(
 	ctx context.Context,
 	backend container.Backend,
+	resolver agent.Resolver,
 	ld *ir.LoadedDefinition,
 	rs *engine.RunState,
 	handles map[string]container.Handle,
@@ -74,7 +76,7 @@ func (r *Runner) runAndFinish(
 		Backend:          backend,
 		Handles:          handles,
 		ComposeFiles:     ld.ComposeFiles,
-		Resolver:         r.resolverOrEmpty(),
+		Resolver:         resolverOrEmpty(resolver),
 		AgentEventTap:    tap,
 		RenderAgentEvent: newAgentEventRenderer(tap),
 		StepCostLine:     true,

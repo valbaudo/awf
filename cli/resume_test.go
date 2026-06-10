@@ -177,7 +177,7 @@ func TestCLIResumeHappyPathSkipsCommittedSteps(t *testing.T) {
 	if diags := ir.Validate(ld); ir.HasErrors(diags) {
 		t.Fatalf("fixture invalid: %v", diags)
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, err := ld.ComputeDigest()
 	if err != nil {
 		t.Fatalf("ComputeDigest: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestCLIResumeDigestMismatchHardError(t *testing.T) {
 	runID := "test-resume-digest-mismatch"
 
 	ld, _ := loader.Load("testdata/phase2/seq.yaml")
-	digest, _ := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, _ := ld.ComputeDigest()
 	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -469,7 +469,7 @@ graph: []
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, err := ld.ComputeDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,7 +622,7 @@ func TestResumeRefusesWhenRunLockHeld(t *testing.T) {
 // the load+digest checks so ld.Workflow.Env can extend the allowlist. If env: were
 // folded asymmetrically, or the registry build were misordered, this fails.
 func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
+	t.Setenv("CUSTOM_AGENT_TOKEN", "custom-secret")
 	stateDir := t.TempDir()
 	runID := "test-resume-workflow-env"
 
@@ -633,8 +633,30 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenBlobs: %v", err)
 	}
+	tmpDir := t.TempDir()
+	wfPath := filepath.Join(tmpDir, "resume-env.awf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: resume-env
+version: 1
+env: [CUSTOM_AGENT_TOKEN]
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: touch_marker
+    container: lab
+    run: "true"
+  - id: ask
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: resume please
+      bare: false
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
 	// Digest is computed from the env:-bearing fixture — the env names fold in.
-	ld, err := loader.Load("testdata/phase2/seq-with-env.yaml")
+	ld, err := loader.Load(wfPath)
 	if err != nil {
 		t.Fatalf("Load fixture: %v", err)
 	}
@@ -644,7 +666,7 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	if len(ld.Workflow.Env) == 0 {
 		t.Fatal("fixture lost its env: declaration on load")
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, err := ld.ComputeDigest()
 	if err != nil {
 		t.Fatalf("ComputeDigest: %v", err)
 	}
@@ -655,6 +677,9 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	}
 	runStartedData, _ := json.Marshal(engine.RunStartedData{
 		RunID: runID, WorkflowDigest: digest, Backend: "fake",
+		Runtimes: []engine.ResolvedRuntime{
+			{Ref: "anthropic/claude-code", Version: "2.1.0", Container: "lab"},
+		},
 	})
 	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
 		t.Fatalf("Append run.started: %v", err)
@@ -678,18 +703,33 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	}
 
 	fake := container.NewFake()
-	fake.ProgramExec("echo step2", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`)}, nil)
-	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	programClaudeSuccess(fake)
 	r := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{"unused"}}}
 	var stdout, stderr bytes.Buffer
-	_ = r.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq-with-env.yaml"}, &stdout, &stderr)
+	exit := r.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
 	// The digest matched (env: folded symmetrically) so resume did NOT refuse;
-	// the reordered registry build then populated the Resolver.
+	// the invocation-local registry build then forwards the workflow env name
+	// into the resumed agent launch.
 	if strings.Contains(stderr.String(), "digest mismatch") {
 		t.Fatalf("resume refused on digest mismatch with env: present — env names folded asymmetrically: %s", stderr.String())
 	}
-	if r.Resolver == nil {
-		t.Error("Resolver still nil after resume of an env:-bearing workflow; reordered registry build did not run")
+	if exit != cli.ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
+	}
+	var sawCustomEnv bool
+	for _, call := range fake.Calls {
+		if call.Run == "claude --version" {
+			continue
+		}
+		if call.Env["CUSTOM_AGENT_TOKEN"] == "custom-secret" {
+			sawCustomEnv = true
+		}
+	}
+	if !sawCustomEnv {
+		t.Fatalf("resumed agent launch did not receive workflow env CUSTOM_AGENT_TOKEN; calls=%+v", fake.Calls)
+	}
+	if r.Resolver != nil {
+		t.Error("Resolver was cached after resume of an env:-bearing workflow; want production registry scoped to the invocation")
 	}
 }
 
@@ -716,7 +756,7 @@ func TestCLIResume_PopulatesResolverFromDefaultAllowlist(t *testing.T) {
 	if diags := ir.Validate(ld); ir.HasErrors(diags) {
 		t.Fatalf("fixture invalid: %v", diags)
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, err := ld.ComputeDigest()
 	if err != nil {
 		t.Fatalf("ComputeDigest: %v", err)
 	}
@@ -767,8 +807,8 @@ func TestCLIResume_PopulatesResolverFromDefaultAllowlist(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	_ = r.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
-	if r.Resolver == nil {
-		t.Error("Resolver still nil after resume; want populated by buildAgentRegistry with default allowlist")
+	if r.Resolver != nil {
+		t.Error("Resolver was cached after resume; want production registry scoped to the invocation")
 	}
 }
 
@@ -793,7 +833,7 @@ func buildInFlightLogForWF(t *testing.T, wfPath, runID string, runtimes []engine
 	if diags := ir.Validate(ld); ir.HasErrors(diags) {
 		t.Fatalf("fixture invalid: %v", diags)
 	}
-	digest, err := ld.Workflow.ComputeDigest(ld.ComposeFiles, ld.Assets)
+	digest, err := ld.ComputeDigest()
 	if err != nil {
 		t.Fatalf("ComputeDigest: %v", err)
 	}
@@ -819,6 +859,64 @@ func buildInFlightLogForWF(t *testing.T, wfPath, runID string, runtimes []engine
 		t.Fatalf("Close: %v", err)
 	}
 	return stateDir
+}
+
+func TestResumeDigestDriftFromImportedWorkflowFails(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	childPath := filepath.Join(dir, "child.awf.yaml")
+	if err := os.WriteFile(childPath, []byte(`workflow: child
+version: 1
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: child.awf.yaml
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runID := "test-import-digest-drift"
+	stateDir := buildInFlightLogForWF(t, rootPath, runID, nil)
+
+	if err := os.WriteFile(childPath, []byte(`workflow: child-mutated
+version: 1
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "workflow digest mismatch") {
+		t.Fatalf("stderr = %q, want digest mismatch", stderr.String())
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	lg, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = lg.Close() }()
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == engine.EventRunResumed {
+			t.Fatal("run.resumed found after imported digest drift rejection")
+		}
+	}
 }
 
 // TestResume_ContinuesAgainstNonThreadedAdapter_FailsFast is the T8 end-to-end

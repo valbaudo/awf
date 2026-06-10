@@ -57,6 +57,7 @@ func runMapReduce(
 	mapPath string,
 	cohort int,
 	wf *ir.Workflow,
+	moduleID string,
 	runstate *RunState,
 	ld *LocalDispatcher,
 	log state.Log,
@@ -90,8 +91,10 @@ func runMapReduce(
 		// dispatcher does NOT already hold (not pre-provisioned) is Created +
 		// Destroyed here.
 		bare, _ := SplitContainerRef(n.Reduce.Container)
-		if _, have := ld.Handles[bare]; !have {
+		handleKey := ld.handleKey(bare)
+		if _, have := ld.Handles[handleKey]; !have {
 			spec := ContainerSpecFor(wf, ld.ComposeFiles, bare)
+			spec.Name = handleKey
 			rh, cerr := ld.Backend.Create(ctx, spec)
 			if cerr != nil {
 				return "", fmt.Errorf("engine.runMapReduce: create reduce container %q: %w", n.Reduce.Container, cerr)
@@ -100,7 +103,7 @@ func runMapReduce(
 			ld = ld.WithItemHandle(bare, rh)
 		}
 	}
-	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, runstate, ld, log, blobs, clk, tap)
+	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, moduleID, runstate, ld, log, blobs, clk, tap)
 }
 
 // runReduce executes a Map's reduce: clause AFTER fan-out, collapsing the N
@@ -135,6 +138,7 @@ func runReduce(
 	branches []reduceBranch,
 	cohort int,
 	wf *ir.Workflow,
+	moduleID string,
 	rs *RunState,
 	ld *LocalDispatcher,
 	log state.Log,
@@ -150,7 +154,7 @@ func runReduce(
 	case r.IsQuorum():
 		return runQuorumReduce(r, nodePath, branches, cohort, log, blobs, rs)
 	case r.IsRun():
-		return runCommandReduce(ctx, r, nodePath, branches, wf, rs, ld, log, blobs, clk, tap)
+		return runCommandReduce(ctx, r, nodePath, branches, wf, moduleID, rs, ld, log, blobs, clk, tap)
 	default:
 		return "", fmt.Errorf("engine.runReduce: reduce at %q has neither quorum nor run (validator AWF1035)", nodePath)
 	}
@@ -212,7 +216,7 @@ func quorumThreshold(q *ir.Ratio, cohort int) int64 {
 // container and runs it as a synthesized CodeStep committing at nodePath.
 func runCommandReduce(
 	ctx context.Context, r *ir.Reduce, nodePath string, branches []reduceBranch,
-	wf *ir.Workflow, rs *RunState, ld *LocalDispatcher, log state.Log, blobs state.Blobs, clk clock.Clock, tap io.Writer,
+	wf *ir.Workflow, moduleID string, rs *RunState, ld *LocalDispatcher, log state.Log, blobs state.Blobs, clk clock.Clock, tap io.Writer,
 ) (Outcome, error) {
 	// 1. Canonical-JSON manifest of branch typed outputs (index-ordered).
 	manifest := make([]map[string]any, 0, len(branches))
@@ -268,7 +272,7 @@ func runCommandReduce(
 	if terr != nil {
 		return failStep(log, nodePath, OutcomePermanentFailure, fmt.Errorf("engine.runReduce: template reduce run %q: %w", r.Run, terr))
 	}
-	outputFiles, outputFileContracts, oerr := resolveOutputFiles(r.OutputFiles, reduceScope, rs.Assets, blobs)
+	outputFiles, outputFileContracts, oerr := resolveOutputFiles(r.OutputFiles, reduceScope, moduleID, rs.Assets, blobs)
 	if oerr != nil {
 		if errors.Is(oerr, errArtifactFetch) {
 			return "", fmt.Errorf("engine.runReduce: resolve output_files contracts at %q: %w", nodePath, oerr)

@@ -1,6 +1,6 @@
 package ir
 
-// Node is one of the eleven node kinds (3 step + 8 control). Discriminated by key-presence at the
+// Node is one of the twelve node kinds (4 step + 8 control). Discriminated by key-presence at the
 // wire level (the AWF standard's surface), so adding/removing a kind touches FOUR places in this
 // package — keep them in sync:
 //
@@ -16,7 +16,7 @@ package ir
 // a test failure (or, in the worst case, as the "unknown control key" runtime error).
 type Node interface{ isNode() }
 
-// --- Step nodes (flat objects discriminated by run/uses/await) ---
+// --- Step nodes (flat objects discriminated by run/uses/await/call) ---
 
 type CodeStep struct {
 	ID           string      `json:"id"`
@@ -72,9 +72,16 @@ type SignalStep struct {
 	OutputSchema *JSONSchema `json:"output_schema,omitempty"`
 }
 
+type CallStep struct {
+	ID    string                   `json:"id"`
+	Call  string                   `json:"call"`
+	Input map[string]TemplateValue `json:"input,omitempty"`
+}
+
 func (*CodeStep) isNode()   {}
 func (*AgentStep) isNode()  {}
 func (*SignalStep) isNode() {}
+func (*CallStep) isNode()   {}
 
 // --- Control nodes (single-key wrapper objects per the standard's YAML surface). Node-bearing
 // fields use the NodeList named type — a bare []Node interface slice cannot be unmarshaled. ---

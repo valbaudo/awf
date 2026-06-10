@@ -22,8 +22,11 @@ func validateAgents(ld *LoadedDefinition, c *collector) {
 	wf := ld.Workflow
 	for name, role := range wf.Agents {
 		rolePath := "agents." + name
-		if strings.TrimSpace(role.Uses) == "" {
+		uses := strings.TrimSpace(role.Uses)
+		if uses == "" {
 			c.errf(rolePath, "AWF1033", "agents: role "+name+" has empty uses: (must name an existing adapter)")
+		} else if !strings.Contains(uses, "/") {
+			c.errf(rolePath, "AWF1033", "agents: role "+name+" uses "+uses+"; role uses: must name a <vendor>/<name> adapter ref")
 		}
 		if strings.Contains(name, "/") {
 			c.errf(rolePath, "AWF1033", "agents: role name "+name+" must not contain '/' (the <vendor>/<name> form is reserved for adapter refs)")

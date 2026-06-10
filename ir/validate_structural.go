@@ -143,6 +143,9 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			// boolean expression once its {{ }} slots are scanned/stripped (AWF1036).
 			checkWhereExpr(v.Where, path+".where", c)
 			// SignalStep has no container — by design (AWF §4.3).
+		case *CallStep:
+			path := PathFor(parent, "", v.ID, i)
+			checkStepID(v.ID, path, c, seen)
 		case *If:
 			path := PathFor(parent, "if", "", i)
 			checkFieldSize(string(v.Cond), path, c)

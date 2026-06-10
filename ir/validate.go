@@ -14,6 +14,8 @@ package ir
 //     uses: ref resolving to a declared role OR a syntactically-valid base ref
 //   - skills     (AWF1040-45, AWF3010-11) — native skill corpus declarations,
 //     loaded directory layout, and agent-step routing shape/staging constraints
+//   - calls      (AWF1046-49) — imported workflow call targets, input contracts,
+//     workflow outputs, and workflow artifact exports
 //   - reduce     (AWF1035, AWF5006, AWF1009) — map reduce: fan-in shape (exactly one
 //     of run:/quorum:; quorum needs over:; a run: reducer needs a resolvable
 //     container:) and quorum/over aggregation scope (over: names a real body field;
@@ -45,42 +47,108 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 		}}
 	}
 	c := &collector{}
-	validateStructural(ld, c)
-	validateAgents(ld, c)
-	validateSkills(ld, c)
-	validateContinues(ld, c)
-	validateReduce(ld, c)
-	validatePrune(ld, c)
-	validateRefs(ld, c)
-	validateInputFiles(ld, c)
-	validateOutputFiles(ld, c)
-	validateAwfOutputWrites(ld.Workflow.Graph, c)
-	validateSchema(ld, c)
-	validateCompose(ld, c)
+	for _, mod := range validationModules(ld) {
+		if mod.Workflow == nil {
+			continue
+		}
+		prevSource := c.source
+		c.source = mod.Source
+		modLD := loadedDefinitionForValidationModule(mod)
+		validateStructural(modLD, c)
+		validateAgents(modLD, c)
+		validateSkills(modLD, c)
+		validateContinues(modLD, c)
+		validateReduce(modLD, c)
+		validatePrune(modLD, c)
+		validateCalls(ld, mod, c)
+		validateRefsModule(ld, mod, c)
+		validateInputFilesModule(ld, mod, c)
+		validateOutputFiles(modLD, c)
+		validateWorkflowExports(ld, mod, c)
+		validateAwfOutputWrites(mod.Workflow.Graph, c)
+		validateSchema(modLD, c)
+		validateCompose(modLD, c)
+		c.source = prevSource
+	}
 	return c.sorted()
+}
+
+type validationModule struct {
+	ModuleID string
+	Workflow *Workflow
+	Assets   map[string]LoadedAsset
+	Source   string
+
+	WorkflowPath string
+	ComposeFiles map[string][]byte
+}
+
+func validationModules(ld *LoadedDefinition) []validationModule {
+	if ld == nil {
+		return nil
+	}
+	out := []validationModule{}
+	_ = ld.WalkModules(func(mod *LoadedModule) error {
+		if mod == nil {
+			return nil
+		}
+		source := ""
+		if mod.ID != "" {
+			source = mod.WorkflowPath
+		}
+		out = append(out, validationModule{
+			ModuleID:     mod.ID,
+			Workflow:     mod.Workflow,
+			Assets:       mod.Assets,
+			Source:       source,
+			WorkflowPath: mod.WorkflowPath,
+			ComposeFiles: mod.ComposeFiles,
+		})
+		return nil
+	})
+	if len(out) == 0 && ld.Workflow != nil {
+		out = append(out, validationModule{
+			ModuleID:     "",
+			Workflow:     ld.Workflow,
+			Assets:       ld.Assets,
+			WorkflowPath: ld.WorkflowPath,
+			ComposeFiles: ld.ComposeFiles,
+		})
+	}
+	return out
+}
+
+func loadedDefinitionForValidationModule(mod validationModule) *LoadedDefinition {
+	return &LoadedDefinition{
+		Workflow:     mod.Workflow,
+		WorkflowPath: mod.WorkflowPath,
+		ComposeFiles: mod.ComposeFiles,
+		Assets:       mod.Assets,
+	}
 }
 
 // collector accumulates Diagnostics across passes and produces a deterministically-ordered
 // output. Used by every validate_*.go pass.
 type collector struct {
-	out []Diagnostic
+	source string
+	out    []Diagnostic
 }
 
 // errf appends an Error diagnostic at the given path with the given code. msg is the
 // fully-formatted message — callers pre-format with fmt.Sprintf if interpolation is needed
 // (the message is included verbatim in the rendered diagnostic and in --format json).
 func (c *collector) errf(path, code, msg string) {
-	c.out = append(c.out, Diagnostic{Severity: Error, Path: path, Code: code, Message: msg})
+	c.out = append(c.out, Diagnostic{Severity: Error, Source: c.source, Path: path, Code: code, Message: msg})
 }
 
 // warnf appends a Warning diagnostic. See errf doc for the message-formatting contract.
 func (c *collector) warnf(path, code, msg string) {
-	c.out = append(c.out, Diagnostic{Severity: Warning, Path: path, Code: code, Message: msg})
+	c.out = append(c.out, Diagnostic{Severity: Warning, Source: c.source, Path: path, Code: code, Message: msg})
 }
 
 // sorted returns the collected diagnostics in a stable, deterministic order (by Code, then
-// Path, then Message) so golden-file comparisons don't depend on map-iteration order or pass
-// invocation order. Always returns a non-nil slice (an empty []Diagnostic{} on the clean path)
+// Source, then Path, then Message) so golden-file comparisons don't depend on map-iteration order
+// or pass invocation order. Always returns a non-nil slice (an empty []Diagnostic{} on the clean path)
 // so JSON consumers see "diagnostics": [] rather than null — important for downstream tooling
 // like `jq '.diagnostics[]'` that breaks on null but works on [].
 func (c *collector) sorted() []Diagnostic {
