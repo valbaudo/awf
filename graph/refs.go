@@ -90,7 +90,27 @@ func addTemplateValues(values map[string]ir.TemplateValue, f func(string)) {
 		if err := json.Unmarshal(values[key], &decoded); err != nil {
 			continue
 		}
-		addRawConfigStrings(decoded, f)
+		addTemplateValueStrings(decoded, f)
+	}
+}
+
+func addTemplateValueStrings(v any, f func(string)) {
+	switch t := v.(type) {
+	case string:
+		f(t)
+	case []any:
+		for _, x := range t {
+			addTemplateValueStrings(x, f)
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for key := range t {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			addTemplateValueStrings(t[key], f)
+		}
 	}
 }
 

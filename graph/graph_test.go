@@ -49,6 +49,16 @@ func hasEdge(p Projection, want Edge) bool {
 	return false
 }
 
+func dataEdgesTo(p Projection, to string) []Edge {
+	var out []Edge
+	for _, e := range p.Edges {
+		if e.Kind == "data" && e.To == to {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // TestBuildStaticStructure checks paths, kinds, ids, parents, control edges, and opaque
 // `with:` passthrough across nested control nodes (gate + map).
 func TestBuildStaticStructure(t *testing.T) {
@@ -229,6 +239,36 @@ func TestBuildStaticCallInputDataEdgesDeterministic(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		if got := string(build()); got != want {
 			t.Fatalf("BuildStatic call-input graph JSON changed across repeated builds:\nfirst=%s\nlater=%s", want, got)
+		}
+	}
+}
+
+func TestBuildStaticCallInputNestedObjectDataEdgesSorted(t *testing.T) {
+	wf := &ir.Workflow{
+		ID: "call-input-nested-order",
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "c", Run: "true"},
+			&ir.CodeStep{ID: "d", Run: "true"},
+			&ir.CallStep{
+				ID:   "recon",
+				Call: "child",
+				Input: map[string]ir.TemplateValue{
+					"payload": []byte(`{
+						"x": "{{ step.c.output }}",
+						"y": "{{ step.d.output }}"
+					}`),
+				},
+			},
+		},
+	}
+
+	want := []Edge{
+		{From: "c", To: "recon", Kind: "data"},
+		{From: "d", To: "recon", Kind: "data"},
+	}
+	for i := 0; i < 200; i++ {
+		if got := dataEdgesTo(BuildStatic(wf), "recon"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("call input nested object data edges = %+v, want %+v", got, want)
 		}
 	}
 }
