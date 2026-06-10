@@ -238,7 +238,8 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// checks above so ld.Workflow.Env is available (the digest pins those names,
 	// so a changed env: declaration has already hard-errored at the mismatch
 	// check; the host VALUES are not pinned and re-resolve here).
-	if r.Resolver == nil {
+	resolver := r.Resolver
+	if resolver == nil {
 		reg, err := buildAgentRegistry(mergeLoadedWorkflowEnv(defaultAgentEnv, ld), backend)
 		if err != nil {
 			fprintf(stderr, "awf resume: build agent registry: %v\n", err)
@@ -253,7 +254,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 			fprintf(stderr, "awf resume: register agent roles: %v\n", err)
 			return ExitUsage
 		}
-		r.Resolver = reg
+		resolver = reg
 	}
 
 	// Step 8 (slice 3.5): per-run broker for the engine + clear stale
@@ -329,7 +330,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	agentRefs := walkAgentRefs(ld.Workflow)
-	currentRuntimes, err := resolveRuntimes(ctx, agentRefs, r.resolverOrEmpty(), handles)
+	currentRuntimes, err := resolveRuntimes(ctx, agentRefs, resolverOrEmpty(resolver), handles)
 	if err != nil {
 		fprintf(stderr, "awf resume: resolve agent runtimes: %v\n", err)
 		return ExitUsage
@@ -342,7 +343,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// Part D: same Threaded guard as run-start (continues: against a
 	// non-Threaded adapter). Run before appending run.resumed so a rejected
 	// resume is a no-op on the log.
-	if err := checkThreadedAdaptersForLoadedDefinition(ld, r.resolverOrEmpty()); err != nil {
+	if err := checkThreadedAdaptersForLoadedDefinition(ld, resolverOrEmpty(resolver)); err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
@@ -373,5 +374,5 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// Branches / LoopIters) skip already-committed nodes — same code path on
 	// first run and resume (CLAUDE.md invariant). backend (local) is passed
 	// in — runAndFinish does NOT read r.Backend.
-	return r.runAndFinish(ctx, backend, ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, broker, &skipTeardown)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, broker, &skipTeardown)
 }

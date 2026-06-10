@@ -159,7 +159,8 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// Slice 5.3: if Resolver isn't test-injected, build the production
 	// *agent.Registry from --agent-env + the resolved backend. Tests that
 	// inject r.Resolver skip this step entirely.
-	if r.Resolver == nil {
+	resolver := r.Resolver
+	if resolver == nil {
 		// The forwarded allowlist is the --agent-env flag (or its default) plus
 		// the workflow's own top-level env: names (awf-workflow(5)). Names only —
 		// values resolve from the host inside buildAgentRegistry.
@@ -176,7 +177,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 			fprintf(stderr, "awf run: register agent roles: %v\n", err)
 			return ExitUsage
 		}
-		r.Resolver = reg
+		resolver = reg
 	}
 
 	// Step 7: Create container handles. Defer Destroy with a SEPARATE
@@ -222,7 +223,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// is nil; omitempty on the field means run.started JSON has no "runtimes"
 	// key, byte-equal to pre-Phase-5 logs.
 	agentRefs := walkAgentRefs(ld.Workflow)
-	resolvedRuntimes, err := resolveRuntimes(ctx, agentRefs, r.resolverOrEmpty(), handles)
+	resolvedRuntimes, err := resolveRuntimes(ctx, agentRefs, resolverOrEmpty(resolver), handles)
 	if err != nil {
 		fprintf(stderr, "awf run: resolve agent runtimes: %v\n", err)
 		return ExitUsage
@@ -231,7 +232,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// Part D: fail fast if any `continues:` step's adapter is not Threaded
 	// (mirrors the Containerless guard inside resolveRuntimes). Runs before
 	// the log is opened, so a rejected run leaves no state on disk.
-	if err := checkThreadedAdaptersForLoadedDefinition(ld, r.resolverOrEmpty()); err != nil {
+	if err := checkThreadedAdaptersForLoadedDefinition(ld, resolverOrEmpty(resolver)); err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
@@ -330,5 +331,5 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// r.BrokerOptions defaults to empty (100ms poll) in production; tests
 	// inject signal.WithPollInterval(time.Millisecond) for fast runs.
 	broker := awfsignal.NewBroker(awfsignal.ControlDir(*stateDir, id), r.BrokerOptions...)
-	return r.runAndFinish(ctx, backend, ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", assetSnapshots, broker, &skipTeardown)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", assetSnapshots, broker, &skipTeardown)
 }

@@ -688,8 +688,8 @@ func TestCLIResume_WorkflowEnv_FoldsIntoDigestAndResumes(t *testing.T) {
 	if strings.Contains(stderr.String(), "digest mismatch") {
 		t.Fatalf("resume refused on digest mismatch with env: present — env names folded asymmetrically: %s", stderr.String())
 	}
-	if r.Resolver == nil {
-		t.Error("Resolver still nil after resume of an env:-bearing workflow; reordered registry build did not run")
+	if r.Resolver != nil {
+		t.Error("Resolver was cached after resume of an env:-bearing workflow; want production registry scoped to the invocation")
 	}
 }
 
@@ -767,8 +767,8 @@ func TestCLIResume_PopulatesResolverFromDefaultAllowlist(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	_ = r.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
-	if r.Resolver == nil {
-		t.Error("Resolver still nil after resume; want populated by buildAgentRegistry with default allowlist")
+	if r.Resolver != nil {
+		t.Error("Resolver was cached after resume; want production registry scoped to the invocation")
 	}
 }
 

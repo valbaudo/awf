@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -376,6 +377,89 @@ func TestRunCallStepChildLocalRoleDispatchesWithChildRoleConfig(t *testing.T) {
 	}
 	if got := calls[0].With["scope"]; got != "child" {
 		t.Fatalf("AgentInvocation.With[scope] = %v, want child role config", got)
+	}
+}
+
+func TestRunPreflightsCompletedCallStartedRuntimeDrift(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Graph: ir.NodeList{&ir.CallStep{ID: "recon", Call: "scan"}},
+	}
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Agents: map[string]ir.AgentRole{
+			"auditor": {Uses: "test/base"},
+		},
+		Containers: map[string]ir.Container{
+			"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+		},
+		Graph: ir.NodeList{
+			&ir.AgentStep{ID: "audit", Uses: "auditor", Container: "c"},
+		},
+	}
+	childRef := AgentRuntimeRef(child, "mod-scan", "auditor")
+	inputRef, err := rig.blobs.Put([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("put input: %v", err)
+	}
+	if err := rig.log.Append(state.Event{
+		Type: EventCallStarted,
+		Path: "recon",
+		Data: marshalOrFatal(t, CallStartedData{
+			InputRef: inputRef,
+			Runtimes: []ResolvedRuntime{{
+				Ref:       childRef,
+				Container: QualifiedContainerKey("recon.workflow", "c"),
+				Version:   "base-v1",
+			}},
+		}),
+	}); err != nil {
+		t.Fatalf("seed call.started: %v", err)
+	}
+	if err := rig.log.Append(state.Event{
+		Type: EventNodeCompleted,
+		Path: "recon",
+		Data: marshalOrFatal(t, NodeCompletedData{Outcome: string(OutcomeOK)}),
+	}); err != nil {
+		t.Fatalf("seed completed call: %v", err)
+	}
+	folded, err := Fold(mustFoldEvents(t, rig.log), rig.blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	rig.rs = folded
+
+	base := agentfake.New("test/base").WithVersion("base-v2")
+	var reg agent.Registry
+	if err := reg.Register(base); err != nil {
+		t.Fatalf("Register base: %v", err)
+	}
+	if err := reg.Register(agent.NewDerivedAdapter(childRef, base, child.Agents["auditor"].With)); err != nil {
+		t.Fatalf("Register child role: %v", err)
+	}
+	rig.disp.Resolver = &reg
+	beforeEvents := len(callEvents(t, rig.log))
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if oc != "" {
+		t.Fatalf("Outcome = %q, want empty on runtime drift", oc)
+	}
+	var drift *ErrRuntimeDrift
+	if !errors.As(err, &drift) {
+		t.Fatalf("Run err = %v, want *ErrRuntimeDrift", err)
+	}
+	if drift.Ref != childRef || drift.Container != QualifiedContainerKey("recon.workflow", "c") || drift.Recorded != "base-v1" || drift.Current != "base-v2" {
+		t.Fatalf("drift = %+v, want child role ref/container base-v1->base-v2", drift)
+	}
+	if got := len(callEvents(t, rig.log)); got != beforeEvents {
+		t.Fatalf("log event count = %d, want unchanged %d", got, beforeEvents)
 	}
 }
 

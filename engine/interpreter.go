@@ -106,6 +106,9 @@ func Run(
 		tap:        opts.Tap,
 		broker:     opts.Broker,
 	}
+	if err := preflightCallStartedRuntimes(ctx, ictx); err != nil {
+		return "", err
+	}
 
 	// Wrap ctx so the background poller can cancel it on pause/cancel
 	// detection. The deferred cancel() ensures the poller exits when

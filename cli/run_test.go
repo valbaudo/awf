@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/agent"
-	"github.com/valbaudo/awf/agent/claude"
 	agentfake "github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/cli"
 	"github.com/valbaudo/awf/clock"
@@ -1813,8 +1812,8 @@ func TestCLIRun_AgentEnvFlag_DefaultPopulatesResolver(t *testing.T) {
 	if exit != cli.ExitOK {
 		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
 	}
-	if r.Resolver == nil {
-		t.Error("Resolver still nil after Run; want populated by --agent-env default")
+	if r.Resolver != nil {
+		t.Error("Resolver was cached after Run; want production registry scoped to the invocation")
 	}
 }
 
@@ -1834,13 +1833,8 @@ func TestCLIRun_AgentEnvFlag_EmptyValue_NoClaudeAdapter(t *testing.T) {
 	if exit != cli.ExitOK {
 		t.Fatalf("exit = %d, stderr=%s", exit, stderr.String())
 	}
-	if r.Resolver == nil {
-		t.Fatal("Resolver nil after Run with --agent-env=''; want non-nil but empty Registry")
-	}
-	if reg, ok := r.Resolver.(*agent.Registry); ok {
-		if _, found := reg.Lookup(claude.AdapterRef); found {
-			t.Error("Claude adapter registered with --agent-env=''; want absent")
-		}
+	if r.Resolver != nil {
+		t.Fatal("Resolver was cached after Run with --agent-env=''; want production registry scoped to the invocation")
 	}
 }
 
@@ -1881,12 +1875,77 @@ graph:
 	if exit != cli.ExitOK {
 		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
 	}
-	reg, ok := r.Resolver.(*agent.Registry)
-	if !ok {
-		t.Fatalf("Resolver type = %T, want *agent.Registry", r.Resolver)
+	if r.Resolver != nil {
+		t.Error("Resolver was cached after Run; want production registry scoped to the invocation")
 	}
-	if _, found := reg.Lookup(claude.AdapterRef); !found {
-		t.Error("claude adapter absent despite workflow env: [ANTHROPIC_API_KEY] with --agent-env=''; workflow env: did not extend the allowlist")
+}
+
+func TestCLIRun_ReusedRunnerBuildsFreshProductionRegistryPerInvocation(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
+	tmpDir := t.TempDir()
+	firstPath := filepath.Join(tmpDir, "first.awf.yaml")
+	if err := os.WriteFile(firstPath, []byte(`workflow: first
+version: 1
+agents:
+  reviewer:
+    uses: anthropic/claude-code
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: noop
+    container: lab
+    run: "true"
+`), 0o644); err != nil {
+		t.Fatalf("write first workflow: %v", err)
+	}
+	secondPath := filepath.Join(tmpDir, "second.awf.yaml")
+	if err := os.WriteFile(secondPath, []byte(`workflow: second
+version: 1
+agents:
+  writer:
+    uses: anthropic/claude-code
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    uses: writer
+    container: lab
+    with:
+      prompt: write the draft
+`), 0o644); err != nil {
+		t.Fatalf("write second workflow: %v", err)
+	}
+
+	fake := container.NewFake()
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	fake.ProgramExec("claude --version", container.ExecResult{ExitCode: 0, Stdout: []byte("2.1.0\n")}, nil)
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{}}
+`)
+	fake.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
+	r := &cli.Runner{
+		IDGen:   &clock.Fake{IDs: []string{"fresh-registry-first", "fresh-registry-second"}},
+		Backend: fake,
+	}
+	var firstStdout, firstStderr bytes.Buffer
+	firstExit := r.Run([]string{"run", "--state-dir", filepath.Join(tmpDir, "state1"), "--backend", "fake", "--agent-env", "ANTHROPIC_API_KEY", firstPath}, &firstStdout, &firstStderr)
+	if firstExit != cli.ExitOK {
+		t.Fatalf("first exit = %d, want %d; stderr=%s", firstExit, cli.ExitOK, firstStderr.String())
+	}
+
+	var secondStdout, secondStderr bytes.Buffer
+	secondExit := r.Run([]string{"run", "--state-dir", filepath.Join(tmpDir, "state2"), "--backend", "fake", "--agent-env", "ANTHROPIC_API_KEY", secondPath}, &secondStdout, &secondStderr)
+	if secondExit != cli.ExitOK {
+		t.Fatalf("second exit = %d, want %d; stderr=%s", secondExit, cli.ExitOK, secondStderr.String())
+	}
+	if strings.Contains(secondStderr.String(), "adapter not found") || strings.Contains(secondStderr.String(), "writer") {
+		t.Fatalf("second run used stale first registry instead of registering writer role; stderr=%s", secondStderr.String())
+	}
+	if r.Resolver != nil {
+		t.Fatal("Resolver was cached on reused Runner; want production registries local per invocation")
 	}
 }
 

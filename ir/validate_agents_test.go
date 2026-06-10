@@ -16,6 +16,41 @@ func TestValidateAgentsEmptyUses(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF1033", "agents.auditor")
 }
 
+func TestValidateAgentsRoleUsesMustBeBaseAdapterRef(t *testing.T) {
+	tests := []struct {
+		name  string
+		roles map[string]AgentRole
+		path  string
+	}{
+		{
+			name: "same module role name",
+			roles: map[string]AgentRole{
+				"writer":   {Uses: "reviewer"},
+				"reviewer": {Uses: "anthropic/claude-code"},
+			},
+			path: "agents.writer",
+		},
+		{
+			name: "bare non adapter name",
+			roles: map[string]AgentRole{
+				"writer": {Uses: "claude"},
+			},
+			path: "agents.writer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ld := makeLD(&Workflow{
+				ID: "role-base-ref", Version: 1,
+				Agents:     tt.roles,
+				Containers: map[string]Container{"lab": {Image: "oci://x@sha256:abc"}},
+				Graph:      NodeList{},
+			})
+			assertErrorAt(t, Validate(ld), "AWF1033", tt.path)
+		})
+	}
+}
+
 func TestValidateAgentsRoleNameWithSlash(t *testing.T) {
 	// A role name that contains '/' collides with the <vendor>/<name> adapter-ref
 	// form → AWF1033 (role-vs-adapter name collision).

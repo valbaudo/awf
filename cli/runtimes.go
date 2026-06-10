@@ -26,18 +26,18 @@ type agentRef struct {
 	Container string
 }
 
-// resolverOrEmpty returns r.Resolver if set, else a freshly-allocated empty
+// resolverOrEmpty returns resolver if set, else a freshly-allocated empty
 // *agent.Registry. The empty fallback exists so workflows without any
 // `uses:` step (every Phase 2-4 fixture) work unchanged — they trigger zero
 // Lookup calls. Workflows WITH a `uses:` step, run against an empty Resolver,
 // fail at run-start with *ErrAdapterNotFound (resolveRuntimes wraps this).
 // Production wiring lives in slice 5.3 (cli/agent_registry.go), which
-// constructs a populated *agent.Registry and assigns it to r.Resolver
-// before dispatch. Called by both cli/run.go (run-start resolution) and
-// cli/resume.go (resume-side re-resolution for the drift check).
-func (r *Runner) resolverOrEmpty() agent.Resolver {
-	if r.Resolver != nil {
-		return r.Resolver
+// constructs a populated *agent.Registry for each invocation. Called by both
+// cli/run.go (run-start resolution) and cli/resume.go (resume-side
+// re-resolution for the drift check).
+func resolverOrEmpty(resolver agent.Resolver) agent.Resolver {
+	if resolver != nil {
+		return resolver
 	}
 	return &agent.Registry{}
 }
