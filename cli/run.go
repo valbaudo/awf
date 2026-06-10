@@ -156,6 +156,12 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
+	liveRoot, err := openLiveHomeRoot(*stateDir)
+	if err != nil {
+		fprintf(stderr, "awf run: open live home: %v\n", err)
+		return ExitUsage
+	}
+
 	// Slice 5.3: if Resolver isn't test-injected, build the production
 	// *agent.Registry from --agent-env + the resolved backend. Tests that
 	// inject r.Resolver skip this step entirely.
@@ -165,7 +171,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		// the workflow's own top-level env: names (awf-workflow(5)). Names only —
 		// values resolve from the host inside buildAgentRegistry.
 		envNames := mergeLoadedWorkflowEnv(parseCSV(*agentEnv), ld)
-		reg, err := buildAgentRegistry(envNames, backend)
+		reg, err := buildAgentRegistryWithLiveRoot(envNames, backend, liveRoot)
 		if err != nil {
 			fprintf(stderr, "awf run: build agent registry: %v\n", err)
 			return ExitUsage
@@ -236,6 +242,10 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
+	if err := checkPersistentSessionGateEvaluateForLoadedDefinition(ld, resolverOrEmpty(resolver)); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
 
 	// Step 8: put input into Blobs (after validation, before log creation).
 	var inputRef string
@@ -253,7 +263,6 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
-
 	// Step 9: OpenLogExclusive atomically claims the run.id.
 	runDir := filepath.Join(*stateDir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -306,6 +315,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		InputRef:        inputRef,
 		Backend:         concreteBackendKind,
 		Assets:          assetSnapshots,
+		LiveHome:        engineLiveHomePin(liveRoot.Pin),
 		Runtimes:        resolvedRuntimes, // Phase 5 slice 5.1
 	})
 	if err != nil {
@@ -331,5 +341,5 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// r.BrokerOptions defaults to empty (100ms poll) in production; tests
 	// inject signal.WithPollInterval(time.Millisecond) for fast runs.
 	broker := awfsignal.NewBroker(awfsignal.ControlDir(*stateDir, id), r.BrokerOptions...)
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", assetSnapshots, broker, &skipTeardown)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", assetSnapshots, broker, liveRoot, &skipTeardown)
 }

@@ -119,6 +119,36 @@ func TestBuildResult_StrictSchema(t *testing.T) {
 	}
 }
 
+func TestBuildResult_StrictSchema_AllowsOnlyWholeJSONDocument(t *testing.T) {
+	schema := &ir.JSONSchema{"type": "object"}
+	inv := agent.AgentInvocation{NodePath: "graph[0]", OutputSchema: schema}
+
+	res, err := codex.BuildResultForTest("\n\t {\"answer\":4} \n", nil, inv)
+	if err != nil {
+		t.Fatalf("buildResult(whitespace-wrapped JSON): %v", err)
+	}
+	if v, ok := res.Output["answer"].(float64); !ok || v != 4 {
+		t.Errorf("Output[answer] = %v, want 4", res.Output["answer"])
+	}
+
+	cases := []struct {
+		name string
+		text string
+	}{
+		{name: "prose-prefix", text: `answer: {"answer":4}`},
+		{name: "markdown-fence", text: "```json\n{\"answer\":4}\n```"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := codex.BuildResultForTest(tc.text, nil, inv)
+			var unp *agent.ErrUnparseableOutput
+			if err == nil || !errors.As(err, &unp) {
+				t.Fatalf("buildResult(%q) = %v, want *agent.ErrUnparseableOutput", tc.text, err)
+			}
+		})
+	}
+}
+
 func TestBuildResult_NonJSON_Unparseable(t *testing.T) {
 	schema := &ir.JSONSchema{"type": "object"}
 	inv := agent.AgentInvocation{NodePath: "graph[0]", OutputSchema: schema}

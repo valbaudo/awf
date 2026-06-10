@@ -80,6 +80,13 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}, closedChunks(), nil
 	}
 
+	if intent.IsGateEvaluate && adapter.Capabilities().PersistentSession {
+		return DispatchResult{
+			Outcome: OutcomePermanentFailure,
+			Err:     &agent.ErrInvalidConfig{Ref: intent.ResolvedInputs.Uses, Reason: fmt.Sprintf("step %q is in gate.evaluate, but adapter %q declares PersistentSession", intent.Path, intent.ResolvedInputs.Uses)},
+		}, closedChunks(), nil
+	}
+
 	var h container.Handle
 	if bare != "" {
 		var ok bool
@@ -119,11 +126,13 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	}
 
 	// Apply step timeout to ctx (mirrors runCode).
+	var cancel context.CancelFunc
 	if intent.ResolvedInputs.Timeout > 0 {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, intent.ResolvedInputs.Timeout)
-		defer cancel()
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
 	}
+	defer cancel()
 
 	// Validate config defensively (the interpreter-level engine/agent_step.go
 	// also validates at run start — this is double-checked at dispatch time per
@@ -144,6 +153,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	inv := agent.AgentInvocation{
 		NodePath:       intent.Path,
 		Uses:           intent.ResolvedInputs.Uses,
+		RunContext:     intent.RunContext,
 		With:           intent.ResolvedInputs.With,
 		OutputSchema:   intent.ResolvedInputs.OutputSchema,
 		IdempotencyKey: intent.IdempotencyKey,
@@ -160,29 +170,60 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// names disambiguated.
 	events, outcomeCh, launchErr := adapter.Launch(ctx, h, inv)
 	if launchErr != nil {
+		if errors.Is(launchErr, agent.ErrLiveReplayRequired) {
+			return DispatchResult{Err: launchErr}, nil, launchErr
+		}
 		dispatchOutcome := classifyAgentLaunchErr(launchErr)
 		return DispatchResult{Outcome: dispatchOutcome, Err: launchErr}, nil, nil
 	}
 
-	drainDone := make(chan []agent.AgentEvent, 1)
+	type drainedAgentEvents struct {
+		events []agent.AgentEvent
+		err    error
+	}
+	drainDone := make(chan drainedAgentEvents, 1)
 	go func() {
 		var buf []agent.AgentEvent
+		var sinkErr error
 		render := d.eventRenderer()
 		for ev := range events {
 			if d.AgentEventTap != nil {
 				render(d.AgentEventTap, ev)
 			}
-			ev.Display = agent.EventDisplay{} // transient; not journaled — drop before buffering
+			if ev.Live && intent.agentEventSink != nil {
+				if err := intent.agentEventSink.send(ev); err != nil {
+					if sinkErr == nil {
+						sinkErr = err
+						cancel()
+					}
+				}
+				continue
+			}
+			// Display is json:"-" and never serialized directly. Keep it in memory
+			// so the interpreter can copy sanitized scalar summaries for live events.
 			buf = append(buf, ev)
 		}
-		drainDone <- buf
+		drainDone <- drainedAgentEvents{events: buf, err: sinkErr}
 	}()
 
 	launchOutcome := <-outcomeCh
-	bufferedEvents := <-drainDone
+	drained := <-drainDone
+	bufferedEvents := drained.events
+	if drained.err != nil {
+		return DispatchResult{
+			Err:         drained.err,
+			AgentEvents: bufferedEvents,
+		}, closedChunks(), drained.err
+	}
 
 	// In-flight failure surfaced via launchOutcome.Err.
 	if launchOutcome.Err != nil {
+		if errors.Is(launchOutcome.Err, agent.ErrLiveReplayRequired) {
+			return DispatchResult{
+				Err:         launchOutcome.Err,
+				AgentEvents: bufferedEvents,
+			}, closedChunks(), launchOutcome.Err
+		}
 		dispatchOutcome := classifyAgentLaunchErr(launchOutcome.Err)
 		return DispatchResult{
 			Outcome:     dispatchOutcome,
@@ -194,6 +235,13 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// Validate Output against OutputSchema (if declared).
 	if intent.ResolvedInputs.OutputSchema != nil {
 		if err := ValidateOutputMap(launchOutcome.Result.Output, intent.ResolvedInputs.OutputSchema); err != nil {
+			if launchOutcome.Result.Live != nil {
+				return DispatchResult{
+					Outputs:     launchOutcome.Result.Output,
+					AgentEvents: bufferedEvents,
+					Err:         agent.ErrLiveReplayRequired,
+				}, closedChunks(), agent.ErrLiveReplayRequired
+			}
 			return DispatchResult{
 				Outcome:     OutcomeRetryableFailure,
 				Outputs:     launchOutcome.Result.Output,
@@ -239,6 +287,21 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		Metrics:     &metrics,
 		Transcript:  launchOutcome.Result.Transcript, // adapter-provided; no With["prompt"] read anywhere in engine
 	}
+	if launchOutcome.Result.Live != nil {
+		live := launchOutcome.Result.Live
+		dr.Live = &LiveDispatchRecord{
+			AdapterRef:     live.AdapterRef,
+			SessionKey:     live.SessionKey,
+			SessionKeyHash: live.SessionKeyHash,
+			LeaseID:        live.LeaseID,
+			ActiveTurnID:   live.ActiveTurnID,
+			ProviderTurnID: live.ProviderTurnID,
+			RunID:          live.RunID,
+			NodePath:       live.NodePath,
+			Epoch:          live.Epoch,
+			CommittedUnix:  live.CommittedUnix,
+		}
+	}
 
 	// Record the container for OK (committed) steps; failed steps carry none
 	// (decision 3: node.completed.container is recorded only for committed/OK
@@ -283,6 +346,8 @@ func classifyAgentLaunchErr(err error) Outcome {
 	case errors.As(err, &notFound):
 		return OutcomePermanentFailure
 	case errors.As(err, &badConfig):
+		return OutcomePermanentFailure
+	case errors.Is(err, agent.ErrPermissionDenied):
 		return OutcomePermanentFailure
 	case errors.As(err, &unparseable):
 		return OutcomeRetryableFailure

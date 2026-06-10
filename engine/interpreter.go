@@ -45,6 +45,10 @@ type RunOptions struct {
 	// Assets is the recorded run-start asset manifest. Task 5 consumes it when
 	// resolving asset.<id> input_files; nil preserves pre-assets behavior.
 	Assets map[string]RunStartedAsset
+
+	// LiveFinalizer, if non-nil, is called after a successful live agent step's
+	// node.completed event has been appended and synced.
+	LiveFinalizer func(context.Context, LiveDispatchRecord) error
 }
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
@@ -95,16 +99,17 @@ func Run(
 		runstate.Assets = opts.Assets
 	}
 	ictx := interpreterContext{
-		def:        def,
-		moduleID:   "",
-		wf:         def.Workflow,
-		runstate:   runstate,
-		dispatcher: dispatcher,
-		log:        log,
-		blobs:      blobs,
-		clk:        clk,
-		tap:        opts.Tap,
-		broker:     opts.Broker,
+		def:           def,
+		moduleID:      "",
+		wf:            def.Workflow,
+		runstate:      runstate,
+		dispatcher:    dispatcher,
+		log:           log,
+		blobs:         blobs,
+		clk:           clk,
+		tap:           opts.Tap,
+		broker:        opts.Broker,
+		liveFinalizer: opts.LiveFinalizer,
 	}
 	if err := preflightCallStartedRuntimes(ctx, ictx); err != nil {
 		return "", err

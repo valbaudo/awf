@@ -7,8 +7,10 @@ import (
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
+	"github.com/valbaudo/awf/agent/codexlive"
 	"github.com/valbaudo/awf/agent/droid"
 	agentfake "github.com/valbaudo/awf/agent/fake"
+	"github.com/valbaudo/awf/agent/live"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
@@ -202,6 +204,25 @@ func TestBuildAgentRegistry_RegistersCodex(t *testing.T) {
 	}
 	if _, ok := reg.Lookup("anthropic/claude-code"); !ok {
 		t.Errorf("registry lost the claude adapter")
+	}
+}
+
+func TestBuildAgentRegistry_RegistersCodexLive(t *testing.T) {
+	root, err := live.OpenRoot(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	reg, err := buildAgentRegistryWithLiveRoot([]string{"OPENAI_API_KEY", "CODEX_HOME"}, container.NewFake(), root)
+	if err != nil {
+		t.Fatalf("buildAgentRegistryWithLiveRoot: %v", err)
+	}
+	a, ok := reg.Lookup(codexlive.AdapterRef)
+	if !ok {
+		t.Fatalf("%s not registered", codexlive.AdapterRef)
+	}
+	caps := a.Capabilities()
+	if !caps.NativeSchema || !caps.Containerless || !caps.PersistentSession {
+		t.Fatalf("codexlive caps = %+v, want native containerless persistent", caps)
 	}
 }
 

@@ -191,6 +191,112 @@ func TestRunAgent_Thread_ThreadedAdapter_OK(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsPersistentEvaluateBeforeLaunch(t *testing.T) {
+	ctx := context.Background()
+
+	fk := agentfake.New("live/agent").
+		WithCaps(agent.Caps{Containerless: true, PersistentSession: true}).
+		Script(0, agentfake.Result{Output: map[string]any{"answer": "42"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	d := &engine.LocalDispatcher{
+		Resolver: &reg,
+		Handles:  map[string]container.Handle{},
+	}
+	intent := engine.NodeIntent{
+		Path:           "gate[0].attempt-1.evaluate[0]",
+		Node:           &ir.AgentStep{ID: "judge", Uses: "live/agent"},
+		IsGateEvaluate: true,
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses: "live/agent",
+			With: ir.RawConfig{"prompt": "judge"},
+		},
+	}
+
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned engine-level error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q", dr.Outcome, engine.OutcomePermanentFailure)
+	}
+	var configErr *agent.ErrInvalidConfig
+	if !errors.As(dr.Err, &configErr) {
+		t.Fatalf("dr.Err = %v (%T), want *agent.ErrInvalidConfig", dr.Err, dr.Err)
+	}
+	if len(fk.Calls()) != 0 {
+		t.Fatalf("Launch calls = %d, want 0", len(fk.Calls()))
+	}
+}
+
+func TestRunAgentCopiesLiveDispatchMetadata(t *testing.T) {
+	ctx := context.Background()
+	live := &agent.LiveDispatch{
+		AdapterRef:     "openai/codex-live",
+		SessionKey:     "builder",
+		SessionKeyHash: "sha256:session",
+		LeaseID:        "lease-1",
+		ActiveTurnID:   "turn-intent-1",
+		ProviderTurnID: "provider-turn-1",
+		RunID:          "run-1",
+		NodePath:       "build",
+		Epoch:          2,
+		CommittedUnix:  1_781_114_500,
+	}
+	fk := agentfake.New("openai/codex-live").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true, PersistentSession: true}).
+		Script(0, agentfake.Result{Output: map[string]any{"ok": true}, Live: live})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{Resolver: &reg, Handles: map[string]container.Handle{}}
+	intent := engine.NodeIntent{
+		Path: "build",
+		Node: &ir.AgentStep{ID: "build", Uses: "openai/codex-live"},
+		RunContext: agent.RunContext{
+			RunID:        "run-1",
+			CurrentEpoch: 1,
+			NextEpoch:    2,
+		},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses: "openai/codex-live",
+			With: ir.RawConfig{"prompt": "hi", "cwd": t.TempDir(), "session": "builder"},
+		},
+	}
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+	if dr.Live == nil {
+		t.Fatal("DispatchResult.Live = nil, want metadata copied")
+	}
+	if got, want := *dr.Live, (engine.LiveDispatchRecord{
+		AdapterRef:     live.AdapterRef,
+		SessionKey:     live.SessionKey,
+		SessionKeyHash: live.SessionKeyHash,
+		LeaseID:        live.LeaseID,
+		ActiveTurnID:   live.ActiveTurnID,
+		ProviderTurnID: live.ProviderTurnID,
+		RunID:          live.RunID,
+		NodePath:       live.NodePath,
+		Epoch:          live.Epoch,
+		CommittedUnix:  live.CommittedUnix,
+	}); got != want {
+		t.Fatalf("DispatchResult.Live = %+v, want %+v", got, want)
+	}
+}
+
 func TestRunAgent_OutputFileContractInvalidArtifactRetryable(t *testing.T) {
 	ctx := context.Background()
 

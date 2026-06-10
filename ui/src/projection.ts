@@ -19,6 +19,12 @@ export interface PEdge {
 export interface NodeState {
   state: string;
   outcome?: string;
+  live_preview?: string;
+  live_display_class?: string;
+  live_display_tool?: string;
+  live_display_lines?: number;
+  live_display_bytes?: number;
+  live_display_is_error?: boolean;
 }
 export interface Projection {
   schema_version: number;
@@ -50,7 +56,7 @@ export interface ElkGraph {
 }
 
 export const NODE_W = 156;
-export const NODE_H = 46;
+export const NODE_H = 64;
 
 // containerOf returns the React-Flow / ELK parent of a node: the nearest ancestor that
 // is itself a node. The projection's `parent` is the enclosing ADDRESSING SCOPE, which

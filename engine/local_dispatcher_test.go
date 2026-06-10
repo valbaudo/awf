@@ -938,6 +938,34 @@ func TestLocalDispatcher_runAgent_AgentLaunchError(t *testing.T) {
 	}
 }
 
+func TestLocalDispatcher_runAgent_PermissionDeniedIsPermanent(t *testing.T) {
+	var reg agent.Registry
+	adapter := &rejectingAdapter{
+		Fake:      fake.New("openai/codex-live").WithCaps(agent.Caps{Containerless: true, PersistentSession: true}),
+		launchErr: agent.ErrPermissionDenied,
+	}
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{},
+		Resolver: &reg,
+	}
+	intent := engine.NodeIntent{
+		Path:           "graph[0]",
+		Node:           &ir.AgentStep{ID: "x", Uses: "openai/codex-live"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "openai/codex-live", With: ir.RawConfig{"prompt": "p"}},
+	}
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q", dr.Outcome, engine.OutcomePermanentFailure)
+	}
+}
+
 func TestLocalDispatcher_runAgent_OutputSchemaMismatch(t *testing.T) {
 	var reg agent.Registry
 	// Schema requires {verdict: bool}; the fake returns {verdict: "string"} which violates.

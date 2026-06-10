@@ -275,7 +275,13 @@ type RunStartedData struct {
 	InputRef        string                     `json:"input_ref,omitempty"`        // empty if Workflow.Input is nil
 	Backend         string                     `json:"backend,omitempty"`          // slice 4.5; "" → BackendDocker on resume
 	Assets          map[string]RunStartedAsset `json:"assets,omitempty"`
+	LiveHome        *LiveHomePin               `json:"live_home,omitempty"`
 	Runtimes        []ResolvedRuntime          `json:"runtimes,omitempty"`
+}
+
+type LiveHomePin struct {
+	Path   string `json:"path"`
+	Digest string `json:"digest"`
 }
 
 // CallStartedData is the durable subworkflow-call input pin. The root
@@ -440,27 +446,35 @@ const (
 // buffered event via Log.Append BEFORE Commit (so the journal records the
 // stream alongside the node it belongs to).
 //
-// Payload offload policy: PayloadInline carries the raw event bytes when
-// `Size <= agentEventInlineThreshold` (4096 bytes, mirroring io.chunk per
-// the Phase 5 spec slice 5.2 row). Larger payloads land in Blobs and
-// PayloadRef carries the CAS pointer; PayloadInline is then nil. Always
-// exactly ONE of PayloadInline / PayloadRef is non-empty.
+// Payload offload policy: PayloadInline carries the event bytes when
+// `Size < agentEventInlineThreshold` (4096 bytes, mirroring io.chunk per
+// the Phase 5 spec slice 5.2 row). Payloads at or above that threshold land
+// in Blobs and PayloadRef carries the CAS pointer; PayloadInline is then nil. Strict
+// adapters may continue to write raw harness bytes. Live adapters set Live;
+// their payload bytes must already be normalized/redacted by the adapter and
+// are defensively display-sanitized before this event is written.
 //
 // agent.event is OBSERVATIONAL — Fold ignores it. Resume reconstructs
 // RunState from node.completed events; agent events are for trace/obs only
 // (Phase 6 will project them as OTel span events). This mirrors how
 // retry.attempt is treated.
 type AgentEventData struct {
-	Kind          string `json:"kind"`                     // adapter-specific (e.g. Claude Code: "system", "assistant", "user", "tool_use", "tool_result", "thinking", "result", "rate_limit")
-	Stream        string `json:"stream,omitempty"`         // "stdout" | "stderr"
-	Size          int    `json:"size"`                     // payload byte count (whether inline or offloaded)
-	PayloadInline []byte `json:"payload_inline,omitempty"` // raw event bytes when Size <= threshold
-	PayloadRef    string `json:"payload_ref,omitempty"`    // CAS pointer when Size > threshold
+	Kind           string `json:"kind"`                       // adapter-specific (e.g. Claude Code: "system", "assistant", "user", "tool_use", "tool_result", "thinking", "result", "rate_limit")
+	Stream         string `json:"stream,omitempty"`           // "stdout" | "stderr"
+	Size           int    `json:"size"`                       // payload byte count (whether inline or offloaded)
+	Live           bool   `json:"live,omitempty"`             // true means payload/display fields follow live normalized/redacted policy
+	DisplayClass   string `json:"display_class,omitempty"`    // sanitized scalar copy of agent.EventDisplay.Class for live events
+	DisplayTool    string `json:"display_tool,omitempty"`     // sanitized scalar copy of EventDisplay.Tool for live events
+	DisplaySummary string `json:"display_summary,omitempty"`  // sanitized scalar copy of EventDisplay.Text for live events
+	DisplayLines   int    `json:"display_lines,omitempty"`    // scalar copy of EventDisplay.Lines for live tool results
+	DisplayBytes   int    `json:"display_bytes,omitempty"`    // scalar copy of EventDisplay.Bytes for live tool results
+	DisplayIsError bool   `json:"display_is_error,omitempty"` // scalar copy of EventDisplay.IsError for live events
+	PayloadInline  []byte `json:"payload_inline,omitempty"`   // strict: raw event bytes; live: normalized/redacted bytes when Size < threshold
+	PayloadRef     string `json:"payload_ref,omitempty"`      // CAS pointer when Size >= threshold
 }
 
 // agentEventInlineThreshold is the per-event inline/offload boundary, in
-// bytes. Mirrors io.chunk per the Phase 5 spec slice 5.2 row ("payload
-// offloaded to Blobs for > 4 KiB, mirrors io.chunk's threshold"). Private
+// bytes. Payloads at or above this size are offloaded to Blobs. Private
 // because slice 5.2 is the only consumer (engine/agent_step.go in Task 8).
 const agentEventInlineThreshold = 4096
 
@@ -482,6 +496,10 @@ type SelectedSkill struct {
 	ID    string  `json:"id"`
 	Score float64 `json:"score"`
 }
+
+// agentEventDisplayFieldLimit bounds live display metadata copied into
+// agent.event JSON. Display fields are previews, not transcript storage.
+const agentEventDisplayFieldLimit = 1024
 
 // NodeSkippedData is the observational marker emitted as a Skip unwinds
 // through a scope (Phase 3 design §B). Path is the path of the skipped scope

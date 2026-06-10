@@ -48,7 +48,8 @@ func checkThreadedWorkflow(wf *ir.Workflow, moduleID string, resolver agent.Reso
 	if wf == nil {
 		return nil
 	}
-	return checkThreadedNodes(wf, moduleID, wf.Graph, resolver)
+	stepsByID := collectAgentSteps(wf.Graph, nil)
+	return checkThreadedNodes(wf, moduleID, wf.Graph, resolver, stepsByID)
 }
 
 // checkThreadedNodes is the recursive worker. It descends into every
@@ -57,7 +58,7 @@ func checkThreadedWorkflow(wf *ir.Workflow, moduleID string, resolver agent.Reso
 // stay in sync with the runtime-ref traversal; when ir/ adds a new node type,
 // update both (the default arm is unreachable from outside ir/ — ir.Node is a
 // closed sum type with an unexported isNode() marker).
-func checkThreadedNodes(wf *ir.Workflow, moduleID string, nodes ir.NodeList, resolver agent.Resolver) error {
+func checkThreadedNodes(wf *ir.Workflow, moduleID string, nodes ir.NodeList, resolver agent.Resolver, stepsByID map[string]*ir.AgentStep) error {
 	for _, n := range nodes {
 		switch v := n.(type) {
 		case *ir.AgentStep:
@@ -72,48 +73,58 @@ func checkThreadedNodes(wf *ir.Workflow, moduleID string, nodes ir.NodeList, res
 			if !adapter.Capabilities().Threaded {
 				return &ErrThreadedRequired{StepID: v.ID, Ref: ref}
 			}
+			if target := stepsByID[v.Continues]; target != nil {
+				targetRef := engine.AgentRuntimeRef(wf, moduleID, target.Uses)
+				targetAdapter, ok := resolver.Lookup(targetRef)
+				if !ok {
+					return &agent.ErrAdapterNotFound{Ref: targetRef}
+				}
+				if targetAdapter.Capabilities().PersistentSession {
+					return &ErrPersistentSessionContinuesTarget{StepID: v.ID, TargetID: v.Continues, Ref: targetRef}
+				}
+			}
 		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip:
 			// no nested steps; cannot declare continues:
 		case *ir.If:
-			if err := checkThreadedNodes(wf, moduleID, v.Then, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Then, resolver, stepsByID); err != nil {
 				return err
 			}
-			if err := checkThreadedNodes(wf, moduleID, v.Else, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Else, resolver, stepsByID); err != nil {
 				return err
 			}
 		case *ir.Loop:
-			if err := checkThreadedNodes(wf, moduleID, v.Body, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Body, resolver, stepsByID); err != nil {
 				return err
 			}
 		case *ir.Try:
-			if err := checkThreadedNodes(wf, moduleID, v.Do, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Do, resolver, stepsByID); err != nil {
 				return err
 			}
-			if err := checkThreadedNodes(wf, moduleID, v.Catch, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Catch, resolver, stepsByID); err != nil {
 				return err
 			}
-			if err := checkThreadedNodes(wf, moduleID, v.Finally, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Finally, resolver, stepsByID); err != nil {
 				return err
 			}
 		case *ir.Parallel:
-			if err := checkThreadedNodes(wf, moduleID, v.Children, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Children, resolver, stepsByID); err != nil {
 				return err
 			}
 		case *ir.Gate:
-			if err := checkThreadedNodes(wf, moduleID, v.Generate, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Generate, resolver, stepsByID); err != nil {
 				return err
 			}
-			if err := checkThreadedNodes(wf, moduleID, v.Evaluate, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Evaluate, resolver, stepsByID); err != nil {
 				return err
 			}
 		case *ir.Map:
 			// Descend into the map body — a continues: step inside a fan-out
 			// branch (E.2) still needs a Threaded adapter.
-			if err := checkThreadedNodes(wf, moduleID, v.Body, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Body, resolver, stepsByID); err != nil {
 				return err
 			}
 		case *ir.Compose:
-			if err := checkThreadedNodes(wf, moduleID, v.Body, resolver); err != nil {
+			if err := checkThreadedNodes(wf, moduleID, v.Body, resolver, stepsByID); err != nil {
 				return err
 			}
 		default:
@@ -124,4 +135,40 @@ func checkThreadedNodes(wf *ir.Workflow, moduleID string, nodes ir.NodeList, res
 		}
 	}
 	return nil
+}
+
+func collectAgentSteps(nodes ir.NodeList, out map[string]*ir.AgentStep) map[string]*ir.AgentStep {
+	if out == nil {
+		out = map[string]*ir.AgentStep{}
+	}
+	for _, n := range nodes {
+		switch v := n.(type) {
+		case *ir.AgentStep:
+			if v.ID != "" {
+				out[v.ID] = v
+			}
+		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip:
+		case *ir.If:
+			collectAgentSteps(v.Then, out)
+			collectAgentSteps(v.Else, out)
+		case *ir.Loop:
+			collectAgentSteps(v.Body, out)
+		case *ir.Try:
+			collectAgentSteps(v.Do, out)
+			collectAgentSteps(v.Catch, out)
+			collectAgentSteps(v.Finally, out)
+		case *ir.Parallel:
+			collectAgentSteps(v.Children, out)
+		case *ir.Gate:
+			collectAgentSteps(v.Generate, out)
+			collectAgentSteps(v.Evaluate, out)
+		case *ir.Map:
+			collectAgentSteps(v.Body, out)
+		case *ir.Compose:
+			collectAgentSteps(v.Body, out)
+		default:
+			panic(fmt.Sprintf("collectAgentSteps: unhandled ir.Node type %T (extend the switch; mirror the runtime-ref traversal)", n))
+		}
+	}
+	return out
 }

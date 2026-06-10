@@ -1,6 +1,6 @@
 import ELK from "elkjs/lib/elk.bundled.js";
 import type { Edge as RFEdge, Node as RFNode } from "reactflow";
-import { toElkGraph, type Projection } from "./projection";
+import { toElkGraph, type NodeState, type Projection } from "./projection";
 
 const elk = new ELK();
 
@@ -51,12 +51,24 @@ export async function layout(p: Projection): Promise<LaidOut> {
 // path Refresh uses in 2a and SSE will reuse in 2b). Positions are untouched.
 export function applyState(
   nodes: RFNode[],
-  overlay: Record<string, { state: string }> | undefined,
+  overlay: Record<string, NodeState> | undefined,
 ): RFNode[] {
-  return nodes.map((n) => ({
-    ...n,
-    data: { ...n.data, state: overlay?.[n.id]?.state ?? "" },
-  }));
+  return nodes.map((n) => {
+    const st = overlay?.[n.id];
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        state: st?.state ?? "",
+        livePreview: st?.live_preview ?? "",
+        liveDisplayClass: st?.live_display_class ?? "",
+        liveDisplayTool: st?.live_display_tool ?? "",
+        liveDisplayLines: st?.live_display_lines ?? 0,
+        liveDisplayBytes: st?.live_display_bytes ?? 0,
+        liveDisplayIsError: st?.live_display_is_error ?? false,
+      },
+    };
+  });
 }
 
 interface ElkResult {

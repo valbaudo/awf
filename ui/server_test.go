@@ -118,6 +118,41 @@ func TestGraphSnapshotOverlay(t *testing.T) {
 	}
 }
 
+func TestUIPreviewRedactsLiveAgentPayload(t *testing.T) {
+	dir := t.TempDir()
+	writeRunLog(t, dir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "r1", WorkflowDigest: testDigest})},
+		state.Event{Type: engine.EventNodeStarted, Path: "gen", Data: mustData(engine.NodeStartedData{Kind: "agent"})},
+		state.Event{Type: engine.EventAgentEvent, Path: "gen", Data: mustData(engine.AgentEventData{
+			Kind: "assistant", Live: true, Size: 18, DisplayClass: "assistant_delta",
+			DisplaySummary: "ok sk-liveSECRET123\x1b]52;c;SECRET\a done\x00",
+			PayloadInline:  []byte("ok\x1b]52;c;SECRET\a done\x00"),
+		})},
+		state.Event{Type: engine.EventAgentEvent, Path: "gen", Data: mustData(engine.AgentEventData{
+			Kind: "notice", Live: true, Size: 6, DisplayClass: "notice",
+			DisplaySummary: "registry finalizer sk-liveSECRET123 needs cleanup",
+			PayloadInline:  []byte("notice"),
+		})},
+	)
+	ts := newTestServer(t, dir)
+	r, err := http.Get(ts.URL + "/api/graph?run=r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Body.Close() }()
+	b, _ := io.ReadAll(r.Body)
+	if strings.Contains(string(b), "SECRET") || strings.Contains(string(b), "\x1b]52") {
+		t.Fatalf("UI graph response leaked raw live payload: %q", b)
+	}
+	if !strings.Contains(string(b), "sk-[redacted]") {
+		t.Fatalf("UI graph response missing redacted live preview: %q", b)
+	}
+	if !strings.Contains(string(b), `"live_display_class":"notice"`) ||
+		!strings.Contains(string(b), `"live_preview":"registry finalizer sk-[redacted] needs cleanup"`) {
+		t.Fatalf("UI graph response missing live notice metadata: %q", b)
+	}
+}
+
 func TestGraphUnknownRun404(t *testing.T) {
 	ts := newTestServer(t, t.TempDir())
 	r, err := http.Get(ts.URL + "/api/graph?run=ghost")

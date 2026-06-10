@@ -59,3 +59,27 @@ func TestErrAgentLaunch_AsAndMessage(t *testing.T) {
 		t.Errorf("errors.Is did not match Cause via Unwrap")
 	}
 }
+
+func TestLiveErrorsClassifyWithErrorsIs(t *testing.T) {
+	cases := []error{
+		agent.ErrLiveLeaseConflict,
+		agent.ErrLiveLeaseStaleOwned,
+		agent.ErrLiveRegistryIO,
+		agent.ErrLiveReplayRequired,
+		agent.ErrLiveRedaction,
+		&agent.ErrUnparseableOutput{NodePath: "graph[0]"},
+	}
+	for _, target := range cases {
+		err := errors.Join(errors.New("context"), target)
+		if !errors.Is(err, target) {
+			t.Fatalf("errors.Is(%T) = false, want true", target)
+		}
+	}
+}
+
+func TestLivePermissionDeniedClassifiesWithErrorsIs(t *testing.T) {
+	err := errors.Join(errors.New("context"), agent.ErrPermissionDenied)
+	if !errors.Is(err, agent.ErrPermissionDenied) {
+		t.Fatalf("errors.Is(permission denied) = false, want true")
+	}
+}

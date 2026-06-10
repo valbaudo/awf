@@ -60,6 +60,7 @@ func buildWithRunProjection(p Projection, events []state.Event) (Projection, err
 			InstanceOf: nearestTemplateNode(templateOf(s.Path), static),
 		})
 	}
+	attachLivePreviews(overlay, events)
 	sort.Slice(inst, func(i, j int) bool { return inst[i].Path < inst[j].Path })
 
 	allNodes := append(append([]Node{}, p.Nodes...), inst...)

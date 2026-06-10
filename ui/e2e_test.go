@@ -10,6 +10,7 @@ package ui
 import (
 	"context"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,42 @@ func TestE2ELiveOverlay(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("live overlay E2E failed (ship gate, not a skip): %v", err)
+	}
+}
+
+func TestE2ELivePreviewMetadata(t *testing.T) {
+	dir := t.TempDir()
+	wf := &ir.Workflow{ID: "live-preview", Graph: ir.NodeList{
+		&ir.AgentStep{ID: "gen", Uses: "live/agent"},
+	}}
+	writeRunLog(t, dir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "r1", WorkflowDigest: testDigest})},
+		state.Event{Type: engine.EventNodeStarted, Path: "gen", Data: mustData(engine.NodeStartedData{Kind: "agent"})},
+		state.Event{Type: engine.EventAgentEvent, Path: "gen", Data: mustData(engine.AgentEventData{
+			Kind: "notice", Live: true, Size: 6, DisplayClass: "notice",
+			DisplaySummary: "registry finalizer sk-liveSECRET123 needs cleanup",
+			PayloadInline:  []byte("notice"),
+		})},
+	)
+	ts := httptest.NewServer(New(wf, testDigest, dir).Handler())
+	defer ts.Close()
+
+	ctx, cancel := chromedp.NewContext(context.Background())
+	defer cancel()
+	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	var preview string
+	err := chromedp.Run(ctx,
+		chromedp.Navigate(ts.URL+"/?run=r1"),
+		chromedp.WaitVisible(`[data-node-path="gen"][data-live-display-class="notice"] .awf-live-preview`, chromedp.ByQuery),
+		chromedp.Text(`[data-node-path="gen"] .awf-live-preview`, &preview, chromedp.ByQuery),
+	)
+	if err != nil {
+		t.Fatalf("live preview E2E failed (ship gate, not a skip): %v", err)
+	}
+	if strings.Contains(preview, "liveSECRET123") || preview != "registry finalizer sk-[redacted] needs cleanup" {
+		t.Fatalf("live preview text = %q, want redacted notice", preview)
 	}
 }
 

@@ -10,8 +10,10 @@ import (
 	"github.com/valbaudo/awf/agent/awfllm"
 	"github.com/valbaudo/awf/agent/claude"
 	"github.com/valbaudo/awf/agent/codex"
+	"github.com/valbaudo/awf/agent/codexlive"
 	"github.com/valbaudo/awf/agent/droid"
 	"github.com/valbaudo/awf/agent/goose"
+	"github.com/valbaudo/awf/agent/live"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
@@ -25,6 +27,7 @@ var defaultAgentEnv = func() []string {
 	out = append(out, droid.DefaultEnvAllowlist...)
 	out = append(out, goose.DefaultEnvAllowlist...)
 	out = append(out, codex.DefaultEnvAllowlist...)
+	out = append(out, codexlive.DefaultEnvAllowlist...)
 	out = append(out, awfllm.DefaultEnvAllowlist...)
 	// Dedup: goose's ANTHROPIC_API_KEY overlaps claude's; OPENAI_API_KEY overlaps
 	// goose/codex/awfllm — keep first occurrence, preserve order (don't surface a
@@ -109,6 +112,10 @@ func mergeLoadedWorkflowEnv(base []string, ld *ir.LoadedDefinition) []string {
 // Tests inject container.NewFake(); production passes the CLI's
 // constructed Backend (cli/backend.go resolveBackend result).
 func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agent.Registry, error) {
+	return buildAgentRegistryWithLiveRoot(envAllowlist, backend, live.Root{})
+}
+
+func buildAgentRegistryWithLiveRoot(envAllowlist []string, backend container.Backend, liveRoot live.Root) (*agent.Registry, error) {
 	if backend == nil {
 		return nil, fmt.Errorf("cli: buildAgentRegistry: nil backend (Claude adapter needs Backend for Version + Launch)")
 	}
@@ -158,6 +165,14 @@ func buildAgentRegistry(envAllowlist []string, backend container.Backend) (*agen
 	}
 	if err := reg.Register(cadapter); err != nil {
 		return nil, fmt.Errorf("cli: buildAgentRegistry: register codex adapter: %w", err)
+	}
+
+	cladapter, err := codexlive.New(codexlive.WithEnv(env), codexlive.WithLiveRoot(liveRoot))
+	if err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: construct codex live adapter: %w", err)
+	}
+	if err := reg.Register(cladapter); err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: register codex live adapter: %w", err)
 	}
 
 	// awf/llm is containerless (direct HTTP) — it takes NO backend; it needs an

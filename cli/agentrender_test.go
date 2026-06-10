@@ -85,6 +85,30 @@ func TestRender_OtherFallback(t *testing.T) {
 		t.Errorf("fallback: %q", got)
 	}
 }
+func TestRender_SanitizesDisplayTextAndFallbackPayload(t *testing.T) {
+	got := render(ag(agent.DisplayAssistant, "", "safe\x1b[31m red\x1b[0m\x00", 0, 0, false))
+	if got != "safe red\n" {
+		t.Fatalf("display text was not sanitized: %q", got)
+	}
+
+	got = render(agent.AgentEvent{Kind: "weird", Payload: []byte("raw\x1b]52;c;SECRET\a text\x00")})
+	if got != "[weird] raw text\n" {
+		t.Fatalf("fallback payload was not sanitized: %q", got)
+	}
+}
+
+func TestRender_RedactsDisplayTextAndFallbackPayload(t *testing.T) {
+	got := render(ag(agent.DisplayAssistant, "", "Authorization: Bearer abc.def.secret", 0, 0, false))
+	if strings.Contains(got, "abc.def.secret") || !strings.Contains(got, "Authorization: [redacted]") {
+		t.Fatalf("display text was not redacted: %q", got)
+	}
+
+	got = render(agent.AgentEvent{Kind: "weird", Payload: []byte("OPENAI_API_KEY=sk-liveSECRET123456")})
+	if strings.Contains(got, "sk-liveSECRET123456") || !strings.Contains(got, "OPENAI_API_KEY=[redacted]") {
+		t.Fatalf("fallback payload was not redacted: %q", got)
+	}
+}
+
 func TestRender_NoANSIWhenNotTTY(t *testing.T) {
 	if strings.Contains(render(ag(agent.DisplayError, "", "x", 0, 0, false)), "\x1b[") {
 		t.Error("plain mode must emit no ANSI")
@@ -118,6 +142,29 @@ func TestRender_AssistantDelta_CharByChar(t *testing.T) {
 	r(&b, ag(agent.DisplayFinal, "", "12 in / 3 out tokens", 0, 0, false))
 	if b.String() != "Hello world\n12 in / 3 out tokens\n" {
 		t.Fatalf("after final = %q, want streamed line terminated then the final line", b.String())
+	}
+}
+
+func TestRender_LiveEventsAreMarkedOnceWithoutChangingStrictEvents(t *testing.T) {
+	var b strings.Builder
+	r := newAgentEventRenderer(&b)
+	r(&b, ag(agent.DisplayNotice, "", "strict notice", 0, 0, false))
+	r(&b, agent.AgentEvent{
+		Live:    true,
+		Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "Hel"},
+	})
+	r(&b, agent.AgentEvent{
+		Live:    true,
+		Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "lo"},
+	})
+	r(&b, agent.AgentEvent{
+		Live:    true,
+		Display: agent.EventDisplay{Class: agent.DisplayNotice, Text: "done"},
+	})
+
+	want := "· strict notice\n· live agent\nHello\n· done\n"
+	if b.String() != want {
+		t.Fatalf("rendered live marker = %q, want %q", b.String(), want)
 	}
 }
 

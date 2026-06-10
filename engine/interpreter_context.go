@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"io"
 	"strings"
 
@@ -24,6 +25,7 @@ type interpreterContext struct {
 	clk           clock.Clock
 	tap           io.Writer
 	broker        *signal.Broker
+	liveFinalizer func(context.Context, LiveDispatchRecord) error
 }
 
 func (ictx interpreterContext) scope(path string) *Scope {

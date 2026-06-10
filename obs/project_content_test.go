@@ -106,6 +106,78 @@ func TestCaptureContentBoundsBlobBackedPayload(t *testing.T) {
 	}
 }
 
+func TestTracePreviewRedactsLiveAgentPayload(t *testing.T) {
+	t0 := time.Unix(1000, 0).UTC()
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		ev(t, engine.EventNodeStarted, "a1", t0, engine.NodeStartedData{Kind: "agent"}),
+		ev(t, engine.EventAgentEvent, "a1", t0.Add(time.Second), engine.AgentEventData{
+			Kind: "assistant", Live: true, Size: 18, PayloadInline: []byte("hi sk-liveSECRET123 \x1b]52;c;SECRET\a there\x00"),
+		}),
+	}
+	spans, err := ProjectWithOptions(events, blobs, ProjectOptions{CaptureContent: true})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	s, _ := findSpan(spans, "a1")
+	var ev0 SpanEvent
+	for _, e := range s.Events {
+		if e.Name == "awf.agent.event" {
+			ev0 = e
+		}
+	}
+	if got := ev0.Attributes["awf.agent.event.payload"]; got != "hi sk-[redacted]  there" {
+		t.Fatalf("live payload attr = %q, want sanitized text", got)
+	}
+}
+
+func TestCaptureContentAttachesLiveDisplayMetadata(t *testing.T) {
+	t0 := time.Unix(1000, 0).UTC()
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		ev(t, engine.EventNodeStarted, "a1", t0, engine.NodeStartedData{Kind: "agent"}),
+		ev(t, engine.EventAgentEvent, "a1", t0.Add(time.Second), engine.AgentEventData{
+			Kind: "tool_result", Stream: "stdout", Live: true, Size: 12,
+			DisplayClass:   "tool_result",
+			DisplayTool:    "shell\x1b[31m",
+			DisplaySummary: "failed sk-liveSECRET123",
+			DisplayLines:   3,
+			DisplayBytes:   42,
+			DisplayIsError: true,
+			PayloadInline:  []byte("redacted"),
+		}),
+		ev(t, engine.EventAgentEvent, "a1", t0.Add(2*time.Second), engine.AgentEventData{
+			Kind: "notice", Stream: "stderr", Live: true, Size: 6,
+			DisplayClass: "notice", DisplaySummary: "lease finalizer needs cleanup",
+			PayloadInline: []byte("notice"),
+		}),
+	}
+
+	spans, err := ProjectWithOptions(events, blobs, ProjectOptions{CaptureContent: true})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	s, _ := findSpan(spans, "a1")
+	if len(s.Events) != 2 {
+		t.Fatalf("span events = %d, want 2: %+v", len(s.Events), s.Events)
+	}
+	tool := s.Events[0].Attributes
+	if tool[AttrAgentEventLive] != true ||
+		tool[AttrAgentEventDisplayClass] != "tool_result" ||
+		tool[AttrAgentEventDisplayTool] != "shell" ||
+		tool[AttrAgentEventDisplaySummary] != "failed sk-[redacted]" ||
+		tool[AttrAgentEventDisplayLines] != int64(3) ||
+		tool[AttrAgentEventDisplayBytes] != int64(42) ||
+		tool[AttrAgentEventDisplayIsError] != true {
+		t.Fatalf("tool display attrs = %+v", tool)
+	}
+	notice := s.Events[1].Attributes
+	if notice[AttrAgentEventDisplayClass] != "notice" ||
+		notice[AttrAgentEventDisplaySummary] != "lease finalizer needs cleanup" {
+		t.Fatalf("notice display attrs = %+v", notice)
+	}
+}
+
 func TestCaptureContentDegradesOnMissingAgentEventBlob(t *testing.T) {
 	t0 := time.Unix(1000, 0).UTC()
 	blobs, err := state.OpenBlobs(t.TempDir())

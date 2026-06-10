@@ -28,6 +28,11 @@ function AwfNode({ data }: NodeProps) {
     "data-kind": data.kind,
     "data-state": data.state || "",
     "data-node-class": data.nodeClass || "template",
+    "data-live-display-class": data.liveDisplayClass || "",
+    "data-live-display-tool": data.liveDisplayTool || "",
+    "data-live-display-lines": data.liveDisplayLines || "",
+    "data-live-display-bytes": data.liveDisplayBytes || "",
+    "data-live-display-is-error": data.liveDisplayIsError ? "1" : "",
   } as const;
   // Group nodes render only a title bar at the top; their children are laid out below it
   // (ELK reserves top padding), so a child never covers the title.
@@ -48,6 +53,7 @@ function AwfNode({ data }: NodeProps) {
       <Handle type="target" position={Position.Top} />
       <span className="awf-kind">{data.kind}</span>
       <span className="awf-label">{data.label}</span>
+      {data.livePreview && <span className="awf-live-preview">{data.livePreview}</span>}
       <Handle type="source" position={Position.Bottom} />
     </div>
   );

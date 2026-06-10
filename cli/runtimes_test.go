@@ -356,6 +356,37 @@ func TestResolveRuntimes_ContainerlessAdapter_NoHandleNeeded(t *testing.T) {
 	}
 }
 
+func TestRuntimeResolutionSupportsLiveAdapterRefsWithoutRuntimeCommand(t *testing.T) {
+	var reg agent.Registry
+	codexLive := fake.New("openai/codex-live").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true, PersistentSession: true}).
+		WithVersion("codex-live/0")
+	gooseLive := fake.New("block/goose-live").
+		WithCaps(agent.Caps{Containerless: true, PersistentSession: true}).
+		WithVersion("goose-live/0")
+	for _, adapter := range []agent.Adapter{gooseLive, codexLive} {
+		if err := reg.Register(adapter); err != nil {
+			t.Fatalf("Register %q: %v", adapter.Ref(), err)
+		}
+	}
+
+	refs := []agentRef{
+		{Uses: "block/goose-live"},
+		{Uses: "openai/codex-live"},
+	}
+	got, err := resolveRuntimes(context.Background(), refs, &reg, map[string]container.Handle{})
+	if err != nil {
+		t.Fatalf("resolveRuntimes: %v", err)
+	}
+	want := []engine.ResolvedRuntime{
+		{Ref: "block/goose-live", Version: "goose-live/0"},
+		{Ref: "openai/codex-live", Version: "codex-live/0"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolveRuntimes = %+v, want %+v", got, want)
+	}
+}
+
 func TestResolveRuntimes_NonContainerlessAdapter_NoContainer_Errors(t *testing.T) {
 	fk := fake.New("anthropic/claude-code") // default Caps: Containerless false
 	var reg agent.Registry

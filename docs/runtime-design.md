@@ -423,16 +423,17 @@ provider-specific behavior stays inside the named adapter and its opaque
 | `block/goose` | strict CLI | no | no | no | no | built-in |
 | `openai/codex` | strict CLI | yes | no | no | no | built-in |
 | `awf/llm` | single HTTP call | no | yes | yes | no | built-in |
-| `openai/codex-live` | live app-server | yes | yes | no | yes | reserved implementation-track ref; no adapter registered yet |
+| `openai/codex-live` | live app-server | yes | yes | no | yes | built-in |
 | `block/goose-live` | live ACP | no | yes | no | yes | reserved implementation-track ref; no adapter registered yet |
 | `anthropic/claude-code-live` | live PTY proof spike | yes | yes | no | yes | deferred; not supported |
 
-Reserved live refs use the same `uses:` resolution and run-start/runtime-version
-pinning path as strict refs once an adapter is registered. They do not add a
+The registered Codex live ref uses the same `uses:` resolution and
+run-start/runtime-version pinning path as strict refs. Live refs do not add a
 separate runtime registry or inspection command; live output continues through
-`AgentEvent`, `agent.event`, `awf trace`, and UI projections. The Claude Code
-live ref stays deferred until the PTY proof spike proves turn-boundary,
-permission, transcript-correlation, prompt-injection, and reconnect behavior.
+`AgentEvent`, `agent.event`, `awf trace`, and UI projections. The Goose live ref
+remains reserved, and the Claude Code live ref stays deferred until the PTY
+proof spike proves turn-boundary, permission, transcript-correlation,
+prompt-injection, and reconnect behavior.
 
 **Claude Code adapter (first).** Runs the CLI inside the container: `claude -p <prompt> --model <m> --output-format stream-json [--max-turns N] [tool allowlist]`. Streams stream-json → `AgentEvent`s for the live tap and `agent.*` span events. Reads `total_cost_usd` + `usage` → `MetricSet{cost.source=reported, gen_ai.usage.*}`. Maps `with` keys and `mcp://` tool refs to the harness's MCP config; passes the idempotency key into the agent env.
 

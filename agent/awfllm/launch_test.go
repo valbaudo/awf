@@ -73,6 +73,87 @@ func TestLaunch_StreamsDeltasAndParses(t *testing.T) {
 	}
 }
 
+func TestLaunch_EventsUseLivePayloadPolicy(t *testing.T) {
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) { return sseResponse(openAISSE), nil })
+	a := launchAdapter(t, rt)
+	evs, outcome := drainLaunch(t, a, okInv())
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	for _, ev := range evs {
+		if !ev.Live {
+			t.Fatalf("event %q Live=false, want live payload policy", ev.Kind)
+		}
+	}
+	if string(evs[0].Payload) != `{"ans` {
+		t.Fatalf("first delta payload = %q, want normalized delta text", evs[0].Payload)
+	}
+	if strings.Contains(string(evs[0].Payload), `"choices"`) {
+		t.Fatalf("first delta payload leaked raw provider SSE: %q", evs[0].Payload)
+	}
+}
+
+func TestLaunch_LiveEventsAreRedactedBeforeEngineAppend(t *testing.T) {
+	const secretSSE = `data: {"choices":[{"index":0,"delta":{"content":"OPENAI_API_KEY=sk-liveSECRET123456"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}
+
+data: [DONE]
+
+`
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) { return sseResponse(secretSSE), nil })
+	a := launchAdapter(t, rt)
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: awfllm.AdapterRef,
+		With: ir.RawConfig{"model": "gpt-x", "prompt": "2+2?", "base_url": "https://x/v1"},
+	}
+	evs, outcome := drainLaunch(t, a, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if len(evs) == 0 {
+		t.Fatal("expected live events")
+	}
+	for _, ev := range evs {
+		if strings.Contains(string(ev.Payload), "sk-liveSECRET123456") || strings.Contains(ev.Display.Text, "sk-liveSECRET123456") {
+			t.Fatalf("live event leaked secret before engine append: %+v payload=%q", ev.Display, ev.Payload)
+		}
+	}
+}
+
+func TestLaunch_LiveDeltaSanitizerCarriesSplitControlSequence(t *testing.T) {
+	const splitControlSSE = `data: {"choices":[{"index":0,"delta":{"content":"\u001b]52;c;SEC"}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"RET\u0007 done"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}
+
+data: [DONE]
+
+`
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) { return sseResponse(splitControlSSE), nil })
+	a := launchAdapter(t, rt)
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: awfllm.AdapterRef,
+		With: ir.RawConfig{"model": "gpt-x", "prompt": "2+2?", "base_url": "https://x/v1"},
+	}
+	evs, outcome := drainLaunch(t, a, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	var combined string
+	for _, ev := range evs {
+		combined += string(ev.Payload)
+		combined += ev.Display.Text
+	}
+	if strings.Contains(combined, "SEC") || strings.Contains(combined, "RET") {
+		t.Fatalf("split control sequence leaked hidden text: %q", combined)
+	}
+	if !strings.Contains(combined, "done") {
+		t.Fatalf("split control sequence dropped visible suffix too: %q", combined)
+	}
+}
+
 func TestAssemblePrompt_InjectsSchemaDirective(t *testing.T) {
 	inv := agent.AgentInvocation{
 		With:         ir.RawConfig{"prompt": "hi"},

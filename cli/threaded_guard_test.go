@@ -54,6 +54,28 @@ func TestCheckThreaded_ContinuesAgainstThreaded_OK(t *testing.T) {
 	}
 }
 
+func TestCheckThreaded_ContinuesFromPersistentSessionTarget_Errors(t *testing.T) {
+	var reg agent.Registry
+	if err := reg.Register(fake.New("openai/codex-live").WithCaps(agent.Caps{Containerless: true, PersistentSession: true})); err != nil {
+		t.Fatalf("Register live: %v", err)
+	}
+	if err := reg.Register(fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true})); err != nil {
+		t.Fatalf("Register threaded: %v", err)
+	}
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.AgentStep{ID: "draft", Uses: "openai/codex-live"},
+		&ir.AgentStep{ID: "refine", Uses: "awf/llm", Continues: "draft"},
+	}}
+	err := checkThreadedAdapters(wf, &reg)
+	var want *ErrPersistentSessionContinuesTarget
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *ErrPersistentSessionContinuesTarget", err)
+	}
+	if want.StepID != "refine" || want.TargetID != "draft" || want.Ref != "openai/codex-live" {
+		t.Fatalf("got %+v, want {StepID:refine TargetID:draft Ref:openai/codex-live}", want)
+	}
+}
+
 func TestCheckThreaded_LoadedDefinitionUsesChildQualifiedRoleRef(t *testing.T) {
 	child := &ir.Workflow{
 		Agents: map[string]ir.AgentRole{

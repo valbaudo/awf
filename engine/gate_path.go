@@ -52,3 +52,23 @@ func enclosingGateForEvaluate(ctxPath string) (string, bool) {
 	}
 	return "", false
 }
+
+func isGateEvaluateContext(ctxPath string) bool {
+	if ctxPath == "" {
+		return false
+	}
+	segments := strings.Split(ctxPath, ".")
+	for i := len(segments) - 1; i >= 2; i-- {
+		if segments[i] != "evaluate" {
+			continue
+		}
+		if !strings.HasPrefix(segments[i-1], AttemptSegmentPrefix) {
+			continue
+		}
+		if !strings.HasPrefix(segments[i-2], GateSegmentPrefix) {
+			continue
+		}
+		return true
+	}
+	return false
+}

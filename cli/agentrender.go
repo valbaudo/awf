@@ -42,11 +42,17 @@ const (
 func newAgentEventRenderer(w io.Writer) func(io.Writer, agent.AgentEvent) {
 	color := wantColor(w)
 	inDelta := false // true while a DisplayAssistantDelta line is mid-stream (unterminated)
+	liveSeen := false
 	return func(out io.Writer, ev agent.AgentEvent) {
 		isDelta := ev.Display.Class == agent.DisplayAssistantDelta
-		if inDelta && !isDelta {
+		if inDelta && (!isDelta || (ev.Live && !liveSeen)) {
 			// A non-delta event after a delta stream: terminate the streamed line.
 			_, _ = io.WriteString(out, "\n")
+			inDelta = false
+		}
+		if ev.Live && !liveSeen {
+			_, _ = io.WriteString(out, dim(glyphMeta+" live agent\n", color))
+			liveSeen = true
 		}
 		inDelta = isDelta
 		_, _ = io.WriteString(out, formatEvent(ev, color))
@@ -82,7 +88,7 @@ func colorize(s, code string, color bool) string {
 // formatEvent renders one event per its normalized Display class; empty-text
 // events are suppressed; unknown/Other falls back to the terse "[kind] preview".
 func formatEvent(ev agent.AgentEvent, color bool) string {
-	d := ev.Display
+	d := sanitizeDisplay(ev.Display)
 	switch d.Class {
 	case agent.DisplayAssistant, agent.DisplayFinal:
 		if d.Text == "" {
@@ -108,12 +114,18 @@ func formatEvent(ev agent.AgentEvent, color bool) string {
 	case agent.DisplayError:
 		return colorize(glyphFail+" "+oneLine(d.Text), ansiRed, color) + "\n"
 	default: // DisplayOther → terse fallback (bounded; no raw JSON flood)
-		p := ev.Payload
-		if len(p) > fallbackPreview {
-			p = p[:fallbackPreview]
+		p := agent.RedactDisplayText(agent.SanitizeDisplayBytes(ev.Payload))
+		if p == "" {
+			return ""
 		}
-		return fmt.Sprintf("[%s] %s\n", ev.Kind, p)
+		return fmt.Sprintf("[%s] %s\n", ev.Kind, truncate(p, fallbackPreview))
 	}
+}
+
+func sanitizeDisplay(d agent.EventDisplay) agent.EventDisplay {
+	d.Tool = agent.RedactDisplayText(agent.SanitizeDisplayText(d.Tool))
+	d.Text = agent.RedactDisplayText(agent.SanitizeDisplayText(d.Text))
+	return d
 }
 
 // formatReasoning shows up to reasoningMaxLines of the (already model-bounded)

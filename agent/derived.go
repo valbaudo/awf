@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"maps"
 
 	"github.com/valbaudo/awf/container"
@@ -59,4 +60,13 @@ func (d *DerivedAdapter) ValidateConfig(with ir.RawConfig) error {
 func (d *DerivedAdapter) Launch(ctx context.Context, h container.Handle, inv AgentInvocation) (<-chan AgentEvent, <-chan AgentOutcome, error) {
 	inv.With = d.merge(inv.With)
 	return d.base.Launch(ctx, h, inv)
+}
+
+func (d *DerivedAdapter) PreflightResume(ctx context.Context, req LiveResumePreflightRequest) error {
+	preflighter, ok := d.base.(ResumePreflighter)
+	if !ok {
+		return fmt.Errorf("base adapter %q for role %q declares PersistentSession but does not implement agent.ResumePreflighter", d.base.Ref(), d.roleName)
+	}
+	req.With = d.merge(req.With)
+	return preflighter.PreflightResume(ctx, req)
 }

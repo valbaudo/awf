@@ -2,11 +2,15 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/state"
 )
@@ -59,6 +63,7 @@ func TestRunStartedDataRoundTrip(t *testing.T) {
 		RunID:          "deadbeef",
 		WorkflowDigest: "awf-d1:sha256:abc",
 		InputRef:       "awf-d1:sha256:def",
+		LiveHome:       &LiveHomePin{Path: "/state/live", Digest: "sha256:live"},
 		Runtimes:       []ResolvedRuntime{}, // Phase 2: always empty
 	}
 	b, err := json.Marshal(in)
@@ -70,7 +75,8 @@ func TestRunStartedDataRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if out.RunID != in.RunID || out.WorkflowDigest != in.WorkflowDigest ||
-		out.InputRef != in.InputRef || len(out.Runtimes) != 0 {
+		out.InputRef != in.InputRef || out.LiveHome == nil || *out.LiveHome != *in.LiveHome ||
+		len(out.Runtimes) != 0 {
 		t.Errorf("round-trip mismatch: in=%+v out=%+v", in, out)
 	}
 }
@@ -727,6 +733,208 @@ func TestAgentEventData_OffloadedRefShape(t *testing.T) {
 		t.Errorf("PayloadInline omitempty failed: %s", b)
 	}
 }
+
+func TestLiveAgentEventPayloadsAreNormalizedAndRedacted(t *testing.T) {
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	blobs := state.NewInMemoryBlobs()
+	events := []agent.AgentEvent{{
+		Kind:    "assistant_delta",
+		Stream:  "stdout",
+		Live:    true,
+		Payload: []byte("safe sk-liveSECRET123 \x1b]52;c;SECRET\a text\x00"),
+		Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "safe \x1b[31msk-liveSECRET123 text\x1b[0m"},
+	}}
+
+	if err := appendAgentEvents(log, blobs, "live", events); err != nil {
+		t.Fatalf("appendAgentEvents: %v", err)
+	}
+	folded, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if len(folded) != 1 {
+		t.Fatalf("folded events = %d, want 1", len(folded))
+	}
+	var data AgentEventData
+	if err := json.Unmarshal(folded[0].Data, &data); err != nil {
+		t.Fatalf("unmarshal AgentEventData: %v", err)
+	}
+	if !data.Live {
+		t.Fatalf("Live = false, want true for live adapter events")
+	}
+	if got := string(data.PayloadInline); got != "safe sk-[redacted]  text" {
+		t.Fatalf("PayloadInline = %q, want sanitized live payload", got)
+	}
+	if data.DisplayClass != "assistant_delta" || data.DisplaySummary != "safe sk-[redacted] text" {
+		t.Fatalf("display metadata = class %q summary %q, want assistant_delta/safe sk-[redacted] text", data.DisplayClass, data.DisplaySummary)
+	}
+}
+
+func TestLiveAgentEventDisplayMetadataIsBounded(t *testing.T) {
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	blobs := state.NewInMemoryBlobs()
+	long := "sk-liveSECRET123 " + strings.Repeat("x", agentEventDisplayFieldLimit+200)
+	events := []agent.AgentEvent{{
+		Kind:    "assistant_delta",
+		Stream:  "stdout",
+		Live:    true,
+		Payload: []byte("ok"),
+		Display: agent.EventDisplay{
+			Class: agent.DisplayAssistantDelta,
+			Tool:  long,
+			Text:  long,
+		},
+	}}
+
+	if err := appendAgentEvents(log, blobs, "live", events); err != nil {
+		t.Fatalf("appendAgentEvents: %v", err)
+	}
+	folded, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var data AgentEventData
+	if err := json.Unmarshal(folded[0].Data, &data); err != nil {
+		t.Fatalf("unmarshal AgentEventData: %v", err)
+	}
+	for name, got := range map[string]string{"DisplayTool": data.DisplayTool, "DisplaySummary": data.DisplaySummary} {
+		if strings.Contains(got, "liveSECRET123") {
+			t.Fatalf("%s leaked secret in %q", name, got)
+		}
+		if !strings.Contains(got, "sk-[redacted]") {
+			t.Fatalf("%s = %q, want redacted secret marker", name, got)
+		}
+		if !strings.Contains(got, "[truncated") {
+			t.Fatalf("%s = %q, want truncation marker", name, got)
+		}
+		if len(got) > agentEventDisplayFieldLimit+64 {
+			t.Fatalf("%s len = %d, want bounded close to %d", name, len(got), agentEventDisplayFieldLimit)
+		}
+	}
+}
+
+func TestLiveCoalescingFlushesDeltaBeforeToolErrorFinal(t *testing.T) {
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	blobs := state.NewInMemoryBlobs()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sink := newAgentEventSink(ctx, cancel, &clock.Fake{T: time.Now()}, log, blobs, "live")
+	send := func(ev agent.AgentEvent) {
+		t.Helper()
+		if err := sink.send(ev); err != nil {
+			t.Fatalf("sink.send(%s): %v", ev.Kind, err)
+		}
+	}
+	send(agent.AgentEvent{Kind: "delta", Stream: "stdout", Live: true, Payload: []byte("hel"), Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "hel"}})
+	send(agent.AgentEvent{Kind: "delta", Stream: "stdout", Live: true, Payload: []byte("lo"), Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "lo"}})
+	send(agent.AgentEvent{Kind: "tool", Stream: "stdout", Live: true, Payload: []byte("tool"), Display: agent.EventDisplay{Class: agent.DisplayToolCall, Tool: "Shell", Text: "ls"}})
+	send(agent.AgentEvent{Kind: "delta", Stream: "stdout", Live: true, Payload: []byte("done"), Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "done"}})
+	send(agent.AgentEvent{Kind: "final", Stream: "stdout", Live: true, Payload: []byte("final"), Display: agent.EventDisplay{Class: agent.DisplayFinal, Text: "final"}})
+	if err := sink.closeWait(); err != nil {
+		t.Fatalf("closeWait: %v", err)
+	}
+	folded, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var got []AgentEventData
+	for _, ev := range folded {
+		var d AgentEventData
+		if err := json.Unmarshal(ev.Data, &d); err != nil {
+			t.Fatalf("unmarshal AgentEventData: %v", err)
+		}
+		got = append(got, d)
+	}
+	if len(got) != 4 {
+		t.Fatalf("agent.event count = %d, want 4: %+v", len(got), got)
+	}
+	if string(got[0].PayloadInline) != "hello" || got[0].DisplayClass != "assistant_delta" || got[0].DisplaySummary != "hello" {
+		t.Fatalf("first coalesced delta = %+v, want hello assistant_delta", got[0])
+	}
+	if got[1].DisplayClass != "tool_call" {
+		t.Fatalf("second event = %+v, want tool_call after delta flush", got[1])
+	}
+	if string(got[2].PayloadInline) != "done" || got[2].DisplayClass != "assistant_delta" {
+		t.Fatalf("third event = %+v, want later delta", got[2])
+	}
+	if got[3].DisplayClass != "final" {
+		t.Fatalf("fourth event = %+v, want final", got[3])
+	}
+}
+
+func TestAgentEventSinkAppendFailureCancelsProvider(t *testing.T) {
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	log.FailAppendAfterN(0)
+	blobs := state.NewInMemoryBlobs()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	providerCtx, cancelProvider := context.WithCancel(context.Background())
+	sink := newAgentEventSink(ctx, cancelProvider, &clock.Fake{T: time.Now()}, log, blobs, "live")
+	if err := sink.send(agent.AgentEvent{Kind: "final", Stream: "stdout", Live: true, Payload: []byte("final"), Display: agent.EventDisplay{Class: agent.DisplayFinal, Text: "final"}}); err != nil {
+		t.Fatalf("sink.send: %v", err)
+	}
+	if err := sink.closeWait(); err == nil {
+		t.Fatal("closeWait = nil, want append failure")
+	}
+	select {
+	case <-providerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("provider context was not cancelled after append failure")
+	}
+}
+
+func TestAgentEventSinkBackpressureCancelsProvider(t *testing.T) {
+	log := newBlockingLog()
+	blobs := state.NewInMemoryBlobs()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	providerCtx, cancelProvider := context.WithCancel(context.Background())
+	sink := newAgentEventSink(ctx, cancelProvider, &clock.Fake{T: time.Now()}, log, blobs, "live")
+	if err := sink.send(agent.AgentEvent{Kind: "final", Stream: "stdout", Live: true, Payload: []byte("first"), Display: agent.EventDisplay{Class: agent.DisplayFinal, Text: "first"}}); err != nil {
+		t.Fatalf("first sink.send: %v", err)
+	}
+	<-log.appendStarted
+	for i := 0; i < agentEventSinkBuffer; i++ {
+		if err := sink.send(agent.AgentEvent{Kind: "notice", Stream: "stdout", Live: true, Payload: []byte("queued"), Display: agent.EventDisplay{Class: agent.DisplayNotice, Text: "queued"}}); err != nil {
+			t.Fatalf("fill sink.send[%d]: %v", i, err)
+		}
+	}
+	err := sink.send(agent.AgentEvent{Kind: "overflow", Stream: "stdout", Live: true, Payload: []byte("overflow"), Display: agent.EventDisplay{Class: agent.DisplayNotice, Text: "overflow"}})
+	if !errors.Is(err, ErrAgentEventSinkBackpressure) {
+		t.Fatalf("overflow sink.send err = %v, want ErrAgentEventSinkBackpressure", err)
+	}
+	select {
+	case <-providerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("provider context was not cancelled after backpressure")
+	}
+	close(log.release)
+	if err := sink.closeWait(); !errors.Is(err, ErrAgentEventSinkBackpressure) {
+		t.Fatalf("closeWait err = %v, want ErrAgentEventSinkBackpressure", err)
+	}
+}
+
+type blockingLog struct {
+	appendStarted chan struct{}
+	release       chan struct{}
+	once          sync.Once
+}
+
+func newBlockingLog() *blockingLog {
+	return &blockingLog{appendStarted: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (l *blockingLog) Append(state.Event) error {
+	l.once.Do(func() { close(l.appendStarted) })
+	<-l.release
+	return nil
+}
+
+func (*blockingLog) Sync() error { return nil }
+
+func (*blockingLog) Fold() ([]state.Event, error) { return nil, nil }
+
+func (*blockingLog) Close() error { return nil }
 
 func TestAgentEventData_FoldIgnores(t *testing.T) {
 	// agent.event events are observational, like retry.attempt. Fold must

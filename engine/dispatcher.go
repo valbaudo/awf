@@ -48,6 +48,10 @@ type NodeIntent struct {
 	Node           ir.Node
 	ResolvedInputs ResolvedInputs
 	IdempotencyKey string
+	IsGateEvaluate bool
+	RunContext     agent.RunContext
+
+	agentEventSink *agentEventSink
 }
 
 // ResolvedInputs is what the interpreter precomputes (Phase 2.5) before
@@ -103,6 +107,23 @@ type OutputFileContract struct {
 	Schema *ir.JSONSchema
 }
 
+// LiveDispatchRecord is the data-only handoff a live-capable dispatcher returns
+// after a successful turn. The interpreter may finalize it after node.completed
+// is committed and synced. It intentionally contains no callbacks or hidden
+// behavior; ownership of finalization hooks stays in RunOptions.
+type LiveDispatchRecord struct {
+	AdapterRef     string
+	SessionKey     string
+	SessionKeyHash string
+	LeaseID        string
+	ActiveTurnID   string
+	ProviderTurnID string
+	RunID          string
+	NodePath       string
+	Epoch          uint32
+	CommittedUnix  int64
+}
+
 // DispatchResult is the pre-commit shape returned by Dispatcher.Run. The
 // interpreter (slice 2.5) passes it to engine.Commit to (a) Put each artifact
 // to Blobs and (b) append a node.completed event — Commit then returns the
@@ -140,6 +161,10 @@ type DispatchResult struct {
 	// content-addresses it when the step participates in a conversation. The engine
 	// never holds a with:-derived prompt — closes the opacity gap.
 	Transcript agent.ThreadTurn
+
+	// Live is an optional data-only live dispatch handoff. If present, the
+	// interpreter calls RunOptions.LiveFinalizer after node.completed commits.
+	Live *LiveDispatchRecord
 
 	// SnapshotRef is the CoW workspace diff captured by the dispatcher after a
 	// successful exec, for a snapshot:workspace container (empty otherwise).

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/state"
 )
@@ -57,15 +58,36 @@ func attachAgentEventContent(s *Span, d engine.AgentEventData, blobs state.Blobs
 	if d.Stream != "" {
 		attrs[AttrAgentEventStream] = d.Stream
 	}
+	if d.Live {
+		attrs[AttrAgentEventLive] = true
+		if d.DisplayClass != "" {
+			attrs[AttrAgentEventDisplayClass] = d.DisplayClass
+		}
+		if d.DisplayTool != "" {
+			attrs[AttrAgentEventDisplayTool] = agent.RedactDisplayText(agent.SanitizeDisplayText(d.DisplayTool))
+		}
+		if d.DisplaySummary != "" {
+			attrs[AttrAgentEventDisplaySummary] = agent.RedactDisplayText(agent.SanitizeDisplayText(d.DisplaySummary))
+		}
+		if d.DisplayLines > 0 {
+			attrs[AttrAgentEventDisplayLines] = int64(d.DisplayLines)
+		}
+		if d.DisplayBytes > 0 {
+			attrs[AttrAgentEventDisplayBytes] = int64(d.DisplayBytes)
+		}
+		if d.DisplayIsError {
+			attrs[AttrAgentEventDisplayIsError] = true
+		}
+	}
 	switch {
 	case d.PayloadInline != nil:
-		// Inline payloads are already ≤ the log's 4 KiB offload threshold
+		// Inline payloads are below the log's 4 KiB offload threshold
 		// (engine.agentEventInlineThreshold); boundedString is defensive
 		// against a corrupt/synthetic oversized inline payload, since the
 		// OTel SDK does not cap attribute value length.
-		attrs[AttrAgentEventPayload] = boundedString(d.PayloadInline, contentInlineCap)
+		attrs[AttrAgentEventPayload] = boundedAgentEventPayload(d.PayloadInline, contentInlineCap, d.Live)
 	case d.PayloadRef != "":
-		// Blob-backed (>4 KiB): emit the CAS ref (full content stays
+		// Blob-backed (at or above 4 KiB): emit the CAS ref (full content stays
 		// retrievable, §10) + a BOUNDED preview, never the whole blob.
 		// Degrade on a missing/corrupt CONTENT blob — never abort the
 		// trace (agent.event is non-authoritative; you trace damaged runs).
@@ -73,8 +95,15 @@ func attachAgentEventContent(s *Span, d engine.AgentEventData, blobs state.Blobs
 		if b, gerr := blobs.Get(d.PayloadRef); gerr != nil {
 			attrs[AttrAgentEventPayloadError] = gerr.Error()
 		} else {
-			attrs[AttrAgentEventPayloadPreview] = boundedString(b, contentPreviewCap)
+			attrs[AttrAgentEventPayloadPreview] = boundedAgentEventPayload(b, contentPreviewCap, d.Live)
 		}
 	}
 	s.Events = append(s.Events, SpanEvent{Name: EventNameAgentContent, Time: ts, Attributes: attrs})
+}
+
+func boundedAgentEventPayload(b []byte, limit int, live bool) string {
+	if live {
+		return boundedString([]byte(agent.RedactDisplayText(agent.SanitizeDisplayBytes(b))), limit)
+	}
+	return boundedString(b, limit)
 }

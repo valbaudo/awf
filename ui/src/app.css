@@ -69,6 +69,13 @@ body { color: var(--ink); background: var(--bg); }
   font-weight: 600; color: var(--ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.awf-live-preview {
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ---- group (container) nodes: a titled translucent panel ---- */
 .awf-group {

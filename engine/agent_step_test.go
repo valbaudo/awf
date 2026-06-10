@@ -3,8 +3,12 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +114,59 @@ graph:
 	}
 }
 
+func TestAgentInvocationReceivesRunContextCurrentAndNextEpoch(t *testing.T) {
+	const yaml = `workflow: agent-run-context
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: triage
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: "p"
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "run-context", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("run-context", "d", nil)
+	rs.Epoch = 7
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("fake.Calls len = %d, want 1", len(calls))
+	}
+	want := agent.RunContext{RunID: "run-context", CurrentEpoch: 7, NextEpoch: 7}
+	if calls[0].RunContext != want {
+		t.Fatalf("AgentInvocation.RunContext = %+v, want %+v", calls[0].RunContext, want)
+	}
+}
+
 func TestRunAgentStep_AgentEventLogEntries(t *testing.T) {
 	const yaml = `workflow: agent-events
 version: 1
@@ -182,6 +239,641 @@ graph:
 	}
 	if count != 2 {
 		t.Errorf("agent.event log entry count = %d, want 2", count)
+	}
+}
+
+func TestRunAgentStep_LiveAgentEventDisplayMetadataSurvivesDispatcher(t *testing.T) {
+	const yaml = `workflow: live-agent-events
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: live
+    container: lab
+    uses: openai/codex-live
+    with:
+      prompt: "p"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	var reg agent.Registry
+	fk := fake.New("openai/codex-live").WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+		Events: []agent.AgentEvent{{
+			Kind:    "delta",
+			Stream:  "stdout",
+			Live:    true,
+			Payload: []byte("hello sk-liveSECRET123"),
+			Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "hello sk-liveSECRET123"},
+		}},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q", oc)
+	}
+
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Type != engine.EventAgentEvent || ev.Path != "live" {
+			continue
+		}
+		var data engine.AgentEventData
+		if err := json.Unmarshal(ev.Data, &data); err != nil {
+			t.Fatalf("unmarshal AgentEventData: %v", err)
+		}
+		if data.DisplayClass != "assistant_delta" || data.DisplaySummary != "hello sk-[redacted]" {
+			t.Fatalf("display metadata = class %q summary %q, want assistant_delta/hello sk-[redacted]", data.DisplayClass, data.DisplaySummary)
+		}
+		return
+	}
+	t.Fatal("missing live agent.event")
+}
+
+func TestRunAgentStep_LiveAgentRetryBoundaryFlushesFailedAttemptBeforeRetry(t *testing.T) {
+	const yaml = `workflow: live-agent-retry-boundary
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: live
+    container: lab
+    uses: openai/codex-live
+    retry: { attempts: 2, backoff: none }
+    with:
+      prompt: "p"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	var reg agent.Registry
+	fk := fake.New("openai/codex-live").Script(0, fake.Result{
+		Output: map[string]any{"ok": "nope"},
+		Events: []agent.AgentEvent{{
+			Kind:    "delta",
+			Stream:  "stdout",
+			Live:    true,
+			Payload: []byte("first"),
+			Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "first"},
+		}},
+	}).Script(1, fake.Result{
+		Output: map[string]any{"ok": true},
+		Events: []agent.AgentEvent{{
+			Kind:    "delta",
+			Stream:  "stdout",
+			Live:    true,
+			Payload: []byte("second"),
+			Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "second"},
+		}},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	log := state.NewInMemoryLog(clock.System{})
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clock.System{}, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var order []string
+	for _, ev := range events {
+		if ev.Path != "live" {
+			continue
+		}
+		switch ev.Type {
+		case engine.EventAgentEvent:
+			var data engine.AgentEventData
+			if err := json.Unmarshal(ev.Data, &data); err != nil {
+				t.Fatalf("unmarshal AgentEventData: %v", err)
+			}
+			order = append(order, "agent.event:"+string(data.PayloadInline))
+		case engine.EventRetryAttempt:
+			order = append(order, "retry.attempt")
+		}
+	}
+	want := []string{"agent.event:first", "retry.attempt", "agent.event:second"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("event order = %v, want %v", order, want)
+	}
+}
+
+func TestRunAgentStep_LiveAgentEventPreservesDisplayLinesAndBytes(t *testing.T) {
+	const yaml = `workflow: live-agent-display-counts
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: live
+    container: lab
+    uses: openai/codex-live
+    with:
+      prompt: "p"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	var reg agent.Registry
+	fk := fake.New("openai/codex-live").Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+		Events: []agent.AgentEvent{{
+			Kind:    "tool_result",
+			Stream:  "stdout",
+			Live:    true,
+			Payload: []byte("line1\nline2\nline3\n"),
+			Display: agent.EventDisplay{
+				Class:   agent.DisplayToolResult,
+				Tool:    "shell",
+				Text:    "line1\n...\nline3",
+				Lines:   3,
+				Bytes:   len("line1\nline2\nline3\n"),
+				IsError: true,
+			},
+		}},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Type != engine.EventAgentEvent || ev.Path != "live" {
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(ev.Data, &raw); err != nil {
+			t.Fatalf("unmarshal raw agent.event JSON: %v", err)
+		}
+		if got := raw["display_lines"]; got != float64(3) {
+			t.Fatalf("display_lines = %v, want 3", got)
+		}
+		if got := raw["display_bytes"]; got != float64(len("line1\nline2\nline3\n")) {
+			t.Fatalf("display_bytes = %v, want %d", got, len("line1\nline2\nline3\n"))
+		}
+		return
+	}
+	t.Fatal("missing live agent.event")
+}
+
+func TestRunAgentStep_LiveAgentEventVisibleBeforeNodeCompleted(t *testing.T) {
+	const yaml = `workflow: live-agent-events-inflight
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: live
+    container: lab
+    uses: openai/codex-live
+    with:
+      prompt: "p"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	var reg agent.Registry
+	fk := fake.New("openai/codex-live").
+		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).
+		WithEmitDelay(300*time.Millisecond).
+		Script(0, fake.Result{
+			Output: map[string]any{"ok": true},
+			Events: []agent.AgentEvent{{
+				Kind:    "delta",
+				Stream:  "stdout",
+				Live:    true,
+				Payload: []byte("hello"),
+				Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: "hello"},
+			}},
+		})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	runDir := t.TempDir()
+	log, err := state.OpenLogExclusive(filepath.Join(runDir, "log"), clk)
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	defer func() { _ = log.Close() }()
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d", nil)
+	done := make(chan error, 1)
+	go func() {
+		oc, runErr := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+		if runErr != nil {
+			done <- runErr
+			return
+		}
+		if oc != engine.OutcomeOK {
+			done <- fmt.Errorf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+			return
+		}
+		done <- nil
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		events, err := log.Fold()
+		if err != nil {
+			t.Fatalf("Fold: %v", err)
+		}
+		var seenLiveEvent, seenCompleted bool
+		for _, ev := range events {
+			switch ev.Type {
+			case engine.EventAgentEvent:
+				if ev.Path == "live" {
+					seenLiveEvent = true
+				}
+			case engine.EventNodeCompleted:
+				if ev.Path == "live" {
+					seenCompleted = true
+				}
+			}
+		}
+		if seenLiveEvent && !seenCompleted {
+			break
+		}
+		if seenCompleted {
+			t.Fatal("node.completed appeared before a separately observable live agent.event")
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("engine.Run completed before live agent.event became visible; err=%v", err)
+		case <-deadline:
+			t.Fatal("timed out waiting for live agent.event before node.completed")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+}
+
+func TestRunAgentStep_LiveReplayRequiredLaunchErrHaltsWithoutFailureOrRetry(t *testing.T) {
+	const yaml = `workflow: live-replay-launch
+version: 1
+graph:
+  - id: live
+    uses: live/agent
+    with:
+      prompt: "p"
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	ad := &replayRequiredAdapter{
+		ref:       "live/agent",
+		launchErr: fmt.Errorf("wrapped: %w", agent.ErrLiveReplayRequired),
+	}
+	var reg agent.Registry
+	if err := reg.Register(ad); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d", nil)
+	dispatcher := &engine.LocalDispatcher{Resolver: &reg}
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+	if oc != "" {
+		t.Fatalf("Outcome = %q, want empty internal halt (err: %v)", oc, err)
+	}
+	if !errors.Is(err, agent.ErrLiveReplayRequired) {
+		t.Fatalf("err = %v, want ErrLiveReplayRequired", err)
+	}
+	if ad.calls != 1 {
+		t.Fatalf("Launch calls = %d, want 1 (no retry)", ad.calls)
+	}
+	assertNoEventTypeAtPath(t, log, engine.EventRetryAttempt, "live")
+	assertNoEventTypeAtPath(t, log, engine.EventNodeFailed, "live")
+}
+
+func TestRunAgentStep_LiveReplayRequiredOutcomeErrAppendsPriorEventsThenHalts(t *testing.T) {
+	const yaml = `workflow: live-replay-outcome
+version: 1
+graph:
+  - id: live
+    uses: live/agent
+    with:
+      prompt: "p"
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	ad := &replayRequiredAdapter{
+		ref:        "live/agent",
+		outcomeErr: fmt.Errorf("wrapped: %w", agent.ErrLiveReplayRequired),
+		events: []agent.AgentEvent{
+			{Kind: "assistant", Stream: "stdout", Payload: []byte(`{"delta":"working"}`)},
+		},
+	}
+	var reg agent.Registry
+	if err := reg.Register(ad); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d", nil)
+	dispatcher := &engine.LocalDispatcher{Resolver: &reg}
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+	if oc != "" {
+		t.Fatalf("Outcome = %q, want empty internal halt (err: %v)", oc, err)
+	}
+	if !errors.Is(err, agent.ErrLiveReplayRequired) {
+		t.Fatalf("err = %v, want ErrLiveReplayRequired", err)
+	}
+	if ad.calls != 1 {
+		t.Fatalf("Launch calls = %d, want 1 (no retry)", ad.calls)
+	}
+	assertNoEventTypeAtPath(t, log, engine.EventRetryAttempt, "live")
+	assertNoEventTypeAtPath(t, log, engine.EventNodeFailed, "live")
+	if got := countEvents(t, log, engine.EventAgentEvent, "live"); got != 1 {
+		t.Fatalf("agent.event count = %d, want 1 prior event before halt", got)
+	}
+}
+
+func TestRunAgentStep_LiveSchemaMismatchHaltsWithoutFailureOrRetry(t *testing.T) {
+	const yaml = `workflow: live-schema-replay
+version: 1
+graph:
+  - id: live
+    uses: live/agent
+    with:
+      prompt: "p"
+    retry:
+      attempts: 3
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	liveMeta := &agent.LiveDispatch{
+		AdapterRef:     "live/agent",
+		SessionKey:     "builder",
+		SessionKeyHash: "sha256:session",
+		LeaseID:        "lease-1",
+		ActiveTurnID:   "turn-1",
+		ProviderTurnID: "provider-turn-1",
+		RunID:          "r1",
+		NodePath:       "live",
+		Epoch:          1,
+		CommittedUnix:  1,
+	}
+	fk := fake.New("live/agent").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true, PersistentSession: true}).
+		Script(0, fake.Result{Output: map[string]any{"ok": "not-bool"}, Live: liveMeta})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d", nil)
+	dispatcher := &engine.LocalDispatcher{Resolver: &reg}
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+	if oc != "" {
+		t.Fatalf("Outcome = %q, want empty internal halt (err: %v)", oc, err)
+	}
+	if !errors.Is(err, agent.ErrLiveReplayRequired) {
+		t.Fatalf("err = %v, want ErrLiveReplayRequired", err)
+	}
+	if calls := fk.Calls(); len(calls) != 1 {
+		t.Fatalf("Launch calls = %d, want 1 (no retry after live schema mismatch)", len(calls))
+	}
+	assertNoEventTypeAtPath(t, log, engine.EventRetryAttempt, "live")
+	assertNoEventTypeAtPath(t, log, engine.EventNodeFailed, "live")
+}
+
+func TestRunAgentStep_LiveFinalizerRunsAfterNodeCompletedSync(t *testing.T) {
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+	rs.Epoch = 4
+	live := engine.LiveDispatchRecord{
+		AdapterRef:     "live/agent",
+		SessionKeyHash: "session-hash",
+		LeaseID:        "lease-1",
+		ActiveTurnID:   "turn-1",
+		ProviderTurnID: "provider-1",
+		RunID:          "r1",
+		NodePath:       "live",
+		Epoch:          4,
+	}
+	dispatcher := staticDispatcher{
+		dr: engine.DispatchResult{Outcome: engine.OutcomeOK, Live: &live},
+	}
+
+	var got engine.LiveDispatchRecord
+	sawCompletedInFinalizer := false
+	oc, err := engine.Run(context.Background(), singleAgentDefinition(), rs, dispatcher, log, blobs, clk, engine.RunOptions{
+		Tap: io.Discard,
+		LiveFinalizer: func(_ context.Context, rec engine.LiveDispatchRecord) error {
+			got = rec
+			events, foldErr := log.Fold()
+			if foldErr != nil {
+				t.Fatalf("Fold inside finalizer: %v", foldErr)
+			}
+			for _, ev := range events {
+				if ev.Type == engine.EventNodeCompleted && ev.Path == "live" {
+					sawCompletedInFinalizer = true
+				}
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+	if !sawCompletedInFinalizer {
+		t.Fatal("finalizer ran before node.completed was visible in the log")
+	}
+	if !reflect.DeepEqual(got, live) {
+		t.Fatalf("LiveFinalizer record = %+v, want %+v", got, live)
+	}
+}
+
+func TestRunAgentStep_LiveFinalizerFailureLeavesNodeCommittedWithoutNodeFailed(t *testing.T) {
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+	live := engine.LiveDispatchRecord{
+		AdapterRef:     "live/agent",
+		SessionKeyHash: "session-hash",
+		LeaseID:        "lease-1",
+		ActiveTurnID:   "turn-1",
+		ProviderTurnID: "provider-1",
+		RunID:          "r1",
+		NodePath:       "live",
+		Epoch:          1,
+	}
+	dispatcher := staticDispatcher{
+		dr: engine.DispatchResult{Outcome: engine.OutcomeOK, Live: &live},
+	}
+	var tap strings.Builder
+
+	oc, err := engine.Run(context.Background(), singleAgentDefinition(), rs, dispatcher, log, blobs, clk, engine.RunOptions{
+		Tap: &tap,
+		LiveFinalizer: func(context.Context, engine.LiveDispatchRecord) error {
+			return errors.New("finalizer failed sk-liveSECRET123")
+		},
+	})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+	if _, ok := rs.LookupCompleted("live"); !ok {
+		t.Fatal("RunState.Completed missing live after finalizer failure")
+	}
+	if got := countEvents(t, log, engine.EventNodeCompleted, "live"); got != 1 {
+		t.Fatalf("node.completed count = %d, want 1", got)
+	}
+	assertNoEventTypeAtPath(t, log, engine.EventNodeFailed, "live")
+
+	events, foldErr := log.Fold()
+	if foldErr != nil {
+		t.Fatalf("Fold: %v", foldErr)
+	}
+	foundWarning := false
+	for _, ev := range events {
+		if ev.Type != engine.EventAgentEvent || ev.Path != "live" {
+			continue
+		}
+		var data engine.AgentEventData
+		if uerr := json.Unmarshal(ev.Data, &data); uerr != nil {
+			t.Fatalf("unmarshal AgentEventData: %v", uerr)
+		}
+		if data.Kind == "live.finalizer.warning" &&
+			data.Live &&
+			data.DisplayClass == "notice" &&
+			data.DisplaySummary == "finalizer failed sk-[redacted]" &&
+			strings.Contains(string(data.PayloadInline), "finalizer failed sk-[redacted]") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatal("missing live DisplayNotice finalizer warning after finalizer failure")
+	}
+	if got := tap.String(); !strings.Contains(got, "· live finalizer: finalizer failed sk-[redacted]") {
+		t.Fatalf("tap = %q, want redacted live finalizer warning", got)
 	}
 }
 
@@ -882,5 +1574,158 @@ graph:
 	}
 	if gen2.ResolvedInputs.Feedback["feedback"] != "missing detection" {
 		t.Errorf("gen2.ResolvedInputs.Feedback[feedback] = %v, want %q", gen2.ResolvedInputs.Feedback["feedback"], "missing detection")
+	}
+}
+
+func TestRunAgentStepIsGateEvaluateRejectsPersistentBeforeLaunch(t *testing.T) {
+	wf := &ir.Workflow{
+		ID:      "gate-persistent-evaluate",
+		Version: 1,
+		Containers: map[string]ir.Container{
+			"lab": {Image: "oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+		},
+		Graph: ir.NodeList{
+			&ir.Gate{
+				Generate: ir.NodeList{
+					&ir.CodeStep{ID: "gen", Container: "lab", Run: "true"},
+				},
+				Evaluate: ir.NodeList{
+					&ir.AgentStep{
+						ID:   "judge",
+						Uses: "live/agent",
+						OutputSchema: &ir.JSONSchema{
+							"type":                 "object",
+							"additionalProperties": false,
+							"required":             []any{"verified"},
+							"properties": map[string]any{
+								"verified": map[string]any{"type": "boolean"},
+							},
+						},
+					},
+				},
+				Until:       ir.Expr("{{ evaluate.verified }}"),
+				MaxAttempts: 1,
+			},
+		},
+	}
+	ld := &ir.LoadedDefinition{Workflow: wf}
+
+	var reg agent.Registry
+	fk := fake.New("live/agent").
+		WithCaps(agent.Caps{Containerless: true, PersistentSession: true}).
+		Script(0, fake.Result{Output: map[string]any{"verified": true}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	be := container.NewFake()
+	h, err := be.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	be.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  be,
+		Handles:  map[string]container.Handle{"lab": h},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
+	if oc != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q (err: %v)", oc, engine.OutcomePermanentFailure, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "PersistentSession") {
+		t.Fatalf("err = %v, want PersistentSession rejection", err)
+	}
+	if calls := fk.Calls(); len(calls) != 0 {
+		t.Fatalf("fake.Calls len = %d, want 0 (evaluate guard must fire before Launch)", len(calls))
+	}
+}
+
+type replayRequiredAdapter struct {
+	ref        string
+	launchErr  error
+	outcomeErr error
+	events     []agent.AgentEvent
+	calls      int
+}
+
+func (a *replayRequiredAdapter) Ref() string { return a.ref }
+
+func (*replayRequiredAdapter) Capabilities() agent.Caps {
+	return agent.Caps{NativeSchema: true, Containerless: true, PersistentSession: true}
+}
+
+func (*replayRequiredAdapter) Version(context.Context, container.Handle) (string, error) {
+	return "replay-test-v1", nil
+}
+
+func (*replayRequiredAdapter) ValidateConfig(ir.RawConfig) error { return nil }
+
+func (a *replayRequiredAdapter) Launch(context.Context, container.Handle, agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+	a.calls++
+	if a.launchErr != nil {
+		return nil, nil, a.launchErr
+	}
+	events := make(chan agent.AgentEvent, len(a.events))
+	outcomes := make(chan agent.AgentOutcome, 1)
+	for _, ev := range a.events {
+		events <- ev
+	}
+	close(events)
+	outcomes <- agent.AgentOutcome{Err: a.outcomeErr}
+	close(outcomes)
+	return events, outcomes, nil
+}
+
+type staticDispatcher struct {
+	dr  engine.DispatchResult
+	err error
+}
+
+func (d staticDispatcher) Run(context.Context, engine.NodeIntent) (engine.DispatchResult, <-chan container.IOChunk, error) {
+	ch := make(chan container.IOChunk)
+	close(ch)
+	return d.dr, ch, d.err
+}
+
+func singleAgentDefinition() *ir.LoadedDefinition {
+	return &ir.LoadedDefinition{
+		Workflow: &ir.Workflow{
+			ID:      "live-finalizer",
+			Version: 1,
+			Graph: ir.NodeList{
+				&ir.AgentStep{ID: "live", Uses: "live/agent"},
+			},
+		},
+	}
+}
+
+func countEvents(t *testing.T, log state.Log, typ, path string) int {
+	t.Helper()
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	n := 0
+	for _, ev := range events {
+		if ev.Type == typ && ev.Path == path {
+			n++
+		}
+	}
+	return n
+}
+
+func assertNoEventTypeAtPath(t *testing.T, log state.Log, typ, path string) {
+	t.Helper()
+	if got := countEvents(t, log, typ, path); got != 0 {
+		t.Fatalf("%s count at %q = %d, want 0", typ, path, got)
 	}
 }

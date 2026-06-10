@@ -4,11 +4,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/awfllm"
+	"github.com/valbaudo/awf/agent/claude"
+	"github.com/valbaudo/awf/agent/codex"
+	"github.com/valbaudo/awf/agent/codexlive"
+	"github.com/valbaudo/awf/agent/droid"
+	"github.com/valbaudo/awf/agent/goose"
 )
 
 func TestCaps_JSONRoundtrip(t *testing.T) {
@@ -59,6 +66,23 @@ func TestAgentInvocation_RetainsRawConfig(t *testing.T) {
 	}
 	if len(got.Env) != 0 {
 		t.Errorf("Env survived JSON roundtrip — expected empty (json:\"-\") but got %d entries", len(got.Env))
+	}
+}
+
+func TestAgentEventJSONOmitsDisplay(t *testing.T) {
+	const displayText = "transient display text must stay out of JSON"
+	ev := agent.AgentEvent{
+		Kind:    "assistant",
+		Payload: []byte("durable payload"),
+		Live:    true,
+		Display: agent.EventDisplay{Class: agent.DisplayAssistant, Text: displayText},
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal AgentEvent: %v", err)
+	}
+	if strings.Contains(string(b), displayText) || strings.Contains(string(b), "Display") || strings.Contains(string(b), "display") {
+		t.Fatalf("AgentEvent JSON serialized transient Display: %s", b)
 	}
 }
 
@@ -196,4 +220,105 @@ func TestCaps_ThreadedZeroValueAndTag(t *testing.T) {
 	if strings.Contains(string(b2), "threaded") {
 		t.Errorf("zero Caps serialized %q, want threaded omitted (omitempty)", b2)
 	}
+}
+
+func TestCapsPersistentSessionMatrixMetadata(t *testing.T) {
+	claudeAdapter, err := claude.New()
+	if err != nil {
+		t.Fatalf("claude.New: %v", err)
+	}
+	droidAdapter, err := droid.New()
+	if err != nil {
+		t.Fatalf("droid.New: %v", err)
+	}
+	gooseAdapter, err := goose.New()
+	if err != nil {
+		t.Fatalf("goose.New: %v", err)
+	}
+	codexAdapter, err := codex.New()
+	if err != nil {
+		t.Fatalf("codex.New: %v", err)
+	}
+	awfLLMAdapter, err := awfllm.New()
+	if err != nil {
+		t.Fatalf("awfllm.New: %v", err)
+	}
+	codexLiveAdapter, err := codexlive.New()
+	if err != nil {
+		t.Fatalf("codexlive.New: %v", err)
+	}
+
+	docBytes, err := os.ReadFile("../docs/runtime-design.md")
+	if err != nil {
+		t.Fatalf("ReadFile runtime-design.md: %v", err)
+	}
+	doc := string(docBytes)
+	if !strings.Contains(doc, "### Adapter capability matrix") {
+		t.Fatalf("runtime-design.md missing adapter capability matrix heading")
+	}
+
+	builtIns := []struct {
+		ref    string
+		mode   string
+		caps   agent.Caps
+		status string
+	}{
+		{ref: claudeAdapter.Ref(), mode: "strict CLI", caps: claudeAdapter.Capabilities(), status: "built-in"},
+		{ref: droidAdapter.Ref(), mode: "strict CLI", caps: droidAdapter.Capabilities(), status: "built-in"},
+		{ref: gooseAdapter.Ref(), mode: "strict CLI", caps: gooseAdapter.Capabilities(), status: "built-in"},
+		{ref: codexAdapter.Ref(), mode: "strict CLI", caps: codexAdapter.Capabilities(), status: "built-in"},
+		{ref: awfLLMAdapter.Ref(), mode: "single HTTP call", caps: awfLLMAdapter.Capabilities(), status: "built-in"},
+		{ref: codexLiveAdapter.Ref(), mode: "live app-server", caps: codexLiveAdapter.Capabilities(), status: "built-in"},
+	}
+	for _, tc := range builtIns {
+		row := capabilityMatrixRow(tc.ref, tc.mode, tc.caps, tc.status)
+		if !strings.Contains(doc, row) {
+			t.Errorf("runtime-design.md missing capability row %q", row)
+		}
+	}
+
+	reserved := []struct {
+		ref    string
+		mode   string
+		caps   agent.Caps
+		status string
+	}{
+		{
+			ref:    "block/goose-live",
+			mode:   "live ACP",
+			caps:   agent.Caps{Containerless: true, PersistentSession: true},
+			status: "reserved implementation-track ref; no adapter registered yet",
+		},
+		{
+			ref:    "anthropic/claude-code-live",
+			mode:   "live PTY proof spike",
+			caps:   agent.Caps{NativeSchema: true, Containerless: true, PersistentSession: true},
+			status: "deferred; not supported",
+		},
+	}
+	for _, tc := range reserved {
+		row := capabilityMatrixRow(tc.ref, tc.mode, tc.caps, tc.status)
+		if !strings.Contains(doc, row) {
+			t.Errorf("runtime-design.md missing reserved capability row %q", row)
+		}
+	}
+}
+
+func capabilityMatrixRow(ref, mode string, caps agent.Caps, status string) string {
+	return fmt.Sprintf("| `%s` | %s | %s | %s | %s | %s | %s |",
+		ref,
+		mode,
+		yesNo(caps.NativeSchema),
+		yesNo(caps.Containerless),
+		yesNo(caps.Threaded),
+		yesNo(caps.PersistentSession),
+		status,
+	)
+}
+
+func yesNo(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
 }

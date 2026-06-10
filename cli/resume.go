@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -229,6 +230,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	recordedAssets := started.Assets
+	if err := checkLiveHomePin(started.LiveHome, *stateDir); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+	liveRoot, err := openLiveHomeRoot(*stateDir)
+	if err != nil {
+		fprintf(stderr, "awf resume: open live home: %v\n", err)
+		return ExitUsage
+	}
 
 	// Slice 5.3: if Resolver isn't test-injected, build the production
 	// *agent.Registry. `awf resume` does not accept --agent-env (per Phase 5
@@ -240,7 +250,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// check; the host VALUES are not pinned and re-resolve here).
 	resolver := r.Resolver
 	if resolver == nil {
-		reg, err := buildAgentRegistry(mergeLoadedWorkflowEnv(defaultAgentEnv, ld), backend)
+		reg, err := buildAgentRegistryWithLiveRoot(mergeLoadedWorkflowEnv(defaultAgentEnv, ld), backend, liveRoot)
 		if err != nil {
 			fprintf(stderr, "awf resume: build agent registry: %v\n", err)
 			return ExitUsage
@@ -347,6 +357,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
+	if err := checkPersistentSessionGateEvaluateForLoadedDefinition(ld, resolverOrEmpty(resolver)); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+
+	if err := preflightLiveResume(ctx, ld, rs, resolverOrEmpty(resolver)); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
 
 	// Step 10: append run.resumed{epoch: rs.Epoch+1}. Slice 2.6 Design
 	// question 6: the new epoch lives in the EVENT PAYLOAD (the resume
@@ -374,5 +393,32 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// Branches / LoopIters) skip already-committed nodes — same code path on
 	// first run and resume (CLAUDE.md invariant). backend (local) is passed
 	// in — runAndFinish does NOT read r.Backend.
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, broker, &skipTeardown)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, broker, liveRoot, &skipTeardown)
+}
+
+func preflightLiveResume(ctx context.Context, ld *ir.LoadedDefinition, rs *engine.RunState, resolver agent.Resolver) error {
+	reqs, err := engine.LiveResumePreflightRequests(ld, rs, resolver)
+	if err != nil {
+		return err
+	}
+	for _, req := range reqs {
+		adapter, ok := resolver.Lookup(req.AdapterRef)
+		if !ok {
+			return &agent.ErrAdapterNotFound{Ref: req.AdapterRef}
+		}
+		if !adapter.Capabilities().PersistentSession {
+			continue
+		}
+		preflighter, ok := adapter.(agent.ResumePreflighter)
+		if !ok {
+			return fmt.Errorf("adapter %q declares PersistentSession but does not implement agent.ResumePreflighter", req.AdapterRef)
+		}
+		if err := preflighter.PreflightResume(ctx, req); err != nil {
+			if errors.Is(err, agent.ErrLiveReplayRequired) {
+				return fmt.Errorf("%w for run %q node %q adapter %q; inspect the live registry and recover or clear the active turn before resuming", err, req.RunID, req.NodePath, req.AdapterRef)
+			}
+			return fmt.Errorf("live resume preflight for run %q node %q adapter %q: %w", req.RunID, req.NodePath, req.AdapterRef, err)
+		}
+	}
+	return nil
 }

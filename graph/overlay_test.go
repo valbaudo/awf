@@ -98,3 +98,85 @@ func TestOverlayIntegration(t *testing.T) {
 		t.Errorf("overlay must exclude the run-root span, got key \"\"")
 	}
 }
+
+func TestOverlayLivePreviewRedactsAgentEvent(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ev := func(off int, typ, path string, data any) state.Event {
+		var raw json.RawMessage
+		if data != nil {
+			b, err := json.Marshal(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = b
+		}
+		return state.Event{TS: base.Add(time.Duration(off) * time.Second), Type: typ, Path: path, Data: raw}
+	}
+	events := []state.Event{
+		ev(0, engine.EventNodeStarted, "gen", engine.NodeStartedData{Kind: "agent"}),
+		ev(1, engine.EventAgentEvent, "gen", engine.AgentEventData{
+			Kind: "assistant", Live: true, DisplayClass: "assistant_delta",
+			DisplaySummary: "ok sk-liveSECRET123\x1b]52;c;SECRET\a done\x00",
+			PayloadInline:  []byte("raw sk-liveSECRET123"),
+		}),
+	}
+
+	got, err := Overlay(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := got["gen"]
+	if st.LivePreview != "ok sk-[redacted] done" || st.LiveDisplayClass != "assistant_delta" {
+		t.Fatalf("overlay live preview = %+v, want redacted assistant_delta preview", st)
+	}
+}
+
+func TestOverlayLiveDisplayMetadataForNoticeAndToolResult(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ev := func(off int, typ, path string, data any) state.Event {
+		var raw json.RawMessage
+		if data != nil {
+			b, err := json.Marshal(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = b
+		}
+		return state.Event{TS: base.Add(time.Duration(off) * time.Second), Type: typ, Path: path, Data: raw}
+	}
+	events := []state.Event{
+		ev(0, engine.EventNodeStarted, "live", engine.NodeStartedData{Kind: "agent"}),
+		ev(1, engine.EventAgentEvent, "live", engine.AgentEventData{
+			Kind: "notice", Live: true, DisplayClass: "notice",
+			DisplaySummary: "registry finalizer needs manual cleanup",
+			PayloadInline:  []byte("notice"),
+		}),
+		ev(2, engine.EventAgentEvent, "live", engine.AgentEventData{
+			Kind: "tool_result", Live: true, DisplayClass: "tool_result",
+			DisplayTool: "shell sk-liveSECRET123", DisplaySummary: "permission denied",
+			DisplayLines: 12, DisplayBytes: 4096, DisplayIsError: true,
+		}),
+		ev(3, engine.EventAgentEvent, "strict", engine.AgentEventData{
+			Kind: "assistant", DisplayClass: "assistant_delta",
+			DisplaySummary: "strict raw event must not become live overlay",
+			PayloadInline:  []byte("strict"),
+		}),
+	}
+
+	got, err := Overlay(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := got["live"]
+	if st.LivePreview != "permission denied" ||
+		st.LiveDisplayClass != "tool_result" ||
+		st.LiveDisplayTool != "shell sk-[redacted]" ||
+		st.LiveDisplayLines != 12 ||
+		st.LiveDisplayBytes != 4096 ||
+		!st.LiveDisplayIsError {
+		t.Fatalf("live overlay metadata = %+v", st)
+	}
+	if _, ok := got["strict"]; ok {
+		t.Fatalf("strict-only path should not get a live overlay entry: %+v", got["strict"])
+	}
+}

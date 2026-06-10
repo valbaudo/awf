@@ -28,16 +28,19 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 		defer close(outcomeCh)
 		defer close(events)
 
-		emit := func(delta string, raw []byte) {
+		var deltaSanitizer agent.DisplayStreamSanitizer
+		emit := func(delta string, _ []byte) {
+			displayText := agent.RedactDisplayText(deltaSanitizer.SanitizeText(delta))
 			ev := agent.AgentEvent{
 				Kind:    "delta",
 				Stream:  "stdout",
-				Payload: raw, // already a fresh copy from transport
-				// RAW delta text — NOT agent.Elide (Elide clips a >512B line with an
-				// ellipsis marker, which would corrupt the live stream). DisplayAssistantDelta
-				// (Task A7) makes the renderer write it WITHOUT a trailing newline → the
-				// deltas concatenate character-by-character.
-				Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: delta},
+				Live:    true,
+				Payload: []byte(displayText),
+				// Sanitized/redacted delta text — NOT agent.Elide (Elide clips a
+				// >512B line with an ellipsis marker, which would corrupt the live
+				// stream). DisplayAssistantDelta makes the renderer write it
+				// WITHOUT a trailing newline, so deltas concatenate character-by-character.
+				Display: agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: displayText},
 			}
 			select {
 			case events <- ev:
@@ -47,13 +50,14 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 
 		full, usage, finish, serr := a.stream(ctx, cfg, prompt, inv.OutputSchema, inv.Thread, emit)
 		if serr != nil {
+			errText := liveEventText(serr.Error())
 			// spec §B.7 step 4: emit a terminal DisplayError event before the
 			// outcome so the live renderer can terminate the in-progress delta
 			// line and display the error prominently. The ctx-aware send mirrors
 			// the emit helper above — if the context is already done we skip the
 			// event but still send the outcome below.
 			select {
-			case events <- agent.AgentEvent{Kind: "error", Stream: "stderr", Display: agent.EventDisplay{Class: agent.DisplayError, IsError: true, Text: serr.Error()}}:
+			case events <- agent.AgentEvent{Kind: "error", Stream: "stderr", Live: true, Payload: []byte(errText), Display: agent.EventDisplay{Class: agent.DisplayError, IsError: true, Text: errText}}:
 			case <-ctx.Done():
 			}
 			outcomeCh <- agent.AgentOutcome{Err: classifyLaunchErr(serr)}
@@ -61,8 +65,9 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 		}
 
 		// Terminal display.
+		summary := liveEventText(tokenSummary(usage))
 		select {
-		case events <- agent.AgentEvent{Kind: "done", Stream: "stdout", Display: agent.EventDisplay{Class: agent.DisplayFinal, Text: tokenSummary(usage)}}:
+		case events <- agent.AgentEvent{Kind: "done", Stream: "stdout", Live: true, Payload: []byte(summary), Display: agent.EventDisplay{Class: agent.DisplayFinal, Text: summary}}:
 		case <-ctx.Done():
 		}
 
@@ -80,6 +85,10 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 	}()
 
 	return events, outcomeCh, nil
+}
+
+func liveEventText(s string) string {
+	return agent.RedactDisplayText(agent.SanitizeDisplayText(s))
 }
 
 // classifyLaunchErr maps a transport/stream error to a mechanical class:

@@ -1,0 +1,47 @@
+package codexlive
+
+import "testing"
+
+func TestProcessClientBuffersEarlyTurnEventsAndRequests(t *testing.T) {
+	c := &processClient{}
+	c.handleLine([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"hello"}}`))
+	c.handleLine([]byte(`{"jsonrpc":"2.0","id":"request-1","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-2","command":"go test ./...","cwd":"/tmp/work","reason":"test"}}`))
+	c.handleLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}`))
+
+	events := c.registerTurnEvents("turn-1")
+	var got []ProviderEvent
+	for ev := range events {
+		got = append(got, ev)
+	}
+	if len(got) != 3 {
+		t.Fatalf("buffered events = %d, want 3: %+v", len(got), got)
+	}
+	if got[0].Type != EventAgentMessageDelta || got[0].Text != "hello" {
+		t.Fatalf("first event = %+v, want agent delta", got[0])
+	}
+	if got[1].Type != EventPermissionRequest || got[1].Permission == nil {
+		t.Fatalf("second event = %+v, want permission request", got[1])
+	}
+	if got[1].Permission.ID != "request-1" || got[1].Permission.TurnID != "turn-1" || got[1].Permission.Command != "go test ./..." {
+		t.Fatalf("permission event = %+v, want routed request", got[1].Permission)
+	}
+	if got[2].Type != EventTurnCompleted {
+		t.Fatalf("third event = %+v, want turn completed", got[2])
+	}
+	if c.requestKinds["request-1"] != serverRequestCommandApproval {
+		t.Fatalf("request kind = %q, want %q", c.requestKinds["request-1"], serverRequestCommandApproval)
+	}
+}
+
+func TestProviderEventFromNotificationCarriesTurnFailureStatus(t *testing.T) {
+	ev, turnID, closeTurn, ok := providerEventFromNotification(EventTurnCompleted, []byte(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":{"message":"boom","codexErrorInfo":null,"additionalDetails":null}}}`))
+	if !ok {
+		t.Fatal("providerEventFromNotification ok = false")
+	}
+	if turnID != "turn-1" || !closeTurn {
+		t.Fatalf("turnID=%q closeTurn=%v, want turn-1 true", turnID, closeTurn)
+	}
+	if ev.Type != EventTurnCompleted || ev.Status != "failed" || ev.Error != "boom" {
+		t.Fatalf("event = %+v, want failed turn with message", ev)
+	}
+}

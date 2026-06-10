@@ -37,6 +37,17 @@ func (r *recordingAdapter) Launch(_ context.Context, _ container.Handle, inv age
 	return nil, nil, nil
 }
 
+type recordingPreflightAdapter struct {
+	recordingAdapter
+	preflightReq agent.LiveResumePreflightRequest
+	preflightErr error
+}
+
+func (r *recordingPreflightAdapter) PreflightResume(_ context.Context, req agent.LiveResumePreflightRequest) error {
+	r.preflightReq = req
+	return r.preflightErr
+}
+
 // Compile-time: DerivedAdapter satisfies Adapter.
 var _ agent.Adapter = (*agent.DerivedAdapter)(nil)
 
@@ -129,5 +140,48 @@ func TestDerivedAdapter_DoesNotMutateInputs(t *testing.T) {
 	}
 	if base.launchWith["model"] != "opus" {
 		t.Errorf("role with: not defensively copied: base saw model=%v, want opus", base.launchWith["model"])
+	}
+}
+
+func TestDerivedAdapter_PreflightResumeMergesRoleWithAndPreservesRoleRef(t *testing.T) {
+	base := &recordingPreflightAdapter{
+		recordingAdapter: recordingAdapter{
+			ref:  "live/base",
+			caps: agent.Caps{PersistentSession: true},
+		},
+	}
+	d := agent.NewDerivedAdapter("auditor", base, ir.RawConfig{
+		"model": "opus",
+		"cwd":   "/repo",
+	})
+
+	req := agent.LiveResumePreflightRequest{
+		NodePath:   "gate[0].attempt-1.generate.audit",
+		AdapterRef: "auditor",
+		With: ir.RawConfig{
+			"model":   "sonnet",
+			"session": "s1",
+		},
+		RunID:        "run-1",
+		CurrentEpoch: 2,
+		NextEpoch:    3,
+	}
+	if err := d.PreflightResume(context.Background(), req); err != nil {
+		t.Fatalf("PreflightResume: %v", err)
+	}
+
+	wantWith := ir.RawConfig{
+		"model":   "sonnet",
+		"cwd":     "/repo",
+		"session": "s1",
+	}
+	if !reflect.DeepEqual(base.preflightReq.With, wantWith) {
+		t.Fatalf("base preflight With = %#v, want %#v", base.preflightReq.With, wantWith)
+	}
+	if base.preflightReq.AdapterRef != "auditor" {
+		t.Fatalf("AdapterRef = %q, want role ref auditor", base.preflightReq.AdapterRef)
+	}
+	if base.preflightReq.RunID != "run-1" || base.preflightReq.CurrentEpoch != 2 || base.preflightReq.NextEpoch != 3 {
+		t.Fatalf("run context = %+v, want original request context", base.preflightReq)
 	}
 }

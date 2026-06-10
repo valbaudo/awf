@@ -24,17 +24,21 @@ import (
 //     dispatcher) and closed by the adapter before AgentResult is
 //     returned synchronously.
 //
-// Phase 5 design decision 7: Adapter.Launch MUST NOT reuse sessions
-// across calls. Each Launch is a fresh context — for Claude Code this
-// means no --continue / --resume / --session-id flags; ValidateConfig
-// rejects any with-key that would enable session reuse. This is what
-// makes the gate's "independence" property (spec §5.5) structural rather
-// than convention.
+// Phase 5 design decision 7: adapters with Caps.PersistentSession == false
+// MUST NOT reuse sessions across calls. Each Launch is a fresh context — for
+// Claude Code this means no --continue / --resume / --session-id flags;
+// ValidateConfig rejects any with-key that would enable session reuse.
+//
+// Adapters with Caps.PersistentSession == true may reuse provider-owned state
+// only through explicit adapter-owned configuration (for example with.session);
+// the core still treats `with:` as opaque. PR0a CLI and defensive engine
+// guards reject PersistentSession adapters in gate.evaluate so the gate's
+// independence property (spec §5.5) remains engine-enforced.
 //
 // Phase 5 design decision 16: Capabilities() reports static claims about
-// the adapter's typed-output pipeline. The engine doesn't branch on it;
-// the conformance suite routes adapters to bucket 14 (NativeSchema=true)
-// or bucket 15 (NativeSchema=false).
+// the adapter's typed-output pipeline and safety properties. The conformance
+// suite routes adapters to the right buckets, and run-start plus defensive
+// guards use safety caps to fail closed before Launch.
 type Adapter interface {
 	// Ref returns the agent-runtime identifier. Must match the workflow's
 	// AgentStep.Uses literal exactly (e.g. "anthropic/claude-code"). Stable
@@ -115,9 +119,12 @@ type Adapter interface {
 	// adapter never reached the launch step. On a successful return both
 	// channels are non-nil and must be drained.
 	//
-	// Independence (spec §5.5): Launch MUST NOT reference, store, or
-	// reuse any state from a prior Launch call against the same Adapter
-	// instance. Each call is fresh.
+	// Independence (spec §5.5): when Capabilities().PersistentSession is false,
+	// Launch MUST NOT reference, store, or reuse any state from a prior Launch
+	// call against the same Adapter instance. When PersistentSession is true,
+	// any reuse must be explicit adapter-owned provider state (for example
+	// with.session), and PR0a guards prevent such adapters from running in
+	// gate.evaluate.
 	//
 	// (Pre-slice-5.3: signature was (AgentResult, <-chan AgentEvent,
 	// error) with events pre-closed before Launch returned — buffer-then-
@@ -125,6 +132,14 @@ type Adapter interface {
 	// buffer-then-burst pattern is preserved by the caller's
 	// `for range events` loop.)
 	Launch(ctx context.Context, handle container.Handle, inv AgentInvocation) (<-chan AgentEvent, <-chan AgentOutcome, error)
+}
+
+// ResumePreflighter is implemented only by adapters whose Capabilities report
+// PersistentSession. The CLI calls it on resume after folding the AWF log and
+// before appending run.resumed, giving the adapter a chance to reject unsafe
+// live replay without mutating AWF state.
+type ResumePreflighter interface {
+	PreflightResume(context.Context, LiveResumePreflightRequest) error
 }
 
 // Resolver is the read-only subset of Registry. The engine's dispatcher

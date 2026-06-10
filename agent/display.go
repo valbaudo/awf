@@ -19,6 +19,31 @@ const (
 	DisplayNotice                             // transient notice (rate-limit/retry/status)
 )
 
+func (c DisplayClass) String() string {
+	switch c {
+	case DisplayInit:
+		return "init"
+	case DisplayAssistant:
+		return "assistant"
+	case DisplayAssistantDelta:
+		return "assistant_delta"
+	case DisplayReasoning:
+		return "reasoning"
+	case DisplayToolCall:
+		return "tool_call"
+	case DisplayToolResult:
+		return "tool_result"
+	case DisplayFinal:
+		return "final"
+	case DisplayError:
+		return "error"
+	case DisplayNotice:
+		return "notice"
+	default:
+		return "other"
+	}
+}
+
 // EventDisplay is the adapter-populated, presentation-neutral summary the live
 // renderer consumes. NEVER journaled (the field is json:"-"); the durable record
 // is AgentEvent.Payload. The adapter fills only the fields relevant to Class.

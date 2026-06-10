@@ -9,11 +9,11 @@ import (
 )
 
 // Caps reports an Adapter's static capabilities. Read by the conformance
-// suite to route adapters to the correct bucket (NativeSchema=true → Bucket
-// 14 path; NativeSchema=false → Bucket 15 layer-2 contract). The engine
-// itself does NOT branch on Caps (Phase 5 design decision 16) — the
-// typed-output contract is on AgentResult.Output regardless of how the
-// adapter produced it. Caps is documentation + test routing.
+// suite to route adapters to the correct bucket (NativeSchema=true -> Bucket
+// 14 path; NativeSchema=false -> Bucket 15 layer-2 contract). The typed-output
+// contract remains AgentResult.Output regardless of how the adapter produced
+// it; other fields are static declarations used by CLI guards, defensive
+// engine guards, conformance routing, and documentation.
 //
 // Future fields land here additively as new Phase 5+ adapters surface
 // distinguishing capabilities (e.g. SupportsThinking, SupportsTools).
@@ -24,17 +24,24 @@ type Caps struct {
 	// container (e.g. a direct network call). When true, an agent step may
 	// omit `container:` (ir/validate_structural.go allows the empty ref; the
 	// run-start guard in cli/runtimes.go permits it only for these adapters).
-	// Zero value false → every CLI-wrapping adapter keeps requiring a
-	// container, unchanged. The engine does not otherwise branch on Caps
-	// (Phase 5 decision 16).
+	// Zero value false -> every CLI-wrapping adapter keeps requiring a
+	// container, unchanged.
 	Containerless bool `json:"containerless"`
 
 	// Threaded reports that this adapter prepends an engine-supplied
-	// AgentInvocation.Thread to its request (continues: threading). The engine
-	// does not branch on Caps at runtime (decision 16); this drives conformance
-	// routing and a run-start guard (a continues: step against a non-Threaded
-	// adapter fails fast). Direct Containerless precedent.
+	// AgentInvocation.Thread to its request (continues: threading). This drives
+	// conformance routing plus CLI and defensive engine guards (a continues:
+	// step against a non-Threaded adapter fails fast). Direct Containerless
+	// precedent.
 	Threaded bool `json:"threaded,omitempty"`
+
+	// PersistentSession reports that this adapter can reuse a live/persistent
+	// session across launches. It is a static runtime declaration used by CLI
+	// guards, defensive engine guards, conformance routing, and docs. Zero value
+	// false preserves the fresh-launch behavior required for gate evaluators;
+	// PersistentSession adapters are rejected in gate.evaluate contexts while
+	// remaining allowed elsewhere, including gate.generate.
+	PersistentSession bool `json:"persistent_session,omitempty"`
 }
 
 // SecretEnv is the type used for env-passthrough values that contain secrets
@@ -78,6 +85,29 @@ type ThreadTurn struct {
 	Assistant string `json:"assistant"`
 }
 
+// RunContext is the explicit run identity passed to every agent invocation.
+// CurrentEpoch is the epoch the invocation is executing in; NextEpoch is the
+// epoch a live replay request should target. Normal dispatch uses the same
+// value for both. Resume preflight can construct requests with distinct values.
+type RunContext struct {
+	RunID        string `json:"run_id"`
+	CurrentEpoch uint32 `json:"current_epoch"`
+	NextEpoch    uint32 `json:"next_epoch"`
+}
+
+// LiveResumePreflightRequest is the data-only request the CLI gives a live
+// adapter before appending run.resumed. The core treats With as opaque after
+// template substitution; adapter-owned keys such as session/cwd are validated
+// by the adapter's PreflightResume implementation.
+type LiveResumePreflightRequest struct {
+	NodePath     string       `json:"node_path"`
+	AdapterRef   string       `json:"adapter_ref"`
+	With         ir.RawConfig `json:"with,omitempty"`
+	RunID        string       `json:"run_id"`
+	CurrentEpoch uint32       `json:"current_epoch"`
+	NextEpoch    uint32       `json:"next_epoch"`
+}
+
 // AgentInvocation is the per-call input handed to Adapter.Launch. Slice 5.2
 // wiring (engine/local_dispatcher.go runAgentStep) constructs one of these
 // per AgentStep, resolves the templated With through template.Evaluator,
@@ -91,6 +121,7 @@ type ThreadTurn struct {
 type AgentInvocation struct {
 	NodePath       string         `json:"node_path"`                 // engine/path output for the AgentStep (e.g. "graph[0]" or "gate[2].attempt-1.generate[0]")
 	Uses           string         `json:"uses"`                      // agent-runtime ref (must match Adapter.Ref())
+	RunContext     RunContext     `json:"run_context"`               // explicit run/epoch identity for live-capable adapters
 	With           ir.RawConfig   `json:"with,omitempty"`            // opaque per-runtime config; validated by Adapter.ValidateConfig
 	OutputSchema   *ir.JSONSchema `json:"output_schema,omitempty"`   // step's output_schema (the adapter passes to harness as --json-schema or layer-2 extractor schema)
 	Env            SecretEnv      `json:"-"`                         // env vars forwarded into the harness exec (slice 5.3 reads ANTHROPIC_API_KEY etc.); never JSON-marshaled so secrets cannot reach the state log
@@ -114,6 +145,10 @@ type AgentResult struct {
 	ExitCode int               `json:"exit_code"`
 	Metrics  MetricSet         `json:"metrics"`
 	Files    map[string][]byte `json:"files,omitempty"`
+	// Live is a data-only handoff from PersistentSession adapters to the
+	// dispatcher/interpreter. It carries operational registry metadata for
+	// post-commit finalization; it is never a bindable output.
+	Live *LiveDispatch `json:"-"`
 	// Transcript is the adapter-provided verbatim {clean user prompt, verbatim
 	// final assistant message} pair for continues: threading. The engine reads
 	// no with: key — the ADAPTER supplies both halves (reading its own with:
@@ -123,20 +158,41 @@ type AgentResult struct {
 	Transcript ThreadTurn `json:"-"`
 }
 
+// LiveDispatch is the adapter-owned, data-only metadata needed to reconcile a
+// successful persistent turn after node.completed has been committed. The raw
+// SessionKey is in-memory only so the registry path can be updated; durable AWF
+// events should use SessionKeyHash if they ever need to reference the session.
+type LiveDispatch struct {
+	AdapterRef     string
+	SessionKey     string
+	SessionKeyHash string
+	LeaseID        string
+	ActiveTurnID   string
+	ProviderTurnID string
+	RunID          string
+	NodePath       string
+	Epoch          uint32
+	CommittedUnix  int64
+}
+
 // AgentEvent is one slice of progress emitted live on the channel returned
 // by Adapter.Launch. Kind is harness-specific (slice 5.3 enumerates the
 // stream-json kinds for Claude Code: "system", "assistant", "user",
 // "tool_use", "tool_result", "thinking", "result", "rate_limit"). Payload
-// is the raw bytes the harness emitted for the event (CAS-offloaded by
-// the dispatcher in slice 5.2 if larger than 4 KiB). Stream is "stdout"
-// or "stderr" — typed loosely to match container/Backend's IOChunk.
+// is the raw bytes a strict adapter's harness emitted for the event
+// (CAS-offloaded by the dispatcher in slice 5.2 if larger than 4 KiB).
+// Live adapters set Live and must put only normalized/redacted durable payload
+// bytes here — never raw provider transcripts. Stream is "stdout" or "stderr"
+// — typed loosely to match container/Backend's IOChunk.
 type AgentEvent struct {
 	Kind    string `json:"kind"`
 	Payload []byte `json:"payload,omitempty"`
 	Stream  string `json:"stream,omitempty"`
+	Live    bool   `json:"live,omitempty"`
 	// Display is the adapter-populated, normalized summary the live renderer uses.
-	// json:"-" — transient presentation, never journaled (the raw Payload is the
-	// durable artifact). Zero value (DisplayOther) → terse fallback.
+	// json:"-" — transient presentation. For Live events, the interpreter copies
+	// sanitized scalar display metadata into agent.event; it never serializes this
+	// struct directly. Zero value (DisplayOther) → terse fallback.
 	Display EventDisplay `json:"-"`
 }
 

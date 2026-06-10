@@ -36,6 +36,7 @@ type Result struct {
 	Cost       float64 // dollars; stamped into AgentResult.Metrics.Cost.USD
 	Tokens     agent.MetricTokens
 	Files      map[string][]byte
+	Live       *agent.LiveDispatch
 	Transcript agent.ThreadTurn // scriptable verbatim pair; copied into AgentResult.Transcript by Launch
 }
 
@@ -208,6 +209,7 @@ func (f *Fake) Launch(ctx context.Context, _ container.Handle, inv agent.AgentIn
 					Tokens: r.Tokens,
 				},
 				Files:      r.Files,
+				Live:       r.Live,
 				Transcript: r.Transcript,
 			},
 		}

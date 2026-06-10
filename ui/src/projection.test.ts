@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { applyState } from "./layout";
 import { containerOf, countGroups, stateOf, toElkGraph, type Projection } from "./projection";
 
 const demo: Projection = {
@@ -61,5 +62,40 @@ describe("stateOf", () => {
     expect(stateOf({ build: { state: "completed" } }, "build")).toBe("completed");
     expect(stateOf({ build: { state: "completed" } }, "gate[1]")).toBe("");
     expect(stateOf(undefined, "build")).toBe("");
+  });
+});
+
+describe("applyState", () => {
+  it("carries live overlay metadata into node data", () => {
+    const [node] = applyState(
+      [
+        {
+          id: "gen",
+          position: { x: 0, y: 0 },
+          data: { label: "gen", kind: "agent", state: "" },
+        },
+      ],
+      {
+        gen: {
+          state: "running",
+          live_preview: "registry finalizer needs cleanup",
+          live_display_class: "notice",
+          live_display_tool: "shell",
+          live_display_lines: 3,
+          live_display_bytes: 42,
+          live_display_is_error: true,
+        },
+      },
+    );
+
+    expect(node.data).toMatchObject({
+      state: "running",
+      livePreview: "registry finalizer needs cleanup",
+      liveDisplayClass: "notice",
+      liveDisplayTool: "shell",
+      liveDisplayLines: 3,
+      liveDisplayBytes: 42,
+      liveDisplayIsError: true,
+    });
   });
 });

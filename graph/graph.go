@@ -69,8 +69,14 @@ type Edge struct {
 // NodeState is the per-path run state in RunOverlay. State is one of running / completed
 // / failed / skipped. Outcome carries the raw awf.node.outcome attribute when present.
 type NodeState struct {
-	State   string `json:"state"`
-	Outcome string `json:"outcome,omitempty"`
+	State              string `json:"state"`
+	Outcome            string `json:"outcome,omitempty"`
+	LivePreview        string `json:"live_preview,omitempty"`
+	LiveDisplayClass   string `json:"live_display_class,omitempty"`
+	LiveDisplayTool    string `json:"live_display_tool,omitempty"`
+	LiveDisplayLines   int    `json:"live_display_lines,omitempty"`
+	LiveDisplayBytes   int    `json:"live_display_bytes,omitempty"`
+	LiveDisplayIsError bool   `json:"live_display_is_error,omitempty"`
 }
 
 // BuildStatic projects a workflow's static structure (nodes + control edges). It never

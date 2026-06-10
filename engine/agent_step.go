@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/ir"
@@ -214,16 +215,27 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		resolved.Timeout = time.Duration(*as.Timeout)
 	}
 
+	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
+	defer cancelDispatch()
+	sink := newAgentEventSink(dispatchCtx, cancelDispatch, clk, log, blobs, path)
+
 	intent := NodeIntent{
 		Path:           path,
 		Node:           as,
 		ResolvedInputs: resolved,
 		IdempotencyKey: idempotencyKey,
+		IsGateEvaluate: isGateEvaluateContext(path),
+		RunContext: agent.RunContext{
+			RunID:        runstate.RunID,
+			CurrentEpoch: runstate.Epoch,
+			NextEpoch:    runstate.Epoch,
+		},
+		agentEventSink: sink,
 	}
 
 	appendNodeStarted(log, path, "agent")
 
-	dr, chunks, runErr := RunWithRetry(ctx, dispatcher, intent, policy, clk, log)
+	dr, chunks, runErr := RunWithRetry(dispatchCtx, dispatcher, intent, policy, clk, log)
 	// Drain via the canonical helper. Agent steps' chunks channel is the
 	// pre-closed one runAgent returns, so this is a no-op on the agent path,
 	// but using drainTap keeps the dispatch tail symmetric with runCodeStep
@@ -236,6 +248,7 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// (happy path) or node.failed (failure path). On failure, runErr is
 	// authoritative — appendErr is reported only when runErr is nil so we
 	// never silently mask a step failure with an internal append error.
+	sinkErr := sink.closeWait()
 	appendErr := appendAgentEvents(log, blobs, path, dr.AgentEvents)
 
 	// 5. Failure paths: mirror runCodeStep's split (engine/interpreter.go:309-316).
@@ -244,6 +257,9 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// no fold corruption on resume. dr.Outcome != "" means the step ran and
 	// failed — failStep writes node.failed with the underlying cause.
 	if runErr != nil {
+		if sinkErr != nil {
+			return "", fmt.Errorf("engine.runAgentStep: live agent.event sink at %q: %w", path, sinkErr)
+		}
 		if dr.Outcome == "" {
 			return "", fmt.Errorf("engine.runAgentStep: dispatch at path %q: %w", path, runErr)
 		}
@@ -251,6 +267,9 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	}
 
 	// On happy path, surface any earlier appendAgentEvents failure now.
+	if sinkErr != nil {
+		return "", fmt.Errorf("engine.runAgentStep: live agent.event sink at %q: %w", path, sinkErr)
+	}
 	if appendErr != nil {
 		return "", fmt.Errorf("engine.runAgentStep: append agent.event entries at %q: %w", path, appendErr)
 	}
@@ -270,6 +289,21 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		return "", fmt.Errorf("engine.runAgentStep: commit at %q: %w", path, commitErr)
 	}
 	runstate.RecordCompleted(path, nr)
+	if dr.Live != nil && ictx.liveFinalizer != nil {
+		if finalErr := ictx.liveFinalizer(ctx, *dr.Live); finalErr != nil {
+			msg := finalErr.Error()
+			if tap != nil {
+				_, _ = fmt.Fprintf(tap, "· live finalizer: %s\n", liveDisplayField(msg))
+			}
+			_ = appendAgentEvents(log, blobs, path, []agent.AgentEvent{{
+				Kind:    "live.finalizer.warning",
+				Stream:  "stderr",
+				Live:    true,
+				Payload: []byte(msg),
+				Display: agent.EventDisplay{Class: agent.DisplayNotice, Text: msg},
+			}})
+		}
+	}
 	return OutcomeOK, nil
 }
 
@@ -306,19 +340,30 @@ func substituteRawConfig(in ir.RawConfig, scope template.Scope) (ir.RawConfig, e
 // carries the CAS pointer; smaller payloads are inline.
 func appendAgentEvents(log state.Log, blobs state.Blobs, path string, events []agent.AgentEvent) error {
 	for _, ev := range events {
+		eventPayload := ev.Payload
 		data := AgentEventData{
 			Kind:   ev.Kind,
 			Stream: ev.Stream,
-			Size:   len(ev.Payload),
 		}
-		if len(ev.Payload) >= agentEventInlineThreshold {
-			ref, err := blobs.Put(ev.Payload)
+		if ev.Live {
+			eventPayload = []byte(agent.RedactDisplayText(agent.SanitizeDisplayBytes(eventPayload)))
+			data.Live = true
+			data.DisplayClass = ev.Display.Class.String()
+			data.DisplayTool = liveDisplayField(ev.Display.Tool)
+			data.DisplaySummary = liveDisplayField(ev.Display.Text)
+			data.DisplayLines = ev.Display.Lines
+			data.DisplayBytes = ev.Display.Bytes
+			data.DisplayIsError = ev.Display.IsError
+		}
+		data.Size = len(eventPayload)
+		if len(eventPayload) >= agentEventInlineThreshold {
+			ref, err := blobs.Put(eventPayload)
 			if err != nil {
 				return fmt.Errorf("Blobs.Put agent.event payload: %w", err)
 			}
 			data.PayloadRef = ref
 		} else {
-			data.PayloadInline = ev.Payload
+			data.PayloadInline = eventPayload
 		}
 		payload, err := json.Marshal(data)
 		if err != nil {
@@ -329,4 +374,26 @@ func appendAgentEvents(log state.Log, blobs state.Blobs, path string, events []a
 		}
 	}
 	return nil
+}
+
+func liveDisplayField(s string) string {
+	return boundDisplayField(agent.RedactDisplayText(agent.SanitizeDisplayText(s)), agentEventDisplayFieldLimit)
+}
+
+func boundDisplayField(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := 0
+	for i, r := range s {
+		next := i + utf8.RuneLen(r)
+		if next > limit {
+			break
+		}
+		cut = next
+	}
+	if cut == 0 {
+		return fmt.Sprintf("...[truncated %d bytes]", len(s))
+	}
+	return s[:cut] + fmt.Sprintf("...[truncated %d bytes]", len(s)-cut)
 }

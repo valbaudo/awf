@@ -1,6 +1,9 @@
 package agent
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrAdapterAlreadyRegistered is returned by Registry.Register when a second
 // adapter is registered under the same Ref(). The Registry never silently
@@ -54,6 +57,15 @@ type ErrUnparseableOutput struct {
 func (e *ErrUnparseableOutput) Error() string {
 	return fmt.Sprintf("agent: unparseable output at node %q", e.NodePath)
 }
+
+var (
+	ErrLiveLeaseConflict   = errors.New("agent: live lease conflict")
+	ErrLiveLeaseStaleOwned = errors.New("agent: live lease stale owned")
+	ErrLiveRegistryIO      = errors.New("agent: live registry I/O")
+	ErrLiveReplayRequired  = errors.New("agent: live replay required")
+	ErrPermissionDenied    = errors.New("agent: permission denied")
+	ErrLiveRedaction       = errors.New("agent: live redaction")
+)
 
 // ErrAgentLaunch is returned by Adapter.Launch when the harness failed to
 // start or terminated abnormally (transport / launch class). Wraps the

@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/live"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -69,6 +70,7 @@ func (r *Runner) runAndFinish(
 	runID, opName, successSuffix string,
 	assets map[string]engine.RunStartedAsset,
 	broker *signal.Broker,
+	liveRoot live.Root,
 	skipTeardown *bool,
 ) int {
 	tap := r.agentEventTap(stderr)
@@ -82,9 +84,10 @@ func (r *Runner) runAndFinish(
 		StepCostLine:     true,
 	}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, engine.RunOptions{
-		Tap:    stdout,
-		Broker: broker,
-		Assets: assets,
+		Tap:           stdout,
+		Broker:        broker,
+		Assets:        assets,
+		LiveFinalizer: liveDispatchFinalizer(liveRoot),
 	})
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished

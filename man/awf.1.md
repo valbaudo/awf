@@ -126,6 +126,16 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     **awf-workflow**(5)); names declared there are forwarded in addition to this
     flag, on both **run** and **resume**. See **ENVIRONMENT**.
 
+    The `uses: openai/codex-live` adapter is registered as a built-in live
+    adapter. It uses Codex app-server sessions, the same runtime-resolution,
+    version-pinning, environment allowlist, live event, **awf trace**, and UI
+    projection paths as ordinary agent steps, and provider-owned transcripts
+    stay outside AWF blobs. There is no separate **awf live** command.
+    `uses: block/goose-live` remains reserved for a future ACP adapter.
+    `uses: anthropic/claude-code-live` remains deferred until a PTY proof spike
+    proves turn-boundary detection, permission handling, transcript
+    correlation, prompt injection, and reconnect behavior.
+
 ## awf resume _run-id_ _path_
 
 Re-enter an interrupted run. **awf** folds the run's journal, then verifies that

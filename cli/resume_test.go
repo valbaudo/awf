@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -1035,5 +1036,128 @@ graph:
 	// NOT with the ErrThreadedRequired message.
 	if rc == cli.ExitUsage && strings.Contains(stderr.String(), "does not support engine-threaded conversations") {
 		t.Fatalf("Threaded adapter incorrectly rejected by guard on resume; stderr: %s", stderr.String())
+	}
+}
+
+func TestResumePersistentAdapterRequiresResumePreflighter(t *testing.T) {
+	t.Parallel()
+
+	fk := agentfake.New("live/no-preflight").WithCaps(agent.Caps{
+		NativeSchema:      true,
+		Containerless:     true,
+		PersistentSession: true,
+	})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dir := t.TempDir()
+	wfPath := filepath.Join(dir, "live-no-preflight.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: live-no-preflight
+version: 1
+graph:
+  - id: live
+    uses: live/no-preflight
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID := "test-live-preflight-required"
+	stateDir := buildInFlightLogForWF(t, wfPath, runID, []engine.ResolvedRuntime{
+		{Ref: "live/no-preflight", Version: "fake-v1"},
+	})
+
+	r := &cli.Runner{Backend: container.NewFake(), Resolver: &reg, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := r.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ResumePreflighter") {
+		t.Fatalf("stderr = %q, want ResumePreflighter requirement", stderr.String())
+	}
+	assertNoRunResumed(t, stateDir, runID)
+}
+
+func TestResumeLiveReplayRequiredBeforeRunResumed(t *testing.T) {
+	t.Parallel()
+
+	adapter := &resumePreflightAdapter{
+		Fake: agentfake.New("live/replay").WithCaps(agent.Caps{
+			NativeSchema:      true,
+			Containerless:     true,
+			PersistentSession: true,
+		}),
+		err: agent.ErrLiveReplayRequired,
+	}
+	var reg agent.Registry
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dir := t.TempDir()
+	wfPath := filepath.Join(dir, "live-replay.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: live-replay
+version: 1
+graph:
+  - id: live
+    uses: live/replay
+    with:
+      session: awf-live
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID := "test-live-replay-required"
+	stateDir := buildInFlightLogForWF(t, wfPath, runID, []engine.ResolvedRuntime{
+		{Ref: "live/replay", Version: "fake-v1"},
+	})
+
+	r := &cli.Runner{Backend: container.NewFake(), Resolver: &reg, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := r.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "live replay required") {
+		t.Fatalf("stderr = %q, want replay-required message", stderr.String())
+	}
+	assertNoRunResumed(t, stateDir, runID)
+	if len(adapter.reqs) != 1 {
+		t.Fatalf("preflight calls = %d, want 1", len(adapter.reqs))
+	}
+	if adapter.reqs[0].NodePath != "live" || adapter.reqs[0].RunID != runID {
+		t.Fatalf("preflight request = %+v, want node/run context", adapter.reqs[0])
+	}
+}
+
+type resumePreflightAdapter struct {
+	*agentfake.Fake
+	err  error
+	reqs []agent.LiveResumePreflightRequest
+}
+
+func (a *resumePreflightAdapter) PreflightResume(_ context.Context, req agent.LiveResumePreflightRequest) error {
+	a.reqs = append(a.reqs, req)
+	return a.err
+}
+
+func assertNoRunResumed(t *testing.T, stateDir, runID string) {
+	t.Helper()
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	lg, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = lg.Close() }()
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == engine.EventRunResumed {
+			t.Fatalf("run.resumed found after preflight rejection; preflight must run before journal mutation")
+		}
 	}
 }

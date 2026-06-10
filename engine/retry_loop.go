@@ -99,6 +99,11 @@ func RunWithRetry(
 				// discard
 			}
 		}
+		if intent.agentEventSink != nil {
+			if err := intent.agentEventSink.flushWait(); err != nil {
+				return DispatchResult{}, nil, fmt.Errorf("engine.RunWithRetry: flush live agent.event at path %q: %w", intent.Path, err)
+			}
+		}
 
 		// Emit retry.attempt event AFTER draining (chunk drain is local; event
 		// emission touches the log, the only other failure point in this loop).
