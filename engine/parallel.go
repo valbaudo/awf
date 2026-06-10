@@ -129,20 +129,34 @@ func runParallel(
 	tap io.Writer,
 	broker *signal.Broker,
 ) (Outcome, error) {
+	return runParallelWithContext(ctx, n, path, interpreterContext{
+		wf: wf, runstate: runstate, dispatcher: dispatcher, log: log, blobs: blobs, clk: clk, tap: tap, broker: broker,
+	})
+}
+
+func runParallelWithContext(
+	ctx context.Context,
+	n *ir.Parallel,
+	path string,
+	ictx interpreterContext,
+) (Outcome, error) {
 	if len(n.Children) == 0 {
 		// Validator should reject; defense-in-depth.
 		return OutcomeOK, nil
 	}
 
-	wrappedLog := newSerializingLog(log)
+	wrappedLog := newSerializingLog(ictx.log)
 	// Same problem the log faces, applied to the live-tap writer: branch
 	// goroutines all call drainTap which writes to `tap`. If callers pass a
 	// shared writer (os.Stdout or a test buffer) we'd race on the writer's
 	// internal state. Wrap it so each fmt.Fprintf lands atomically.
 	var wrappedTap io.Writer
-	if tap != nil {
-		wrappedTap = newSerializingWriter(tap)
+	if ictx.tap != nil {
+		wrappedTap = newSerializingWriter(ictx.tap)
 	}
+	branchCtx := ictx
+	branchCtx.log = wrappedLog
+	branchCtx.tap = wrappedTap
 
 	g, gctx := errgroup.WithContext(ctx)
 	outcomes := make([]Outcome, len(n.Children))
@@ -151,7 +165,7 @@ func runParallel(
 	for i, child := range n.Children {
 		i, child := i, child
 		g.Go(func() error {
-			oc, err := interpNode(gctx, child, i, path, wf, runstate, dispatcher, wrappedLog, blobs, clk, wrappedTap, broker)
+			oc, err := interpNode(gctx, child, i, path, branchCtx)
 			// Skip-in-branch: ends THIS branch as ok, siblings unaffected.
 			var su *SkipUnwind
 			if errors.As(err, &su) {

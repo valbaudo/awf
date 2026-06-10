@@ -504,7 +504,9 @@ func TestRunMapPrunedDoesNotTripTry(t *testing.T) {
 	}
 	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c", "d"))
 
-	oc, err := interpNodes(context.Background(), wf.Graph, "", wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	oc, err := interpNodes(context.Background(), wf.Graph, "", interpreterContext{
+		wf: wf, runstate: rs, dispatcher: rig.ld, log: rig.lg, blobs: rig.blobs, clk: rig.clk,
+	})
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("prune-in-try: got (%q, %v), want (ok, nil) — pruned items must not trip catch", oc, err)
 	}

@@ -84,9 +84,10 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	var h container.Handle
 	if bare != "" {
 		var ok bool
-		h, ok = d.Handles[bare]
+		handleKey := QualifiedContainerKey(d.RuntimeParent, bare)
+		h, ok = d.Handles[handleKey]
 		if !ok {
-			return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher.runAgent: no handle for container %q (bare %q) at path %q", as.Container, bare, intent.Path)
+			return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher.runAgent: no handle for container %q (bare %q, key %q) at path %q", as.Container, bare, handleKey, intent.Path)
 		}
 		if svcOverride != "" {
 			h.Service = svcOverride
@@ -244,7 +245,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// (decision 3: node.completed.container is recorded only for committed/OK
 	// steps — obs reads it off every committed step's node.completed).
 	if dr.Outcome == OutcomeOK {
-		dr.Container = bare
+		dr.Container = QualifiedContainerKey(d.RuntimeParent, bare)
 	}
 	// snapshot:workspace capture (slice 7.1) — identical to runCode. Only an OK
 	// step that committed records its container; a failed launch returned
@@ -259,7 +260,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 				Outcome:     oc,
 				ExitCode:    exitCodePtr,
 				AgentEvents: bufferedEvents,
-				Err:         fmt.Errorf("engine.LocalDispatcher.runAgent: snapshot %q at %q: %w", bare, intent.Path, snapErr),
+				Err:         fmt.Errorf("engine.LocalDispatcher.runAgent: snapshot %q at %q: %w", QualifiedContainerKey(d.RuntimeParent, bare), intent.Path, snapErr),
 			}, closedChunks(), nil
 		}
 		dr.SnapshotRef = string(ref)

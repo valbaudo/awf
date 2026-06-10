@@ -29,6 +29,10 @@ import (
 type LocalDispatcher struct {
 	Backend container.Backend
 	Handles map[string]container.Handle
+	// RuntimeParent scopes declared container names for call workflows. Empty
+	// means root workflow; non-empty handles are keyed as
+	// QualifiedContainerKey(RuntimeParent, container).
+	RuntimeParent string
 	// ComposeFiles is the workflow's compose-file bytes by workflow-relative
 	// path — sourced from ir.LoadedDefinition.ComposeFiles at construction.
 	// engine/map.go reads this when Creating per-item containers for compose-
@@ -106,9 +110,10 @@ func (d *LocalDispatcher) stageInputFiles(ctx context.Context, h container.Handl
 
 func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir.CodeStep) (DispatchResult, <-chan container.IOChunk, error) {
 	bare, svcOverride := SplitContainerRef(cs.Container)
-	h, ok := d.Handles[bare]
+	handleKey := QualifiedContainerKey(d.RuntimeParent, bare)
+	h, ok := d.Handles[handleKey]
 	if !ok {
-		return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher: no handle for container %q (bare name %q) at path %q (interpreter must Create before dispatch)", cs.Container, bare, intent.Path)
+		return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher: no handle for container %q (bare name %q, key %q) at path %q (interpreter must Create before dispatch)", cs.Container, bare, handleKey, intent.Path)
 	}
 	if svcOverride != "" {
 		h.Service = svcOverride // shallow clone — h is a Handle value type; no aliasing of d.Handles
@@ -280,7 +285,7 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 	// (decision 3: node.completed.container is recorded only for committed/OK
 	// steps — obs reads it off every committed step's node.completed).
 	if dr.Outcome == OutcomeOK {
-		dr.Container = bare
+		dr.Container = handleKey
 	}
 	// snapshot:workspace capture (slice 7.1). Only an OK step that committed
 	// records its container; a failed exec returned earlier without it. After a
@@ -294,7 +299,7 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 				Outcome:  oc,
 				ExitCode: copyIntPtr(exec.ExitCode),
 				Stdout:   exec.Stdout,
-				Err:      fmt.Errorf("engine.LocalDispatcher: snapshot %q at %q: %w", bare, intent.Path, snapErr),
+				Err:      fmt.Errorf("engine.LocalDispatcher: snapshot %q at %q: %w", handleKey, intent.Path, snapErr),
 			}, chunks, nil
 		}
 		dr.SnapshotRef = string(ref)
@@ -411,10 +416,11 @@ func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *Local
 	for k, v := range d.Handles {
 		cloned[k] = v
 	}
-	cloned[name] = h
+	cloned[QualifiedContainerKey(d.RuntimeParent, name)] = h
 	return &LocalDispatcher{
 		Backend:          d.Backend,
 		Handles:          cloned,
+		RuntimeParent:    d.RuntimeParent,
 		ComposeFiles:     d.ComposeFiles,
 		Resolver:         d.Resolver,
 		AgentEventTap:    d.AgentEventTap,

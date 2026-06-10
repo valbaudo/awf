@@ -57,24 +57,35 @@ func runMap(
 	tap io.Writer,
 	broker *signal.Broker,
 ) (Outcome, error) {
-	ld, ok := dispatcher.(*LocalDispatcher)
+	return runMapWithContext(ctx, n, mapPath, interpreterContext{
+		wf: wf, runstate: runstate, dispatcher: dispatcher, log: log, blobs: blobs, clk: clk, tap: tap, broker: broker,
+	})
+}
+
+func runMapWithContext(
+	ctx context.Context,
+	n *ir.Map,
+	mapPath string,
+	ictx interpreterContext,
+) (Outcome, error) {
+	ld, ok := ictx.dispatcher.(*LocalDispatcher)
 	if !ok {
 		// Design Q2: Phase 3 production dispatcher is *LocalDispatcher; map
 		// needs Backend access for per-item container provisioning. Test
 		// rigs that don't pass *LocalDispatcher don't exercise map.
-		return "", fmt.Errorf("engine.runMap: map at %q requires *LocalDispatcher for per-item container provisioning (got %T)", mapPath, dispatcher)
+		return "", fmt.Errorf("engine.runMap: map at %q requires *LocalDispatcher for per-item container provisioning (got %T)", mapPath, ictx.dispatcher)
 	}
 
 	// 1. Evaluate `over`. Design Q1: bare reference; the resolved value must
 	//    be a []any. Empty/nil → ok with zero items.
-	overScope := NewScope(runstate, wf, mapPath+".over")
+	overScope := ictx.scope(mapPath + ".over")
 	overVal, err := evalOver(string(n.Over), overScope)
 	if err != nil {
-		return failStep(log, mapPath, OutcomePermanentFailure, fmt.Errorf("evaluate over: %w", err))
+		return failStep(ictx.log, mapPath, OutcomePermanentFailure, fmt.Errorf("evaluate over: %w", err))
 	}
 	overArr, ok := overVal.([]any)
 	if !ok {
-		return failStep(log, mapPath, OutcomePermanentFailure,
+		return failStep(ictx.log, mapPath, OutcomePermanentFailure,
 			fmt.Errorf("`over` resolved to %T, want []any (spec §5.7 — `over` must be a typed array)", overVal))
 	}
 	if len(overArr) == 0 {
@@ -86,14 +97,14 @@ func runMap(
 	//    track maxCommittedN to detect non-deterministic `over` (H8).
 	committed := map[int]string{} // N → Status, for items already in MapItems
 	maxCommittedN := -1
-	for _, mr := range runstate.LookupMapItems(mapPath) {
+	for _, mr := range ictx.runstate.LookupMapItems(mapPath) {
 		committed[mr.N] = mr.Status
 		if mr.N > maxCommittedN {
 			maxCommittedN = mr.N
 		}
 		// Fill in ItemValue post-resume (Design Q3) iff still in-bounds.
 		if mr.ItemValue == nil && mr.N < len(overArr) {
-			runstate.UpdateMapItemValue(mapPath, mr.N, overArr[mr.N])
+			ictx.runstate.UpdateMapItemValue(mapPath, mr.N, overArr[mr.N])
 		}
 	}
 	// H8: fail-loud if over re-evaluated to fewer items than were committed.
@@ -114,10 +125,10 @@ func runMap(
 	sem := semaphore.NewWeighted(capSize)
 
 	// 3a. Slice-3.2 patterns: wrap log + tap for concurrent goroutines.
-	wrappedLog := newSerializingLog(log)
+	wrappedLog := newSerializingLog(ictx.log)
 	var wrappedTap io.Writer
-	if tap != nil {
-		wrappedTap = newSerializingWriter(tap)
+	if ictx.tap != nil {
+		wrappedTap = newSerializingWriter(ictx.tap)
 	}
 
 	// 3b. SP5 prune frontier. Build the controller + the in-flight cancel /
@@ -129,7 +140,7 @@ func runMap(
 		stepID, ok := ir.LastStepID(n.Body)
 		if !ok {
 			// Should not happen — AWF5008 guarantees the last body node is a step.
-			return failStep(log, mapPath, OutcomePermanentFailure,
+			return failStep(ictx.log, mapPath, OutcomePermanentFailure,
 				fmt.Errorf("engine.runMap: map %q declares prune: but the body's last node is not a step (AWF5008 should have caught)", mapPath))
 		}
 		pr = newPruneRun(n.Prune, mapPath, stepID)
@@ -151,7 +162,7 @@ func runMap(
 		}
 		// Record a pending MapItemRecord BEFORE goroutine fires so the
 		// body's templates can resolve <as>.<field> via LookupMapItems.
-		runstate.RecordMapItem(mapPath, MapItemRecord{
+		ictx.runstate.RecordMapItem(mapPath, MapItemRecord{
 			N:         i,
 			ItemValue: overArr[i],
 			Status:    "", // pending
@@ -203,7 +214,10 @@ func runMap(
 				return
 			}
 
-			status, dispatchErr := dispatchItem(itemCtx, n, mapPath, i, pr, wf, runstate, ld, wrappedLog, blobs, clk, wrappedTap, broker)
+			itemIctx := ictx
+			itemIctx.log = wrappedLog
+			itemIctx.tap = wrappedTap
+			status, dispatchErr := dispatchItem(itemCtx, n, mapPath, i, pr, ld, itemIctx)
 			statuses[i] = status
 			if dispatchErr != nil {
 				// A prune cancel unwinds the body via ctx; that is not an internal
@@ -225,7 +239,7 @@ func runMap(
 			// (after wg.Wait) commits the authoritative per-item status, so the
 			// commit is race-free regardless of concurrent completion order.
 			if pr != nil && status == ItemPassed {
-				if dErr := pr.report(runstate, i); dErr != nil {
+				if dErr := pr.report(ictx.runstate, i); dErr != nil {
 					statusErrMu.Lock()
 					if statusErr == nil {
 						statusErr = dErr
@@ -268,7 +282,7 @@ func runMap(
 			fresh = append(fresh, MapItemData{N: i, Status: final})
 		}
 		if len(fresh) > 0 {
-			if cErr := commitMapFrontier(log, runstate, mapPath, fresh); cErr != nil {
+			if cErr := commitMapFrontier(ictx.log, ictx.runstate, mapPath, fresh); cErr != nil {
 				return "", cErr
 			}
 		}
@@ -285,7 +299,7 @@ func runMap(
 		var rie *renderImageError
 		var cce *createConfigError
 		if errors.As(statusErr, &rie) || errors.As(statusErr, &cce) {
-			return failStep(log, mapPath, OutcomePermanentFailure, statusErr)
+			return failStep(ictx.log, mapPath, OutcomePermanentFailure, statusErr)
 		}
 		return "", statusErr
 	}
@@ -320,7 +334,7 @@ func runMap(
 	//    it is from min_success above; a mechanically-failed branch still counts
 	//    (absent from branches → a non-agreeing vote), so passing len(overArr)
 	//    would demand agreement from items the frontier deliberately discarded.
-	return runMapReduce(ctx, n, mapPath, effectiveTotal, wf, runstate, ld, log, blobs, clk, tap)
+	return runMapReduce(ctx, n, mapPath, effectiveTotal, ictx.wf, ictx.runstate, ld, ictx.log, ictx.blobs, ictx.clk, ictx.tap)
 }
 
 // renderImageError marks a per-item map.image render fault (the image: template
@@ -381,18 +395,12 @@ func dispatchItem(
 	mapPath string,
 	itemN int,
 	pr *pruneRun,
-	wf *ir.Workflow,
-	runstate *RunState,
 	ld *LocalDispatcher,
-	log state.Log,
-	blobs state.Blobs,
-	clk clock.Clock,
-	tap io.Writer,
-	broker *signal.Broker,
+	ictx interpreterContext,
 ) (string, error) {
 	itemPath := ItemPath(mapPath, itemN) // "map[0].item-3"
 
-	spec := ContainerSpecFor(wf, ld.ComposeFiles, n.Container)
+	spec := ContainerSpecFor(ictx.wf, ld.ComposeFiles, n.Container)
 	// Per-item containers MUST have distinct names: the docker backend derives the
 	// container name from spec.Name, so every item sharing n.Container would collide
 	// on a concurrent Create (the fake ignores Name, so this path went untested until
@@ -412,7 +420,7 @@ func dispatchItem(
 	// against min_success). A STATIC container's Create failure stays an internal
 	// hard error (below) — that is infra for a definition-pinned image.
 	if n.Image != "" {
-		rendered, rErr := template.Substitute(string(n.Image), NewScope(runstate, wf, itemPath))
+		rendered, rErr := template.Substitute(string(n.Image), ictx.scope(itemPath))
 		if rErr != nil {
 			// A render fault is a deterministic definition/data error → fail the
 			// whole map (runMap converts this sentinel to permanent_failure).
@@ -451,7 +459,7 @@ func dispatchItem(
 				if pr != nil {
 					return ItemFailed, nil
 				}
-				return commitMapItem(log, runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable)
+				return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable)
 			}
 			// Any OTHER Create error is a deterministic definition error (an invalid
 			// per-element spec — bad resources, a host config the daemon rejects):
@@ -475,16 +483,18 @@ func dispatchItem(
 
 	// Per-item dispatcher with the override.
 	perItemDispatcher := ld.WithItemHandle(n.Container, itemHandle)
+	itemCtx := ictx
+	itemCtx.dispatcher = perItemDispatcher
 
 	// Walk body.
-	bodyOC, bodyErr := interpNodes(ctx, n.Body, itemPath, wf, runstate, perItemDispatcher, log, blobs, clk, tap, broker)
+	bodyOC, bodyErr := interpNodes(ctx, n.Body, itemPath, itemCtx)
 
 	status := ItemPassed // default optimistic; revised below
 	var su *SkipUnwind
 	if errors.As(bodyErr, &su) {
 		// Skip ends the item as ok (design §E step 5). Record node.skipped
 		// for trace; status stays ItemPassed.
-		if appErr := appendNodeSkipped(log, itemPath, su.Reason); appErr != nil {
+		if appErr := appendNodeSkipped(ictx.log, itemPath, su.Reason); appErr != nil {
 			return "", fmt.Errorf("append node.skipped for item-%d: %w", itemN, appErr)
 		}
 	} else if bodyErr != nil || bodyOC != OutcomeOK {
@@ -498,7 +508,7 @@ func dispatchItem(
 	if pr != nil {
 		return status, nil
 	}
-	return commitMapItem(log, runstate, mapPath, itemN, status, imageDigest, "")
+	return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "")
 }
 
 // commitMapItem appends the map.item commit (with the optional captured runtime

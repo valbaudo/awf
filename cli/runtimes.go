@@ -1,11 +1,10 @@
 package cli
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
@@ -50,99 +49,15 @@ func (r *Runner) resolverOrEmpty() agent.Resolver {
 // nil (NOT empty slice — `omitempty` on the consumer side then writes
 // "runtimes" absent from the run.started JSON).
 func walkAgentRefs(wf *ir.Workflow) []agentRef {
-	if wf == nil {
+	refs := engine.WalkRuntimeRefs("", "", wf)
+	if len(refs) == 0 {
 		return nil
 	}
-	seen := map[agentRef]bool{}
-	walkAgentRefsNodes(wf.Graph, seen)
-	if len(seen) == 0 {
-		return nil
+	out := make([]agentRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, agentRef{Uses: ref.Uses, Container: ref.Container})
 	}
-	out := make([]agentRef, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
-	// Go 1.21+ idiom: slices.SortFunc with cmp.Compare composes naturally —
-	// the cmp.Compare result chain (return early on the first non-zero) is
-	// clearer than the boolean less-than chain it replaces. Stable ordering
-	// matters because the resolved slice is byte-compared on resume.
-	slices.SortFunc(out, func(a, b agentRef) int {
-		if c := cmp.Compare(a.Uses, b.Uses); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.Container, b.Container)
-	})
 	return out
-}
-
-// walkAgentRefsNodes is the recursive worker. It descends into every
-// structural-node type that can contain steps; step-typed leaves contribute
-// to seen.
-//
-// MAP NODES — AgentSteps inside `map.body` are intentionally SKIPPED at
-// run-start version pinning. Map's per-item containers are created at dispatch
-// time (spec §5.7), so there is no handle to pass to Adapter.Version() at run
-// start. For a statically-imaged map the per-item container is reconstructed
-// from the IR-declared `image:` digest (validator-pinned), so the baked binary
-// cannot drift. For a P6a runtime-resolved `map` image: that static-pin premise
-// does NOT hold — the image is learned per element at dispatch and digest-
-// captured at first boot, not validator-pinned. This is still SAFE for the
-// current consumers because a runtime-image map body runs code steps (item4),
-// not agent steps; if a runtime-image map body ever runs an `agent` step,
-// per-item agent-version capture must be revisited (tracked as a P6a follow-up).
-//
-// UNKNOWN NODE — PANIC, but the default arm is UNREACHABLE from outside
-// the ir package. ir.Node is `interface{ isNode() }` (see ir/node.go:17) —
-// a CLOSED sum type with an unexported marker method. No type outside
-// the ir package can satisfy ir.Node, so the default arm cannot be
-// unit-tested from cli/. The panic exists as forward-compatibility
-// documentation: when ir/ adds a new node type (extending the closed
-// set), this switch MUST be updated. If the case is missed, real IR
-// fixtures exercising the new type panic loudly at run-start — caught by
-// any integration test or fixture run that exercises the new type. This
-// switch MUST stay in sync with engine/scope.go's node walker (which
-// traverses the same node types for Phase 3.2+ scope resolution); when
-// adding a new ir.Node type, update both walkers.
-func walkAgentRefsNodes(nodes ir.NodeList, seen map[agentRef]bool) {
-	for _, n := range nodes {
-		switch v := n.(type) {
-		case *ir.AgentStep:
-			seen[agentRef{Uses: v.Uses, Container: v.Container}] = true
-		case *ir.CodeStep, *ir.SignalStep, *ir.Skip:
-			// no nested steps
-		case *ir.If:
-			walkAgentRefsNodes(v.Then, seen)
-			walkAgentRefsNodes(v.Else, seen)
-		case *ir.Loop:
-			walkAgentRefsNodes(v.Body, seen)
-		case *ir.Try:
-			walkAgentRefsNodes(v.Do, seen)
-			walkAgentRefsNodes(v.Catch, seen)
-			walkAgentRefsNodes(v.Finally, seen)
-		case *ir.Parallel:
-			// ir.Parallel has a single `Children NodeList` (the standard's
-			// `{"parallel":[<node>,...]}` shape — flat list of branch heads).
-			walkAgentRefsNodes(v.Children, seen)
-		case *ir.Gate:
-			walkAgentRefsNodes(v.Generate, seen)
-			walkAgentRefsNodes(v.Evaluate, seen)
-		case *ir.Map:
-			// Map body intentionally NOT traversed for run-start agent-version
-			// pinning — per-item containers are dispatch-time (static maps:
-			// image-digest-pinned; P6a runtime-image maps: digest-captured at
-			// first boot). See the doc-comment above for the safety argument.
-		case *ir.Compose:
-			// Runtime compose body intentionally NOT traversed for run-start
-			// agent-version pinning: the scoped container handle is promoted at
-			// dispatch time from a committed artifact, so there is no handle to
-			// pass to Adapter.Version at run start.
-		default:
-			// Unreachable from outside ir/ (ir.Node is closed sum type with
-			// unexported isNode() marker). Defensive documentation only.
-			// See doc-comment on walkAgentRefsNodes above.
-			panic(fmt.Sprintf("walkAgentRefs: unhandled ir.Node type %T (extend the switch; mirror engine/scope.go)", n))
-		}
-	}
 }
 
 // resolveRuntimes calls Adapter.Version once per (ref, container) pair and
@@ -158,42 +73,17 @@ func walkAgentRefsNodes(nodes ir.NodeList, seen map[agentRef]bool) {
 // Missing handle is a wiring bug — the caller must Create handles for every
 // container before calling this.
 func resolveRuntimes(ctx context.Context, refs []agentRef, resolver agent.Resolver, handles map[string]container.Handle) ([]engine.ResolvedRuntime, error) {
-	if len(refs) == 0 {
-		return nil, nil
-	}
-	out := make([]engine.ResolvedRuntime, 0, len(refs))
+	engineRefs := make([]engine.RuntimeRef, 0, len(refs))
 	for _, ref := range refs {
-		adapter, ok := resolver.Lookup(ref.Uses)
-		if !ok {
-			return nil, &agent.ErrAdapterNotFound{Ref: ref.Uses}
-		}
-		// Containerless agent step (empty ref): permitted only when the adapter
-		// declares Caps.Containerless; resolve Version with the zero Handle (no
-		// binary to probe — e.g. awf/llm returns a static version).
-		if ref.Container == "" {
-			if !adapter.Capabilities().Containerless {
-				return nil, &ErrContainerRequired{Ref: ref.Uses}
-			}
-			ver, err := adapter.Version(ctx, container.Handle{})
-			if err != nil {
-				return nil, fmt.Errorf("cli: adapter %q version resolution (containerless): %w", ref.Uses, err)
-			}
-			out = append(out, engine.ResolvedRuntime{Ref: ref.Uses, Version: ver, Container: ""})
-			continue
-		}
-		handle, ok := handles[ref.Container]
-		if !ok {
-			return nil, fmt.Errorf("cli: no handle for container %q (resolveRuntimes wiring bug — Create the container before calling)", ref.Container)
-		}
-		ver, err := adapter.Version(ctx, handle)
-		if err != nil {
-			return nil, fmt.Errorf("cli: adapter %q version resolution in container %q: %w", ref.Uses, ref.Container, err)
-		}
-		out = append(out, engine.ResolvedRuntime{
-			Ref:       ref.Uses,
-			Version:   ver,
-			Container: ref.Container,
-		})
+		engineRefs = append(engineRefs, engine.RuntimeRef{Uses: ref.Uses, Container: ref.Container})
+	}
+	out, err := engine.ResolveRuntimes(ctx, engineRefs, resolver, handles)
+	var required *engine.ErrContainerRequired
+	if errors.As(err, &required) {
+		return nil, &ErrContainerRequired{Ref: required.Ref}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cli: %w", err)
 	}
 	return out, nil
 }

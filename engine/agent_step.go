@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/valbaudo/awf/agent"
-	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/retry"
-	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 	"github.com/valbaudo/awf/template"
 )
@@ -36,26 +33,22 @@ import (
 // are made HERE (and via the canonical Commit), not in the dispatcher. Per
 // "simplest solution first": the commit logic is NOT duplicated — slice 5.2
 // reuses engine.Commit verbatim.
-func runAgentStep(
-	ctx context.Context,
-	as *ir.AgentStep,
-	path string,
-	wf *ir.Workflow,
-	runstate *RunState,
-	dispatcher Dispatcher,
-	log state.Log,
-	blobs state.Blobs,
-	clk clock.Clock,
-	tap io.Writer,
-	_ *signal.Broker,
-) (Outcome, error) {
+func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string, ictx interpreterContext) (Outcome, error) {
+	wf := ictx.wf
+	runstate := ictx.runstate
+	dispatcher := ictx.dispatcher
+	log := ictx.log
+	blobs := ictx.blobs
+	clk := ictx.clk
+	tap := ictx.tap
+
 	// Resume short-circuit (mirrors runCodeStep — committed nodes are replayed,
 	// not recomputed).
 	if _, ok := runstate.LookupCompleted(path); ok {
 		return OutcomeOK, nil
 	}
 
-	scope := NewScope(runstate, wf, path)
+	scope := ictx.scope(path)
 
 	// 1. Substitute With.
 	resolvedWith, err := substituteRawConfig(as.With, scope)

@@ -34,6 +34,7 @@ const (
 const (
 	AttemptSegmentPrefix = "attempt-"
 	GateSegmentPrefix    = "gate["
+	CallWorkflowSegment  = "workflow"
 )
 
 // IterPath appends a per-iteration suffix to a loop body's static path, producing the
@@ -89,6 +90,24 @@ func ItemStepPath(mapPath string, item int, suffix string) string {
 		return p
 	}
 	return p + "." + suffix
+}
+
+// CallWorkflowRuntimePath appends the reserved child-workflow segment under a
+// call-step path.
+func CallWorkflowRuntimePath(callPath string) string {
+	if callPath == "" {
+		return CallWorkflowSegment
+	}
+	return callPath + "." + CallWorkflowSegment
+}
+
+// QualifiedContainerKey scopes a workflow-declared container name to the
+// runtime parent that owns the handle.
+func QualifiedContainerKey(runtimeParent, container string) string {
+	if runtimeParent == "" {
+		return container
+	}
+	return runtimeParent + "::" + container
 }
 
 // ParentPath returns the runtime-address parent of a node path, and false when

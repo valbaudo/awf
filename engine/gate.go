@@ -68,6 +68,17 @@ func runGate(
 	tap io.Writer,
 	broker *signal.Broker,
 ) (Outcome, error) {
+	return runGateWithContext(ctx, g, gatePath, interpreterContext{
+		wf: wf, runstate: runstate, dispatcher: dispatcher, log: log, blobs: blobs, clk: clk, tap: tap, broker: broker,
+	})
+}
+
+func runGateWithContext(
+	ctx context.Context,
+	g *ir.Gate,
+	gatePath string,
+	ictx interpreterContext,
+) (Outcome, error) {
 	if len(g.Generate) == 0 {
 		// Validator (AWF1013) rejects; defense-in-depth.
 		return "", fmt.Errorf("engine.runGate: gate %q has empty generate (AWF1013 should have caught)", gatePath)
@@ -79,7 +90,7 @@ func runGate(
 		return "", fmt.Errorf("engine.runGate: gate %q has MaxAttempts=%d, want ≥ 1", gatePath, g.MaxAttempts)
 	}
 
-	startN := len(runstate.LookupGateAttempts(gatePath)) + 1
+	startN := len(ictx.runstate.LookupGateAttempts(gatePath)) + 1
 
 	for n := startN; n <= g.MaxAttempts; n++ {
 		attemptPath := AttemptPath(gatePath, n) // "gate[0].attempt-1"
@@ -87,11 +98,11 @@ func runGate(
 		evaluatePath := attemptPath + ".evaluate"
 
 		// 1. Run generate.
-		genOC, genErr := interpNodes(ctx, g.Generate, generatePath, wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		genOC, genErr := interpNodes(ctx, g.Generate, generatePath, ictx)
 		var su *SkipUnwind
 		if errors.As(genErr, &su) {
 			// Skip ends WHOLE gate as ok (design §D + slice 3.3 design Q3).
-			if appErr := appendNodeSkipped(log, gatePath, su.Reason); appErr != nil {
+			if appErr := appendNodeSkipped(ictx.log, gatePath, su.Reason); appErr != nil {
 				return "", appErr
 			}
 			return OutcomeOK, nil
@@ -102,9 +113,9 @@ func runGate(
 		}
 
 		// 2. Run evaluate.
-		evalOC, evalErr := interpNodes(ctx, g.Evaluate, evaluatePath, wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		evalOC, evalErr := interpNodes(ctx, g.Evaluate, evaluatePath, ictx)
 		if errors.As(evalErr, &su) {
-			if appErr := appendNodeSkipped(log, gatePath, su.Reason); appErr != nil {
+			if appErr := appendNodeSkipped(ictx.log, gatePath, su.Reason); appErr != nil {
 				return "", appErr
 			}
 			return OutcomeOK, nil
@@ -118,7 +129,7 @@ func runGate(
 		if lerr != nil {
 			return "", fmt.Errorf("engine.runGate: %w", lerr)
 		}
-		nr, ok := runstate.LookupCompleted(lastStepPath)
+		nr, ok := ictx.runstate.LookupCompleted(lastStepPath)
 		if !ok {
 			return "", fmt.Errorf("engine.runGate: last evaluator step %q not in Completed (slice 3.3 invariant violated)", lastStepPath)
 		}
@@ -126,12 +137,12 @@ func runGate(
 
 		// 4. Evaluate g.Until against the just-produced verdict.
 		untilCtxPath := attemptPath + ".until"
-		untilScope := NewScopeWithVerdict(runstate, wf, untilCtxPath, verdict)
+		untilScope := ictx.scopeWithVerdict(untilCtxPath, verdict)
 		passed, untilErr := template.EvalBoolString(string(g.Until), untilScope)
 		if untilErr != nil {
 			// Author's bug — invalid until expression. Same classification as
 			// runIf / runLoop's DQ7 (permanent_failure for the gate node).
-			return failStep(log, gatePath, OutcomePermanentFailure, untilErr)
+			return failStep(ictx.log, gatePath, OutcomePermanentFailure, untilErr)
 		}
 		attemptOutcome := AttemptRejected
 		if passed {
@@ -147,19 +158,19 @@ func runGate(
 		if mErr != nil {
 			return "", fmt.Errorf("engine.runGate: marshal gate.attempt at %q: %w", gatePath, mErr)
 		}
-		if err := log.Append(state.Event{
+		if err := ictx.log.Append(state.Event{
 			Type: EventGateAttempt,
 			Path: gatePath,
 			Data: data,
 		}); err != nil {
 			return "", fmt.Errorf("engine.runGate: append gate.attempt at %q: %w", gatePath, err)
 		}
-		if err := log.Sync(); err != nil {
+		if err := ictx.log.Sync(); err != nil {
 			return "", fmt.Errorf("engine.runGate: sync after gate.attempt at %q: %w", gatePath, err)
 		}
 
 		// 6. RecordGateAttempt — in-memory mirror.
-		runstate.RecordGateAttempt(gatePath, AttemptResult{
+		ictx.runstate.RecordGateAttempt(gatePath, AttemptResult{
 			N:              n,
 			AttemptOutcome: attemptOutcome,
 			Verdict:        verdict,

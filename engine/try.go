@@ -49,8 +49,19 @@ func runTry(
 	tap io.Writer,
 	broker *signal.Broker,
 ) (Outcome, error) {
+	return runTryWithContext(ctx, n, path, interpreterContext{
+		wf: wf, runstate: runstate, dispatcher: dispatcher, log: log, blobs: blobs, clk: clk, tap: tap, broker: broker,
+	})
+}
+
+func runTryWithContext(
+	ctx context.Context,
+	n *ir.Try,
+	path string,
+	ictx interpreterContext,
+) (Outcome, error) {
 	// 1. Run Do.
-	doOC, doErr := interpNodes(ctx, n.Do, path+".do", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+	doOC, doErr := interpNodes(ctx, n.Do, path+".do", ictx)
 
 	// 2a. SkipUnwind escaped Do → terminal-ok. Skip Catch.
 	var su *SkipUnwind
@@ -62,7 +73,7 @@ func runTry(
 	if doErr != nil && !skipped && len(n.Catch) > 0 {
 		// Catch absorbs the error (unconditional catch). Catch may itself fail,
 		// in which case Catch's error becomes the propagated error.
-		catchOC, catchErr := interpNodes(ctx, n.Catch, path+".catch", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		catchOC, catchErr := interpNodes(ctx, n.Catch, path+".catch", ictx)
 		propagatedOC = catchOC
 		propagatedErr = catchErr
 	}
@@ -80,7 +91,7 @@ func runTry(
 		// Try is NOT a target scope — skip propagates THROUGH a try (running
 		// Finally on the way per spec §5.3). Re-raise the SkipUnwind after Finally
 		// runs so the next enclosing scope catches it.
-		if appendErr := appendNodeSkipped(log, path, su.Reason); appendErr != nil {
+		if appendErr := appendNodeSkipped(ictx.log, path, su.Reason); appendErr != nil {
 			pendingErr = appendErr
 		}
 		// propagatedErr stays as the SkipUnwind from doErr — Finally runs, then
@@ -96,7 +107,7 @@ func runTry(
 	// runs first, then the cancellation propagates.
 	if len(n.Finally) > 0 {
 		finallyCtx := context.WithoutCancel(ctx)
-		finallyOC, finallyErr := interpNodes(finallyCtx, n.Finally, path+".finally", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		finallyOC, finallyErr := interpNodes(finallyCtx, n.Finally, path+".finally", ictx)
 		if finallyErr != nil {
 			// 4. Finally errored — its error wins.
 			return finallyOC, finallyErr

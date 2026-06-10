@@ -94,6 +94,18 @@ func Run(
 	if opts.Assets != nil {
 		runstate.Assets = opts.Assets
 	}
+	ictx := interpreterContext{
+		def:        def,
+		moduleID:   "",
+		wf:         def.Workflow,
+		runstate:   runstate,
+		dispatcher: dispatcher,
+		log:        log,
+		blobs:      blobs,
+		clk:        clk,
+		tap:        opts.Tap,
+		broker:     opts.Broker,
+	}
 
 	// Wrap ctx so the background poller can cancel it on pause/cancel
 	// detection. The deferred cancel() ensures the poller exits when
@@ -110,7 +122,7 @@ func Run(
 		close(pollDone)
 	}
 
-	oc, err := interpNodes(runCtx, def.Workflow.Graph, "", def.Workflow, runstate, dispatcher, log, blobs, clk, opts.Tap, opts.Broker)
+	oc, err := interpNodes(runCtx, def.Workflow.Graph, "", ictx)
 
 	// SkipUnwind reaching Run = workflow-root unwind target (no enclosing
 	// loop/try/parallel/gate/map caught it). Per Phase 3 spec §5.6: "Cleanly
@@ -152,17 +164,10 @@ func interpNodes(
 	ctx context.Context,
 	nodes ir.NodeList,
 	parent string,
-	wf *ir.Workflow,
-	runstate *RunState,
-	dispatcher Dispatcher,
-	log state.Log,
-	blobs state.Blobs,
-	clk clock.Clock,
-	tap io.Writer,
-	broker *signal.Broker,
+	ictx interpreterContext,
 ) (Outcome, error) {
 	for i, n := range nodes {
-		oc, err := interpNode(ctx, n, i, parent, wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		oc, err := interpNode(ctx, n, i, parent, ictx)
 		if oc != OutcomeOK || err != nil {
 			return oc, err
 		}
@@ -177,36 +182,31 @@ func interpNode(
 	n ir.Node,
 	idx int,
 	parent string,
-	wf *ir.Workflow,
-	runstate *RunState,
-	dispatcher Dispatcher,
-	log state.Log,
-	blobs state.Blobs,
-	clk clock.Clock,
-	tap io.Writer,
-	broker *signal.Broker,
+	ictx interpreterContext,
 ) (Outcome, error) {
 	switch v := n.(type) {
 	case *ir.CodeStep:
-		return runCodeStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runCodeStepWithContext(ctx, v, ir.PathFor(parent, "", v.ID, idx), ictx)
 	case *ir.If:
-		return runIf(ctx, v, ir.PathFor(parent, "if", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runIf(ctx, v, ir.PathFor(parent, "if", "", idx), ictx)
 	case *ir.Loop:
-		return runLoop(ctx, v, ir.PathFor(parent, "loop", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runLoop(ctx, v, ir.PathFor(parent, "loop", "", idx), ictx)
 	case *ir.AgentStep:
-		return runAgentStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runAgentStepWithContext(ctx, v, ir.PathFor(parent, "", v.ID, idx), ictx)
 	case *ir.SignalStep:
-		return runSignalStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runSignalStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), ictx.wf, ictx.runstate, ictx.dispatcher, ictx.log, ictx.blobs, ictx.clk, ictx.tap, ictx.broker)
+	case *ir.CallStep:
+		return runCallStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), ictx)
 	case *ir.Try:
-		return runTry(ctx, v, ir.PathFor(parent, "try", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runTryWithContext(ctx, v, ir.PathFor(parent, "try", "", idx), ictx)
 	case *ir.Parallel:
-		return runParallel(ctx, v, ir.PathFor(parent, "parallel", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runParallelWithContext(ctx, v, ir.PathFor(parent, "parallel", "", idx), ictx)
 	case *ir.Gate:
-		return runGate(ctx, v, ir.PathFor(parent, "gate", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runGateWithContext(ctx, v, ir.PathFor(parent, "gate", "", idx), ictx)
 	case *ir.Map:
-		return runMap(ctx, v, ir.PathFor(parent, "map", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runMapWithContext(ctx, v, ir.PathFor(parent, "map", "", idx), ictx)
 	case *ir.Compose:
-		return runCompose(ctx, v, ir.PathFor(parent, "compose", "", idx), wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return runComposeWithContext(ctx, v, ir.PathFor(parent, "compose", "", idx), ictx)
 	case *ir.Skip:
 		return runSkip(v)
 	default:
@@ -234,33 +234,21 @@ func interpNode(
 //  8. On internal error from RunWithRetry (unknown container, etc.): no
 //     node.failed event (the step never got to fail mechanically — this is
 //     the CLI's bug, not the step's). Return ("", err).
-func runCodeStep(
-	ctx context.Context,
-	cs *ir.CodeStep,
-	path string,
-	wf *ir.Workflow,
-	runstate *RunState,
-	dispatcher Dispatcher,
-	log state.Log,
-	blobs state.Blobs,
-	clk clock.Clock,
-	tap io.Writer,
-	_ *signal.Broker, // carried for signature uniformity; runCodeStep does not recurse
-) (Outcome, error) {
-	if _, done := runstate.LookupCompleted(path); done {
+func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, ictx interpreterContext) (Outcome, error) {
+	if _, done := ictx.runstate.LookupCompleted(path); done {
 		return OutcomeOK, nil
 	}
 
-	scope := NewScope(runstate, wf, path)
+	scope := ictx.scope(path)
 	command, err := template.Substitute(cs.Run, scope)
 	if err != nil {
-		return failStep(log, path, OutcomePermanentFailure, err)
+		return failStep(ictx.log, path, OutcomePermanentFailure, err)
 	}
 	idemKey := ""
 	if cs.IdempotencyKey != nil {
 		idemKey, err = template.Substitute(string(*cs.IdempotencyKey), scope)
 		if err != nil {
-			return failStep(log, path, OutcomePermanentFailure, err)
+			return failStep(ictx.log, path, OutcomePermanentFailure, err)
 		}
 	}
 
@@ -269,22 +257,22 @@ func runCodeStep(
 		return "", fmt.Errorf("engine.Run: build retry policy at path %q: %w", path, err)
 	}
 
-	inputFiles, err := resolveInputFiles(cs.InputFiles, scope, wf, blobs, runstate.Assets)
+	inputFiles, err := resolveInputFiles(cs.InputFiles, scope, ictx.wf, ictx.blobs, ictx.runstate.Assets)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			// Committed artifact unreadable — internal error (content-address
 			// invariant says it must exist); resume re-runs + re-fetches.
 			return "", fmt.Errorf("engine.Run: stage input_files at %q: %w", path, err)
 		}
-		return failStep(log, path, OutcomePermanentFailure, err)
+		return failStep(ictx.log, path, OutcomePermanentFailure, err)
 	}
 
-	outputFiles, outputFileContracts, err := resolveOutputFiles(cs.OutputFiles, scope, runstate.Assets, blobs)
+	outputFiles, outputFileContracts, err := resolveOutputFiles(cs.OutputFiles, scope, ictx.runstate.Assets, ictx.blobs)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			return "", fmt.Errorf("engine.Run: resolve output_files contracts at %q: %w", path, err)
 		}
-		return failStep(log, path, OutcomePermanentFailure, fmt.Errorf("engine.Run: substitute output_files at %q: %w", path, err))
+		return failStep(ictx.log, path, OutcomePermanentFailure, fmt.Errorf("engine.Run: substitute output_files at %q: %w", path, err))
 	}
 	snapBare, _ := SplitContainerRef(cs.Container)
 	resolved := ResolvedInputs{
@@ -294,7 +282,7 @@ func runCodeStep(
 		OutputFileContracts:   outputFileContracts,
 		OutputSchema:          cs.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
-		Snapshot:              wf.Containers[snapBare].Snapshot,
+		Snapshot:              ictx.wf.Containers[snapBare].Snapshot,
 		InputFiles:            inputFiles,
 	}
 	if cs.Timeout != nil {
@@ -308,13 +296,13 @@ func runCodeStep(
 		IdempotencyKey: idemKey,
 	}
 
-	appendNodeStarted(log, path, "code")
+	appendNodeStarted(ictx.log, path, "code")
 
-	dr, chunks, runErr := RunWithRetry(ctx, dispatcher, intent, policy, clk, log)
+	dr, chunks, runErr := RunWithRetry(ctx, ictx.dispatcher, intent, policy, ictx.clk, ictx.log)
 	// Drain the live-tap channel (single consumer — fine for Phase 2's
 	// pre-closed fake channels; Phase 4's Docker streaming will require
 	// this be moved to a goroutine).
-	drainTap(chunks, cs.ID, tap)
+	drainTap(chunks, cs.ID, ictx.tap)
 
 	if runErr != nil {
 		// dr.Outcome == "" means RunWithRetry never successfully dispatched (the
@@ -329,19 +317,19 @@ func runCodeStep(
 			return "", fmt.Errorf("engine.Run: dispatch at path %q: %w", path, runErr)
 		}
 		// Step outcome class: runErr is the underlying cause.
-		return failStep(log, path, dr.Outcome, runErr)
+		return failStep(ictx.log, path, dr.Outcome, runErr)
 	}
 
 	if dr.Outcome != OutcomeOK {
 		// Defensive — RunWithRetry should always return non-nil err on non-ok.
-		return failStep(log, path, dr.Outcome, errors.New("step did not commit (no underlying error reported)"))
+		return failStep(ictx.log, path, dr.Outcome, errors.New("step did not commit (no underlying error reported)"))
 	}
 
-	nr, err := Commit(log, blobs, path, dr, false) // code steps never participate in conversations
+	nr, err := Commit(ictx.log, ictx.blobs, path, dr, false) // code steps never participate in conversations
 	if err != nil {
 		return "", fmt.Errorf("engine.Run: commit at path %q: %w", path, err)
 	}
-	runstate.RecordCompleted(path, nr)
+	ictx.runstate.RecordCompleted(path, nr)
 	return OutcomeOK, nil
 }
 
@@ -361,23 +349,16 @@ func runIf(
 	ctx context.Context,
 	n *ir.If,
 	path string,
-	wf *ir.Workflow,
-	runstate *RunState,
-	dispatcher Dispatcher,
-	log state.Log,
-	blobs state.Blobs,
-	clk clock.Clock,
-	tap io.Writer,
-	broker *signal.Broker,
+	ictx interpreterContext,
 ) (Outcome, error) {
-	which, recorded := runstate.LookupBranch(path)
+	which, recorded := ictx.runstate.LookupBranch(path)
 	if !recorded {
-		scope := NewScope(runstate, wf, path)
+		scope := ictx.scope(path)
 		// Template-error class (parse: AWF4005; eval: AWF4001/4002/4003/4004) —
 		// DQ7: permanent_failure for the if NODE. The error is the author's bug.
 		cond, err := template.EvalBoolString(string(n.Cond), scope)
 		if err != nil {
-			return failStep(log, path, OutcomePermanentFailure, err)
+			return failStep(ictx.log, path, OutcomePermanentFailure, err)
 		}
 		if cond {
 			which = "then"
@@ -388,7 +369,7 @@ func runIf(
 		if err != nil {
 			return "", fmt.Errorf("engine.Run: marshal branch.taken at path %q: %w", path, err)
 		}
-		if err := log.Append(state.Event{
+		if err := ictx.log.Append(state.Event{
 			Type: EventBranchTaken,
 			Path: path,
 			Data: data,
@@ -398,18 +379,18 @@ func runIf(
 		// branch.taken is observational — no Log.Sync (rides the next fsync per
 		// spec §8 cost lever). A branch.taken lost to a torn tail means resume
 		// re-evaluates the cond, which is correct first-run-equivalent behavior.
-		runstate.RecordBranch(path, which)
+		ictx.runstate.RecordBranch(path, which)
 	}
 
 	switch which {
 	case "then":
-		return interpNodes(ctx, n.Then, path+".then", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return interpNodes(ctx, n.Then, path+".then", ictx)
 	case "else":
 		// nil/empty Else is a no-op per spec §5.1.
 		if len(n.Else) == 0 {
 			return OutcomeOK, nil
 		}
-		return interpNodes(ctx, n.Else, path+".else", wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		return interpNodes(ctx, n.Else, path+".else", ictx)
 	default:
 		// Validator should reject; this is corruption / bug defense.
 		return "", fmt.Errorf("engine.Run: unknown branch %q at path %q", which, path)
@@ -431,14 +412,7 @@ func runLoop(
 	ctx context.Context,
 	n *ir.Loop,
 	path string,
-	wf *ir.Workflow,
-	runstate *RunState,
-	dispatcher Dispatcher,
-	log state.Log,
-	blobs state.Blobs,
-	clk clock.Clock,
-	tap io.Writer,
-	broker *signal.Broker,
+	ictx interpreterContext,
 ) (Outcome, error) {
 	// Defense-in-depth FIRST: avoid entering the loop with a definition that
 	// validation should have rejected.
@@ -446,18 +420,18 @@ func runLoop(
 		return "", fmt.Errorf("engine: loop at path %q has neither until nor max_iters — validator regression (AWF §5.2 requires one); please report", path)
 	}
 
-	startK := runstate.LookupLoopIters(path) + 1
+	startK := ictx.runstate.LookupLoopIters(path) + 1
 	for k := startK; ; k++ {
 		bodyParent := IterPath(path+".body", k)
 		// 1. Walk the body for iter K.
-		oc, err := interpNodes(ctx, n.Body, bodyParent, wf, runstate, dispatcher, log, blobs, clk, tap, broker)
+		oc, err := interpNodes(ctx, n.Body, bodyParent, ictx)
 		// SkipUnwind from body = iteration end target. Append node.skipped for
 		// trace, then continue to the loop.iter append below — the iter
 		// completed (via skip) and loop.iter records that for resume.
 		var su *SkipUnwind
 		skipped := errors.As(err, &su)
 		if skipped {
-			if appendErr := appendNodeSkipped(log, bodyParent, su.Reason); appendErr != nil {
+			if appendErr := appendNodeSkipped(ictx.log, bodyParent, su.Reason); appendErr != nil {
 				return "", appendErr
 			}
 			// Clear oc/err to fall through to the loop.iter + until/max_iters
@@ -473,7 +447,7 @@ func runLoop(
 		if mErr != nil {
 			return "", fmt.Errorf("engine.Run: marshal loop.iter at path %q iter %d: %w", path, k, mErr)
 		}
-		if err := log.Append(state.Event{
+		if err := ictx.log.Append(state.Event{
 			Type: EventLoopIter,
 			Path: path,
 			Data: data,
@@ -481,16 +455,16 @@ func runLoop(
 			return "", fmt.Errorf("engine.Run: append loop.iter at path %q iter %d: %w", path, k, err)
 		}
 		// loop.iter is observational — no Log.Sync (rides next fsync).
-		runstate.RecordLoopIter(path, k)
+		ictx.runstate.RecordLoopIter(path, k)
 
 		// 3. Evaluate until (if set). True → exit. Scope rooted at bodyParent so
 		//    step.<id>.<field> refs resolve to THIS iter's outputs (spec §5.2
 		//    "most recent iteration"). Template errors → permanent_failure (DQ7).
 		if n.Until != nil {
-			scope := NewScope(runstate, wf, bodyParent)
+			scope := ictx.scope(bodyParent)
 			done, evalErr := template.EvalBoolString(string(*n.Until), scope)
 			if evalErr != nil {
-				return failStep(log, path, OutcomePermanentFailure, evalErr)
+				return failStep(ictx.log, path, OutcomePermanentFailure, evalErr)
 			}
 			if done {
 				return OutcomeOK, nil
