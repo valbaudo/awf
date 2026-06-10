@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -382,6 +384,135 @@ func TestRunCallStepResumeRestoresChildSnapshotHandle(t *testing.T) {
 	}
 }
 
+func TestRunCallStepInputFilesAssetRefsUseChildModuleAssets(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.fake.WithBlobs(rig.blobs)
+	rig.seedRunStarted(t)
+	rootBytes := []byte("root schema\n")
+	childBytes := []byte("child schema\n")
+	rootRef, err := rig.blobs.Put(rootBytes)
+	if err != nil {
+		t.Fatalf("put root asset: %v", err)
+	}
+	childRef, err := rig.blobs.Put(childBytes)
+	if err != nil {
+		t.Fatalf("put child asset: %v", err)
+	}
+	rig.fake.ProgramExec("consume", container.ExecResult{ExitCode: 0}, nil)
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Assets:  map[string]string{"schema": "child.schema.json"},
+		Containers: map[string]ir.Container{
+			"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Snapshot: "workspace"},
+		},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID:         "consume",
+				Container:  "c",
+				Run:        "consume",
+				InputFiles: map[string]string{"/work/schema.json": "asset.schema"},
+			},
+		},
+	}
+	def := simpleCallNoInputDefinition(child)
+	def.Workflow.Assets = map[string]string{"schema": "root.schema.json"}
+
+	oc, err := Run(context.Background(), def, rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{
+		Assets: map[string]RunStartedAsset{
+			"schema":          testRunStartedAsset("root.schema.json", rootRef, rootBytes),
+			"mod-scan/schema": testRunStartedAsset("child.schema.json", childRef, childBytes),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	var snapshotRef string
+	for _, e := range callEvents(t, rig.log) {
+		if e.Type != EventNodeCompleted || e.Path != "recon.workflow.consume" {
+			continue
+		}
+		var d NodeCompletedData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatalf("unmarshal node.completed: %v", err)
+		}
+		snapshotRef = string(d.SnapshotRef)
+	}
+	if snapshotRef == "" {
+		t.Fatalf("missing child snapshot ref in events")
+	}
+	h, err := rig.fake.Restore(context.Background(), container.SnapshotRef(snapshotRef), "inspect")
+	if err != nil {
+		t.Fatalf("Restore snapshot: %v", err)
+	}
+	got, err := rig.fake.CaptureFiles(context.Background(), h, []string{"/work/schema.json"})
+	if err != nil {
+		t.Fatalf("CaptureFiles: %v", err)
+	}
+	if string(got[0].Content) != string(childBytes) {
+		t.Fatalf("staged asset bytes = %q, want child module bytes %q", got[0].Content, childBytes)
+	}
+}
+
+func TestRunCallStepOutputFilesSchemaRefUsesChildModuleAssets(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rootSchema := []byte(`{"type":"object","required":["kind"],"properties":{"kind":{"const":"root"}}}`)
+	childSchema := []byte(`{"type":"object","required":["kind"],"properties":{"kind":{"const":"child"}}}`)
+	rootRef, err := rig.blobs.Put(rootSchema)
+	if err != nil {
+		t.Fatalf("put root schema: %v", err)
+	}
+	childRef, err := rig.blobs.Put(childSchema)
+	if err != nil {
+		t.Fatalf("put child schema: %v", err)
+	}
+	rig.fake.ProgramExecWithFiles("produce", container.ExecResult{ExitCode: 0}, nil,
+		map[string][]byte{"/out/result.json": []byte(`{"kind":"child"}`)})
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Assets:  map[string]string{"schema": "child.schema.json"},
+		Containers: map[string]ir.Container{
+			"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+		},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID:        "produce",
+				Container: "c",
+				Run:       "produce",
+				OutputFiles: ir.OutputFiles{{
+					Name:      "result",
+					Path:      "/out/result.json",
+					Format:    "json",
+					SchemaRef: "asset.schema",
+				}},
+			},
+		},
+	}
+	def := simpleCallNoInputDefinition(child)
+	def.Workflow.Assets = map[string]string{"schema": "root.schema.json"}
+
+	oc, err := Run(context.Background(), def, rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{
+		Assets: map[string]RunStartedAsset{
+			"schema":          testRunStartedAsset("root.schema.json", rootRef, rootSchema),
+			"mod-scan/schema": testRunStartedAsset("child.schema.json", childRef, childSchema),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	if _, ok := rig.rs.Completed["recon.workflow.produce"]; !ok {
+		t.Fatal("missing child produce completion")
+	}
+}
+
 func TestRunCallStepChildMapReduceReusesQualifiedContainer(t *testing.T) {
 	rig := newCallRunRig(t)
 	rig.seedRunStarted(t)
@@ -748,6 +879,19 @@ func childNoOutputWorkflow(id, run string) *ir.Workflow {
 		Graph: ir.NodeList{
 			&ir.CodeStep{ID: "work", Container: "c", Run: run},
 		},
+	}
+}
+
+func testRunStartedAsset(declaredPath, ref string, b []byte) RunStartedAsset {
+	sum := sha256.Sum256(b)
+	return RunStartedAsset{
+		DeclaredPath: declaredPath,
+		Files: []RunStartedAssetFile{{
+			Path:   ".",
+			Ref:    ref,
+			Size:   int64(len(b)),
+			SHA256: hex.EncodeToString(sum[:]),
+		}},
 	}
 }
 

@@ -31,6 +31,10 @@ func SelectRunBackendForTest(requested string, wf *ir.Workflow) (string, error) 
 	return selectRunBackend(requested, wf)
 }
 
+func SelectRunBackendForLoadedDefinitionForTest(requested string, ld *ir.LoadedDefinition) (string, error) {
+	return selectRunBackendForLoadedDefinition(requested, ld)
+}
+
 // PrintUsageForTest exposes printUsage for the external cli_test package.
 func PrintUsageForTest(w io.Writer) {
 	printUsage(w)

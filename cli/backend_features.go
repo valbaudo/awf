@@ -52,20 +52,43 @@ func firstDockerOnlyFeature(wf *ir.Workflow) (dockerFeature, bool) {
 	return dockerFeature{}, false
 }
 
-func workflowRequiresDocker(wf *ir.Workflow) bool {
-	_, ok := firstDockerOnlyFeature(wf)
-	return ok
+func firstDockerOnlyFeatureForLoadedDefinition(ld *ir.LoadedDefinition) (dockerFeature, bool) {
+	if ld == nil {
+		return dockerFeature{}, false
+	}
+	var out dockerFeature
+	var found bool
+	_ = ld.WalkModules(func(module *ir.LoadedModule) error {
+		if found || module == nil {
+			return nil
+		}
+		feature, ok := firstDockerOnlyFeature(module.Workflow)
+		if !ok {
+			return nil
+		}
+		if module.ID != "" {
+			feature.Path = fmt.Sprintf("module %s %s", module.ID, feature.Path)
+		}
+		out = feature
+		found = true
+		return nil
+	})
+	return out, found
 }
 
 func selectRunBackend(requested string, wf *ir.Workflow) (string, error) {
+	return selectRunBackendForLoadedDefinition(requested, &ir.LoadedDefinition{Workflow: wf})
+}
+
+func selectRunBackendForLoadedDefinition(requested string, ld *ir.LoadedDefinition) (string, error) {
 	switch requested {
 	case backendAuto:
-		if workflowRequiresDocker(wf) {
+		if _, ok := firstDockerOnlyFeatureForLoadedDefinition(ld); ok {
 			return engine.BackendDocker, nil
 		}
 		return engine.BackendNative, nil
 	case engine.BackendNative:
-		if feature, ok := firstDockerOnlyFeature(wf); ok {
+		if feature, ok := firstDockerOnlyFeatureForLoadedDefinition(ld); ok {
 			return "", fmt.Errorf("--backend native cannot run Docker-only feature %q at %s; use --backend docker", feature.Kind, feature.Path)
 		}
 		return engine.BackendNative, nil
@@ -76,7 +99,25 @@ func selectRunBackend(requested string, wf *ir.Workflow) (string, error) {
 	}
 }
 
-func checkWorkflowBackendCapabilities(wf *ir.Workflow, backendKind string, backend container.Backend) error {
+func checkWorkflowBackendCapabilities(ld *ir.LoadedDefinition, backendKind string, backend container.Backend) error {
+	if ld == nil {
+		return nil
+	}
+	return ld.WalkModules(func(module *ir.LoadedModule) error {
+		if module == nil {
+			return nil
+		}
+		if err := checkWorkflowModuleBackendCapabilities(module.Workflow, backendKind, backend); err != nil {
+			if module.ID != "" {
+				return fmt.Errorf("module %s: %w", module.ID, err)
+			}
+			return err
+		}
+		return nil
+	})
+}
+
+func checkWorkflowModuleBackendCapabilities(wf *ir.Workflow, backendKind string, backend container.Backend) error {
 	if err := checkSnapshotCapability(wf, backend); err != nil {
 		return err
 	}

@@ -257,7 +257,7 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		return "", fmt.Errorf("engine.Run: build retry policy at path %q: %w", path, err)
 	}
 
-	inputFiles, err := resolveInputFiles(cs.InputFiles, scope, ictx.wf, ictx.blobs, ictx.runstate.Assets)
+	inputFiles, err := resolveInputFiles(cs.InputFiles, scope, ictx.wf, ictx.moduleID, ictx.blobs, ictx.runstate.Assets)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			// Committed artifact unreadable — internal error (content-address
@@ -267,7 +267,7 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		return failStep(ictx.log, path, OutcomePermanentFailure, err)
 	}
 
-	outputFiles, outputFileContracts, err := resolveOutputFiles(cs.OutputFiles, scope, ictx.runstate.Assets, ictx.blobs)
+	outputFiles, outputFileContracts, err := resolveOutputFiles(cs.OutputFiles, scope, ictx.moduleID, ictx.runstate.Assets, ictx.blobs)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			return "", fmt.Errorf("engine.Run: resolve output_files contracts at %q: %w", path, err)

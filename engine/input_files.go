@@ -32,7 +32,7 @@ var errArtifactFetch = errors.New("engine: input_files artifact fetch failed")
 // Ref errors (parse/undeclared/not-committed) return a plain error (caller →
 // permanent_failure); a Blobs.Get failure is wrapped with errArtifactFetch
 // (caller → internal halt). Sorted by dst for determinism.
-func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blobs state.Blobs, assets map[string]RunStartedAsset) ([]container.InputFile, error) {
+func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, moduleID string, blobs state.Blobs, assets map[string]RunStartedAsset) ([]container.InputFile, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
@@ -52,7 +52,7 @@ func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, blob
 		}
 		rawRef := in[dst]
 		if id, ok := template.ParseAssetRef(rawRef); ok {
-			files, err := resolveAssetInputFiles(resolvedDst, rawRef, id, assets, blobs)
+			files, err := resolveAssetInputFiles(resolvedDst, rawRef, moduleID, id, assets, blobs)
 			if err != nil {
 				return nil, fmt.Errorf("input_files[%s]: %w", dst, err)
 			}
@@ -91,14 +91,15 @@ type resolvedInputFile struct {
 	source string
 }
 
-func resolveAssetInputFiles(dst, rawRef, id string, assets map[string]RunStartedAsset, blobs state.Blobs) ([]resolvedInputFile, error) {
-	asset, ok := assets[id]
+func resolveAssetInputFiles(dst, rawRef, moduleID, id string, assets map[string]RunStartedAsset, blobs state.Blobs) ([]resolvedInputFile, error) {
+	key := QualifiedAssetKey(moduleID, id)
+	asset, ok := assets[key]
 	if !ok {
-		return nil, fmt.Errorf("%w: %s: asset %q was not recorded in run.started", errArtifactFetch, rawRef, id)
+		return nil, fmt.Errorf("%w: %s: asset %q was not recorded in run.started", errArtifactFetch, rawRef, key)
 	}
 	if !asset.IsDir {
 		if len(asset.Files) != 1 || asset.Files[0].Path != "." {
-			return nil, fmt.Errorf("%w: %s: file asset %q has invalid run-start manifest", errArtifactFetch, rawRef, id)
+			return nil, fmt.Errorf("%w: %s: file asset %q has invalid run-start manifest", errArtifactFetch, rawRef, key)
 		}
 		b, err := readRunStartedAssetFile(blobs, asset.Files[0])
 		if err != nil {
@@ -111,13 +112,13 @@ func resolveAssetInputFiles(dst, rawRef, id string, assets map[string]RunStarted
 	}
 	files := append([]RunStartedAssetFile(nil), asset.Files...)
 	if len(files) == 0 {
-		return nil, fmt.Errorf("%w: %s: directory asset %q has empty run-start manifest", errArtifactFetch, rawRef, id)
+		return nil, fmt.Errorf("%w: %s: directory asset %q has empty run-start manifest", errArtifactFetch, rawRef, key)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	out := make([]resolvedInputFile, 0, len(files))
 	for _, f := range files {
 		if !validAssetManifestPath(f.Path) {
-			return nil, fmt.Errorf("%w: %s: directory asset %q has unsafe manifest path %q", errArtifactFetch, rawRef, id, f.Path)
+			return nil, fmt.Errorf("%w: %s: directory asset %q has unsafe manifest path %q", errArtifactFetch, rawRef, key, f.Path)
 		}
 		b, err := readRunStartedAssetFile(blobs, f)
 		if err != nil {

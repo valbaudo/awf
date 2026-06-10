@@ -14,7 +14,7 @@ import (
 // substituted capture path. output_files paths are templated exactly like run:
 // and idempotency_key, so a path such as /work/records/{{ input.cve_id }}.json
 // captures — and commits, PATH-keyed in commit.go — under the substituted name.
-func resolveOutputFiles(ofs ir.OutputFiles, scope template.Scope, assets map[string]RunStartedAsset, blobs state.Blobs) ([]string, map[string]OutputFileContract, error) {
+func resolveOutputFiles(ofs ir.OutputFiles, scope template.Scope, moduleID string, assets map[string]RunStartedAsset, blobs state.Blobs) ([]string, map[string]OutputFileContract, error) {
 	if len(ofs) == 0 {
 		return nil, nil, nil
 	}
@@ -31,7 +31,7 @@ func resolveOutputFiles(ofs ir.OutputFiles, scope template.Scope, assets map[str
 		}
 		seenPaths[p] = of.Name
 		paths = append(paths, p)
-		contract, hasContract, err := resolveOutputFileContract(of, assets, blobs)
+		contract, hasContract, err := resolveOutputFileContract(of, moduleID, assets, blobs)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -45,7 +45,7 @@ func resolveOutputFiles(ofs ir.OutputFiles, scope template.Scope, assets map[str
 	return paths, contracts, nil
 }
 
-func resolveOutputFileContract(of ir.OutputFile, assets map[string]RunStartedAsset, blobs state.Blobs) (OutputFileContract, bool, error) {
+func resolveOutputFileContract(of ir.OutputFile, moduleID string, assets map[string]RunStartedAsset, blobs state.Blobs) (OutputFileContract, bool, error) {
 	if of.Format == "" && of.Schema == nil && of.SchemaRef == "" {
 		return OutputFileContract{}, false, nil
 	}
@@ -74,12 +74,13 @@ func resolveOutputFileContract(of ir.OutputFile, assets map[string]RunStartedAss
 	if !ok {
 		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref must be asset.<id>", of.Name)
 	}
-	asset, ok := assets[id]
+	key := QualifiedAssetKey(moduleID, id)
+	asset, ok := assets[key]
 	if !ok {
-		return OutputFileContract{}, false, fmt.Errorf("%w: output_files.%s: schema_ref asset %q was not recorded in run.started", errArtifactFetch, of.Name, id)
+		return OutputFileContract{}, false, fmt.Errorf("%w: output_files.%s: schema_ref asset %q was not recorded in run.started", errArtifactFetch, of.Name, key)
 	}
 	if asset.IsDir || len(asset.Files) != 1 || asset.Files[0].Path != "." {
-		return OutputFileContract{}, false, fmt.Errorf("%w: output_files.%s: schema_ref asset %q has invalid run-start manifest", errArtifactFetch, of.Name, id)
+		return OutputFileContract{}, false, fmt.Errorf("%w: output_files.%s: schema_ref asset %q has invalid run-start manifest", errArtifactFetch, of.Name, key)
 	}
 	raw, err := readRunStartedAssetFile(blobs, asset.Files[0])
 	if err != nil {
@@ -87,10 +88,10 @@ func resolveOutputFileContract(of ir.OutputFile, assets map[string]RunStartedAss
 	}
 	var schema ir.JSONSchema
 	if err := json.Unmarshal(raw, &schema); err != nil {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref asset %q is not JSON: %w", of.Name, id, err)
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref asset %q is not JSON: %w", of.Name, key, err)
 	}
 	if _, err := compileJSONSchema(&schema); err != nil {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref asset %q: %w", of.Name, id, err)
+		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref asset %q: %w", of.Name, key, err)
 	}
 	contract.Schema = &schema
 	return contract, true, nil

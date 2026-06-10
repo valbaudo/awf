@@ -273,7 +273,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// are reconstructed from their image/compose recipe on every (re)creation,
 	// including resume").
 	//
-	if err := checkWorkflowBackendCapabilities(ld.Workflow, kind, backend); err != nil {
+	if err := checkWorkflowBackendCapabilities(ld, kind, backend); err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
@@ -342,7 +342,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// Part D: same Threaded guard as run-start (continues: against a
 	// non-Threaded adapter). Run before appending run.resumed so a rejected
 	// resume is a no-op on the log.
-	if err := checkThreadedAdapters(ld.Workflow, r.resolverOrEmpty()); err != nil {
+	if err := checkThreadedAdaptersForLoadedDefinition(ld, r.resolverOrEmpty()); err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}

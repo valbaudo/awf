@@ -22,6 +22,28 @@ import (
 //     (a Lookup miss must not be read as "not threaded"),
 //   - nil if no step declares continues:, or every such adapter is Threaded.
 func checkThreadedAdapters(wf *ir.Workflow, resolver agent.Resolver) error {
+	return checkThreadedAdaptersForLoadedDefinition(&ir.LoadedDefinition{Workflow: wf}, resolver)
+}
+
+func checkThreadedAdaptersForLoadedDefinition(ld *ir.LoadedDefinition, resolver agent.Resolver) error {
+	if ld == nil {
+		return nil
+	}
+	return ld.WalkModules(func(module *ir.LoadedModule) error {
+		if module == nil {
+			return nil
+		}
+		if err := checkThreadedWorkflow(module.Workflow, resolver); err != nil {
+			if module.ID != "" {
+				return fmt.Errorf("module %s: %w", module.ID, err)
+			}
+			return err
+		}
+		return nil
+	})
+}
+
+func checkThreadedWorkflow(wf *ir.Workflow, resolver agent.Resolver) error {
 	if wf == nil {
 		return nil
 	}
@@ -49,7 +71,7 @@ func checkThreadedNodes(nodes ir.NodeList, resolver agent.Resolver) error {
 			if !adapter.Capabilities().Threaded {
 				return &ErrThreadedRequired{StepID: v.ID, Ref: v.Uses}
 			}
-		case *ir.CodeStep, *ir.SignalStep, *ir.Skip:
+		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip:
 			// no nested steps; cannot declare continues:
 		case *ir.If:
 			if err := checkThreadedNodes(v.Then, resolver); err != nil {

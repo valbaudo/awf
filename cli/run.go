@@ -94,7 +94,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	concreteBackendKind, err := selectRunBackend(*backendKind, ld.Workflow)
+	concreteBackendKind, err := selectRunBackendForLoadedDefinition(*backendKind, ld)
 	if err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
@@ -151,7 +151,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	defer cleanup()
 
-	if err := checkWorkflowBackendCapabilities(ld.Workflow, concreteBackendKind, backend); err != nil {
+	if err := checkWorkflowBackendCapabilities(ld, concreteBackendKind, backend); err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
@@ -231,7 +231,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// Part D: fail fast if any `continues:` step's adapter is not Threaded
 	// (mirrors the Containerless guard inside resolveRuntimes). Runs before
 	// the log is opened, so a rejected run leaves no state on disk.
-	if err := checkThreadedAdapters(ld.Workflow, r.resolverOrEmpty()); err != nil {
+	if err := checkThreadedAdaptersForLoadedDefinition(ld, r.resolverOrEmpty()); err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
@@ -247,7 +247,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		inputRef = ref
 	}
 
-	assetSnapshots, err := engine.StoreRunStartedAssets(blobs, ld.Assets)
+	assetSnapshots, err := engine.StoreRunStartedAssetsForLoadedDefinition(blobs, ld)
 	if err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage

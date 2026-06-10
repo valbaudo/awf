@@ -1381,6 +1381,89 @@ func TestCLIRunBackendInvalidValueIsExitUsage(t *testing.T) {
 	}
 }
 
+func TestRunBackendAutoScansImportedWorkflows(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	childPath := filepath.Join(dir, "child.awf.yaml")
+	if err := os.WriteFile(childPath, []byte(`workflow: child
+version: 1
+containers:
+  lab:
+    image: oci://example.com/lab@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: child.awf.yaml
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--backend", "auto", "--state-dir", stateDir, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	backendField := readRunStartedBackendField(t, stateDir, "test-run-1")
+	if backendField != engine.BackendDocker {
+		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendDocker)
+	}
+}
+
+func TestRunBackendNativeRejectsImportedDockerOnlyFeature(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	childPath := filepath.Join(dir, "child.awf.yaml")
+	if err := os.WriteFile(childPath, []byte(`workflow: child
+version: 1
+containers:
+  lab:
+    compose: lab/compose.yml
+    service: runner
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "lab"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lab", "compose.yml"), []byte("services:\n  runner:\n    image: example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: child.awf.yaml
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--backend", "native", "--state-dir", stateDir, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "module recon") || !strings.Contains(stderr.String(), "containers.lab.compose") {
+		t.Fatalf("stderr = %q, want imported module/path diagnostic", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "runs", "test-run-1", "log")); !os.IsNotExist(err) {
+		t.Fatalf("log exists after native import rejection; err = %v, want ErrNotExist", err)
+	}
+}
+
 func TestCLIRunRunStartedRecordsAssetSnapshots(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1437,6 +1520,136 @@ graph: []
 	}
 	assertRunStartedAssetFile(t, stateDir, fixtures.Files[0], "nested/a.txt", []byte("a"))
 	assertRunStartedAssetFile(t, stateDir, fixtures.Files[1], "z.txt", []byte("z"))
+}
+
+func TestRunStartedAssetsAreModuleQualified(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "root.schema.json"), []byte(`{"title":"root"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "recon.schema.json"), []byte(`{"title":"recon"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "outer", "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "outer", "inner", "inner.schema.json"), []byte(`{"title":"inner"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "recon.awf.yaml"), []byte(`workflow: recon
+version: 1
+assets:
+  schema: recon.schema.json
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "outer", "outer.awf.yaml"), []byte(`workflow: outer
+version: 1
+imports:
+  inner: inner/inner.awf.yaml
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "outer", "inner", "inner.awf.yaml"), []byte(`workflow: inner
+version: 1
+assets:
+  schema: inner.schema.json
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: recon.awf.yaml
+  outer: outer/outer.awf.yaml
+assets:
+  schema: root.schema.json
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	started := readRunStartedData(t, stateDir, "test-run-1")
+	if len(started.Assets) != 3 {
+		t.Fatalf("run.started.Assets len = %d, want 3: %#v", len(started.Assets), started.Assets)
+	}
+	assertRunStartedAssetFile(t, stateDir, started.Assets["schema"].Files[0], ".", []byte(`{"title":"root"}`))
+	assertRunStartedAssetFile(t, stateDir, started.Assets["recon/schema"].Files[0], ".", []byte(`{"title":"recon"}`))
+	assertRunStartedAssetFile(t, stateDir, started.Assets["outer.inner/schema"].Files[0], ".", []byte(`{"title":"inner"}`))
+}
+
+func TestThreadedGuardScansCallWorkflows(t *testing.T) {
+	t.Parallel()
+	fk := agentfake.New("anthropic/claude-code")
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dir := t.TempDir()
+	childPath := filepath.Join(dir, "child.awf.yaml")
+	if err := os.WriteFile(childPath, []byte(`workflow: child
+version: 1
+containers:
+  lab:
+    image: oci://example.com/lab@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    uses: anthropic/claude-code
+    container: lab
+  - id: refine
+    uses: anthropic/claude-code
+    container: lab
+    continues: draft
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(dir, "root.awf.yaml")
+	if err := os.WriteFile(rootPath, []byte(`workflow: root
+version: 1
+imports:
+  recon: child.awf.yaml
+containers: {}
+graph:
+  - id: recon
+    call: recon
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runner := &cli.Runner{
+		Backend:  container.NewFake(),
+		IDGen:    &clock.Fake{IDs: []string{"test-threaded-import-run"}},
+		Resolver: &reg,
+	}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--backend", "fake", "--state-dir", stateDir, rootPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does not support engine-threaded conversations") {
+		t.Fatalf("stderr = %q, want threaded guard diagnostic", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "runs", "test-threaded-import-run", "log")); !os.IsNotExist(err) {
+		t.Fatalf("log exists after threaded import rejection; err = %v, want ErrNotExist", err)
+	}
 }
 
 func TestCLIRunAssetBlobPutFailureDoesNotAppendRunStarted(t *testing.T) {
