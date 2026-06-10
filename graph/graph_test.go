@@ -40,6 +40,15 @@ func TestKindOfExhaustive(t *testing.T) {
 	}
 }
 
+func hasEdge(p Projection, want Edge) bool {
+	for _, e := range p.Edges {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestBuildStaticStructure checks paths, kinds, ids, parents, control edges, and opaque
 // `with:` passthrough across nested control nodes (gate + map).
 func TestBuildStaticStructure(t *testing.T) {
@@ -119,6 +128,69 @@ func TestBuildStaticDataEdges(t *testing.T) {
 	// control edges still present alongside data edges.
 	if !has(Edge{From: "build", To: "analyze", Kind: "control"}) {
 		t.Errorf("missing control edge build->analyze; edges=%+v", got.Edges)
+	}
+}
+
+func TestBuildStaticCallInputDataEdge(t *testing.T) {
+	wf := &ir.Workflow{
+		ID: "call-data",
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "prep", Run: "true"},
+			&ir.CallStep{
+				ID:   "recon",
+				Call: "child",
+				Input: map[string]ir.TemplateValue{
+					"target": []byte(`"{{ step.prep.finding }}"`),
+				},
+			},
+		},
+	}
+
+	got := BuildStatic(wf)
+
+	if !hasEdge(got, Edge{From: "prep", To: "recon", Kind: "data"}) {
+		t.Errorf("missing call input data edge prep->recon; edges=%+v", got.Edges)
+	}
+}
+
+func TestBuildStaticNestedCallInputDataEdgeUsesImportedModuleIndex(t *testing.T) {
+	root := &ir.Workflow{
+		ID: "root",
+		Graph: ir.NodeList{
+			&ir.CallStep{ID: "outer", Call: "child"},
+		},
+	}
+	child := &ir.Workflow{
+		ID: "child",
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "prep", Run: "true"},
+			&ir.CallStep{
+				ID:   "inner",
+				Call: "grand",
+				Input: map[string]ir.TemplateValue{
+					"target": []byte(`{"finding":"{{ step.prep.finding }}"}`),
+				},
+			},
+		},
+	}
+	grand := &ir.Workflow{ID: "grand"}
+	ld := &ir.LoadedDefinition{
+		Workflow: root,
+		Modules: map[string]*ir.LoadedModule{
+			"":          {ID: "", Workflow: root},
+			"mod-child": {ID: "mod-child", Workflow: child},
+			"mod-grand": {ID: "mod-grand", Workflow: grand},
+		},
+		ImportEdges: []ir.LoadedImportEdge{
+			{ParentID: "", ImportID: "child", ChildID: "mod-child"},
+			{ParentID: "mod-child", ImportID: "grand", ChildID: "mod-grand"},
+		},
+	}
+
+	got := BuildStaticLoaded(ld)
+
+	if !hasEdge(got, Edge{From: "outer.workflow.prep", To: "outer.workflow.inner", Kind: "data"}) {
+		t.Errorf("missing nested call input data edge outer.workflow.prep->outer.workflow.inner; edges=%+v", got.Edges)
 	}
 }
 

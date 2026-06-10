@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"encoding/json"
+
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/template"
 )
@@ -54,6 +56,8 @@ func producerRefs(n ir.Node) []string {
 		add(v.Continues) // continues: <id> is a thread dependency on a prior agent step
 	case *ir.SignalStep:
 		addExpr(v.Where)
+	case *ir.CallStep:
+		addTemplateValues(v.Input, addSlots)
 	case *ir.If:
 		addExpr(string(v.Cond))
 	case *ir.Loop:
@@ -72,6 +76,16 @@ func producerRefs(n ir.Node) []string {
 		addSlots(string(v.Service))
 	}
 	return ids
+}
+
+func addTemplateValues(values map[string]ir.TemplateValue, f func(string)) {
+	for _, raw := range values {
+		var decoded any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			continue
+		}
+		addRawConfigStrings(decoded, f)
+	}
 }
 
 // exprRefs extracts step-producer ids from a bare expression (if.cond, loop.until,
