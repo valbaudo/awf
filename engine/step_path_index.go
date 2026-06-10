@@ -20,6 +20,8 @@ func StepPathIndex(wf *ir.Workflow) map[string]string {
 			out[v.ID] = path
 		case *ir.SignalStep:
 			out[v.ID] = path
+		case *ir.CallStep:
+			out[v.ID] = path
 		}
 	})
 	return out
