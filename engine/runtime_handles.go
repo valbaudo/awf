@@ -13,7 +13,7 @@ import (
 
 const callTeardownGrace = 30 * time.Second
 
-func createRuntimeHandles(ctx context.Context, ld *LocalDispatcher, wf *ir.Workflow, composeFiles map[string][]byte, runtimeParent string) (map[string]container.Handle, error) {
+func createRuntimeHandles(ctx context.Context, ld *LocalDispatcher, wf *ir.Workflow, composeFiles map[string][]byte, runtimeParent string, runstate *RunState) (map[string]container.Handle, error) {
 	handles := make(map[string]container.Handle, len(wf.Containers))
 	mapImageTargets := ir.MapImageTargets(wf)
 	names := make([]string, 0, len(wf.Containers))
@@ -25,9 +25,10 @@ func createRuntimeHandles(ctx context.Context, ld *LocalDispatcher, wf *ir.Workf
 		if mapImageTargets[name] {
 			continue
 		}
+		handleKey := QualifiedContainerKey(runtimeParent, name)
 		spec := ContainerSpecFor(wf, composeFiles, name)
-		spec.Name = QualifiedContainerKey(runtimeParent, name)
-		h, err := ld.Backend.Create(ctx, spec)
+		spec.Name = handleKey
+		h, err := createOrRestoreRuntimeHandle(ctx, ld, wf.Containers[name], spec, handleKey, runstate)
 		if err != nil {
 			destroyErr := destroyRuntimeHandles(ld.Backend, handles)
 			if destroyErr != nil {
@@ -35,9 +36,18 @@ func createRuntimeHandles(ctx context.Context, ld *LocalDispatcher, wf *ir.Workf
 			}
 			return handles, fmt.Errorf("create child container %q: %w", name, err)
 		}
-		handles[QualifiedContainerKey(runtimeParent, name)] = h
+		handles[handleKey] = h
 	}
 	return handles, nil
+}
+
+func createOrRestoreRuntimeHandle(ctx context.Context, ld *LocalDispatcher, ctr ir.Container, spec container.ContainerSpec, handleKey string, runstate *RunState) (container.Handle, error) {
+	if ctr.Snapshot == "workspace" && runstate != nil {
+		if ref := runstate.SnapshotRefs[handleKey]; ref != "" {
+			return ld.Backend.Restore(ctx, container.SnapshotRef(ref), handleKey)
+		}
+	}
+	return ld.Backend.Create(ctx, spec)
 }
 
 func destroyRuntimeHandles(backend container.Backend, handles map[string]container.Handle) error {

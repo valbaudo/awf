@@ -194,7 +194,7 @@ func interpNode(
 	case *ir.AgentStep:
 		return runAgentStepWithContext(ctx, v, ir.PathFor(parent, "", v.ID, idx), ictx)
 	case *ir.SignalStep:
-		return runSignalStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), ictx.wf, ictx.runstate, ictx.dispatcher, ictx.log, ictx.blobs, ictx.clk, ictx.tap, ictx.broker)
+		return runSignalStepWithContext(ctx, v, ir.PathFor(parent, "", v.ID, idx), ictx)
 	case *ir.CallStep:
 		return runCallStep(ctx, v, ir.PathFor(parent, "", v.ID, idx), ictx)
 	case *ir.Try:

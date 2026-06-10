@@ -50,13 +50,24 @@ func runSignalStep(
 	_ io.Writer,
 	broker *signal.Broker,
 ) (Outcome, error) {
+	return runSignalStepWithContext(ctx, ss, path, interpreterContext{
+		wf: wf, runstate: runstate, dispatcher: nil, log: log, blobs: blobs, broker: broker,
+	})
+}
+
+func runSignalStepWithContext(
+	ctx context.Context,
+	ss *ir.SignalStep,
+	path string,
+	ictx interpreterContext,
+) (Outcome, error) {
 	// 1. Resume-check.
-	if _, done := runstate.LookupCompleted(path); done {
+	if _, done := ictx.runstate.LookupCompleted(path); done {
 		return OutcomeOK, nil
 	}
 
 	// 2. Nil-broker defense.
-	if broker == nil {
+	if ictx.broker == nil {
 		return "", fmt.Errorf("engine.runSignalStep: signal step %q reached but engine.Run was called with nil *signal.Broker — CLI/conformance must construct a broker before invoking the engine on a workflow with signal steps", path)
 	}
 
@@ -73,11 +84,11 @@ func runSignalStep(
 	//    validation success implies round-2's will too.
 	var payloadRef string
 	var typedOutputs map[string]any
-	if entry, ok := runstate.LookupSignalReceivedAt(path); ok {
+	if entry, ok := ictx.runstate.LookupSignalReceivedAt(path); ok {
 		payloadRef = entry.PayloadRef
 		// Re-derive typed payload from CAS if schema declared.
 		if ss.OutputSchema != nil && payloadRef != "" {
-			raw, gerr := blobs.Get(payloadRef)
+			raw, gerr := ictx.blobs.Get(payloadRef)
 			if gerr != nil {
 				return "", fmt.Errorf("engine.runSignalStep: read half-commit payload at %q: %w", path, gerr)
 			}
@@ -92,7 +103,7 @@ func runSignalStep(
 		// Skip broker.Receive AND signal.received Append (already journaled);
 		// jump to node.completed at step 7b below.
 	} else {
-		appendNodeStarted(log, path, "signal")
+		appendNodeStarted(ictx.log, path, "signal")
 
 		// 4. Block on broker.Receive.
 		timeout := time.Duration(0)
@@ -110,22 +121,22 @@ func runSignalStep(
 			rerr error
 		)
 		if ss.Where != "" {
-			match, perr := buildWherePredicate(ss.Where, runstate, wf, path)
+			match, perr := buildWherePredicateWithScope(ss.Where, ictx.scope(path))
 			if perr != nil {
 				// Slot substitution / expr parse failed at runtime — an author
 				// bug the validator should have caught, but a {{ }} ref that
 				// resolves to a composite (AWF4004) or an unresolved engine ref
 				// (AWF4002) only surfaces here. Permanent: re-running is identical.
-				return failStep(log, path, OutcomePermanentFailure,
+				return failStep(ictx.log, path, OutcomePermanentFailure,
 					fmt.Errorf("signal %q where: %w", ss.Await, perr))
 			}
-			d, rerr = broker.ReceiveMatching(ctx, ss.Await, timeout, match)
+			d, rerr = ictx.broker.ReceiveMatching(ctx, ss.Await, timeout, match)
 		} else {
-			d, rerr = broker.Receive(ctx, ss.Await, timeout)
+			d, rerr = ictx.broker.Receive(ctx, ss.Await, timeout)
 		}
 		if rerr != nil {
 			if errors.Is(rerr, context.DeadlineExceeded) {
-				return failStep(log, path, OutcomeRetryableFailure,
+				return failStep(ictx.log, path, OutcomeRetryableFailure,
 					fmt.Errorf("signal %q await timeout (%s)", ss.Await, timeout))
 			}
 			// M7 fix: ctx.Canceled caused by the operator (cancel.json /
@@ -134,11 +145,11 @@ func runSignalStep(
 			// event after this handler returns. Don't emit node.failed —
 			// that'd create a redundant terminal record + block resume on
 			// cli/resume.go's node.failed refusal class.
-			if runstate.IsCancelled() || runstate.LookupPaused() != nil {
+			if ictx.runstate.IsCancelled() || ictx.runstate.LookupPaused() != nil {
 				return "", rerr
 			}
 			// True transport / Ctrl-C error — emit node.failed.
-			return failStep(log, path, OutcomeRetryableFailure,
+			return failStep(ictx.log, path, OutcomeRetryableFailure,
 				fmt.Errorf("signal %q await: %w", ss.Await, rerr))
 		}
 
@@ -149,7 +160,7 @@ func runSignalStep(
 		if ss.OutputSchema != nil {
 			validated, verr := ValidateAgainstSchema(d.Payload, ss.OutputSchema)
 			if verr != nil {
-				return failStep(log, path, OutcomeRetryableFailure,
+				return failStep(ictx.log, path, OutcomeRetryableFailure,
 					fmt.Errorf("signal %q payload failed output_schema validation: %w", ss.Await, verr))
 			}
 			typedOutputs = validated
@@ -167,7 +178,7 @@ func runSignalStep(
 			if mErr != nil {
 				return "", fmt.Errorf("engine.runSignalStep: marshal canonical payload at %q: %w", path, mErr)
 			}
-			ref, perr := blobs.Put(canonicalBytes)
+			ref, perr := ictx.blobs.Put(canonicalBytes)
 			if perr != nil {
 				return "", fmt.Errorf("engine.runSignalStep: put payload at %q: %w", path, perr)
 			}
@@ -175,7 +186,7 @@ func runSignalStep(
 		} else if len(d.Payload) > 0 {
 			// No schema declared → CAS the raw bytes as-is (no canonicalization
 			// target; the operator's bytes are the wire form).
-			ref, perr := blobs.Put(d.Payload)
+			ref, perr := ictx.blobs.Put(d.Payload)
 			if perr != nil {
 				return "", fmt.Errorf("engine.runSignalStep: put payload at %q: %w", path, perr)
 			}
@@ -191,16 +202,16 @@ func runSignalStep(
 		if mErr != nil {
 			return "", fmt.Errorf("engine.runSignalStep: marshal signal.received at %q: %w", path, mErr)
 		}
-		if err := log.Append(state.Event{Type: EventSignalReceived, Path: path, Data: sigData}); err != nil {
+		if err := ictx.log.Append(state.Event{Type: EventSignalReceived, Path: path, Data: sigData}); err != nil {
 			return "", fmt.Errorf("engine.runSignalStep: append signal.received at %q: %w", path, err)
 		}
-		if err := log.Sync(); err != nil {
+		if err := ictx.log.Sync(); err != nil {
 			return "", fmt.Errorf("engine.runSignalStep: sync after signal.received at %q: %w", path, err)
 		}
 		// Mirror in RunState (used by Phase 6 obs + as the path-keyed lookup
 		// for any future re-entry of the same path).
-		runstate.AppendSignal(ss.Await, SignalEntry{Seq: seq, PayloadRef: payloadRef})
-		runstate.RecordSignalReceivedAt(path, SignalReceivedEntry{
+		ictx.runstate.AppendSignal(ss.Await, SignalEntry{Seq: seq, PayloadRef: payloadRef})
+		ictx.runstate.RecordSignalReceivedAt(path, SignalReceivedEntry{
 			Seq:        seq,
 			PayloadRef: payloadRef,
 		})
@@ -209,7 +220,7 @@ func runSignalStep(
 	// 7b. Append node.completed + fsync. Reached by both the fresh-receive
 	//     path (above) AND the half-commit-resume path (the if-branch sets
 	//     payloadRef + typedOutputs and falls through).
-	if err := appendNodeCompleted(log, path, NodeCompletedData{
+	if err := appendNodeCompleted(ictx.log, path, NodeCompletedData{
 		Outcome:    string(OutcomeOK),
 		OutputsRef: payloadRef,
 	}); err != nil {
@@ -217,7 +228,7 @@ func runSignalStep(
 	}
 
 	// 7c. Update RunState.Completed mirror.
-	runstate.RecordCompleted(path, NodeResult{
+	ictx.runstate.RecordCompleted(path, NodeResult{
 		Outcome:    OutcomeOK,
 		Outputs:    typedOutputs,
 		OutputsRef: payloadRef,
@@ -225,16 +236,15 @@ func runSignalStep(
 	return OutcomeOK, nil
 }
 
-// buildWherePredicate compiles a signal step's where: clause into a payload
-// matcher. The {{ … }} slots substitute ONCE against the engine scope (the
-// correlation value is constant across candidate signals); the rendered string
-// parses as a bounded boolean Expr (reusing the SAME evaluator as if/loop/gate —
-// no arithmetic). The returned MatchFunc parses each candidate payload as JSON
-// and evaluates the expr against a payloadScope. A candidate whose payload is
-// not a JSON object → (false, err) so tryConsumeMatching SKIPS it (leaves it
-// buffered) rather than consuming it.
-func buildWherePredicate(where string, runstate *RunState, wf *ir.Workflow, path string) (signal.MatchFunc, error) {
-	engineScope := NewScope(runstate, wf, path)
+// buildWherePredicateWithScope compiles a signal step's where: clause into a
+// payload matcher. The {{ … }} slots substitute ONCE against the engine scope
+// (the correlation value is constant across candidate signals); the rendered
+// string parses as a bounded boolean Expr (reusing the SAME evaluator as
+// if/loop/gate — no arithmetic). The returned MatchFunc parses each candidate
+// payload as JSON and evaluates the expr against a payloadScope. A candidate
+// whose payload is not a JSON object → (false, err) so tryConsumeMatching SKIPS
+// it (leaves it buffered) rather than consuming it.
+func buildWherePredicateWithScope(where string, engineScope template.Scope) (signal.MatchFunc, error) {
 	rendered, err := template.Substitute(where, engineScope)
 	if err != nil {
 		return nil, fmt.Errorf("substitute where slots: %w", err)

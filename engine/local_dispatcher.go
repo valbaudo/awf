@@ -402,6 +402,11 @@ func SplitContainerRef(ref string) (bare, service string) {
 	return ref, ""
 }
 
+func (d *LocalDispatcher) handleKey(containerRef string) string {
+	bare, _ := SplitContainerRef(containerRef)
+	return QualifiedContainerKey(d.RuntimeParent, bare)
+}
+
 // WithItemHandle returns a shallow clone of d with Handles cloned and the
 // (name → h) entry overridden (or inserted). Slice 3.4: the map executor
 // (engine/map.go) calls this per item to retarget body's container lookup

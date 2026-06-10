@@ -27,7 +27,7 @@ func runCallStep(ctx context.Context, call *ir.CallStep, path string, ictx inter
 	}
 
 	runtimeParent := CallWorkflowRuntimePath(path)
-	childHandles, err := createRuntimeHandles(ctx, ld, child.Workflow, child.ComposeFiles, runtimeParent)
+	childHandles, err := createRuntimeHandles(ctx, ld, child.Workflow, child.ComposeFiles, runtimeParent, ictx.runstate)
 	if err != nil {
 		return failStep(ictx.log, path, OutcomeRetryableFailure, err)
 	}

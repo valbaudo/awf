@@ -90,8 +90,10 @@ func runMapReduce(
 		// dispatcher does NOT already hold (not pre-provisioned) is Created +
 		// Destroyed here.
 		bare, _ := SplitContainerRef(n.Reduce.Container)
-		if _, have := ld.Handles[bare]; !have {
+		handleKey := ld.handleKey(bare)
+		if _, have := ld.Handles[handleKey]; !have {
 			spec := ContainerSpecFor(wf, ld.ComposeFiles, bare)
+			spec.Name = handleKey
 			rh, cerr := ld.Backend.Create(ctx, spec)
 			if cerr != nil {
 				return "", fmt.Errorf("engine.runMapReduce: create reduce container %q: %w", n.Reduce.Container, cerr)

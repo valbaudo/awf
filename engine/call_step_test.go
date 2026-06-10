@@ -315,6 +315,217 @@ func TestRunCallStepChildStepRefsResolveWithinChildWorkflow(t *testing.T) {
 	}
 }
 
+func TestRunCallStepResumeRestoresChildSnapshotHandle(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.fake.WithBlobs(rig.blobs)
+	rig.seedRunStarted(t)
+	inputRef, err := rig.blobs.Put([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("seed call input: %v", err)
+	}
+	if err := rig.log.Append(state.Event{
+		Type: EventCallStarted,
+		Path: "recon",
+		Data: marshalOrFatal(t, CallStartedData{InputRef: inputRef}),
+	}); err != nil {
+		t.Fatalf("seed call.started: %v", err)
+	}
+	snapshotRef, err := rig.blobs.Put([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+	if err := rig.log.Append(state.Event{
+		Type: EventNodeCompleted,
+		Path: "recon.workflow.produce",
+		Data: marshalOrFatal(t, NodeCompletedData{
+			Outcome:     string(OutcomeOK),
+			SnapshotRef: snapshotRef,
+			Container:   QualifiedContainerKey("recon.workflow", "c"),
+		}),
+	}); err != nil {
+		t.Fatalf("seed child node.completed: %v", err)
+	}
+	folded, err := Fold(mustFoldEvents(t, rig.log), rig.blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	rig.rs = folded
+	rig.fake.ProgramExec("consume", container.ExecResult{ExitCode: 0}, nil)
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Containers: map[string]ir.Container{
+			"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Snapshot: "workspace"},
+		},
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "produce", Container: "c", Run: "produce"},
+			&ir.CodeStep{ID: "consume", Container: "c", Run: "consume"},
+		},
+	}
+
+	oc, err := Run(context.Background(), simpleCallNoInputDefinition(child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	if len(rig.fake.RestoreCalls) != 1 {
+		t.Fatalf("RestoreCalls len = %d, want 1", len(rig.fake.RestoreCalls))
+	}
+	restore := rig.fake.RestoreCalls[0]
+	if restore.Name != "recon.workflow::c" || string(restore.Ref) != snapshotRef {
+		t.Fatalf("RestoreCalls[0] = %+v, want name recon.workflow::c ref %q", restore, snapshotRef)
+	}
+	if len(rig.fake.ExecHandles) != 1 || rig.fake.ExecHandles[0].Name != "recon.workflow::c" {
+		t.Fatalf("exec handles = %+v, want consume on restored qualified child handle", rig.fake.ExecHandles)
+	}
+}
+
+func TestRunCallStepChildMapReduceReusesQualifiedContainer(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rig.fake.ProgramExec("scan a", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"k":"a"}`),
+	}, nil)
+	rig.fake.ProgramExec("merge", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"csv_rows":1}`),
+	}, nil)
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Input: &ir.JSONSchema{
+			"type":       "object",
+			"properties": map[string]any{"items": map[string]any{"type": "array"}},
+		},
+		Containers: map[string]ir.Container{
+			"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+		},
+		Graph: ir.NodeList{
+			&ir.Map{
+				ID:          "fanout",
+				Over:        ir.Expr("{{ input.items }}"),
+				As:          "item",
+				Container:   "c",
+				Concurrency: 1,
+				Body: ir.NodeList{
+					&ir.CodeStep{ID: "scan", Container: "c", Run: "scan {{ item }}", OutputSchema: awfStringObjectSchema("k")},
+				},
+				Reduce: &ir.Reduce{Run: "merge", Container: "c", OutputSchema: awfIntegerObjectSchema("csv_rows")},
+			},
+		},
+	}
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Graph: ir.NodeList{
+			&ir.CallStep{ID: "recon", Call: "scan", Input: map[string]ir.TemplateValue{
+				"items": json.RawMessage(`["a"]`),
+			}},
+		},
+	}
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	var childContainerCreates int
+	for _, spec := range rig.fake.CreateSpecs {
+		if spec.Name == "recon.workflow::c" {
+			childContainerCreates++
+		}
+	}
+	if childContainerCreates != 1 {
+		t.Fatalf("qualified child container creates = %d, want 1 (reducer must reuse the declared handle)", childContainerCreates)
+	}
+	var reduceHandle *container.Handle
+	for i, call := range rig.fake.Calls {
+		if call.Run == "merge" {
+			reduceHandle = &rig.fake.ExecHandles[i]
+			break
+		}
+	}
+	if reduceHandle == nil {
+		t.Fatal("reduce command was not executed")
+	}
+	if reduceHandle.Name != "recon.workflow::c" {
+		t.Fatalf("reduce handle name = %q, want recon.workflow::c", reduceHandle.Name)
+	}
+}
+
+func TestRunCallStepChildSignalWhereUsesChildScope(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	b := tempBroker(t)
+	if _, err := b.WriteSignal("ready", []byte(`{"token":"parent-token","value":"wrong"}`)); err != nil {
+		t.Fatalf("WriteSignal wrong: %v", err)
+	}
+	if _, err := b.WriteSignal("ready", []byte(`{"token":"child-token","value":"child-value"}`)); err != nil {
+		t.Fatalf("WriteSignal match: %v", err)
+	}
+	rig.fake.ProgramExec("produce", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"value":"child-value"}`),
+	}, nil)
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Graph: ir.NodeList{
+			&ir.CallStep{ID: "recon", Call: "scan", Input: map[string]ir.TemplateValue{
+				"token": json.RawMessage(`"child-token"`),
+			}},
+		},
+	}
+	child := &ir.Workflow{
+		ID:         "scan",
+		Version:    1,
+		Input:      awfStringObjectSchema("token"),
+		Containers: map[string]ir.Container{"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "produce", Container: "c", Run: "produce", OutputSchema: awfStringObjectSchema("value")},
+			&ir.SignalStep{
+				ID:           "wait",
+				Await:        "ready",
+				Where:        `token == "{{ input.token }}" && value == "{{ step.produce.value }}"`,
+				OutputSchema: signalTokenValueSchema(),
+			},
+		},
+	}
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{Broker: b})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	nr, ok := rig.rs.LookupCompleted("recon.workflow.wait")
+	if !ok {
+		t.Fatal("missing child signal completion")
+	}
+	if nr.Outputs["token"] != "child-token" || nr.Outputs["value"] != "child-value" {
+		t.Fatalf("signal outputs = %+v, want child token/value", nr.Outputs)
+	}
+	d, err := b.Receive(context.Background(), "ready", 0)
+	if err != nil {
+		t.Fatalf("Receive remaining: %v", err)
+	}
+	if d.Seq != 1 {
+		t.Fatalf("remaining signal seq = %d, want non-matching seq 1 left buffered", d.Seq)
+	}
+}
+
 func TestRunCallStepRepeatedCallsHaveIsolatedContainers(t *testing.T) {
 	rig := newCallRunRig(t)
 	rig.seedRunStarted(t)
@@ -536,6 +747,34 @@ func childNoOutputWorkflow(id, run string) *ir.Workflow {
 		Containers: map[string]ir.Container{"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
 		Graph: ir.NodeList{
 			&ir.CodeStep{ID: "work", Container: "c", Run: run},
+		},
+	}
+}
+
+func awfIntegerObjectSchema(fields ...string) *ir.JSONSchema {
+	props := map[string]any{}
+	required := make([]any, 0, len(fields))
+	for _, field := range fields {
+		props[field] = map[string]any{"type": "integer"}
+		required = append(required, field)
+	}
+	schema := ir.JSONSchema{
+		"type":                 "object",
+		"properties":           props,
+		"required":             required,
+		"additionalProperties": false,
+	}
+	return &schema
+}
+
+func signalTokenValueSchema() *ir.JSONSchema {
+	return &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"token", "value"},
+		"properties": map[string]any{
+			"token": map[string]any{"type": "string"},
+			"value": map[string]any{"type": "string"},
 		},
 	}
 }
