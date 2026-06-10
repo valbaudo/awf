@@ -2,6 +2,7 @@ package graph
 
 import (
 	"encoding/json"
+	"sort"
 
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/template"
@@ -79,9 +80,14 @@ func producerRefs(n ir.Node) []string {
 }
 
 func addTemplateValues(values map[string]ir.TemplateValue, f func(string)) {
-	for _, raw := range values {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
 		var decoded any
-		if err := json.Unmarshal(raw, &decoded); err != nil {
+		if err := json.Unmarshal(values[key], &decoded); err != nil {
 			continue
 		}
 		addRawConfigStrings(decoded, f)

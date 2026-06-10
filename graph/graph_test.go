@@ -194,6 +194,45 @@ func TestBuildStaticNestedCallInputDataEdgeUsesImportedModuleIndex(t *testing.T)
 	}
 }
 
+func TestBuildStaticCallInputDataEdgesDeterministic(t *testing.T) {
+	build := func() []byte {
+		wf := &ir.Workflow{
+			ID: "call-input-determinism",
+			Graph: ir.NodeList{
+				&ir.CodeStep{ID: "a", Run: "true"},
+				&ir.CodeStep{ID: "b", Run: "true"},
+				&ir.CodeStep{ID: "c", Run: "true"},
+				&ir.CodeStep{ID: "d", Run: "true"},
+				&ir.CallStep{
+					ID:   "recon",
+					Call: "child",
+					Input: map[string]ir.TemplateValue{
+						"alpha": []byte(`"{{ step.a.output }}"`),
+						"bravo": []byte(`"{{ step.b.output }}"`),
+						"delta": []byte(`"{{ step.d.output }}"`),
+						"charlie": []byte(`{
+							"finding": "{{ step.c.output }}",
+							"dupe": "{{ step.a.output }}"
+						}`),
+					},
+				},
+			},
+		}
+		b, err := json.Marshal(BuildStatic(wf))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+
+	want := string(build())
+	for i := 0; i < 200; i++ {
+		if got := string(build()); got != want {
+			t.Fatalf("BuildStatic call-input graph JSON changed across repeated builds:\nfirst=%s\nlater=%s", want, got)
+		}
+	}
+}
+
 // TestBuildStaticSkipOmitted verifies a `skip` node is omitted and the control edge
 // connects the surrounding siblings directly.
 func TestBuildStaticSkipOmitted(t *testing.T) {
