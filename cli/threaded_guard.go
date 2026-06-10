@@ -52,12 +52,11 @@ func checkThreadedWorkflow(wf *ir.Workflow, moduleID string, resolver agent.Reso
 }
 
 // checkThreadedNodes is the recursive worker. It descends into every
-// structural-node type that can contain steps. Unlike walkAgentRefsNodes
-// (cli/runtimes.go), it DOES descend into map.body: a continues: step inside a
-// map body still resolves an adapter and still needs Threaded. This switch must
-// stay in sync with walkAgentRefsNodes (cli/runtimes.go); when ir/ adds a new
-// node type, update both (the default arm is unreachable from outside ir/ —
-// ir.Node is a closed sum type with an unexported isNode() marker).
+// structural-node type that can contain steps: a continues: step inside a map
+// body still resolves an adapter and still needs Threaded. This switch must
+// stay in sync with the runtime-ref traversal; when ir/ adds a new node type,
+// update both (the default arm is unreachable from outside ir/ — ir.Node is a
+// closed sum type with an unexported isNode() marker).
 func checkThreadedNodes(wf *ir.Workflow, moduleID string, nodes ir.NodeList, resolver agent.Resolver) error {
 	for _, n := range nodes {
 		switch v := n.(type) {
@@ -120,8 +119,8 @@ func checkThreadedNodes(wf *ir.Workflow, moduleID string, nodes ir.NodeList, res
 		default:
 			// Unreachable from outside ir/ (ir.Node is a closed sum type with an
 			// unexported isNode() marker). Defensive: keep this switch in sync with
-			// walkAgentRefsNodes (cli/runtimes.go) when a new ir.Node type lands.
-			panic(fmt.Sprintf("checkThreadedAdapters: unhandled ir.Node type %T (extend the switch; mirror walkAgentRefsNodes in cli/runtimes.go)", n))
+			// the runtime-ref traversal when a new ir.Node type lands.
+			panic(fmt.Sprintf("checkThreadedAdapters: unhandled ir.Node type %T (extend the switch; mirror the runtime-ref traversal)", n))
 		}
 	}
 	return nil

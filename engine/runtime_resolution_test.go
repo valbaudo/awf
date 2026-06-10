@@ -80,3 +80,85 @@ func TestWalkRuntimeRefsUsesModuleQualifiedRoleRefs(t *testing.T) {
 		t.Fatalf("WalkRuntimeRefs Uses = %q, want %q", refs[0].Uses, want)
 	}
 }
+
+func TestWalkRuntimeRefsIncludesContainerlessMapBodyAgent(t *testing.T) {
+	wf := &ir.Workflow{
+		Graph: ir.NodeList{
+			&ir.Map{
+				Over:        "input.items",
+				As:          "item",
+				Container:   "lab",
+				Concurrency: 1,
+				Body: ir.NodeList{
+					&ir.AgentStep{ID: "audit", Uses: "awf/llm"},
+				},
+			},
+		},
+	}
+
+	refs := WalkRuntimeRefs("", "", wf)
+	if len(refs) != 1 {
+		t.Fatalf("WalkRuntimeRefs len = %d, want 1: %+v", len(refs), refs)
+	}
+	if refs[0].Uses != "awf/llm" || refs[0].Container != "" {
+		t.Fatalf("WalkRuntimeRefs[0] = %+v, want awf/llm containerless", refs[0])
+	}
+}
+
+func TestWalkRuntimeRefsIncludesContainerlessComposeBodyAgent(t *testing.T) {
+	wf := &ir.Workflow{
+		Graph: ir.NodeList{
+			&ir.Compose{
+				As:      "lab",
+				From:    "step.make.files.compose",
+				Service: "api",
+				Body: ir.NodeList{
+					&ir.AgentStep{ID: "audit", Uses: "awf/llm"},
+				},
+			},
+		},
+	}
+
+	refs := WalkRuntimeRefs("", "", wf)
+	if len(refs) != 1 {
+		t.Fatalf("WalkRuntimeRefs len = %d, want 1: %+v", len(refs), refs)
+	}
+	if refs[0].Uses != "awf/llm" || refs[0].Container != "" {
+		t.Fatalf("WalkRuntimeRefs[0] = %+v, want awf/llm containerless", refs[0])
+	}
+}
+
+func TestWalkRuntimeRefsSkipsRuntimeCreatedContainerAliases(t *testing.T) {
+	wf := &ir.Workflow{
+		Graph: ir.NodeList{
+			&ir.Map{
+				Over:        "input.items",
+				As:          "item",
+				Container:   "dyn",
+				Image:       "oci://repo/{{ item.image }}",
+				Concurrency: 1,
+				Body: ir.NodeList{
+					&ir.AgentStep{ID: "dynamic_map", Uses: "test/map", Container: "dyn"},
+					&ir.AgentStep{ID: "containerless_map", Uses: "awf/llm"},
+				},
+			},
+			&ir.Compose{
+				As:      "rt",
+				From:    "step.make.files.compose",
+				Service: "api",
+				Body: ir.NodeList{
+					&ir.AgentStep{ID: "dynamic_compose", Uses: "test/compose", Container: "rt:api"},
+					&ir.AgentStep{ID: "containerless_compose", Uses: "awf/llm"},
+				},
+			},
+		},
+	}
+
+	refs := WalkRuntimeRefs("", "", wf)
+	if len(refs) != 1 {
+		t.Fatalf("WalkRuntimeRefs len = %d, want one deduped containerless ref: %+v", len(refs), refs)
+	}
+	if refs[0].Uses != "awf/llm" || refs[0].Container != "" {
+		t.Fatalf("WalkRuntimeRefs[0] = %+v, want awf/llm containerless", refs[0])
+	}
+}

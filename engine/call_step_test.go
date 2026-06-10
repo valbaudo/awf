@@ -380,6 +380,77 @@ func TestRunCallStepChildLocalRoleDispatchesWithChildRoleConfig(t *testing.T) {
 	}
 }
 
+func TestRunCallStepCallStartedPinsContainerlessMapBodyAgent(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	base := agentfake.New("test/base").WithVersion("base-v1").WithCaps(agent.Caps{Containerless: true})
+	var reg agent.Registry
+	if err := reg.Register(base); err != nil {
+		t.Fatalf("Register base: %v", err)
+	}
+
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Graph: ir.NodeList{&ir.CallStep{ID: "recon", Call: "scan", Input: map[string]ir.TemplateValue{
+			"items": json.RawMessage(`[]`),
+		}}},
+	}
+	childInput := ir.JSONSchema{
+		"type": "object",
+		"properties": map[string]any{
+			"items": map[string]any{"type": "array"},
+		},
+		"required":             []any{"items"},
+		"additionalProperties": false,
+	}
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Input:   &childInput,
+		Agents: map[string]ir.AgentRole{
+			"auditor": {Uses: "test/base"},
+		},
+		Graph: ir.NodeList{
+			&ir.Map{
+				Over:        ir.Expr("{{ input.items }}"),
+				As:          "item",
+				Container:   "lab",
+				Concurrency: 1,
+				Body: ir.NodeList{
+					&ir.AgentStep{ID: "audit", Uses: "auditor"},
+				},
+			},
+		},
+	}
+	childRef := AgentRuntimeRef(child, "mod-scan", "auditor")
+	if err := reg.Register(agent.NewDerivedAdapter(childRef, base, child.Agents["auditor"].With)); err != nil {
+		t.Fatalf("Register child role: %v", err)
+	}
+	rig.disp.Resolver = &reg
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	rec, ok := rig.rs.LookupCallStarted("recon")
+	if !ok {
+		t.Fatal("LookupCallStarted(recon) ok=false")
+	}
+	if len(rec.Runtimes) != 1 {
+		t.Fatalf("call.started runtimes len = %d, want 1: %+v", len(rec.Runtimes), rec.Runtimes)
+	}
+	if rec.Runtimes[0].Ref != childRef || rec.Runtimes[0].Version != "base-v1" || rec.Runtimes[0].Container != "" {
+		t.Fatalf("call.started runtime = %+v, want child role base-v1 containerless", rec.Runtimes[0])
+	}
+}
+
 func TestRunPreflightsCompletedCallStartedRuntimeDrift(t *testing.T) {
 	rig := newCallRunRig(t)
 	rig.seedRunStarted(t)

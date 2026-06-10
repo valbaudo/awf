@@ -136,12 +136,10 @@ func TestWalkAgentRefs_NestedInParallelOnly(t *testing.T) {
 	}
 }
 
-// TestWalkAgentRefs_MapBodySkipped pins the design decision: AgentSteps
-// inside Map bodies are intentionally NOT pinned at run-start. Per-item
-// containers are dispatch-time; the IR container's image: digest already
-// pins the claude binary version (Phase 1.4 validation). See walkAgentRefsNodes
-// doc-comment for the safety rationale.
-func TestWalkAgentRefs_MapBodySkipped(t *testing.T) {
+// TestWalkAgentRefs_MapBodyIncluded pins that static/containerless map-body
+// AgentSteps are part of the runtime pin set. Only runtime-created map.image
+// container aliases are skipped because no handle exists at run start.
+func TestWalkAgentRefs_MapBodyIncluded(t *testing.T) {
 	wf := &ir.Workflow{
 		Graph: ir.NodeList{
 			&ir.Map{
@@ -154,13 +152,41 @@ func TestWalkAgentRefs_MapBodySkipped(t *testing.T) {
 		},
 	}
 	got := walkAgentRefs(wf)
-	if len(got) != 0 {
-		t.Errorf("len(walkAgentRefs map-body-only) = %d, want 0 (Map body is dispatch-time-pinned via image digest, NOT run-start-pinned via Adapter.Version)", len(got))
+	if len(got) != 1 {
+		t.Fatalf("len(walkAgentRefs map-body-only) = %d, want 1", len(got))
+	}
+	want := agentRef{Uses: "m", Container: "lab"}
+	if got[0] != want {
+		t.Errorf("walkAgentRefs map-body-only = %+v, want %+v", got[0], want)
+	}
+}
+
+func TestWalkAgentRefs_MapRuntimeImageContainerAliasSkipped(t *testing.T) {
+	wf := &ir.Workflow{
+		Graph: ir.NodeList{
+			&ir.Map{
+				Over:      "input.items",
+				As:        "item",
+				Container: "lab",
+				Image:     "oci://repo/{{ item.image }}",
+				Body: ir.NodeList{
+					&ir.AgentStep{ID: "inside", Container: "lab", Uses: "runtime-image-agent"},
+					&ir.AgentStep{ID: "containerless", Uses: "awf/llm"},
+				},
+			},
+		},
+	}
+	got := walkAgentRefs(wf)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want one containerless ref", len(got))
+	}
+	if got[0].Uses != "awf/llm" || got[0].Container != "" {
+		t.Errorf("walkAgentRefs = %+v, want only awf/llm containerless", got)
 	}
 }
 
 // TestWalkAgentRefs_TopLevelAndMapSibling — when a workflow has BOTH a top-level
-// AgentStep AND a Map-body AgentStep, only the top-level one is pinned.
+// AgentStep AND a static Map-body AgentStep, both are pinned.
 func TestWalkAgentRefs_TopLevelAndMapSibling(t *testing.T) {
 	wf := &ir.Workflow{
 		Graph: ir.NodeList{
@@ -174,21 +200,24 @@ func TestWalkAgentRefs_TopLevelAndMapSibling(t *testing.T) {
 		},
 	}
 	got := walkAgentRefs(wf)
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1 (top-level only)", len(got))
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (top-level + static map body)", len(got))
 	}
 	if got[0].Uses != "anthropic/claude-code" {
-		t.Errorf("Uses = %q, want %q (Map-body ref leaked)", got[0].Uses, "anthropic/claude-code")
+		t.Errorf("got[0].Uses = %q, want %q", got[0].Uses, "anthropic/claude-code")
+	}
+	if got[1].Uses != "should-be-skipped" {
+		t.Errorf("got[1].Uses = %q, want static map-body ref", got[1].Uses)
 	}
 }
 
 // NOTE: There is intentionally no TestWalkAgentRefs_UnknownNodePanics test.
 // ir.Node is interface{ isNode() } (see ir/node.go:17) — a closed sum type
 // with an UNEXPORTED marker method. No type outside the ir package can
-// satisfy ir.Node, so walkAgentRefsNodes's default arm is unreachable from
-// cli/_test. The panic is defensive documentation only; if a future ir/
-// node type lands without updating this switch, integration tests
-// exercising the new node panic loudly. See walkAgentRefsNodes doc-comment.
+// satisfy ir.Node, so the runtime-ref traversal's default arm is unreachable
+// from cli/_test. The panic is defensive documentation only; if a future ir/
+// node type lands without updating that switch, integration tests exercising
+// the new node panic loudly.
 
 func TestResolveRuntimes_Empty(t *testing.T) {
 	got, err := resolveRuntimes(context.Background(), nil, &agent.Registry{}, nil)

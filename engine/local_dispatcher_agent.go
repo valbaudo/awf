@@ -53,9 +53,9 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// it (e.g. awf/llm issues a direct HTTP call).
 	bare, svcOverride := SplitContainerRef(as.Container)
 
-	// Defense-in-depth: the run-start walk in cli/runtimes.go intentionally
-	// skips map.body steps, so a non-containerless adapter inside a map body
-	// with an empty container: slips past that guard. Catch it here — the
+	// Defense-in-depth: engine.Run callers can bypass the CLI run-start guard,
+	// and runtime-created container scopes may not be resolvable until dispatch.
+	// Catch a non-containerless adapter with an empty container here — the
 	// single chokepoint every agent dispatch passes through — before the zero
 	// Handle reaches Backend.Exec, where the failure would be misclassified as
 	// retryable and burn the retry budget.
@@ -66,9 +66,8 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}, closedChunks(), nil
 	}
 
-	// Defense-in-depth: the run-start guard in cli/checkThreadedAdapters only
-	// walks the top-level step list. An engine.Run caller that bypasses the CLI,
-	// or a continues: step inside a map body, could reach here with a non-empty
+	// Defense-in-depth: an engine.Run caller that bypasses the CLI, or a future
+	// traversal gap in the run-start guard, could reach here with a non-empty
 	// Thread against an adapter that doesn't support engine-threaded conversations
 	// (Caps.Threaded == false). Without this guard the thread is silently dropped
 	// and Launch proceeds with no history — corrupting the conversation. Catch it

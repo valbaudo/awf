@@ -94,8 +94,8 @@ func TestCheckThreaded_NoContinues_NotThreaded_OK(t *testing.T) {
 }
 
 // TestCheckThreaded_ContinuesInsideMapBody_Errors: the walk descends into
-// map.body (unlike walkAgentRefsNodes, which skips it) — a continues: inside a
-// map body against a non-Threaded adapter is still rejected.
+// map.body — a continues: inside a map body against a non-Threaded adapter is
+// still rejected.
 func TestCheckThreaded_ContinuesInsideMapBody_Errors(t *testing.T) {
 	fk := fake.New("anthropic/claude-code") // Threaded false
 	reg := regWith(t, fk)

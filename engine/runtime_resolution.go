@@ -56,7 +56,7 @@ func WalkRuntimeRefs(moduleID, runtimeParent string, wf *ir.Workflow) []RuntimeR
 		return nil
 	}
 	seen := map[runtimeRefKey]RuntimeRef{}
-	walkRuntimeRefsNodes(wf, moduleID, runtimeParent, wf.Graph, "", seen)
+	walkRuntimeRefsNodes(wf, moduleID, runtimeParent, wf.Graph, "", nil, seen)
 	if len(seen) == 0 {
 		return nil
 	}
@@ -86,10 +86,14 @@ type runtimeRefKey struct {
 	container     string
 }
 
-func walkRuntimeRefsNodes(wf *ir.Workflow, moduleID, runtimeParent string, nodes ir.NodeList, parent string, seen map[runtimeRefKey]RuntimeRef) {
+func walkRuntimeRefsNodes(wf *ir.Workflow, moduleID, runtimeParent string, nodes ir.NodeList, parent string, runtimeCreatedContainers map[string]bool, seen map[runtimeRefKey]RuntimeRef) {
 	for i, n := range nodes {
 		switch v := n.(type) {
 		case *ir.AgentStep:
+			bare, _ := SplitContainerRef(v.Container)
+			if bare != "" && runtimeCreatedContainers[bare] {
+				continue
+			}
 			path := ir.PathFor(parent, "", v.ID, i)
 			uses := AgentRuntimeRef(wf, moduleID, v.Uses)
 			ref := RuntimeRef{ModuleID: moduleID, NodePath: path, RuntimeParent: runtimeParent, Uses: uses, Container: v.Container}
@@ -100,29 +104,49 @@ func walkRuntimeRefsNodes(wf *ir.Workflow, moduleID, runtimeParent string, nodes
 		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip:
 		case *ir.If:
 			base := ir.PathFor(parent, "if", "", i)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Then, base+".then", seen)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Else, base+".else", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Then, base+".then", runtimeCreatedContainers, seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Else, base+".else", runtimeCreatedContainers, seen)
 		case *ir.Loop:
 			base := ir.PathFor(parent, "loop", "", i)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Body, base+".body", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Body, base+".body", runtimeCreatedContainers, seen)
 		case *ir.Try:
 			base := ir.PathFor(parent, "try", "", i)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Do, base+".do", seen)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Catch, base+".catch", seen)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Finally, base+".finally", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Do, base+".do", runtimeCreatedContainers, seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Catch, base+".catch", runtimeCreatedContainers, seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Finally, base+".finally", runtimeCreatedContainers, seen)
 		case *ir.Parallel:
 			base := ir.PathFor(parent, "parallel", "", i)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Children, base, seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Children, base, runtimeCreatedContainers, seen)
 		case *ir.Gate:
 			base := ir.PathFor(parent, "gate", "", i)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Generate, base+".generate", seen)
-			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Evaluate, base+".evaluate", seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Generate, base+".generate", runtimeCreatedContainers, seen)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Evaluate, base+".evaluate", runtimeCreatedContainers, seen)
 		case *ir.Map:
+			base := ir.PathFor(parent, "map", "", i)
+			nextRuntimeCreated := runtimeCreatedContainers
+			if v.Image != "" {
+				nextRuntimeCreated = withRuntimeCreatedContainer(runtimeCreatedContainers, v.Container)
+			}
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Body, base+".body", nextRuntimeCreated, seen)
 		case *ir.Compose:
+			base := ir.PathFor(parent, "compose", "", i)
+			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Body, base+".body", withRuntimeCreatedContainer(runtimeCreatedContainers, v.As), seen)
 		default:
 			panic(fmt.Sprintf("engine.WalkRuntimeRefs: unhandled ir.Node type %T", n))
 		}
 	}
+}
+
+func withRuntimeCreatedContainer(existing map[string]bool, name string) map[string]bool {
+	if name == "" {
+		return existing
+	}
+	next := make(map[string]bool, len(existing)+1)
+	for k, v := range existing {
+		next[k] = v
+	}
+	next[name] = true
+	return next
 }
 
 func ResolveRuntimes(ctx context.Context, refs []RuntimeRef, resolver agent.Resolver, handles map[string]container.Handle) ([]ResolvedRuntime, error) {
