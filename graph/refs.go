@@ -34,8 +34,13 @@ func producerRefs(n ir.Node) []string {
 		}
 	}
 	addFiles := func(m map[string]string) {
-		for _, v := range m {
-			if id, _, ok := template.ParseArtifactRef(v); ok {
+		keys := make([]string, 0, len(m))
+		for key := range m {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if id, _, ok := template.ParseArtifactRef(m[key]); ok {
 				add(id)
 			}
 		}
@@ -59,6 +64,7 @@ func producerRefs(n ir.Node) []string {
 		addExpr(v.Where)
 	case *ir.CallStep:
 		addTemplateValues(v.Input, addSlots)
+		addFiles(v.InputFiles)
 	case *ir.If:
 		addExpr(string(v.Cond))
 	case *ir.Loop:

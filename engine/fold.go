@@ -158,9 +158,10 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 					d.InputRef, e.Path)
 			}
 			rs.CallStarted[e.Path] = CallStartedRecord{
-				Input:    in,
-				InputRef: d.InputRef,
-				Runtimes: d.Runtimes,
+				Input:      in,
+				InputRef:   d.InputRef,
+				InputFiles: cloneStringMap(d.InputFiles),
+				Runtimes:   d.Runtimes,
 			}
 
 		case EventNodeCompleted:

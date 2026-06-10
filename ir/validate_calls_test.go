@@ -237,6 +237,161 @@ func TestValidateCallArtifactRefsUseChildExportFiles(t *testing.T) {
 	assertNoErrorCode(t, diags, "AWF1049")
 }
 
+func TestValidateCallInputFilesAccepted(t *testing.T) {
+	root, child := validCallInputFilesValidationPair()
+	ld := loadedWithChild(root, child)
+
+	assertNoError(t, Validate(ld))
+}
+
+func TestValidateCallInputFilesBindingShape(t *testing.T) {
+	cases := []struct {
+		name string
+		edit func(root, child *Workflow)
+		code string
+		path string
+	}{
+		{
+			name: "missing required name",
+			edit: func(root, child *Workflow) {
+				child.InputFiles = WorkflowInputFiles{"report": {}, "notes": {}}
+			},
+			code: "AWF1051", path: "scan.input_files.notes",
+		},
+		{
+			name: "extra name",
+			edit: func(root, child *Workflow) {
+				root.Graph[1].(*CallStep).InputFiles["extra"] = "step.collect.files.report"
+			},
+			code: "AWF1051", path: "scan.input_files.extra",
+		},
+		{
+			name: "templated rhs",
+			edit: func(root, child *Workflow) {
+				root.Graph[1].(*CallStep).InputFiles["report"] = "{{ step.collect.files.report }}"
+			},
+			code: "AWF3007", path: "scan.input_files.report",
+		},
+		{
+			name: "binding when child declares none",
+			edit: func(root, child *Workflow) {
+				child.InputFiles = nil
+			},
+			code: "AWF1051", path: "scan.input_files.report",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, child := validCallInputFilesValidationPair()
+			tc.edit(root, child)
+			assertErrorAt(t, Validate(loadedWithChild(root, child)), tc.code, tc.path)
+		})
+	}
+}
+
+func TestValidateCallInputFilesRejectsLateProducer(t *testing.T) {
+	root, child := validCallInputFilesValidationPair()
+	root.Graph = NodeList{root.Graph[1], root.Graph[0]} // call before collect
+
+	assertErrorAt(t, Validate(loadedWithChild(root, child)), "AWF3007", "scan.input_files.report")
+}
+
+func TestValidateCallInputFilesRejectsDirectoryAsset(t *testing.T) {
+	root, child := validCallInputFilesValidationPair()
+	root.Assets = map[string]string{"report_dir": "fixtures"}
+	root.Graph[1].(*CallStep).InputFiles["report"] = "asset.report_dir"
+	ld := loadedWithChild(root, child)
+	ld.Modules[""].Assets = map[string]LoadedAsset{
+		"report_dir": {
+			ID: "report_dir", DeclaredPath: "fixtures", IsDir: true,
+			Files: []LoadedAssetFile{{Path: "report.json", Bytes: []byte(`{"status":"ok"}`)}},
+		},
+	}
+
+	assertErrorAt(t, Validate(ld), "AWF1051", "scan.input_files.report")
+}
+
+func TestValidateCallInputFilesAcceptsGatePromotedArtifact(t *testing.T) {
+	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	root := validCallingRoot()
+	root.Containers = awf5003Container()
+	root.Graph = NodeList{
+		&Gate{
+			Generate:    NodeList{reconProducer()},
+			Evaluate:    NodeList{&CodeStep{ID: "judge", Container: "c", Run: "true", OutputSchema: schema}},
+			Until:       Expr("{{ step.judge.exit_code == 0 }}"),
+			MaxAttempts: 2,
+		},
+		&CallStep{ID: "scan", Call: "scan", InputFiles: map[string]string{"report": "step.recon.files.report"}},
+	}
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.InputFiles = WorkflowInputFiles{"report": {}}
+
+	assertNoError(t, Validate(loadedWithChild(root, child)))
+}
+
+func TestValidateCallInputFilesAcceptsReducePromotedArtifact(t *testing.T) {
+	root := validCallingRoot()
+	root.Containers = awf5003Container()
+	root.Input = &JSONSchema{"type": "object", "additionalProperties": false,
+		"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}}
+	root.Graph = NodeList{
+		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
+			Body: NodeList{reduceBodyScan()},
+			Reduce: &Reduce{Run: "true", Container: "c",
+				OutputFiles: OutputFiles{{Name: "report", Path: "/out/report.md"}}}},
+		&CallStep{ID: "send", Call: "scan", InputFiles: map[string]string{"report": "step.scan.files.report"}},
+	}
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.InputFiles = WorkflowInputFiles{"report": {}}
+
+	assertNoError(t, Validate(loadedWithChild(root, child)))
+}
+
+func TestValidateCallInputFilesRejectsQuorumReducerArtifact(t *testing.T) {
+	root := validCallingRoot()
+	root.Containers = awf5003Container()
+	root.Input = &JSONSchema{"type": "object", "additionalProperties": false,
+		"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}}
+	root.Graph = NodeList{
+		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
+			Body: NodeList{&CodeStep{ID: "scan", Container: "c", Run: "true",
+				OutputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
+					"required": []any{"agree"}, "properties": map[string]any{"agree": map[string]any{"type": "boolean"}}},
+				OutputFiles: OutputFiles{{Name: "leaf", Path: "/out/leaf.txt"}}}},
+			Reduce: &Reduce{Quorum: reduceRatio("2"), Over: "agree"}},
+		&CallStep{ID: "send", Call: "scan", InputFiles: map[string]string{"report": "step.scan.files.leaf"}},
+	}
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.InputFiles = WorkflowInputFiles{"report": {}}
+
+	assertErrorAt(t, Validate(loadedWithChild(root, child)), "AWF3007", "send.input_files.report")
+}
+
+func TestTypedInputFilesObjectStillWorksInTemplates(t *testing.T) {
+	wf := &Workflow{
+		ID:      "typed-input-files-object",
+		Version: 1,
+		Input: &JSONSchema{
+			"type": "object",
+			"properties": map[string]any{
+				"files": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"report": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{ID: "use", Container: "c", Run: "./use {{ input.files.report }}"},
+		},
+	}
+	assertNoErrorCode(t, Validate(makeLD(wf)), "AWF3001")
+	assertNoErrorCode(t, Validate(makeLD(wf)), "AWF3007")
+}
+
 func TestValidateChildSchemaRefUsesChildModuleAssets(t *testing.T) {
 	child := childWorkflowWithArtifactExport("child")
 	child.Assets = map[string]string{"childschema": "schema.json"}
@@ -355,6 +510,22 @@ func validCallingRoot() *Workflow {
 			&CallStep{ID: "scan", Call: "scan"},
 		},
 	}
+}
+
+func validCallInputFilesValidationPair() (*Workflow, *Workflow) {
+	root := validCallingRoot()
+	root.Containers = map[string]Container{
+		"c": {Image: "oci://x@sha256:abc"},
+	}
+	root.Graph = NodeList{
+		&CodeStep{ID: "collect", Container: "c", Run: "true",
+			OutputFiles: OutputFiles{{Name: "report", Path: "/out/report.json"}}},
+		&CallStep{ID: "scan", Call: "scan",
+			InputFiles: map[string]string{"report": "step.collect.files.report"}},
+	}
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.InputFiles = WorkflowInputFiles{"report": {}}
+	return root, child
 }
 
 func childWorkflowWithTypedOutput(id, field string) *Workflow {

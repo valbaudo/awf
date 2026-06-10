@@ -178,6 +178,40 @@ graph: []
 	}
 }
 
+func TestDecodeDuplicateWorkflowInputFilesKeyRejected(t *testing.T) {
+	_, err := Decode([]byte(`
+workflow: duplicate-workflow-input-files
+version: 1
+input_files:
+  report: {}
+  report: {}
+containers: {}
+graph: []
+`))
+	if err == nil {
+		t.Fatal("expected duplicate workflow input_files key to be rejected")
+	}
+}
+
+func TestDecodeDuplicateCallInputFilesKeyRejected(t *testing.T) {
+	_, err := Decode([]byte(`
+workflow: duplicate-call-input-files
+version: 1
+imports:
+  child: child.awf.yaml
+containers: {}
+graph:
+  - id: scan
+    call: child
+    input_files:
+      report: step.a.files.report
+      report: step.b.files.report
+`))
+	if err == nil {
+		t.Fatal("expected duplicate call input_files key to be rejected")
+	}
+}
+
 func TestDecodeWorkflowArtifactExportsKeepsStepOutputFiles(t *testing.T) {
 	wf, err := Decode([]byte(`
 workflow: exports

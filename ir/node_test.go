@@ -80,6 +80,28 @@ func TestCallStepRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCallStepInputFilesRoundTrip(t *testing.T) {
+	in := `{"id":"analyze","call":"analyzer","input_files":{"report":"step.collect.files.report"}}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, ok := n.(*CallStep)
+	if !ok {
+		t.Fatalf("got %T, want *CallStep", n)
+	}
+	if call.InputFiles["report"] != "step.collect.files.report" {
+		t.Fatalf("InputFiles = %#v", call.InputFiles)
+	}
+	out, err := json.Marshal(call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
 func TestControlMarshalShape(t *testing.T) {
 	b, err := json.Marshal(&Gate{Until: "x", MaxAttempts: 3})
 	if err != nil {

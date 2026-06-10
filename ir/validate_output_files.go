@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"sort"
 
 	"github.com/valbaudo/awf/template"
 )
@@ -10,6 +11,7 @@ func validateOutputFiles(ld *LoadedDefinition, c *collector) {
 	if ld == nil || ld.Workflow == nil {
 		return
 	}
+	validateWorkflowInputFiles(ld, c)
 	WalkNodes(ld.Workflow.Graph, "", func(n Node, nodePath string) {
 		switch s := n.(type) {
 		case *CodeStep:
@@ -47,32 +49,52 @@ func validateOutputFileContracts(ld *LoadedDefinition, c *collector, nodePath st
 		if of.Path == "" {
 			c.errf(nodePath, "AWF3009", "output_files."+of.Name+": contract object requires path")
 		}
-		if of.Format != "" && of.Format != "json" && of.Format != "jsonl" {
-			c.errf(nodePath, "AWF3009", "output_files."+of.Name+": format must be json or jsonl")
-		}
-		if (of.Schema != nil || of.SchemaRef != "") && of.Format == "" {
-			c.errf(nodePath, "AWF3009", "output_files."+of.Name+": schema requires format json or jsonl")
-		}
-		if of.Schema != nil && of.SchemaRef != "" {
-			c.errf(nodePath, "AWF3009", "output_files."+of.Name+": schema and schema_ref are mutually exclusive")
-		}
-		if of.Schema != nil {
-			checkSchemaWellFormed(*of.Schema, nodePath+".output_files."+of.Name+".schema", c)
-		}
-		if of.SchemaRef != "" {
-			validateOutputFileSchemaRef(ld, c, nodePath, of)
-		}
+		validateArtifactContractMetadata(ld, c, nodePath, "AWF3009", "output_files."+of.Name, nodePath+".output_files."+of.Name, ContractFromOutputFile(of))
 	}
 }
 
-func validateOutputFileSchemaRef(ld *LoadedDefinition, c *collector, nodePath string, of OutputFile) {
-	id, ok := template.ParseAssetRef(of.SchemaRef)
+func validateWorkflowInputFiles(ld *LoadedDefinition, c *collector) {
+	keys := make([]string, 0, len(ld.Workflow.InputFiles))
+	for key := range ld.Workflow.InputFiles {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		path := "input_files." + key
+		if !stepIDPattern.MatchString(key) {
+			c.errf(path, "AWF1050", "workflow input_files."+key+": name must match "+stepIDPattern.String())
+			continue
+		}
+		validateArtifactContractMetadata(ld, c, path, "AWF1050", "input_files."+key, path, ld.Workflow.InputFiles[key])
+	}
+}
+
+func validateArtifactContractMetadata(ld *LoadedDefinition, c *collector, nodePath, code, label, schemaPath string, contract ArtifactContract) {
+	if contract.Format != "" && contract.Format != "json" && contract.Format != "jsonl" {
+		c.errf(nodePath, code, label+": format must be json or jsonl")
+	}
+	if (contract.Schema != nil || contract.SchemaRef != "") && contract.Format == "" {
+		c.errf(nodePath, code, label+": schema requires format json or jsonl")
+	}
+	if contract.Schema != nil && contract.SchemaRef != "" {
+		c.errf(nodePath, code, label+": schema and schema_ref are mutually exclusive")
+	}
+	if contract.Schema != nil {
+		checkSchemaWellFormed(*contract.Schema, schemaPath+".schema", c)
+	}
+	if contract.SchemaRef != "" {
+		validateSchemaRefAsset(ld, c, nodePath, code, label, contract.SchemaRef, schemaPath+".schema_ref")
+	}
+}
+
+func validateSchemaRefAsset(ld *LoadedDefinition, c *collector, nodePath, code, label, schemaRef, schemaPath string) {
+	id, ok := template.ParseAssetRef(schemaRef)
 	if !ok {
-		c.errf(nodePath, "AWF3009", "output_files."+of.Name+": schema_ref must be asset.<id>")
+		c.errf(nodePath, code, label+": schema_ref must be asset.<id>")
 		return
 	}
 	if _, declared := ld.Workflow.Assets[id]; !declared {
-		c.errf(nodePath, "AWF3009", "output_files."+of.Name+": schema_ref asset "+id+" is not declared")
+		c.errf(nodePath, code, label+": schema_ref asset "+id+" is not declared")
 		return
 	}
 	asset, loaded := ld.Assets[id]
@@ -80,13 +102,13 @@ func validateOutputFileSchemaRef(ld *LoadedDefinition, c *collector, nodePath st
 		return
 	}
 	if asset.IsDir || len(asset.Files) != 1 || asset.Files[0].Path != "." {
-		c.errf(nodePath, "AWF3009", "output_files."+of.Name+": schema_ref asset "+id+" must be a single file")
+		c.errf(nodePath, code, label+": schema_ref asset "+id+" must be a single file")
 		return
 	}
 	var schema JSONSchema
 	if err := json.Unmarshal(asset.Files[0].Bytes, &schema); err != nil {
-		c.errf(nodePath, "AWF3009", "output_files."+of.Name+": schema_ref asset "+id+" is not JSON")
+		c.errf(nodePath, code, label+": schema_ref asset "+id+" is not JSON")
 		return
 	}
-	checkSchemaWellFormed(schema, nodePath+".output_files."+of.Name+".schema_ref", c)
+	checkSchemaWellFormed(schema, schemaPath, c)
 }

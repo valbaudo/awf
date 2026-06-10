@@ -19,6 +19,14 @@ type OutputFile struct {
 	SchemaRef string
 }
 
+type ArtifactContract struct {
+	Format    string
+	Schema    *JSONSchema
+	SchemaRef string
+}
+
+type WorkflowInputFiles map[string]ArtifactContract
+
 // OutputFiles unmarshals from EITHER a bare list (["/out/a"] → unnamed) OR a
 // name→path map ({"report":"/out/r.md"} → named, referenceable as
 // step.<id>.files.<name>). MarshalJSON re-emits the original shape so bare-list
@@ -57,12 +65,13 @@ func (o *OutputFiles) UnmarshalJSON(b []byte) error {
 		if err := dec.Decode(&wire); err != nil {
 			return fmt.Errorf("output_files[%q] must be a path string or contract object: %w", n, err)
 		}
+		contract := artifactContractFromOutputFileWire(wire)
 		out = append(out, OutputFile{
 			Name:      n,
 			Path:      wire.Path,
-			Format:    wire.Format,
-			Schema:    wire.Schema,
-			SchemaRef: wire.SchemaRef,
+			Format:    contract.Format,
+			Schema:    contract.Schema,
+			SchemaRef: contract.SchemaRef,
 		})
 	}
 	*o = out
@@ -90,14 +99,55 @@ func (o OutputFiles) MarshalJSON() ([]byte, error) {
 			m[e.Name] = e.Path
 			continue
 		}
+		contract := ContractFromOutputFile(e)
 		m[e.Name] = outputFileContractWire{
 			Path:      e.Path,
-			Format:    e.Format,
-			Schema:    e.Schema,
-			SchemaRef: e.SchemaRef,
+			Format:    contract.Format,
+			Schema:    contract.Schema,
+			SchemaRef: contract.SchemaRef,
 		}
 	}
 	return json.Marshal(m)
+}
+
+func (w *WorkflowInputFiles) UnmarshalJSON(b []byte) error {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return fmt.Errorf("input_files must be a name→contract map: %w", err)
+	}
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	out := make(WorkflowInputFiles, len(m))
+	for _, n := range names {
+		var wire artifactContractWire
+		dec := json.NewDecoder(bytes.NewReader(m[n]))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&wire); err != nil {
+			return fmt.Errorf("input_files[%q] must be a contract object: %w", n, err)
+		}
+		out[n] = artifactContractFromWire(wire)
+	}
+	*w = out
+	return nil
+}
+
+func (w WorkflowInputFiles) MarshalJSON() ([]byte, error) {
+	m := make(map[string]artifactContractWire, len(w))
+	for name, contract := range w {
+		m[name] = artifactContractWireFromContract(contract)
+	}
+	return json.Marshal(m)
+}
+
+func ContractFromOutputFile(of OutputFile) ArtifactContract {
+	return ArtifactContract{
+		Format:    of.Format,
+		Schema:    of.Schema,
+		SchemaRef: of.SchemaRef,
+	}
 }
 
 type outputFileContractWire struct {
@@ -105,6 +155,28 @@ type outputFileContractWire struct {
 	Format    string      `json:"format,omitempty"`
 	Schema    *JSONSchema `json:"schema,omitempty"`
 	SchemaRef string      `json:"schema_ref,omitempty"`
+}
+
+type artifactContractWire struct {
+	Format    string      `json:"format,omitempty"`
+	Schema    *JSONSchema `json:"schema,omitempty"`
+	SchemaRef string      `json:"schema_ref,omitempty"`
+}
+
+func artifactContractFromOutputFileWire(wire outputFileContractWire) ArtifactContract {
+	return ArtifactContract{
+		Format:    wire.Format,
+		Schema:    wire.Schema,
+		SchemaRef: wire.SchemaRef,
+	}
+}
+
+func artifactContractFromWire(wire artifactContractWire) ArtifactContract {
+	return ArtifactContract(wire)
+}
+
+func artifactContractWireFromContract(contract ArtifactContract) artifactContractWire {
+	return artifactContractWire(contract)
 }
 
 // Paths returns the in-container paths to capture (Backend.CaptureFiles), in

@@ -54,6 +54,9 @@
 //   - Artifact contracts: named output_files contract metadata validates captured
 //     artifacts before commit, including schema_ref assets resolved from the
 //     run-start snapshot (jsonl_schema_ref_rejects_invalid_capture).
+//   - Subworkflows: call input_files validates child workflow file contracts
+//     before child dispatch, stages parent and child-call artifacts into child
+//     workflows, and resumes from the CAS refs pinned in call.started.
 //   - P6a runtime-image map (Bucket 18): a map whose per-element image: is
 //     runtime-resolved captures each element's content digest into its map.item
 //     commit at first boot (captures_digest_on_first_boot); committed elements

@@ -751,6 +751,8 @@ func validateCalls(ld *LoadedDefinition, mod validationModule, c *collector) {
 	if wf.Input != nil {
 		producers["input"] = producer{path: "input", kind: "input", schema: wf.Input}
 	}
+	order := nodeOrder(wf.Graph)
+	outFiles := outputFilesByStepIDForModule(ld, mod.ModuleID, wf)
 	maps := mapsByPath(wf.Graph)
 
 	WalkNodes(wf.Graph, "", func(n Node, nodePath string) {
@@ -764,9 +766,59 @@ func validateCalls(ld *LoadedDefinition, mod validationModule, c *collector) {
 			c.errf(nodePath, "AWF1046", fmt.Sprintf("%s: %q", catalog["AWF1046"], call.Call))
 		} else if child, ok := callTargetModule(ld, mod.ModuleID, call.Call); ok && child != nil && child.Workflow != nil {
 			validateCallInputContract(c, nodePath, call.Input, child.Workflow.Input)
+			validateCallInputFiles(ld, mod.ModuleID, c, nodePath, call.InputFiles, child.Workflow.InputFiles, producers, order, outFiles, maps)
 		}
 		validateTemplateValueRefs(c, "AWF1047", nodePath+".input", call.Input, producers, maps, nil)
 	})
+}
+
+func validateCallInputFiles(
+	ld *LoadedDefinition,
+	moduleID string,
+	c *collector,
+	nodePath string,
+	inputFiles map[string]string,
+	childInputFiles WorkflowInputFiles,
+	producers map[string]producer,
+	order map[string]int,
+	outFiles map[string]OutputFiles,
+	maps map[string]*Map,
+) {
+	inputPath := nodePath + ".input_files"
+	childKeys := make([]string, 0, len(childInputFiles))
+	for name := range childInputFiles {
+		childKeys = append(childKeys, name)
+	}
+	sort.Strings(childKeys)
+	for _, name := range childKeys {
+		if _, ok := inputFiles[name]; !ok {
+			c.errf(inputPath+"."+name, "AWF1051", fmt.Sprintf("%s: missing required input file %q", catalog["AWF1051"], name))
+		}
+	}
+
+	parent, _ := ld.Module(moduleID)
+	assets := map[string]string(nil)
+	if parent != nil && parent.Workflow != nil {
+		assets = parent.Workflow.Assets
+	}
+	inputKeys := make([]string, 0, len(inputFiles))
+	for name := range inputFiles {
+		inputKeys = append(inputKeys, name)
+	}
+	sort.Strings(inputKeys)
+	for _, name := range inputKeys {
+		raw := inputFiles[name]
+		path := inputPath + "." + name
+		if _, ok := childInputFiles[name]; !ok {
+			c.errf(path, "AWF1051", fmt.Sprintf("%s: child workflow input_files does not declare %q", catalog["AWF1051"], name))
+		}
+		validateInputFileRef(c, path, nodePath, "input_files."+name, raw, nil, assets, producers, order, outFiles, maps)
+		if id, ok := template.ParseAssetRef(raw); ok && parent != nil {
+			if asset, loaded := parent.Assets[id]; loaded && asset.IsDir {
+				c.errf(path, "AWF1051", fmt.Sprintf("%s: asset %s is a directory; call input_files require a file artifact", catalog["AWF1051"], id))
+			}
+		}
+	}
 }
 
 func validateCallInputContract(c *collector, nodePath string, input map[string]TemplateValue, schema *JSONSchema) {

@@ -73,9 +73,10 @@ type SignalStep struct {
 }
 
 type CallStep struct {
-	ID    string                   `json:"id"`
-	Call  string                   `json:"call"`
-	Input map[string]TemplateValue `json:"input,omitempty"`
+	ID         string                   `json:"id"`
+	Call       string                   `json:"call"`
+	Input      map[string]TemplateValue `json:"input,omitempty"`
+	InputFiles map[string]string        `json:"input_files,omitempty"`
 }
 
 func (*CodeStep) isNode()   {}

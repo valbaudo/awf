@@ -14,7 +14,7 @@ package ir
 //     uses: ref resolving to a declared role OR a syntactically-valid base ref
 //   - skills     (AWF1040-45, AWF3010-11) — native skill corpus declarations,
 //     loaded directory layout, and agent-step routing shape/staging constraints
-//   - calls      (AWF1046-49) — imported workflow call targets, input contracts,
+//   - calls      (AWF1046-51) — imported workflow call targets, input contracts,
 //     workflow outputs, and workflow artifact exports
 //   - reduce     (AWF1035, AWF5006, AWF1009) — map reduce: fan-in shape (exactly one
 //     of run:/quorum:; quorum needs over:; a run: reducer needs a resolvable

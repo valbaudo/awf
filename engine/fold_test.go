@@ -172,6 +172,34 @@ func TestFoldCallStartedMaterializesInputAndRuntimes(t *testing.T) {
 	}
 }
 
+func TestFoldCallStartedRecordsInputFiles(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	inputRef, err := blobs.Put([]byte(`{"task":"audit"}`))
+	if err != nil {
+		t.Fatalf("seed call input: %v", err)
+	}
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Path: "scan", Type: EventCallStarted,
+			Data: marshalOrFatal(t, CallStartedData{
+				InputRef:   inputRef,
+				InputFiles: map[string]string{"report": "sha256:report"},
+			})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got, ok := rs.LookupCallStarted("scan")
+	if !ok {
+		t.Fatal("LookupCallStarted(scan): ok=false")
+	}
+	if got.InputFiles["report"] != "sha256:report" {
+		t.Errorf("InputFiles[report] = %q, want sha256:report", got.InputFiles["report"])
+	}
+}
+
 func TestFoldCallStartedMissingInputBlobIsError(t *testing.T) {
 	events := []state.Event{
 		{Seq: 1, TS: fixedTS, Type: EventRunStarted,

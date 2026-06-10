@@ -38,6 +38,7 @@ type Scope struct {
 	verdictOverride  map[string]any
 	inputOverride    map[string]any
 	hasInputOverride bool
+	inputFiles       map[string]string
 	wfRef            *ir.Workflow // slice 3.4 — needed by resolveAsBinding's mapPathIndex
 }
 
@@ -77,15 +78,34 @@ func NewScopeWithVerdict(rs *RunState, wf *ir.Workflow, ctxPath string, verdict 
 // instead of the run's top-level input. Used for child workflows with typed call
 // inputs.
 func NewScopeWithInput(rs *RunState, wf *ir.Workflow, ctxPath string, input map[string]any) *Scope {
+	return NewScopeWithInputAndFiles(rs, wf, ctxPath, input, nil)
+}
+
+// NewScopeWithInputAndFiles constructs a Scope whose input.* refs resolve
+// against typed call input when provided, and whose input.files.<name> refs
+// resolve against the call invocation's recorded input file refs.
+func NewScopeWithInputAndFiles(rs *RunState, wf *ir.Workflow, ctxPath string, input map[string]any, inputFiles map[string]string) *Scope {
 	return &Scope{
 		rs:               rs,
 		ctxPath:          ctxPath,
 		stepIndex:        StepPathIndex(wf),
 		mapProducts:      mapProductIndex(wf),
 		inputOverride:    input,
-		hasInputOverride: true,
+		hasInputOverride: input != nil,
+		inputFiles:       inputFiles,
 		wfRef:            wf,
 	}
+}
+
+func (s *Scope) ResolveWorkflowInputFile(name string) (string, error) {
+	if s.inputFiles == nil {
+		return "", template.EvalErrf(template.EvalCodeRefUnresolved, "input.files.%s: no caller supplied workflow input file %q", name, name)
+	}
+	ref, ok := s.inputFiles[name]
+	if !ok || ref == "" {
+		return "", template.EvalErrf(template.EvalCodeRefUnresolved, "input.files.%s: no caller supplied workflow input file %q", name, name)
+	}
+	return ref, nil
 }
 
 // Resolve implements template.Scope. Dispatches on the first ref segment; the

@@ -63,3 +63,25 @@ func TestParseAssetRef(t *testing.T) {
 		})
 	}
 }
+
+func TestParseWorkflowInputFileRef(t *testing.T) {
+	name, ok := ParseWorkflowInputFileRef("input.files.report")
+	if !ok || name != "report" {
+		t.Fatalf("ParseWorkflowInputFileRef = %q, %v; want report, true", name, ok)
+	}
+}
+
+func TestParseWorkflowInputFileRefRejectsOtherShapes(t *testing.T) {
+	rejects := []string{
+		"input.report",
+		"input.files",
+		"input.files.report.extra",
+		"step.make.files.report",
+		"{{ input.files.report }}",
+	}
+	for _, raw := range rejects {
+		if name, ok := ParseWorkflowInputFileRef(raw); ok {
+			t.Fatalf("ParseWorkflowInputFileRef(%q) = %q, true; want false", raw, name)
+		}
+	}
+}

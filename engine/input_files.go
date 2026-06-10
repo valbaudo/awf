@@ -59,6 +59,21 @@ func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow
 			return nil, fmt.Errorf("input_files[%s]: substituted destination %q must be an absolute, clean path (no '..' segment)", dst, resolvedDst)
 		}
 		rawRef := in[dst]
+		if name, ok := template.ParseWorkflowInputFileRef(rawRef); ok {
+			cas, err := scope.ResolveWorkflowInputFile(name)
+			if err != nil {
+				return nil, fmt.Errorf("input_files[%s]: %w", dst, err)
+			}
+			b, err := blobs.Get(cas)
+			if err != nil {
+				return nil, fmt.Errorf("input_files[%s]: %w (%v)", dst, errArtifactFetch, err)
+			}
+			expanded = append(expanded, resolvedInputFile{
+				file:   container.InputFile{Path: resolvedDst, Content: b},
+				source: rawRef,
+			})
+			continue
+		}
 		if id, ok := template.ParseAssetRef(rawRef); ok {
 			files, err := resolveAssetInputFiles(resolvedDst, rawRef, moduleID, id, assets, blobs)
 			if err != nil {
@@ -67,17 +82,12 @@ func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow
 			expanded = append(expanded, files...)
 			continue
 		}
-		id, name, ok := template.ParseArtifactRef(rawRef)
-		if !ok {
-			return nil, fmt.Errorf("input_files[%s]=%q: expected step.<id>.files.<name> or asset.<id>", dst, rawRef)
-		}
-		cas, err := resolveNamedArtifactRef(scope, wf, id, name)
+		_, b, err := resolveSingleInputFileRef(rawRef, scope, wf, moduleID, blobs, assets)
 		if err != nil {
+			if _, _, ok := template.ParseArtifactRef(rawRef); !ok {
+				return nil, fmt.Errorf("input_files[%s]=%q: expected step.<id>.files.<name>, input.files.<name>, or asset.<id>", dst, rawRef)
+			}
 			return nil, fmt.Errorf("input_files[%s]: %w", dst, err)
-		}
-		b, err := blobs.Get(cas)
-		if err != nil {
-			return nil, fmt.Errorf("input_files[%s]: %w (%v)", dst, errArtifactFetch, err)
 		}
 		expanded = append(expanded, resolvedInputFile{
 			file:   container.InputFile{Path: resolvedDst, Content: b},
@@ -101,6 +111,40 @@ func inputFilesFromResolvedEntries(expanded []resolvedInputFile) ([]container.In
 		out = append(out, e.file)
 	}
 	return out, nil
+}
+
+func resolveSingleInputFileRef(rawRef string, scope *Scope, wf *ir.Workflow, moduleID string, blobs state.Blobs, assets map[string]RunStartedAsset) (ref string, content []byte, err error) {
+	if id, name, ok := template.ParseArtifactRef(rawRef); ok {
+		cas, err := resolveNamedArtifactRef(scope, wf, id, name)
+		if err != nil {
+			return "", nil, err
+		}
+		b, err := blobs.Get(cas)
+		if err != nil {
+			return "", nil, fmt.Errorf("%w (%v)", errArtifactFetch, err)
+		}
+		return cas, b, nil
+	}
+	id, ok := template.ParseAssetRef(rawRef)
+	if !ok {
+		return "", nil, fmt.Errorf("%q: expected step.<id>.files.<name> or asset.<id>", rawRef)
+	}
+	key := QualifiedAssetKey(moduleID, id)
+	asset, ok := assets[key]
+	if !ok {
+		return "", nil, fmt.Errorf("%w: %s: asset %q was not recorded in run.started", errArtifactFetch, rawRef, key)
+	}
+	if asset.IsDir {
+		return "", nil, fmt.Errorf("%s: directory asset %q cannot be used as a single input file", rawRef, key)
+	}
+	if len(asset.Files) != 1 || asset.Files[0].Path != "." {
+		return "", nil, fmt.Errorf("%w: %s: file asset %q has invalid run-start manifest", errArtifactFetch, rawRef, key)
+	}
+	b, err := readRunStartedAssetFile(blobs, asset.Files[0])
+	if err != nil {
+		return "", nil, fmt.Errorf("%s: %w", rawRef, err)
+	}
+	return asset.Files[0].Ref, b, nil
 }
 
 func resolveAssetInputFiles(dst, rawRef, moduleID, id string, assets map[string]RunStartedAsset, blobs state.Blobs) ([]resolvedInputFile, error) {

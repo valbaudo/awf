@@ -163,6 +163,74 @@ func TestBuildStaticCallInputDataEdge(t *testing.T) {
 	}
 }
 
+func TestGraphDataEdgeFromCallInputFiles(t *testing.T) {
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"child": "child.awf.yaml",
+		},
+		Containers: map[string]ir.Container{
+			"c": {Image: "oci://root@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID:          "collect",
+				Container:   "c",
+				Run:         "true",
+				OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.json"}},
+			},
+			&ir.CallStep{
+				ID:         "analyze",
+				Call:       "child",
+				InputFiles: map[string]string{"report": "step.collect.files.report"},
+			},
+		},
+	}
+
+	got := BuildStatic(root)
+	want := Edge{From: "collect", To: "analyze", Kind: "data"}
+	if !hasEdge(got, want) {
+		t.Fatalf("missing data edge %+v; edges=%+v", want, got.Edges)
+	}
+}
+
+func TestBuildStaticCallInputFilesDataEdgesDeterministic(t *testing.T) {
+	build := func() []byte {
+		wf := &ir.Workflow{
+			ID: "call-input-files-determinism",
+			Graph: ir.NodeList{
+				&ir.CodeStep{ID: "a", Run: "true", OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/a.json"}}},
+				&ir.CodeStep{ID: "b", Run: "true", OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/b.json"}}},
+				&ir.CodeStep{ID: "c", Run: "true", OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/c.json"}}},
+				&ir.CodeStep{ID: "d", Run: "true", OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/d.json"}}},
+				&ir.CallStep{
+					ID:   "recon",
+					Call: "child",
+					InputFiles: map[string]string{
+						"alpha":   "step.a.files.report",
+						"bravo":   "step.b.files.report",
+						"charlie": "step.c.files.report",
+						"delta":   "step.d.files.report",
+					},
+				},
+			},
+		}
+		b, err := json.Marshal(BuildStatic(wf))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+
+	want := string(build())
+	for i := 0; i < 200; i++ {
+		if got := string(build()); got != want {
+			t.Fatalf("BuildStatic call-input-files graph JSON changed across repeated builds:\nfirst=%s\nlater=%s", want, got)
+		}
+	}
+}
+
 func TestBuildStaticNestedCallInputDataEdgeUsesImportedModuleIndex(t *testing.T) {
 	root := &ir.Workflow{
 		ID: "root",

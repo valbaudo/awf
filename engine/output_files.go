@@ -52,47 +52,54 @@ func resolveOutputFileContract(of ir.OutputFile, moduleID string, assets map[str
 	if of.Path == "" {
 		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: contract object requires path", of.Name)
 	}
-	if of.Format != "" && of.Format != "json" && of.Format != "jsonl" {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: format must be json or jsonl", of.Name)
+	return resolveArtifactContract("output_files."+of.Name, ir.ContractFromOutputFile(of), moduleID, assets, blobs)
+}
+
+func resolveArtifactContract(label string, contract ir.ArtifactContract, moduleID string, assets map[string]RunStartedAsset, blobs state.Blobs) (OutputFileContract, bool, error) {
+	if contract.Format == "" && contract.Schema == nil && contract.SchemaRef == "" {
+		return OutputFileContract{}, false, nil
 	}
-	if (of.Schema != nil || of.SchemaRef != "") && of.Format == "" {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema requires format json or jsonl", of.Name)
+	if contract.Format != "" && contract.Format != "json" && contract.Format != "jsonl" {
+		return OutputFileContract{}, false, fmt.Errorf("%s: format must be json or jsonl", label)
 	}
-	if of.Schema != nil && of.SchemaRef != "" {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema and schema_ref are mutually exclusive", of.Name)
+	if (contract.Schema != nil || contract.SchemaRef != "") && contract.Format == "" {
+		return OutputFileContract{}, false, fmt.Errorf("%s: schema requires format json or jsonl", label)
 	}
-	contract := OutputFileContract{Format: of.Format, Schema: of.Schema}
-	if of.Schema != nil {
-		if _, err := compileJSONSchema(of.Schema); err != nil {
-			return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema: %w", of.Name, err)
+	if contract.Schema != nil && contract.SchemaRef != "" {
+		return OutputFileContract{}, false, fmt.Errorf("%s: schema and schema_ref are mutually exclusive", label)
+	}
+	out := OutputFileContract{Format: contract.Format, Schema: contract.Schema}
+	if contract.Schema != nil {
+		if _, err := compileJSONSchema(contract.Schema); err != nil {
+			return OutputFileContract{}, false, fmt.Errorf("%s: schema: %w", label, err)
 		}
 	}
-	if of.SchemaRef == "" {
-		return contract, true, nil
+	if contract.SchemaRef == "" {
+		return out, true, nil
 	}
-	id, ok := template.ParseAssetRef(of.SchemaRef)
+	id, ok := template.ParseAssetRef(contract.SchemaRef)
 	if !ok {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref must be asset.<id>", of.Name)
+		return OutputFileContract{}, false, fmt.Errorf("%s: schema_ref must be asset.<id>", label)
 	}
 	key := QualifiedAssetKey(moduleID, id)
 	asset, ok := assets[key]
 	if !ok {
-		return OutputFileContract{}, false, fmt.Errorf("%w: output_files.%s: schema_ref asset %q was not recorded in run.started", errArtifactFetch, of.Name, key)
+		return OutputFileContract{}, false, fmt.Errorf("%w: %s: schema_ref asset %q was not recorded in run.started", errArtifactFetch, label, key)
 	}
 	if asset.IsDir || len(asset.Files) != 1 || asset.Files[0].Path != "." {
-		return OutputFileContract{}, false, fmt.Errorf("%w: output_files.%s: schema_ref asset %q has invalid run-start manifest", errArtifactFetch, of.Name, key)
+		return OutputFileContract{}, false, fmt.Errorf("%w: %s: schema_ref asset %q has invalid run-start manifest", errArtifactFetch, label, key)
 	}
 	raw, err := readRunStartedAssetFile(blobs, asset.Files[0])
 	if err != nil {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: %w", of.Name, err)
+		return OutputFileContract{}, false, fmt.Errorf("%s: %w", label, err)
 	}
 	var schema ir.JSONSchema
 	if err := json.Unmarshal(raw, &schema); err != nil {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref asset %q is not JSON: %w", of.Name, key, err)
+		return OutputFileContract{}, false, fmt.Errorf("%s: schema_ref asset %q is not JSON: %w", label, key, err)
 	}
 	if _, err := compileJSONSchema(&schema); err != nil {
-		return OutputFileContract{}, false, fmt.Errorf("output_files.%s: schema_ref asset %q: %w", of.Name, key, err)
+		return OutputFileContract{}, false, fmt.Errorf("%s: schema_ref asset %q: %w", label, key, err)
 	}
-	contract.Schema = &schema
-	return contract, true, nil
+	out.Schema = &schema
+	return out, true, nil
 }

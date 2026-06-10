@@ -30,6 +30,7 @@ A workflow document has the following top-level shape:
     workflow: <id>
     version: 1
     input: <json-schema>          # optional; run parameters
+    input_files: { <name>: <contract> }  # optional; imported workflow file inputs
     env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent steps
     imports:                      # optional; local subworkflows
       <id>: <relative-path.awf.yaml>
@@ -58,6 +59,17 @@ A workflow document has the following top-level shape:
 **input**
 :   Optional. A JSON Schema (see **TEMPLATING AND TYPED OUTPUTS**) for the run
     parameters, referenced as `{{ input.<field> }}`.
+
+**input_files**
+:   Optional. The public file-input contract for an imported workflow. Each key
+    is a name the caller may bind from a call step; each value is an artifact
+    contract. For example:
+
+        input_files:
+          report:
+            format: json
+            schema_ref: asset.report_schema
+          notes: {}
 
 **env**
 :   Optional. A list of host environment-variable **names** to forward into this
@@ -460,6 +472,7 @@ exports.
     - id: <id>
       call: <import-id>
       input: { ... }                 # optional; default {}
+      input_files: { <name>: step.<id>.files.<name> } # optional; or asset.<id>
       timeout: <dur>                 # optional
       retry: { ... }                 # optional
 
@@ -473,11 +486,24 @@ exports.
     against the imported workflow's top-level `input` schema. If the imported
     workflow has no `input` schema, only `{}` is valid.
 
+**input_files**
+:   Optional. Maps the child workflow's public file input name to a parent
+    artifact reference. Each key must be declared by the imported workflow's
+    top-level `input_files:` contract; each value is a static artifact reference
+    such as `step.<id>.files.<name>` or `asset.<id>`.
+
+        - id: analyze
+          call: analyzer
+          input_files:
+            report: step.collect.files.report
+
 Call steps may set only the common step fields that apply to a black-box
-execution boundary: `id`, `call`, `input`, `timeout`, and `retry`. They must not
-set `container`, `run`, `uses`, `await`, `continues`, `with`, `output_schema`,
-`output_files`, `input_files`, or `idempotency_key`; those belong to the caller's
-other step kinds or to the imported workflow's own exports.
+execution boundary: `id`, `call`, `input`, `input_files`, `timeout`, and
+`retry`. They must not set `container`, `uses`, `run`, `await`, `with`,
+`output_files`, or `idempotency_key`; those belong to the caller's normal step
+execution surface or to the child workflow's own contract. A call step's
+`input_files` binds parent artifacts to the child workflow's public file input
+names.
 
 The call product is addressable as `step.<id>.<field>` and
 `step.<id>.files.<name>`, using only the imported workflow's declared
@@ -496,6 +522,21 @@ runtime stages the bytes in before the consumer runs. This is the file-handoff
 seam between black boxes: an agent writes a report in one workspace, a code step
 verifies it in a clean one. Both fields appear on code (`run:`) and agent
 (`uses:`) steps.
+
+The name shape depends on the surface:
+
+- Step input_files uses destination path -> artifact ref.
+- Call input_files uses child public name -> artifact ref.
+- Workflow input_files uses public name -> artifact contract.
+
+Child steps consume inbound call artifacts through normal step staging:
+
+    input_files:
+      /work/report.json: input.files.report
+
+Call input files are file-valued. A call input may bind a named `output_files`
+artifact or a single-file asset. Directory assets remain valid only for normal
+step `input_files` because those bindings provide a destination tree.
 
 **output_files (three forms)**
 :   A **bare list** of paths — `output_files: [/out/a, /out/b]` — captures each
@@ -544,7 +585,9 @@ verifies it in a clean one. Both fields appear on code (`run:`) and agent
 :   A map of *in-container destination path* -> *artifact reference* —
     `input_files: { /work/report.md: step.recon.files.report }`. The reference
     may also be `asset.<id>`, which stages the run-start snapshot of a top-level
-    asset. Before the step runs, the runtime resolves each reference to its
+    asset, or `input.files.<name>` inside a called workflow, which stages a file
+    artifact bound by the parent call step. Before the step runs, the runtime
+    resolves each reference to its
     committed, content-addressed blob and writes the bytes to the destination
     path inside this step's container, creating parent directories as needed and
     overwriting any existing file. Destination paths are `{{ }}`-substituted
@@ -563,11 +606,14 @@ verifies it in a clean one. Both fields appear on code (`run:`) and agent
     `step.<id>.<field>` references remain gate-scoped; this exception exists only
     for durable files. A producer inside a `map` body is still not referenceable
     from outside unless the map has a `reduce:` product. An `asset.<id>` reference
-    must name a declared top-level asset. Destination paths must be **absolute
+    must name a declared top-level asset. An `input.files.<name>` reference must
+    name a public workflow `input_files:` contract entry that the parent call
+    bound for this child run. Destination paths must be **absolute
     and clean after substitution** — no `..` segment — and distinct (overlapping
     parent/child destinations are undefined). A reference that fails any of these
-    — undeclared producer, undeclared artifact name, undeclared asset, a templated
-    right-hand side, or a non-absolute / `..`-containing destination — is rejected
+    — undeclared producer, undeclared artifact name, undeclared asset, undeclared
+    workflow file input, a templated right-hand side, or a non-absolute /
+    `..`-containing destination — is rejected
     at validation (**AWF3007**).
 
     `input_files` **requires a container**: it is rejected on a *containerless*

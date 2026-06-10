@@ -674,6 +674,337 @@ func TestRunCallStepInputFilesAssetRefsUseChildModuleAssets(t *testing.T) {
 	}
 }
 
+func TestRunCallStepRecordsInputFilesBeforeChild(t *testing.T) {
+	rig := newCallRunRig(t)
+	spy := newCopyToSpy(rig.fake)
+	rig.disp.Backend = spy
+	rig.seedRunStarted(t)
+	rootHandle, err := spy.Create(context.Background(), container.ContainerSpec{Name: "rootc"})
+	if err != nil {
+		t.Fatalf("Create root: %v", err)
+	}
+	rig.disp.Handles["rootc"] = rootHandle
+	reportBytes := []byte(`{"status":"ok"}`)
+	rig.fake.ProgramExecWithFiles("collect", container.ExecResult{ExitCode: 0}, nil,
+		map[string][]byte{"/out/report.json": reportBytes})
+	rig.fake.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+	def := callInputFileDefinition(
+		map[string]string{"report": "step.collect.files.report"},
+		ir.WorkflowInputFiles{"report": {Format: "json", Schema: awfStringObjectSchema("status")}},
+	)
+
+	oc, err := Run(context.Background(), def, rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	rec, ok := rig.rs.LookupCallStarted("analyze")
+	if !ok {
+		t.Fatal("LookupCallStarted(analyze) ok=false")
+	}
+	if rec.InputFiles["report"] == "" {
+		t.Fatalf("call.started input_files.report = %q, want non-empty CAS ref", rec.InputFiles["report"])
+	}
+	if got := stagedFileContent(t, spy, "analyze.workflow::c", "/work/report.json"); string(got) != string(reportBytes) {
+		t.Fatalf("staged report bytes = %q, want %q", got, reportBytes)
+	}
+	events := callEvents(t, rig.log)
+	assertEventOrder(t, events, []eventAtPath{
+		{typ: EventNodeStarted, path: "analyze"},
+		{typ: EventCallStarted, path: "analyze"},
+		{typ: EventNodeStarted, path: "analyze.workflow.use"},
+	})
+}
+
+func TestRunCallStepInputFileContractFailureBeforeChildGraph(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rootHandle, err := rig.fake.Create(context.Background(), container.ContainerSpec{Name: "rootc"})
+	if err != nil {
+		t.Fatalf("Create root: %v", err)
+	}
+	rig.disp.Handles["rootc"] = rootHandle
+	rig.fake.ProgramExecWithFiles("collect", container.ExecResult{ExitCode: 0}, nil,
+		map[string][]byte{"/out/report.json": []byte(`{"status":3}`)})
+	rig.fake.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+	def := callInputFileDefinition(
+		map[string]string{"report": "step.collect.files.report"},
+		ir.WorkflowInputFiles{"report": {Format: "json", Schema: awfStringObjectSchema("status")}},
+	)
+
+	oc, err := Run(context.Background(), def, rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if oc != OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q (err=%v)", oc, OutcomePermanentFailure, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "input_files.report") {
+		t.Fatalf("Run err = %v, want input_files.report contract error", err)
+	}
+	if sawExec(rig.fake, "./use-report.sh") {
+		t.Fatalf("child exec ./use-report.sh ran despite call input file contract failure")
+	}
+	if _, ok := rig.rs.LookupCallStarted("analyze"); ok {
+		t.Fatal("call.started recorded despite input file contract failure")
+	}
+	if sawCreateSpec(rig.fake, "analyze.workflow::c") {
+		t.Fatalf("child runtime handle was created before input file validation failed")
+	}
+	if got := countEvents(callEvents(t, rig.log), EventNodeStarted, "analyze.workflow.use"); got != 0 {
+		t.Fatalf("child node.started count = %d, want 0", got)
+	}
+}
+
+func TestRunWorkflowInputFileRefWithoutCallerFailsBeforeDispatch(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rootHandle, err := rig.fake.Create(context.Background(), container.ContainerSpec{Name: "rootc"})
+	if err != nil {
+		t.Fatalf("Create root: %v", err)
+	}
+	rig.disp.Handles["rootc"] = rootHandle
+	rig.fake.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+	wf := &ir.Workflow{
+		ID:         "root",
+		Version:    1,
+		InputFiles: ir.WorkflowInputFiles{"report": {}},
+		Containers: map[string]ir.Container{"rootc": {Image: "oci://root@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID:         "use",
+				Container:  "rootc",
+				Run:        "./use-report.sh",
+				InputFiles: map[string]string{"/work/report.json": "input.files.report"},
+			},
+		},
+	}
+
+	oc, err := Run(context.Background(), awfLoadedDefinitionForWorkflow(wf), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if oc != OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q (err=%v)", oc, OutcomePermanentFailure, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "input.files.report") {
+		t.Fatalf("Run err = %v, want missing caller workflow input file error", err)
+	}
+	if sawExec(rig.fake, "./use-report.sh") {
+		t.Fatalf("dispatch ran despite missing caller input file")
+	}
+}
+
+func TestRunCallStepRecordedInputFileRefWinsOverParentArtifact(t *testing.T) {
+	rig := newCallRunRig(t)
+	spy := newCopyToSpy(rig.fake)
+	rig.disp.Backend = spy
+	rig.seedRunStarted(t)
+	currentRef, err := rig.blobs.Put([]byte(`{"status":"current"}`))
+	if err != nil {
+		t.Fatalf("put current report: %v", err)
+	}
+	recordedBytes := []byte(`{"status":"recorded"}`)
+	recordedRef, err := rig.blobs.Put(recordedBytes)
+	if err != nil {
+		t.Fatalf("put recorded report: %v", err)
+	}
+	inputRef, err := rig.blobs.Put([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("put input: %v", err)
+	}
+	if err := rig.log.Append(state.Event{
+		Type: EventNodeCompleted,
+		Path: "collect",
+		Data: marshalOrFatal(t, NodeCompletedData{
+			Outcome: string(OutcomeOK),
+			Files:   map[string]string{"report": currentRef},
+		}),
+	}); err != nil {
+		t.Fatalf("seed collect completion: %v", err)
+	}
+	if err := rig.log.Append(state.Event{
+		Type: EventCallStarted,
+		Path: "analyze",
+		Data: marshalOrFatal(t, CallStartedData{
+			InputRef:   inputRef,
+			InputFiles: map[string]string{"report": recordedRef},
+		}),
+	}); err != nil {
+		t.Fatalf("seed call.started: %v", err)
+	}
+	folded, err := Fold(mustFoldEvents(t, rig.log), rig.blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	rig.rs = folded
+	rig.fake.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+	def := callInputFileDefinition(
+		map[string]string{"report": "step.collect.files.report"},
+		ir.WorkflowInputFiles{"report": {Format: "json", Schema: awfStringObjectSchema("status")}},
+	)
+
+	oc, err := Run(context.Background(), def, rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	if got := stagedFileContent(t, spy, "analyze.workflow::c", "/work/report.json"); string(got) != string(recordedBytes) {
+		t.Fatalf("staged report bytes = %q, want recorded bytes %q", got, recordedBytes)
+	}
+}
+
+func TestRunCallStepInputFileSchemaRefUsesChildModuleAssets(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rootHandle, err := rig.fake.Create(context.Background(), container.ContainerSpec{Name: "rootc"})
+	if err != nil {
+		t.Fatalf("Create root: %v", err)
+	}
+	rig.disp.Handles["rootc"] = rootHandle
+	rootSchema := []byte(`{"type":"object","required":["status"],"properties":{"status":{"const":"root"}}}`)
+	childSchema := []byte(`{"type":"object","required":["status"],"properties":{"status":{"const":"child"}}}`)
+	rootSchemaRef, err := rig.blobs.Put(rootSchema)
+	if err != nil {
+		t.Fatalf("put root schema: %v", err)
+	}
+	childSchemaRef, err := rig.blobs.Put(childSchema)
+	if err != nil {
+		t.Fatalf("put child schema: %v", err)
+	}
+	rig.fake.ProgramExecWithFiles("collect", container.ExecResult{ExitCode: 0}, nil,
+		map[string][]byte{"/out/report.json": []byte(`{"status":"child"}`)})
+	rig.fake.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+	def := callInputFileDefinition(
+		map[string]string{"report": "step.collect.files.report"},
+		ir.WorkflowInputFiles{"report": {Format: "json", SchemaRef: "asset.schema"}},
+	)
+	def.Workflow.Assets = map[string]string{"schema": "root.schema.json"}
+	def.Modules["mod-scan"].Workflow.Assets = map[string]string{"schema": "child.schema.json"}
+
+	oc, err := Run(context.Background(), def, rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{
+		Assets: map[string]RunStartedAsset{
+			"schema":          testRunStartedAsset("root.schema.json", rootSchemaRef, rootSchema),
+			"mod-scan/schema": testRunStartedAsset("child.schema.json", childSchemaRef, childSchema),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+}
+
+func TestRunCallStepInputFileFailureIsCatchableByTry(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rootHandle, err := rig.fake.Create(context.Background(), container.ContainerSpec{Name: "rootc"})
+	if err != nil {
+		t.Fatalf("Create root: %v", err)
+	}
+	rig.disp.Handles["rootc"] = rootHandle
+	rig.fake.ProgramExecWithFiles("collect", container.ExecResult{ExitCode: 0}, nil,
+		map[string][]byte{"/out/report.json": []byte(`{"status":3}`)})
+	rig.fake.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+	rig.fake.ProgramExec("./recover.sh", container.ExecResult{ExitCode: 0}, nil)
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Containers: map[string]ir.Container{"rootc": {Image: "oci://root@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID:          "collect",
+				Container:   "rootc",
+				Run:         "collect",
+				OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.json"}},
+			},
+			&ir.Try{
+				Do: ir.NodeList{
+					&ir.CallStep{
+						ID:         "analyze",
+						Call:       "scan",
+						InputFiles: map[string]string{"report": "step.collect.files.report"},
+					},
+				},
+				Catch: ir.NodeList{
+					&ir.CodeStep{ID: "recover", Container: "rootc", Run: "./recover.sh"},
+				},
+			},
+		},
+	}
+	child := childWorkflowUsingReport(ir.WorkflowInputFiles{"report": {Format: "json", Schema: awfStringObjectSchema("status")}})
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	if !sawExec(rig.fake, "./recover.sh") {
+		t.Fatalf("recover exec was not observed after catchable call input file failure")
+	}
+	if sawExec(rig.fake, "./use-report.sh") {
+		t.Fatalf("child exec ./use-report.sh ran despite input file contract failure")
+	}
+}
+
+func TestRunCallStepRecordedInputFileMissingBlobIsInternalError(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	inputRef, err := rig.blobs.Put([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("put input: %v", err)
+	}
+	currentRef, err := rig.blobs.Put([]byte(`{"status":"current"}`))
+	if err != nil {
+		t.Fatalf("put current report: %v", err)
+	}
+	if err := rig.log.Append(state.Event{
+		Type: EventNodeCompleted,
+		Path: "collect",
+		Data: marshalOrFatal(t, NodeCompletedData{
+			Outcome: string(OutcomeOK),
+			Files:   map[string]string{"report": currentRef},
+		}),
+	}); err != nil {
+		t.Fatalf("seed collect completion: %v", err)
+	}
+	if err := rig.log.Append(state.Event{
+		Type: EventCallStarted,
+		Path: "analyze",
+		Data: marshalOrFatal(t, CallStartedData{
+			InputRef:   inputRef,
+			InputFiles: map[string]string{"report": "sha256:missing-report"},
+		}),
+	}); err != nil {
+		t.Fatalf("seed call.started: %v", err)
+	}
+	folded, err := Fold(mustFoldEvents(t, rig.log), rig.blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	rig.rs = folded
+	rig.fake.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+	def := callInputFileDefinition(
+		map[string]string{"report": "step.collect.files.report"},
+		ir.WorkflowInputFiles{"report": {Format: "json", Schema: awfStringObjectSchema("status")}},
+	)
+
+	oc, err := Run(context.Background(), def, rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if oc != "" {
+		t.Fatalf("Outcome = %q, want empty internal-error outcome", oc)
+	}
+	if err == nil || !strings.Contains(err.Error(), "input_files artifact fetch failed") {
+		t.Fatalf("Run err = %v, want input_files artifact fetch failed", err)
+	}
+	if got := countEvents(callEvents(t, rig.log), EventNodeFailed, "analyze"); got != 0 {
+		t.Fatalf("node.failed analyze count = %d, want 0 for internal fetch error", got)
+	}
+}
+
 func TestRunCallStepOutputFilesSchemaRefUsesChildModuleAssets(t *testing.T) {
 	rig := newCallRunRig(t)
 	rig.seedRunStarted(t)
@@ -1044,6 +1375,48 @@ func callLoadedDefinition(root, child *ir.Workflow) *ir.LoadedDefinition {
 	}
 }
 
+func callInputFileDefinition(callInputFiles map[string]string, childInputFiles ir.WorkflowInputFiles) *ir.LoadedDefinition {
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{
+			"scan": "scan.awf.yaml",
+		},
+		Containers: map[string]ir.Container{"rootc": {Image: "oci://root@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID:          "collect",
+				Container:   "rootc",
+				Run:         "collect",
+				OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.json"}},
+			},
+			&ir.CallStep{
+				ID:         "analyze",
+				Call:       "scan",
+				InputFiles: callInputFiles,
+			},
+		},
+	}
+	return callLoadedDefinition(root, childWorkflowUsingReport(childInputFiles))
+}
+
+func childWorkflowUsingReport(inputFiles ir.WorkflowInputFiles) *ir.Workflow {
+	return &ir.Workflow{
+		ID:         "scan",
+		Version:    1,
+		InputFiles: inputFiles,
+		Containers: map[string]ir.Container{"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
+		Graph: ir.NodeList{
+			&ir.CodeStep{
+				ID:         "use",
+				Container:  "c",
+				Run:        "./use-report.sh",
+				InputFiles: map[string]string{"/work/report.json": "input.files.report"},
+			},
+		},
+	}
+}
+
 type failSecondCreateBackend struct {
 	*container.Fake
 	creates int
@@ -1178,6 +1551,49 @@ func countEvents(events []state.Event, typ, path string) int {
 		}
 	}
 	return n
+}
+
+func sawExec(fake *container.Fake, run string) bool {
+	for _, call := range fake.Calls {
+		if call.Run == run {
+			return true
+		}
+	}
+	return false
+}
+
+func sawCreateSpec(fake *container.Fake, name string) bool {
+	for _, spec := range fake.CreateSpecs {
+		if spec.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func stagedFileContent(t *testing.T, spy *copyToSpy, handleName, filePath string) []byte {
+	t.Helper()
+	var handleID string
+	for _, h := range spy.ExecHandles {
+		if h.Name == handleName {
+			handleID = h.ID
+			break
+		}
+	}
+	if handleID == "" {
+		t.Fatalf("no exec handle recorded for %q; ExecHandles=%+v", handleName, spy.ExecHandles)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	for _, f := range spy.staged[handleID] {
+		if f.Path == filePath {
+			out := make([]byte, len(f.Content))
+			copy(out, f.Content)
+			return out
+		}
+	}
+	t.Fatalf("no staged file %q for handle %q (%s); staged=%+v", filePath, handleName, handleID, spy.staged[handleID])
+	return nil
 }
 
 func eventIndex(events []state.Event, typ, path string) int {

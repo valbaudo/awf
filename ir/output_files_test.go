@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -83,6 +84,36 @@ func TestOutputFilesContractUnknownKeyRejected(t *testing.T) {
 	var o OutputFiles
 	if err := json.Unmarshal([]byte(`{"summary":{"path":"/out/summary.json","shape":"json"}}`), &o); err == nil {
 		t.Fatal("unmarshal contract object with unknown key succeeded")
+	}
+}
+
+func TestWorkflowInputFilesDecodeAndMarshal(t *testing.T) {
+	raw := []byte(`{"report":{"format":"json","schema_ref":"asset.report_schema"},"notes":{}}`)
+	var got WorkflowInputFiles
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["report"].Format != "json" || got["report"].SchemaRef != "asset.report_schema" {
+		t.Fatalf("report contract = %#v", got["report"])
+	}
+	if got["notes"].Format != "" || got["notes"].Schema != nil || got["notes"].SchemaRef != "" {
+		t.Fatalf("notes contract = %#v, want empty opaque contract", got["notes"])
+	}
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"notes":{},"report":{"format":"json","schema_ref":"asset.report_schema"}}`
+	if string(out) != want {
+		t.Fatalf("marshal = %s, want canonical sorted JSON %s", out, want)
+	}
+}
+
+func TestWorkflowInputFilesRejectUnknownContractKey(t *testing.T) {
+	var got WorkflowInputFiles
+	err := json.Unmarshal([]byte(`{"report":{"path":"/work/report.json"}}`), &got)
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("err = %v, want unknown field", err)
 	}
 }
 

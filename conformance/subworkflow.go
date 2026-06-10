@@ -7,6 +7,7 @@ import (
 
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/state"
 )
 
 func testSubworkflow(t *testing.T, factory BackendFactory) {
@@ -22,6 +23,18 @@ func testSubworkflow(t *testing.T, factory BackendFactory) {
 	})
 	t.Run("artifact_export_stages_into_parent", func(t *testing.T) {
 		testSubworkflowArtifactExport(t, factory)
+	})
+	t.Run("artifact_import_stages_into_child", func(t *testing.T) {
+		testSubworkflowArtifactImportStagesIntoChild(t, factory)
+	})
+	t.Run("artifact_import_contract_failure_stops_before_child", func(t *testing.T) {
+		testSubworkflowArtifactImportContractFailureStopsBeforeChild(t, factory)
+	})
+	t.Run("artifact_import_child_to_child", func(t *testing.T) {
+		testSubworkflowArtifactImportChildToChild(t, factory)
+	})
+	t.Run("artifact_import_resume_uses_recorded_call_ref", func(t *testing.T) {
+		testSubworkflowArtifactImportResumeUsesRecordedCallRef(t, factory)
 	})
 	t.Run("named_aggregate_artifact_export", func(t *testing.T) {
 		testSubworkflowNamedAggregateArtifactExport(t, factory)
@@ -171,6 +184,224 @@ func testSubworkflowArtifactExport(t *testing.T, factory BackendFactory) {
 	if string(got) != string(report) {
 		t.Fatalf("exported report blob = %q, want %q", got, report)
 	}
+}
+
+func testSubworkflowArtifactImportStagesIntoChild(t *testing.T, factory BackendFactory) {
+	t.Helper()
+
+	report := []byte(`{"status":"ready"}`)
+	var spy *assetCopyToSpy
+	h := newHarness(t, func() container.Backend {
+		f := factory().(*container.Fake)
+		f.ProgramExecWithFiles("./collect-report.sh", container.ExecResult{ExitCode: 0}, nil,
+			map[string][]byte{"/out/report.json": report})
+		f.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+		spy = newAssetCopyToSpy(f)
+		return spy
+	}, subworkflowCallInputFilesRootWorkflow)
+	writeSubworkflowFile(t, h, "child.awf.yaml", subworkflowCallInputFilesChildWorkflow)
+
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("outcome = %q, want ok", oc)
+	}
+	if spy == nil {
+		t.Fatal("workflow did not create a fake backend")
+	}
+	assertExactlyOneStagedPath(t, spy, "/work/report.json", report)
+}
+
+func testSubworkflowArtifactImportContractFailureStopsBeforeChild(t *testing.T, factory BackendFactory) {
+	t.Helper()
+
+	report := []byte(`{"status":3}`)
+	var fake *container.Fake
+	h := newHarness(t, func() container.Backend {
+		f := factory().(*container.Fake)
+		f.ProgramExecWithFiles("./collect-report.sh", container.ExecResult{ExitCode: 0}, nil,
+			map[string][]byte{"/out/report.json": report})
+		f.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+		fake = f
+		return f
+	}, subworkflowCallInputFilesRootWorkflow)
+	writeSubworkflowFile(t, h, "child.awf.yaml", subworkflowCallInputFilesChildWorkflow)
+
+	oc, err := h.runWorkflow(t)
+	if oc != engine.OutcomePermanentFailure {
+		t.Fatalf("outcome = %q, want permanent_failure (err=%v)", oc, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "input_files.report") {
+		t.Fatalf("run err = %v, want input_files.report contract error", err)
+	}
+	if fake == nil {
+		t.Fatal("workflow did not create a fake backend")
+	}
+	if sawExec(fake, "./use-report.sh") {
+		t.Fatalf("child executed despite call input_files contract failure; calls = %+v", fake.Calls)
+	}
+	events := mustFoldEvents(t, h)
+	if got := countEventsAt(events, engine.EventCallStarted, "child_call"); got != 0 {
+		t.Fatalf("call.started at child_call count = %d, want 0", got)
+	}
+	if got := countEventsWithPathPrefix(events, engine.EventNodeStarted, "child_call.workflow"); got != 0 {
+		t.Fatalf("node.started under child_call.workflow count = %d, want 0", got)
+	}
+}
+
+func testSubworkflowArtifactImportChildToChild(t *testing.T, factory BackendFactory) {
+	t.Helper()
+
+	report := []byte(`{"status":"from-producer-child"}`)
+	var spy *assetCopyToSpy
+	h := newHarness(t, func() container.Backend {
+		f := factory().(*container.Fake)
+		f.ProgramExecWithFiles("./pack-report.sh", container.ExecResult{ExitCode: 0}, nil,
+			map[string][]byte{"/out/report.json": report})
+		f.ProgramExec("./consume-report.sh", container.ExecResult{ExitCode: 0}, nil)
+		spy = newAssetCopyToSpy(f)
+		return spy
+	}, subworkflowCallInputFilesChildToChildRootWorkflow)
+	writeSubworkflowFile(t, h, "producer.awf.yaml", subworkflowCallInputFilesProducerChildWorkflow)
+	writeSubworkflowFile(t, h, "consumer.awf.yaml", subworkflowCallInputFilesConsumerChildWorkflow)
+
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("outcome = %q, want ok", oc)
+	}
+	if spy == nil {
+		t.Fatal("workflow did not create a fake backend")
+	}
+	assertExactlyOneStagedPath(t, spy, "/work/report.json", report)
+}
+
+func testSubworkflowArtifactImportResumeUsesRecordedCallRef(t *testing.T, factory BackendFactory) {
+	t.Helper()
+
+	parentBytes := []byte(`{"status":"parent-current"}`)
+	recordedBytes := []byte(`{"status":"recorded-call-start"}`)
+	var resumeFake *container.Fake
+	var resumeSpy *assetCopyToSpy
+	h := newHarness(t, func() container.Backend {
+		f := factory().(*container.Fake)
+		f.ProgramExec("./use-report.sh", container.ExecResult{ExitCode: 0}, nil)
+		resumeFake = f
+		resumeSpy = newAssetCopyToSpy(f)
+		return resumeSpy
+	}, subworkflowCallInputFilesRootWorkflow)
+	writeSubworkflowFile(t, h, "child.awf.yaml", subworkflowCallInputFilesChildWorkflow)
+
+	ld := loadSubworkflowDefinition(t, h)
+	digest, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatalf("ComputeDigest: %v", err)
+	}
+	assets, err := engine.StoreRunStartedAssetsForLoadedDefinition(h.blobs, ld)
+	if err != nil {
+		t.Fatalf("store run-started assets: %v", err)
+	}
+	appendEvent(t, h.log, state.Event{
+		Type: engine.EventRunStarted,
+		Data: mustJSON(t, engine.RunStartedData{RunID: h.runID, WorkflowDigest: digest, Assets: assets}),
+	})
+	parentRef, err := h.blobs.Put(parentBytes)
+	if err != nil {
+		t.Fatalf("put parent report: %v", err)
+	}
+	recordedRef, err := h.blobs.Put(recordedBytes)
+	if err != nil {
+		t.Fatalf("put recorded report: %v", err)
+	}
+	appendEvent(t, h.log, state.Event{
+		Type: engine.EventNodeCompleted,
+		Path: "collect",
+		Data: mustJSON(t, engine.NodeCompletedData{
+			Outcome: string(engine.OutcomeOK),
+			Files:   map[string]string{"report": parentRef},
+		}),
+	})
+	inputRef, err := h.blobs.Put([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("put call input: %v", err)
+	}
+	appendEvent(t, h.log, state.Event{
+		Type: engine.EventCallStarted,
+		Path: "child_call",
+		Data: mustJSON(t, engine.CallStartedData{
+			InputRef:   inputRef,
+			InputFiles: map[string]string{"report": recordedRef},
+		}),
+	})
+	appendEvent(t, h.log, state.Event{
+		Type: engine.EventNodeStarted,
+		Path: "child_call.workflow.use_report",
+		Data: mustJSON(t, engine.NodeStartedData{Kind: "code"}),
+	})
+
+	oc, err := h.resumeWorkflow(t)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("resume outcome = %q, want ok", oc)
+	}
+	if resumeFake == nil || resumeSpy == nil {
+		t.Fatal("resume did not create a fake backend")
+	}
+	if sawExec(resumeFake, "./collect-report.sh") {
+		t.Fatalf("resume re-ran committed parent collect; calls = %+v", resumeFake.Calls)
+	}
+	assertExactlyOneStagedPath(t, resumeSpy, "/work/report.json", recordedBytes)
+}
+
+func assertExactlyOneStagedPath(t *testing.T, spy *assetCopyToSpy, path string, expected []byte) {
+	t.Helper()
+	if spy == nil {
+		t.Fatal("workflow did not create a fake backend")
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+
+	count := 0
+	got := ""
+	for _, f := range spy.staged {
+		if f.Path != path {
+			continue
+		}
+		count++
+		got = string(f.Content)
+	}
+	if count != 1 {
+		t.Fatalf("staged %s count = %d, want exactly 1 (all staged: %#v)", path, count, spy.staged)
+	}
+	if got != string(expected) {
+		t.Fatalf("staged %s = %q, want %q (all staged: %#v)", path, got, expected, spy.staged)
+	}
+}
+
+func countEventsAt(events []state.Event, typ, path string) int {
+	count := 0
+	for _, ev := range events {
+		if ev.Type == typ && ev.Path == path {
+			count++
+		}
+	}
+	return count
+}
+
+func countEventsWithPathPrefix(events []state.Event, typ, prefix string) int {
+	count := 0
+	for _, ev := range events {
+		if ev.Type == typ && strings.HasPrefix(ev.Path, prefix) {
+			count++
+		}
+	}
+	return count
 }
 
 func testSubworkflowNamedAggregateArtifactExport(t *testing.T, factory BackendFactory) {

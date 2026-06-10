@@ -571,6 +571,22 @@ func TestRunStateCallStartedRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRecordCallStartedCopiesInputFiles(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	inputFiles := map[string]string{"report": "sha256:report"}
+
+	rs.RecordCallStarted("call.review", CallStartedRecord{InputFiles: inputFiles})
+	inputFiles["report"] = "sha256:mutated"
+
+	got, ok := rs.LookupCallStarted("call.review")
+	if !ok {
+		t.Fatal("LookupCallStarted(call.review): ok=false")
+	}
+	if got.InputFiles["report"] != "sha256:report" {
+		t.Errorf("InputFiles[report] = %q, want sha256:report", got.InputFiles["report"])
+	}
+}
+
 func TestRunStatePausedRoundTrip(t *testing.T) {
 	rs := NewRunState("run-x", "digest", nil)
 	if rs.LookupPaused() != nil {

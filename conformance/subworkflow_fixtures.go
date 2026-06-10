@@ -54,6 +54,96 @@ graph:
       report: /out/report.md
 `, fakeImageDigest)
 
+var subworkflowCallInputFilesRootWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-call-input-files-root
+version: 1
+imports:
+  child: child.awf.yaml
+containers:
+  lab:
+    image: %[1]s
+graph:
+  - id: collect
+    container: lab
+    run: "./collect-report.sh"
+    retry: { attempts: 1 }
+    output_files:
+      report: /out/report.json
+  - id: child_call
+    call: child
+    input_files:
+      report: step.collect.files.report
+`, fakeImageDigest)
+
+var subworkflowCallInputFilesChildWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-call-input-files-child
+version: 1
+input_files:
+  report:
+    format: json
+    schema:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string }
+containers:
+  lab:
+    image: %[1]s
+graph:
+  - id: use_report
+    container: lab
+    run: "./use-report.sh"
+    retry: { attempts: 1 }
+    input_files:
+      /work/report.json: input.files.report
+`, fakeImageDigest)
+
+var subworkflowCallInputFilesChildToChildRootWorkflow = `workflow: conformance-subworkflow-call-input-files-child-to-child-root
+version: 1
+imports:
+  producer: producer.awf.yaml
+  consumer: consumer.awf.yaml
+containers: {}
+graph:
+  - id: first_call
+    call: producer
+  - id: second_call
+    call: consumer
+    input_files:
+      report: step.first_call.files.report
+`
+
+var subworkflowCallInputFilesProducerChildWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-call-input-files-producer-child
+version: 1
+output_files:
+  report: step.pack.files.report
+containers:
+  lab:
+    image: %[1]s
+graph:
+  - id: pack
+    container: lab
+    run: "./pack-report.sh"
+    retry: { attempts: 1 }
+    output_files:
+      report: /out/report.json
+`, fakeImageDigest)
+
+var subworkflowCallInputFilesConsumerChildWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-call-input-files-consumer-child
+version: 1
+input_files:
+  report: {}
+containers:
+  lab:
+    image: %[1]s
+graph:
+  - id: consume_report
+    container: lab
+    run: "./consume-report.sh"
+    retry: { attempts: 1 }
+    input_files:
+      /work/report.json: input.files.report
+`, fakeImageDigest)
+
 var subworkflowAggregateRootWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-aggregate-root
 version: 1
 imports:

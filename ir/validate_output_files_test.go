@@ -155,3 +155,27 @@ func TestValidateOutputFileContractSchemaRefAssetMustBeSingleFile(t *testing.T) 
 	}}
 	assertErrorAt(t, Validate(ld), "AWF3009", "produce")
 }
+
+func TestValidateWorkflowInputFileContractFormatValues(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		InputFiles: WorkflowInputFiles{
+			"report": {Format: "text"},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1050", "input_files.report")
+}
+
+func TestValidateWorkflowInputFileContractSchemaRefUsesModuleAssets(t *testing.T) {
+	child := childWorkflowWithTypedOutput("child", "finding")
+	child.Assets = map[string]string{"childschema": "schema.json"}
+	child.InputFiles = WorkflowInputFiles{
+		"report": {Format: "json", SchemaRef: "asset.childschema"},
+	}
+	ld := loadedWithChild(validCallingRoot(), child)
+	ld.Modules["module-scan"].Assets = map[string]LoadedAsset{
+		"childschema": singleFileAsset("childschema", `{"type":"object"}`),
+	}
+
+	assertNoErrorCode(t, Validate(ld), "AWF1050")
+}

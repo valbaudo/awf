@@ -55,7 +55,7 @@ func validateInputFilesModule(ld *LoadedDefinition, mod validationModule, c *col
 				continue
 			}
 			validDsts = append(validDsts, dst)
-			validateInputFileRef(c, nodePath, "input_files["+dst+"]", raw, wf.Assets, producers, order, outFiles, maps)
+			validateInputFileRef(c, nodePath, nodePath, "input_files["+dst+"]", raw, wf.InputFiles, wf.Assets, producers, order, outFiles, maps)
 		}
 		validateInputFileDestinationOverlap(c, nodePath, validDsts)
 	})
@@ -116,7 +116,8 @@ func nodeOrder(nodes NodeList) map[string]int {
 
 func validateInputFileRef(
 	c *collector,
-	nodePath, label, raw string,
+	diagnosticPath, consumerPath, label, raw string,
+	workflowInputFiles WorkflowInputFiles,
 	assets map[string]string,
 	producers map[string]producer,
 	order map[string]int,
@@ -124,21 +125,27 @@ func validateInputFileRef(
 	maps map[string]*Map,
 ) {
 	if strings.Contains(raw, "{{") || strings.Contains(raw, "}}") {
-		c.errf(nodePath, "AWF3007", label+": must be a static step.<id>.files.<name> or asset.<id> reference, not a template")
+		c.errf(diagnosticPath, "AWF3007", label+": must be a static step.<id>.files.<name> or asset.<id> reference, not a template")
+		return
+	}
+	if name, ok := template.ParseWorkflowInputFileRef(raw); ok {
+		if _, declared := workflowInputFiles[name]; !declared {
+			c.errf(diagnosticPath, "AWF3007", label+": workflow input file "+name+" is not declared")
+		}
 		return
 	}
 	if id, ok := template.ParseAssetRef(raw); ok {
 		if _, declared := assets[id]; !declared {
-			c.errf(nodePath, "AWF3007", label+": asset "+id+" is not a declared asset")
+			c.errf(diagnosticPath, "AWF3007", label+": asset "+id+" is not a declared asset")
 		}
 		return
 	}
 	id, name, ok := template.ParseArtifactRef(raw)
 	if !ok {
-		c.errf(nodePath, "AWF3007", label+"="+raw+": expected step.<id>.files.<name> or asset.<id>")
+		c.errf(diagnosticPath, "AWF3007", label+"="+raw+": expected step.<id>.files.<name> or asset.<id>")
 		return
 	}
-	validateParsedNamedArtifactRef(c, nodePath, label, id, name, producers, order, outFiles, maps)
+	validateParsedNamedArtifactRef(c, diagnosticPath, consumerPath, label, id, name, producers, order, outFiles, maps)
 }
 
 func validateNamedArtifactRef(
@@ -158,12 +165,12 @@ func validateNamedArtifactRef(
 		c.errf(nodePath, "AWF3007", label+"="+raw+": expected step.<id>.files.<name>")
 		return
 	}
-	validateParsedNamedArtifactRef(c, nodePath, label, id, name, producers, order, outFiles, maps)
+	validateParsedNamedArtifactRef(c, nodePath, nodePath, label, id, name, producers, order, outFiles, maps)
 }
 
 func validateParsedNamedArtifactRef(
 	c *collector,
-	nodePath, label, id, name string,
+	diagnosticPath, consumerPath, label, id, name string,
 	producers map[string]producer,
 	order map[string]int,
 	outFiles map[string]OutputFiles,
@@ -171,15 +178,15 @@ func validateParsedNamedArtifactRef(
 ) {
 	p, ok := producers[id]
 	if !ok {
-		c.errf(nodePath, "AWF3007", label+": step "+id+" is not a declared step")
+		c.errf(diagnosticPath, "AWF3007", label+": step "+id+" is not a declared step")
 		return
 	}
-	if p.kind == "map_reduce" && pathWithinScope(nodePath, p.path) {
-		c.errf(nodePath, "AWF3007", label+": reduced map product "+id+" may only be referenced outside its producing map")
+	if p.kind == "map_reduce" && pathWithinScope(consumerPath, p.path) {
+		c.errf(diagnosticPath, "AWF3007", label+": reduced map product "+id+" may only be referenced outside its producing map")
 		return
 	}
-	if consumerOrd, ok := order[nodePath]; ok && p.ord >= consumerOrd {
-		c.errf(nodePath, "AWF3007", label+": producer "+id+" must appear before this consumer")
+	if consumerOrd, ok := order[consumerPath]; ok && p.ord >= consumerOrd {
+		c.errf(diagnosticPath, "AWF3007", label+": producer "+id+" must appear before this consumer")
 		return
 	}
 	// Reduce short-circuit: a producer in the v1 single-map shape, referenced
@@ -190,23 +197,23 @@ func validateParsedNamedArtifactRef(
 	// quorum reducer has no artifacts (empty OutputFiles → name not found →
 	// AWF3007). The body step's output_files and the gate/map-scope reachability
 	// check below do NOT apply — the reducer's output IS reachable from outside.
-	if mapPath, _, isMapBody := SingleMapBodyShape(p.path); isMapBody && !pathWithinScope(nodePath, mapPath) {
+	if mapPath, _, isMapBody := SingleMapBodyShape(p.path); isMapBody && !pathWithinScope(consumerPath, mapPath) {
 		if m, ok := maps[mapPath]; ok && m.Reduce != nil {
 			if _, ok := m.Reduce.OutputFiles.PathForName(name); !ok {
-				c.errf(nodePath, "AWF3007", label+": reduced map (producer "+id+") reducer has no named output_files artifact "+name)
+				c.errf(diagnosticPath, "AWF3007", label+": reduced map (producer "+id+") reducer has no named output_files artifact "+name)
 			}
 			return
 		}
 	}
 	if _, ok := outFiles[id].PathForName(name); !ok {
-		c.errf(nodePath, "AWF3007", label+": step "+id+" has no named output_files artifact "+name)
+		c.errf(diagnosticPath, "AWF3007", label+": step "+id+" has no named output_files artifact "+name)
 		return
 	}
-	if scope, opaque := opaqueScopePrefix(p.path); opaque && !pathWithinScope(nodePath, scope) {
+	if scope, opaque := opaqueScopePrefix(p.path); opaque && !pathWithinScope(consumerPath, scope) {
 		if isGateScope(scope) {
 			return
 		}
-		c.errf(nodePath, "AWF3007", label+": producer "+id+" is inside a gate/map scope not reachable from here")
+		c.errf(diagnosticPath, "AWF3007", label+": producer "+id+" is inside a gate/map scope not reachable from here")
 	}
 }
 

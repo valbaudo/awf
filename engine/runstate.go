@@ -158,9 +158,10 @@ type SignalReceivedEntry struct {
 // Input is the materialized JSON object from InputRef. READ-ONLY (callers MUST
 // NOT mutate — same caveat as NodeResult.Outputs).
 type CallStartedRecord struct {
-	Input    map[string]any
-	InputRef string
-	Runtimes []ResolvedRuntime
+	Input      map[string]any
+	InputRef   string
+	InputFiles map[string]string
+	Runtimes   []ResolvedRuntime
 }
 
 // NodeResult is the fold result for one completed node — stored in RunState.Completed
@@ -512,7 +513,7 @@ func (rs *RunState) LookupSignals(name string) []SignalEntry {
 
 // LookupCallStarted returns the call.started record stored for path and a
 // present flag. Thread-safe. READ-ONLY — callers MUST NOT mutate the returned
-// record's Input map or Runtimes slice.
+// record's Input map, InputFiles map, or Runtimes slice.
 func (rs *RunState) LookupCallStarted(path string) (CallStartedRecord, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -543,7 +544,19 @@ func (rs *RunState) CallStartedPaths() []string {
 func (rs *RunState) RecordCallStarted(path string, rec CallStartedRecord) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
+	rec.InputFiles = cloneStringMap(rec.InputFiles)
 	rs.CallStarted[path] = rec
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	cp := make(map[string]string, len(src))
+	for k, v := range src {
+		cp[k] = v
+	}
+	return cp
 }
 
 // LookupSignalReceivedAt returns the SignalReceivedEntry stored for path and

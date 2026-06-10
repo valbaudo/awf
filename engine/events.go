@@ -281,10 +281,11 @@ type RunStartedData struct {
 // CallStartedData is the durable subworkflow-call input pin. The root
 // run.started.workflow_digest already pins imported workflow canonical IR,
 // compose bytes, and asset bytes; call.started only records the call-specific
-// input and runtime resolutions.
+// typed input, child input file refs, and runtime resolutions.
 type CallStartedData struct {
-	InputRef string            `json:"input_ref"`
-	Runtimes []ResolvedRuntime `json:"runtimes,omitempty"`
+	InputRef   string            `json:"input_ref"`
+	InputFiles map[string]string `json:"input_files,omitempty"`
+	Runtimes   []ResolvedRuntime `json:"runtimes,omitempty"`
 }
 
 // RunStartedAsset is the durable run-start manifest for one workflow asset.

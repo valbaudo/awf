@@ -89,6 +89,32 @@ func TestInputFilesUnknownAssetReportsAWF3007(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
 }
 
+func TestInputFilesWorkflowInputFileRefAccepted(t *testing.T) {
+	wf := &Workflow{
+		ID: "child", Version: 1,
+		InputFiles: WorkflowInputFiles{"report": {}},
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{ID: "use", Container: "c", Run: "true",
+				InputFiles: map[string]string{"/work/report.json": "input.files.report"}},
+		},
+	}
+	assertNoErrorCode(t, Validate(makeLD(wf)), "AWF3007")
+}
+
+func TestInputFilesWorkflowInputFileRefRejectsUndeclaredName(t *testing.T) {
+	wf := &Workflow{
+		ID: "child", Version: 1,
+		InputFiles: WorkflowInputFiles{"report": {}},
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{ID: "use", Container: "c", Run: "true",
+				InputFiles: map[string]string{"/work/report.json": "input.files.missing"}},
+		},
+	}
+	assertErrorAt(t, Validate(makeLD(wf)), "AWF3007", "use")
+}
+
 func TestInputFilesAssetRefAcceptedForFileAndDirectoryDeclarations(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,

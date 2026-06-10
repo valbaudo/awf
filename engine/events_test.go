@@ -77,7 +77,8 @@ func TestRunStartedDataRoundTrip(t *testing.T) {
 
 func TestCallStartedDataRoundTrip(t *testing.T) {
 	in := CallStartedData{
-		InputRef: "awf-d1:sha256:def",
+		InputRef:   "awf-d1:sha256:def",
+		InputFiles: map[string]string{"report": "sha256:report"},
 		Runtimes: []ResolvedRuntime{
 			{Ref: "anthropic/claude-code", Version: "2.1.118", Container: "lab"},
 			{Ref: "openai/codex", Version: "0.31.0"},
@@ -90,6 +91,9 @@ func TestCallStartedDataRoundTrip(t *testing.T) {
 	if !bytes.Contains(b, []byte(`"input_ref":"awf-d1:sha256:def"`)) {
 		t.Errorf("marshal = %s, want input_ref", b)
 	}
+	if !bytes.Contains(b, []byte(`"input_files":{"report":"sha256:report"}`)) {
+		t.Errorf("marshal = %s, want input_files", b)
+	}
 	if bytes.Contains(b, []byte("workflow_digest")) {
 		t.Errorf("call.started JSON must not contain workflow_digest, got %s", b)
 	}
@@ -99,6 +103,9 @@ func TestCallStartedDataRoundTrip(t *testing.T) {
 	}
 	if out.InputRef != in.InputRef {
 		t.Errorf("InputRef = %q, want %q", out.InputRef, in.InputRef)
+	}
+	if out.InputFiles["report"] != "sha256:report" {
+		t.Errorf("InputFiles[report] = %q, want sha256:report", out.InputFiles["report"])
 	}
 	if len(out.Runtimes) != len(in.Runtimes) {
 		t.Fatalf("len(Runtimes) = %d, want %d", len(out.Runtimes), len(in.Runtimes))

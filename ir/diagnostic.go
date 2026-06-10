@@ -198,6 +198,8 @@ var catalog = map[string]string{
 	"AWF1047": "call input contract invalid",
 	"AWF1048": "workflow outputs/export contract invalid",
 	"AWF1049": "workflow artifact export invalid",
+	"AWF1050": "workflow input_files contract invalid",
+	"AWF1051": "call input_files binding invalid",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
 	"AWF_IMPORT_DECODE":         "imported workflow failed to decode",

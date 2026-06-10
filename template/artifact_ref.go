@@ -40,3 +40,20 @@ func ParseAssetRef(raw string) (id string, ok bool) {
 	}
 	return g[1].Ident, true
 }
+
+// ParseWorkflowInputFileRef parses a static workflow input file reference
+// "input.files.<name>" into name. ok=false for any other shape.
+func ParseWorkflowInputFileRef(raw string) (name string, ok bool) {
+	r, err := ParseRef(strings.TrimSpace(raw))
+	if err != nil {
+		return "", false
+	}
+	g := r.Segments
+	if len(g) != 3 ||
+		g[0].IsIndex || g[0].Ident != "input" ||
+		g[1].IsIndex || g[1].Ident != "files" ||
+		g[2].IsIndex {
+		return "", false
+	}
+	return g[2].Ident, true
+}

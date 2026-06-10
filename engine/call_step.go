@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,22 +28,26 @@ func runCallStep(ctx context.Context, call *ir.CallStep, path string, ictx inter
 	}
 
 	runtimeParent := CallWorkflowRuntimePath(path)
-	childHandles, err := createRuntimeHandles(ctx, ld, child.Workflow, child.ComposeFiles, runtimeParent, ictx.runstate)
-	if err != nil {
-		return failStep(ictx.log, path, OutcomeRetryableFailure, err)
-	}
-	defer func() {
-		_ = destroyRuntimeHandles(ld.Backend, childHandles)
-	}()
 
-	childDispatcher := cloneDispatcherForRuntime(ld, runtimeParent, child.ComposeFiles, childHandles)
 	var callInput map[string]any
 	var inputRef string
+	var inputFiles map[string]string
 	var runtimes []ResolvedRuntime
+	var childDispatcher *LocalDispatcher
+	var err error
 	if rec, recorded := ictx.runstate.LookupCallStarted(path); recorded {
 		callInput = rec.Input
 		inputRef = rec.InputRef
+		inputFiles = rec.InputFiles
 		runtimes = rec.Runtimes
+		childHandles, err := createRuntimeHandles(ctx, ld, child.Workflow, child.ComposeFiles, runtimeParent, ictx.runstate)
+		if err != nil {
+			return failStep(ictx.log, path, OutcomeRetryableFailure, err)
+		}
+		defer func() {
+			_ = destroyRuntimeHandles(ld.Backend, childHandles)
+		}()
+		childDispatcher = cloneDispatcherForRuntime(ld, runtimeParent, child.ComposeFiles, childHandles)
 		current, rerr := ResolveRuntimes(ctx, WalkRuntimeRefs(child.ID, runtimeParent, child.Workflow), childDispatcher.Resolver, childDispatcher.Handles)
 		if rerr != nil {
 			return "", fmt.Errorf("engine.runCallStep: resolve current runtimes at %q: %w", path, rerr)
@@ -55,6 +60,13 @@ func runCallStep(ctx context.Context, call *ir.CallStep, path string, ictx inter
 		if err != nil {
 			return failStep(ictx.log, path, OutcomePermanentFailure, err)
 		}
+		inputFiles, err = resolveCallInputFiles(call, child, path, ictx)
+		if err != nil {
+			if errors.Is(err, errArtifactFetch) {
+				return "", fmt.Errorf("engine.runCallStep: resolve input_files at %q: %w", path, err)
+			}
+			return failStep(ictx.log, path, OutcomePermanentFailure, err)
+		}
 		raw, merr := json.Marshal(callInput)
 		if merr != nil {
 			return "", fmt.Errorf("engine.runCallStep: marshal input at %q: %w", path, merr)
@@ -63,14 +75,22 @@ func runCallStep(ctx context.Context, call *ir.CallStep, path string, ictx inter
 		if err != nil {
 			return "", fmt.Errorf("engine.runCallStep: put input at %q: %w", path, err)
 		}
+		childHandles, err := createRuntimeHandles(ctx, ld, child.Workflow, child.ComposeFiles, runtimeParent, ictx.runstate)
+		if err != nil {
+			return failStep(ictx.log, path, OutcomeRetryableFailure, err)
+		}
+		defer func() {
+			_ = destroyRuntimeHandles(ld.Backend, childHandles)
+		}()
+		childDispatcher = cloneDispatcherForRuntime(ld, runtimeParent, child.ComposeFiles, childHandles)
 		runtimes, err = ResolveRuntimes(ctx, WalkRuntimeRefs(child.ID, runtimeParent, child.Workflow), childDispatcher.Resolver, childDispatcher.Handles)
 		if err != nil {
 			return failStep(ictx.log, path, OutcomePermanentFailure, err)
 		}
-		if err := appendCallStarted(ictx.log, path, inputRef, runtimes); err != nil {
+		if err := appendCallStarted(ictx.log, path, inputRef, inputFiles, runtimes); err != nil {
 			return "", err
 		}
-		ictx.runstate.RecordCallStarted(path, CallStartedRecord{Input: callInput, InputRef: inputRef, Runtimes: runtimes})
+		ictx.runstate.RecordCallStarted(path, CallStartedRecord{Input: callInput, InputRef: inputRef, InputFiles: inputFiles, Runtimes: runtimes})
 	}
 	_ = inputRef
 
@@ -78,6 +98,7 @@ func runCallStep(ctx context.Context, call *ir.CallStep, path string, ictx inter
 	childCtx.moduleID = child.ID
 	childCtx.wf = child.Workflow
 	childCtx.input = callInput
+	childCtx.inputFiles = inputFiles
 	childCtx.runtimeParent = runtimeParent
 	childCtx.dispatcher = childDispatcher
 	oc, childErr := interpNodes(ctx, child.Workflow.Graph, runtimeParent, childCtx)
@@ -136,8 +157,8 @@ func evaluateCallInput(call *ir.CallStep, path string, child *ir.Workflow, ictx 
 	return validated, nil
 }
 
-func appendCallStarted(log state.Log, path, inputRef string, runtimes []ResolvedRuntime) error {
-	data, err := json.Marshal(CallStartedData{InputRef: inputRef, Runtimes: runtimes})
+func appendCallStarted(log state.Log, path, inputRef string, inputFiles map[string]string, runtimes []ResolvedRuntime) error {
+	data, err := json.Marshal(CallStartedData{InputRef: inputRef, InputFiles: inputFiles, Runtimes: runtimes})
 	if err != nil {
 		return fmt.Errorf("engine.runCallStep: marshal call.started at %q: %w", path, err)
 	}
