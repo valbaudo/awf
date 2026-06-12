@@ -9,15 +9,28 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
+// with-config key names. Shared by ValidateConfig (allowedKeys + per-key checks)
+// and assembleCommand (launch.go) so the two can never disagree on a key name —
+// mirrors agent/codex/validate.go.
+const (
+	keyPrompt       = "prompt"
+	keyModel        = "model"
+	keyMaxTurns     = "max_turns"
+	keySystemPrompt = "system_prompt"
+	keyAllowedTools = "allowed_tools"
+	keyBare         = "bare"
+	keyMaxBudgetUSD = "max_budget_usd"
+)
+
+// defaultBare is the AWF default for the `bare` key (Phase 5 decision 9): true.
+// One source read by BOTH the validate-time API-key gate and the launch-time
+// `--bare` flag emission.
+const defaultBare = true
+
 // Per Phase 5 design decision 9. Strict; unknown keys rejected.
 var allowedKeys = map[string]struct{}{
-	"prompt":         {},
-	"model":          {},
-	"max_turns":      {},
-	"system_prompt":  {},
-	"allowed_tools":  {},
-	"bare":           {},
-	"max_budget_usd": {},
+	keyPrompt: {}, keyModel: {}, keyMaxTurns: {}, keySystemPrompt: {},
+	keyAllowedTools: {}, keyBare: {}, keyMaxBudgetUSD: {},
 }
 
 // sessionKeysList is the literal list of with-keys whose presence would
@@ -54,61 +67,61 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 	}
 
 	// 3. prompt (required, string).
-	prompt, ok := with["prompt"]
+	prompt, ok := with[keyPrompt]
 	if !ok {
 		return &agent.ErrInvalidConfig{
 			Ref:    AdapterRef,
-			Key:    "prompt",
+			Key:    keyPrompt,
 			Reason: "required",
 		}
 	}
 	if _, ok := prompt.(string); !ok {
 		return &agent.ErrInvalidConfig{
 			Ref:    AdapterRef,
-			Key:    "prompt",
+			Key:    keyPrompt,
 			Reason: fmt.Sprintf("must be string, got %T", prompt),
 		}
 	}
 
 	// 4. Optional-field types (each present-key must be the right Go type).
-	if v, ok := with["model"]; ok {
+	if v, ok := with[keyModel]; ok {
 		if _, ok := v.(string); !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), "model")
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyModel)
 		}
 	}
-	if v, ok := with["max_turns"]; ok {
+	if v, ok := with[keyMaxTurns]; ok {
 		switch v.(type) {
 		case int, int64, float64: // YAML decodes ints sometimes as float64
 		default:
-			return wrapInvalidConfig(fmt.Sprintf("must be integer, got %T", v), "max_turns")
+			return wrapInvalidConfig(fmt.Sprintf("must be integer, got %T", v), keyMaxTurns)
 		}
 	}
-	if v, ok := with["system_prompt"]; ok {
+	if v, ok := with[keySystemPrompt]; ok {
 		if _, ok := v.(string); !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), "system_prompt")
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keySystemPrompt)
 		}
 	}
-	if v, ok := with["allowed_tools"]; ok {
+	if v, ok := with[keyAllowedTools]; ok {
 		if _, ok := v.([]any); !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be array of strings, got %T", v), "allowed_tools")
+			return wrapInvalidConfig(fmt.Sprintf("must be array of strings, got %T", v), keyAllowedTools)
 		}
 	}
-	if v, ok := with["bare"]; ok {
+	if v, ok := with[keyBare]; ok {
 		if _, ok := v.(bool); !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be bool, got %T", v), "bare")
+			return wrapInvalidConfig(fmt.Sprintf("must be bool, got %T", v), keyBare)
 		}
 	}
-	if v, ok := with["max_budget_usd"]; ok {
+	if v, ok := with[keyMaxBudgetUSD]; ok {
 		switch v.(type) {
 		case int, int64, float64:
 		default:
-			return wrapInvalidConfig(fmt.Sprintf("must be number, got %T", v), "max_budget_usd")
+			return wrapInvalidConfig(fmt.Sprintf("must be number, got %T", v), keyMaxBudgetUSD)
 		}
 	}
 
 	// 5. bare-requires-API-key. AWF default for bare is true (decision 9).
-	bare := true
-	if v, ok := with["bare"]; ok {
+	bare := defaultBare
+	if v, ok := with[keyBare]; ok {
 		bare = v.(bool)
 	}
 	if bare {

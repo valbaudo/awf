@@ -178,7 +178,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 // Shell-escapes user-controlled strings via POSIX single-quoting (see
 // shellQuote below for the literal escape sequence).
 func assembleCommand(inv agent.AgentInvocation) (string, error) {
-	prompt, ok := inv.With["prompt"].(string)
+	prompt, ok := inv.With[keyPrompt].(string)
 	if !ok {
 		return "", fmt.Errorf("agent/claude: assembleCommand: with.prompt missing or non-string")
 	}
@@ -207,23 +207,23 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	}
 
 	// bare default true per decision 9.
-	bare := true
-	if v, ok := inv.With["bare"].(bool); ok {
+	bare := defaultBare
+	if v, ok := inv.With[keyBare].(bool); ok {
 		bare = v
 	}
 	if bare {
 		parts = append(parts, "--bare")
 	}
-	if model, ok := inv.With["model"].(string); ok && model != "" {
+	if model, ok := inv.With[keyModel].(string); ok && model != "" {
 		parts = append(parts, "--model", shellQuote(model))
 	}
-	if mt, ok := toInt(inv.With["max_turns"]); ok && mt > 0 {
+	if mt, ok := toInt(inv.With[keyMaxTurns]); ok && mt > 0 {
 		parts = append(parts, "--max-turns", fmt.Sprintf("%d", mt))
 	}
-	if sp, ok := inv.With["system_prompt"].(string); ok && sp != "" {
+	if sp, ok := inv.With[keySystemPrompt].(string); ok && sp != "" {
 		parts = append(parts, "--system-prompt", shellQuote(sp))
 	}
-	if at, ok := inv.With["allowed_tools"].([]any); ok && len(at) > 0 {
+	if at, ok := inv.With[keyAllowedTools].([]any); ok && len(at) > 0 {
 		var toolStrs []string
 		for _, v := range at {
 			if s, ok := v.(string); ok {
@@ -234,7 +234,7 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 			parts = append(parts, "--allowedTools", shellQuote(strings.Join(toolStrs, ",")))
 		}
 	}
-	if budget, ok := toFloat(inv.With["max_budget_usd"]); ok && budget > 0 {
+	if budget, ok := toFloat(inv.With[keyMaxBudgetUSD]); ok && budget > 0 {
 		parts = append(parts, "--max-budget-usd", fmt.Sprintf("%g", budget))
 	}
 

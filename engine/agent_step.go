@@ -27,7 +27,7 @@ import (
 //  3. Substitutes AgentStep.IdempotencyKey (if any).
 //  4. Builds NodeIntent and calls engine.RunWithRetry.
 //  5. Writes one agent.event log entry per buffered AgentEvent (Blobs offload
-//     for payloads ≥ agentEventInlineThreshold).
+//     for payloads ≥ AgentEventInlineThreshold).
 //  6. Calls the canonical engine.Commit (engine/commit.go) and records the
 //     resulting NodeResult in runstate.
 //
@@ -336,7 +336,7 @@ func substituteRawConfig(in ir.RawConfig, scope template.Scope) (ir.RawConfig, e
 }
 
 // appendAgentEvents writes one agent.event log entry per buffered AgentEvent.
-// Payloads ≥ agentEventInlineThreshold are offloaded to Blobs and the entry
+// Payloads ≥ AgentEventInlineThreshold are offloaded to Blobs and the entry
 // carries the CAS pointer; smaller payloads are inline.
 func appendAgentEvents(log state.Log, blobs state.Blobs, path string, events []agent.AgentEvent) error {
 	for _, ev := range events {
@@ -356,7 +356,7 @@ func appendAgentEvents(log state.Log, blobs state.Blobs, path string, events []a
 			data.DisplayIsError = ev.Display.IsError
 		}
 		data.Size = len(eventPayload)
-		if len(eventPayload) >= agentEventInlineThreshold {
+		if len(eventPayload) >= AgentEventInlineThreshold {
 			ref, err := blobs.Put(eventPayload)
 			if err != nil {
 				return fmt.Errorf("Blobs.Put agent.event payload: %w", err)

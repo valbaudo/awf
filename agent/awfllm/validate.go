@@ -39,6 +39,9 @@ var rejectedKeys = []string{"api_key", "session_id", "messages", "tools", "strea
 // /api/chat format; off = prompt-only + tolerant parse.
 var structuredOutputValues = []string{soResponseFormat, soOllamaFormat, soOff}
 
+// defaultAPIKeyEnv is the canonical default API-key env-var name for this adapter.
+// DefaultEnvAllowlist (errors.go) is built from this constant so the two values
+// cannot drift independently.
 const defaultAPIKeyEnv = "OPENAI_API_KEY"
 
 // ValidateConfig enforces the with-schema: reject-inline/session → unknown-key →

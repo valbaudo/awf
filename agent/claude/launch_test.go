@@ -303,6 +303,69 @@ func TestLaunch_ErrorMaxStructuredOutputRetries_MapsToErrUnparseableOutput(t *te
 	}
 }
 
+func TestAssembleCommand_EmitsFlagPerWithKey(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{"ok":true}}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{{Stream: "stdout", Data: streamLines}})
+	a, _ := claude.New(claude.WithBackend(f), claude.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]",
+		Uses:     claude.AdapterRef,
+		With: ir.RawConfig{
+			"prompt":         "x",
+			"model":          "claude-opus-4-8",
+			"max_turns":      3,
+			"system_prompt":  "be terse",
+			"allowed_tools":  []any{"Bash", "Read"},
+			"max_budget_usd": 5,
+		},
+	}
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range eventCh {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	cmd := f.Calls[0].Run
+	for key, flag := range map[string]string{
+		"model":          "--model",
+		"max_turns":      "--max-turns",
+		"system_prompt":  "--system-prompt",
+		"allowed_tools":  "--allowedTools",
+		"max_budget_usd": "--max-budget-usd",
+		"bare":           "--bare", // default true
+	} {
+		if !strings.Contains(cmd, flag) {
+			t.Errorf("with[%q] did not emit %q: %s", key, flag, cmd)
+		}
+	}
+}
+
+func TestAssembleCommand_BareFalseOmitsFlag(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{"ok":true}}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{{Stream: "stdout", Data: streamLines}})
+	a, _ := claude.New(claude.WithBackend(f), claude.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	inv := agent.AgentInvocation{NodePath: "graph[0]", Uses: claude.AdapterRef, With: ir.RawConfig{"prompt": "x", "bare": false}}
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range eventCh {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if strings.Contains(f.Calls[0].Run, "--bare") {
+		t.Errorf("bare=false still emitted --bare: %s", f.Calls[0].Run)
+	}
+}
+
 func TestLaunch_FeedbackPrependedToPrompt(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})

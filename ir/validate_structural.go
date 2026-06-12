@@ -82,7 +82,7 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 	// definition; only the names here fold into the digest.
 	for i, name := range wf.Env {
 		if !envNamePattern.MatchString(name) {
-			c.errf(fmt.Sprintf("env[%d]", i), "AWF1024", fmt.Sprintf("%s: %q", catalog["AWF1024"], name))
+			c.errf(fmt.Sprintf("env[%d]", i), "AWF1024", fmt.Sprintf("%s: %q (must match %s)", catalog["AWF1024"], name, envNamePattern))
 		}
 	}
 
@@ -467,7 +467,7 @@ func nodeHasOutputSchema(n Node) bool {
 // with a multi-megabyte condition.
 func checkFieldSize(src, path string, c *collector) {
 	if len(src) > maxExpressionBytes {
-		c.errf(path, "AWF1016", fmt.Sprintf("%s (got %d bytes)", catalog["AWF1016"], len(src)))
+		c.errf(path, "AWF1016", fmt.Sprintf("%s (limit %d bytes, got %d bytes)", catalog["AWF1016"], maxExpressionBytes, len(src)))
 	}
 }
 
