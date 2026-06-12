@@ -1,6 +1,7 @@
 # AWF correctable-gaps roadmap — design
 
-> Status: design (approved in brainstorming, pending written-spec review). Date: 2026-06-12.
+> Status: design — approved in brainstorming, then hardened by an adversarial self-critique + a
+> code/prior-art verification workflow (11 curated revisions applied; see git history). Date: 2026-06-12.
 > Author: maintainer-side verification pass over an external feasibility audit.
 > Scope: plan the genuine correctable gaps the audit surfaced. P1 is fully specified
 > (ships first, gets its own implementation plan); P2 and P3 are scoped roadmap entries,
@@ -45,7 +46,7 @@ into P1.
 
 Four real correctable gaps, sequenced cheap-first:
 
-- **P1 — `awf output` read-back command + research-doc hygiene.** Read-only, ~days. **Fully
+- **P1 — `awf outputs` read-back command + research-doc hygiene.** Read-only, ~days. **Fully
   specified here; ships first.**
 - **P2 — native-backend resume.** Roadmap entry. **Recommendation: document the boundary +
   escape hatch now; build the workspace-snapshot only on demonstrated need.**
@@ -57,7 +58,7 @@ is a complete answer to the audit.
 
 ---
 
-## 2. P1 — `awf output` + doc hygiene (full design)
+## 2. P1 — `awf outputs` + doc hygiene (full design)
 
 ### 2.1 Problem
 
@@ -70,110 +71,194 @@ bounded to 4 KB (`obs/content.go:17`) — a telemetry surface, not full-fidelity
 the caller must fold the run log and parse AWF's internal blob layout. P1 gives it a first-class
 read command.
 
+**Command name: `awf outputs` (plural).** It projects the workflow's `outputs:` contract (a named
+map), matching the plural-named-export convention of GitHub Actions (`steps.<id>.outputs.*`) and
+Argo (`status.outputs`). Deliberately **not** `awf output` (singular): that overloads the
+`--output {text,json}` format flag already used by `ls`/`inspect`/`trace`/`graph` — an ergonomic
+hazard (clig.dev "no ambiguous/similar commands"; System.CommandLine "a parent command is a
+grouping noun"). Not `awf result` either: AWF returns a named map, not one terminal value (the
+Temporal/Prefect shape).
+
 ### 2.2 Surface
 
-A new read-only subcommand, added as one `case "output":` arm in the dispatch switch
-(`cli/cli.go:121-143`), mirroring the existing `ls`/`inspect`/`trace` commands:
+A new read-only subcommand, added as one `case "outputs":` arm in the dispatch switch
+(`cli/cli.go:120-145`), mirroring the existing `ls`/`inspect`/`trace` commands:
 
 ```
-awf output <run-id> [<workflow-path>] [--step <node-path>] [--file <name>] [--state-dir .awf]
+awf outputs <run-id> [<workflow-path>] [--step <node-id>] [--state-dir .awf]
 ```
 
-### 2.3 Semantics (three forms)
+Artifact (file) read-back is **deferred** from P1 — see §2.10.
+
+### 2.3 Semantics (two forms)
 
 1. **No `--step` — the run's `outputs:` contract (default).** Requires `<workflow-path>`.
    Re-load + validate + digest the workflow file and **refuse on digest mismatch against the
-   run's pinned `WorkflowDigest`** — identical to how `awf resume` already guards (`cli/resume.go:209-224`,
-   spec §8 hard error). Then `state.FoldFile` the run log → build the root scope → evaluate
-   `wf.Outputs` and validate against `wf.OutputSchema`, reusing the **existing** export logic
-   (`engine/workflow_exports.go:18`, `evaluateWorkflowExports`) adapted to the root run state
-   instead of a sub-workflow child. Emit the resulting map as JSON to stdout.
+   run's pinned `WorkflowDigest`** — identical to how `awf resume` already guards
+   (`cli/resume.go:209-224`, spec §8 hard error). Then fold the run log
+   (`state.FoldFile → []Event`, then `engine.Fold(events, blobs) → *RunState`), build a top-level
+   scope (`engine.NewScope(rs, wf, "")`), and evaluate `wf.Outputs` / validate `wf.OutputSchema`
+   via the **new shared exported** `engine.EvaluateExports` (§2.6 — factored out of
+   `evaluateWorkflowExports` so the sub-workflow-call path and this top-level path are one
+   implementation). Emit the resulting map as JSON to stdout.
 
-2. **`--step <node-path>` — any single step's typed output.** **No workflow file needed.**
-   `state.FoldFile` already materializes `Completed[path].Outputs` from each step's `OutputsRef`
-   (`engine/fold.go:188-199`); look up the node path, emit its output map as JSON. A `--step`
-   whose node has no `output_schema` (no typed output) is an explicit error, not empty output.
+2. **`--step <node-id>` — one top-level node's typed output.** **No workflow file needed.**
+   Fold the log; `engine.Fold` already materializes `Completed[<node-id>].Outputs` from each
+   step's `OutputsRef` (`engine/fold.go`). `<node-id>` is a **top-level node id** — a step, agent,
+   call, `map`, or `loop` id (a top-level `map`'s aggregate is readable via its id). It is **not** a
+   runtime-suffixed internal path: a value containing `[`, `.iter-`, `.attempt-`, or `.item-` is
+   rejected — "P1 reads top-level node ids; gate/map-internal outputs are out of scope; use
+   `awf inspect`/`awf trace`." (The engine itself refuses cross-attempt/cross-item external refs,
+   and a gate commits no bare-path `Completed` entry, so there is no stable address to expose
+   anyway.) A `--step` whose node has no `output_schema` (no typed output) is an explicit error.
 
-3. **`--file <name>` — a declared `output_files:` export, as raw bytes.** Part of the
-   export-contract form, so it **also requires `<workflow-path>`** (and the same digest guard).
-   Resolve the workflow's top-level `output_files.<name>` export — already legal, validated IR
-   (`ir/types.go:26`, `AWF1048`) — via the existing `resolveNamedArtifactRef`
-   (`engine/workflow_exports.go:63`) → `blobs.Get(ref)` → stream raw bytes to stdout. The
-   embedder's "give me the file the workflow produced" path.
+**The two forms must not be mixed.** The *export-contract form* needs `<workflow-path>`; the
+*log-only form* needs `--step`. Supplying `--step` together with `<workflow-path>` is a usage error.
 
-**Two forms, not to be mixed.** (1) The *export-contract form* — `<workflow-path>` given; emits
-the run's `outputs:` map as JSON, or, with `--file <name>`, the named `output_files:` export as
-raw bytes. (2) The *log-only form* — `--step <node-path>`; emits one committed step's typed output
-as JSON, no workflow file needed. Combining `--step` with `<workflow-path>` or `--file` is a usage
-error. A step's *internal* named files are out of scope for P1 (YAGNI; add later if needed).
+**JSON format.** Pretty-printed, two-space indent, via `json.NewEncoder(stdout).SetIndent("", "  ")`
+— matching the established AWF convention of all four existing JSON emitters
+(`inspect`/`trace`/`ls`/`graph`); the encoder's trailing newline is preserved (line-oriented
+consumption). (kubectl `-o json` is likewise indented-by-default; a TTY-aware compact mode à la
+`gh` is a possible later refinement, not P1.)
 
-### 2.4 What P1 deliberately does NOT touch
+### 2.4 Run-success ≠ output-success (the sharp edge)
 
-- **No new event, no engine write-path change.** `awf output` is a pure read-only projection of
-  the same durable log + blobs that resume folds — the same discipline as `obs`/`awf trace`.
-- **No validator or format change.** Top-level `outputs:` / `output_files` are *already*
-  first-class IR fields (`ir/types.go:25-26`) and *already* validated (`ir/validate_refs.go:91`,
-  diagnostic `AWF1048`). They are merely **inert at the top level today** — only evaluated on
-  sub-workflow import. P1 gives the existing block a top-level *consumer*; it does not extend the
-  grammar.
+Top-level `outputs:` are **inert during a normal run** — `engine.Run` never evaluates them
+(`wf.Outputs` is touched only in `engine/workflow_exports.go`, called only from
+`engine/call_step.go:121` for sub-workflow *calls*). `awf outputs` evaluates them for the **first
+time** at read-time. Consequence: **a run can succeed yet `awf outputs` fail** — e.g. an output
+binds `{{ step.X.field }}` where `X` sits in the not-taken branch of an `if` (so `X` never
+committed → AWF4002 "step not yet committed"), or the bound value mismatches `output_schema`.
+`validate` does not catch this: it checks producer-existence + schema-field, not runtime
+reachability (`ir/validate_refs.go:947-979`).
+
+This is the documented failure mode of Argo (issue #2167: Argo hard-failed a workflow when a
+declared output referenced a `when:false`-skipped step; treated as a bug, fixed to skip
+gracefully). AWF's stance + mitigations:
+
+- **Default: hard error, never silent partial data** (correct for a strict export contract; matches
+  Prefect "no result ⇒ nothing to return").
+- **A validate-time *warning* (new, in P1):** when a top-level output binds a producer whose static
+  path is inside a conditional/multiplicity scope (`if[` / `gate[` / `map[` / `try[`.catch), emit a
+  non-fatal `AWF1048`-class warning — "output %q binds step %q inside a conditional scope; it may
+  not commit, and `awf outputs` will then error." Cheap: piggybacks on `producers[id].path` and
+  mirrors the existing AWF5002/5003 cross-scope path-segment checks. It does **not** attempt full
+  reachability (undecidable with `if`); a warning is the right altitude.
+- **`awf outputs` classifies its own failure:** "output X references step Y, which did not commit
+  (skipped or never ran)" — distinct from "the run failed" — so a caller can branch on it.
+- **Future:** a `--partial` opt-in (emit `null`/omit for uncommitted-source outputs — the GitHub
+  Actions empty-value model) when richer conditional outputs are wanted. Never the silent default.
+
+### 2.5 What P1 touches and deliberately does not
+
+- **No new event, no engine write-path change.** `awf outputs` reads the same durable log + blobs
+  resume folds. The `--step` form is a pure events-level read like `obs`/`awf trace`; the `outputs:`
+  form additionally builds a `RunState` + scope and evaluates templates (pure reads, no side
+  effects) — deeper than the `obs` span projection, but still write-free.
+- **One small read-side engine refactor.** The `outputs:` form needs the export-eval logic, which is
+  currently unexported and child-call-specific. P1 factors it into the shared exported
+  `engine.EvaluateExports` (§2.6) — a refactor, not a behavior change.
+- **No grammar / format change.** Top-level `outputs:` / `output_files` are *already* first-class IR
+  fields (`ir/types.go:25-26`) and *already* validated (`ir/validate_refs.go:91`, `AWF1048`); they
+  are merely inert at the top level today. P1 gives them a consumer (and the §2.4 warning, which is
+  additive).
 - **No persistence of the workflow source.** Like `awf resume`, the no-`--step` form takes the
-  workflow file as an argument and re-hashes it against the pinned digest. Runs stay as they are.
+  workflow file as an argument and re-hashes it against the pinned digest.
 
-### 2.5 Errors and exit codes
+### 2.6 Reused seams + the one refactor
 
-Following the CLI convention (`cli/cli.go:34-39`: 0 ok / 1 failed / 2 usage):
-
-| Condition | Exit | Message |
-|---|---|---|
-| Workflow digest mismatch (no-`--step` form) | 2 | mirror `awf resume`'s §8 message |
-| No `<workflow-path>` given and no `--step` | 2 | point at `--step` or supplying the workflow file |
-| `--step` combined with `<workflow-path>` or `--file` (mixing forms) | 2 | "use either `--step` (log-only) or the workflow-export form, not both" |
-| Workflow declares no `outputs:` (no-`--step` form) | 2 | "this workflow declares no `outputs:`; use `--step <id>`" |
-| Unknown `--step` node path / not committed | 2 | list nothing; clear "no committed step at <path>" |
-| `outputs:` references an uncommitted step | 2 | surface the eval error from `evaluateWorkflowExports` |
-| Unknown `--file` name | 2 | "no captured artifact named <name>" |
-| Run dir missing | 2 | reuse `requireRunDir` (`cli/util.go:66`) |
-
-`awf output` reads **committed** state; it does not require the overall run to have succeeded
-(a committed step is readable even if a later step failed), but an `outputs:` map that references
-an uncommitted step errors rather than emitting partial data.
-
-### 2.6 Reused seams (no new machinery)
-
-| P1 piece | Existing function it reuses |
+| P1 piece | Code |
 |---|---|
-| Subcommand dispatch | `cli/cli.go:121-143` switch + `cli/util.go` helpers |
-| Log read | `state.FoldFile` (concurrent-safe; used by `cli/resume.go`, integ tests) |
-| Step output read | `engine/fold.go:188-199` (`OutputsRef` → blob → `Completed[path].Outputs`) |
-| `outputs:` evaluation + `output_schema` validation | `engine/workflow_exports.go:18` (`evaluateWorkflowExports`) |
-| Named artifact resolution | `resolveNamedArtifactRef` (`engine/workflow_exports.go:63`) |
+| Subcommand dispatch | `cli/cli.go:120-145` switch + `cli/util.go` helpers |
+| Log → events | `state.FoldFile` (concurrent-safe; used by `cli/resume.go`, integ tests) |
+| Events → `*RunState` | `engine.Fold(events, blobs)` (`engine/fold.go:67`) — exported; populates `Completed`/`Branches`/`Input`/… |
+| Top-level scope | `engine.NewScope(rs, wf, "")` (`engine/scope.go:49`) — exported |
+| Step output (`--step`) | `rs.Completed[<node-id>].Outputs` (materialized by `engine.Fold` from `OutputsRef`) |
 | Digest guard | `cli/resume.go:209-224` pattern (`ld.ComputeDigest` vs `rs.WorkflowDigest`) |
-| Blob bytes | `blobs.Get(ref)` |
 
-The one genuinely new code is a thin `cli/output.go` that wires these together, plus a root-scope
-analog of `evaluateWorkflowExports` (the existing function builds a *child* scope via
-`childRunStateForCall`; the top-level form evaluates against the folded root `RunState` directly).
+**The one refactor (`outputs:` form).** `evaluateWorkflowExports` (`engine/workflow_exports.go:18`)
+and `resolveNamedArtifactRef` (`engine/artifact_refs.go:10`) are unexported and child-call-specific:
+the function first calls `childRunStateForCall`, which prefix-strips the parent's keys — correct for
+a sub-workflow call, **wrong for a top-level run** (whose keys are already at their bare ids). A
+naive "call the existing function with `callPath=""`" silently yields an empty `Completed`, and
+every output ref fails AWF4002 (verified: `stripChildPrefix("summarize","workflow") = ("", false)`).
+The clean factoring mirrors the engine's own top-level-vs-call scope split at
+`engine/interpreter_context.go:33-43`:
 
-### 2.7 Testing
+```go
+// new, exported — body is workflow_exports.go:22-76, scope built from the PASSED args
+func EvaluateExports(rs *RunState, wf *ir.Workflow, ctxPath string, input map[string]any, blobs state.Blobs) (WorkflowExportResult, error)
+```
 
-Unit tests over a folded fixture log (the `state.FoldFile` + fake-blobs pattern already used in
-`cli/*_test.go`), covering: the three forms (`outputs:`, `--step`, `--file`); digest mismatch;
-missing-`outputs:`; unknown step/file; and an `outputs:` ref to an uncommitted step. No
-conformance bucket is required — the command introduces no new durable state and no new event,
-so the deterministic-replay invariant is unaffected. `make lint test` is the green bar.
+- `call_step.go:121` keeps the call-specific lines: `child := childRunStateForCall(...)` then
+  `EvaluateExports(child, wf, ir.CallWorkflowParentPath(path), callInput, blobs)`.
+- `cli/outputs.go` calls `EvaluateExports(foldedRS, wf, "", foldedRS.Input, blobs)` — no
+  prefix-strip, `ctxPath=""`, `input` = the run's own input.
 
-### 2.8 Doc hygiene (same phase, trivial)
+This makes `awf outputs`' result **equal to the sub-workflow export of the same run by
+construction** (one implementation) — locked by a test (§2.8).
 
-Edit `docs/research/awf-as-agent-building-substrate.md`:
+### 2.7 Errors and exit codes
 
-- Mark **A1** (`agents:` block) shipped — SP2.
-- Mark **A2** (`continues:` execution) shipped — SP3 (the `AgentInvocation.Thread` field +
-  `Caps.Threaded` + the per-adapter prepend, e.g. `agent/awfllm/transport.go:84-88`). The doc's
-  §3.2 / §8 "validated-but-not-executed" caveat is now stale.
-- Mark **A6/G3** (blob-as-agent-input) shipped — SP1 (`input_files` / named `output_files` +
-  `Backend.CopyTo`).
-- Add a dated banner at the top: "Since this note (2026-06-06), SP1–SP5 landed; the keystone
-  trio A1→A4→A3 is now **A4 + A3 only**." This stops the doc from mis-reporting our own state.
+`awf outputs`' exit code reflects the **read operation**, not the run's outcome — it deliberately
+succeeds on a committed output even if a later step failed (the GitHub Actions model: output-read is
+decoupled from `needs.<job>.result`; a caller checks `awf run`/`awf ls` for run success). Codes use
+the existing constants (`cli/cli.go:34-39`: `ExitOK=0`, `ExitInvalid`/`ExitRunFailed=1`,
+`ExitUsage=2`):
+
+| Condition | Exit | Note |
+|---|---|---|
+| Usage: bad flags, or `--step` mixed with `<workflow-path>` | 2 | matches Go `flag` pkg + POSIX |
+| No `<workflow-path>` and no `--step` | 2 | point at `--step` or the workflow file |
+| Workflow digest mismatch | 2 | mirror `awf resume`'s §8 message |
+| Run dir missing (run-id not found) | 2 | reuse `requireRunDir` (`cli/util.go:66`); consistent with `inspect`/`trace` today |
+| Workflow declares no `outputs:` (no-`--step` form) | 2 | "declares no `outputs:`; use `--step <id>`" |
+| **Requested output not producible** — `outputs:` ref to an uncommitted step, or unknown `--step` id | **1** | a *data* condition (run didn't produce it), not a typo — distinct from usage so a consumer can branch |
+
+The "not-producible → 1" split is deliberate: today a missing output and a bad flag both return 2,
+conflating "you asked wrong" with "the run didn't produce this." Not renumbering to sysexits (64/66):
+`2` aligns with Go's `flag` package and the three values are test-locked (`validate_test.go:305-311`).
+
+### 2.8 Testing
+
+Unit tests over a folded fixture log (the `state.FoldFile` + fake-blobs pattern in `cli/*_test.go`):
+the two forms (`outputs:`, `--step`); digest mismatch; missing-`outputs:`; unknown / rejected
+`--step` (including a runtime-suffixed path → rejected); an `outputs:` ref to an uncommitted step
+→ exit 1 with the classified message; and the **equivalence test** — `awf outputs R` equals the
+sub-workflow export of the same workflow+input (guards the §2.6 shared-function refactor against
+drift). Plus an `ir` test for the §2.4 **conditional-scope warning**. No conformance bucket
+(read-only; no new durable state/event, so the deterministic-replay invariant is unaffected).
+`make lint test` is the green bar.
+
+### 2.9 Doc hygiene (same phase, trivial)
+
+Update `docs/research/awf-as-agent-building-substrate.md` to mark **A1** (`agents:`, SP2), **A2**
+(`continues:`, SP3 — the `AgentInvocation.Thread` field + `Caps.Threaded` + per-adapter prepend,
+e.g. `agent/awfllm/transport.go:84-88`; the doc's §3.2/§8 "validated-but-not-executed" caveat is
+stale), and **A6/G3** (blob-as-input, SP1 — `input_files` / named `output_files` + `Backend.CopyTo`)
+as shipped, with a dated banner: "Since 2026-06-06, SP1–SP5 landed; the keystone trio A1→A4→A3 is
+now **A4 + A3 only**."
+
+**Mechanics:** this file is **untracked** — `docs/` is gitignored (`.gitignore:3`) and it was never
+force-added (unlike the five tracked docs under `docs/`, including this spec). It is also **absent
+from the `awf-correctable-gaps` worktree**. So the edit happens in the **main working tree** as a
+separate step (or the doc is force-added into tracking if we want it versioned) — it is **not** part
+of the P1 worktree branch. Scope the hygiene step to this one file; do not touch the five tracked
+docs.
+
+### 2.10 Deferred from P1: artifact (file) read-back
+
+Returning a captured `output_files:` artifact by name (the original `--file` idea) is **deferred**
+from P1. `state.Blobs.Get(ref) ([]byte, error)` buffers the **whole** blob via `io.ReadAll`
+(`state/blobs.go:125`), and there is **no size cap on captured files** (docker `capture.go:94`,
+native `capture.go:40`; the 256 MiB cap is Snapshot-only, `backend.go:115`). A buffered, uncapped
+artifact read is an OOM footgun — precisely the large artifacts (corpora, PoCs, payload dumps) this
+would serve. Every mature engine **streams** artifacts (Dagger `export --path`, Argo artifact
+download, Nextflow `publishDir`, Gitaly `catfile` returning an `io.Reader`). So artifact read-back is
+a follow-up that adds a streaming seam — `state.Blobs.Open(ref) (io.ReadCloser, error)` + `io.Copy`
+to the sink, plus an optional `awf outputs <run-id> --file <name> --path <dest>` to write to disk
+(the Dagger/Nextflow pattern). The typed `outputs:` map + `--step` (P1) cover the core embedder
+need; artifact streaming is its own small slice.
 
 ---
 
@@ -241,7 +326,8 @@ already shipped (SP2)**, the remaining trio is **A4 + A3**:
    first thing P3's own brainstorm must resolve.
 2. **The request shape is the *easy* part.** `openai-go` v3 (already pinned) exposes
    `params.Tools`, `ToolChoice`, `ToolMessage()`, and the streaming `ChatCompletionAccumulator`
-   (`JustFinishedToolCall()`). ~1 day. It is *not* the gap; do not let it dominate the estimate.
+   (`JustFinishedToolCall()`). Roughly a day's work (an estimate, not a measured figure) — and it
+   is *not* the gap; do not let it dominate the effort estimate.
 
 ### 4.3 Scope boundary (unchanged)
 
@@ -267,7 +353,8 @@ existing app's in-process tools.
 
 **P1 (this spec) → P2 (document) → P3 (own cycle).** P1 and the P2 documentation note are
 independent and can land together. P3 is gated on its own brainstorm resolving the intra-step
-journaling design before any code.
+journaling design before any code. The implementation plan that follows this spec covers **P1
+only**; P2 and P3 get their own plans when picked up.
 
 ---
 
