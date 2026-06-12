@@ -215,7 +215,7 @@ func nodeLine(s obs.Span, toolCalls map[string]int, showTokens bool) string {
 	}
 	parts = append(parts, nodeStatusToken(s))
 	if c, ok := s.Attributes[obs.AttrCostUSD].(float64); ok {
-		parts = append(parts, fmt.Sprintf("$%.4f", c))
+		parts = append(parts, formatUSD(c))
 	}
 	// For pending agent spans, append tool-call count and elapsed.
 	if s.Pending && s.Kind == "agent" {

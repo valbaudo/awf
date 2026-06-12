@@ -156,7 +156,7 @@ func lsMetricsSuffix(r lsRow) string {
 	}
 	cost := "—"
 	if r.CostUSD != nil {
-		cost = fmt.Sprintf("$%.4f", *r.CostUSD)
+		cost = formatUSD(*r.CostUSD)
 	}
 	return fmt.Sprintf("  %-9s  %d in / %d out tok", cost, *r.InputTokens, *r.OutputTokens)
 }

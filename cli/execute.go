@@ -194,6 +194,6 @@ func printRunCostSummary(stdout io.Writer, log state.Log) {
 	if m.AgentSteps == 0 {
 		return
 	}
-	fprintf(stdout, "  cost: $%.4f · %d tok (%d in / %d out) · %d turns across %d agent step(s)\n",
-		m.TotalUSD, m.InTok+m.OutTok, m.InTok, m.OutTok, m.Turns, m.AgentSteps)
+	fprintf(stdout, "  cost: %s · %d tok (%d in / %d out) · %d turns across %d agent step(s)\n",
+		formatUSD(m.TotalUSD), m.InTok+m.OutTok, m.InTok, m.OutTok, m.Turns, m.AgentSteps)
 }
