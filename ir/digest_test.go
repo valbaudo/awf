@@ -31,10 +31,10 @@ func TestDigestIsSelfDescribing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(d, digestScheme) {
+	if !strings.HasPrefix(d, DigestScheme) {
 		t.Fatalf("digest %q lacks scheme prefix", d)
 	}
-	if len(d) != len(digestScheme)+sha256.Size*2 {
+	if len(d) != len(DigestScheme)+sha256.Size*2 {
 		t.Fatalf("digest %q wrong length", d)
 	}
 }
@@ -46,7 +46,7 @@ func TestDigestExcludesDigestField(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := sampleWorkflow()
-	b.Digest = digestScheme + strings.Repeat("f", sha256.Size*2) // pre-set Digest must not affect the hash
+	b.Digest = DigestScheme + strings.Repeat("f", sha256.Size*2) // pre-set Digest must not affect the hash
 	db, err := b.ComputeDigest(nil, nil)
 	if err != nil {
 		t.Fatal(err)

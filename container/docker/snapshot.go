@@ -21,6 +21,9 @@ import (
 // deletesManifestPath is the fixed in-tar path of the deletes sidecar file.
 const deletesManifestPath = ".awf-deletes"
 
+// snapshotBlobScheme must equal ir.DigestScheme; pinned by a test.
+const snapshotBlobScheme = "awf-d1:sha256:"
+
 // ErrSnapshotTooLarge is returned by Snapshot when the gzip-compressed
 // diff-tar exceeds the Backend's snapshotMaxBlobBytes cap (default 256 MiB;
 // override via WithSnapshotMaxBlobBytes). The engine (slice 4.5+ wiring)
@@ -84,8 +87,8 @@ func parseSnapshotRef(ref container.SnapshotRef) (blobRef, image string, cmd sna
 		return "", "", snapshotCmdSpec{}, fmt.Errorf("container/docker: parseSnapshotRef: need 3 '@'-separated segments in %q", s)
 	}
 	blobRef, image, enc := s[:first], s[first+1:last], s[last+1:]
-	if !strings.HasPrefix(blobRef, "awf-d1:sha256:") {
-		return "", "", snapshotCmdSpec{}, fmt.Errorf("container/docker: parseSnapshotRef: blob portion %q must have awf-d1:sha256: prefix", blobRef)
+	if !strings.HasPrefix(blobRef, snapshotBlobScheme) {
+		return "", "", snapshotCmdSpec{}, fmt.Errorf("container/docker: parseSnapshotRef: blob portion %q must have %q prefix", blobRef, snapshotBlobScheme)
 	}
 	if image == "" {
 		return "", "", snapshotCmdSpec{}, fmt.Errorf("container/docker: parseSnapshotRef: empty image portion in %q", s)

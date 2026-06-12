@@ -10,9 +10,11 @@ import (
 	"github.com/gowebpki/jcs"
 )
 
-// digestScheme is the self-describing prefix. Bump (awf-d2) only on a deliberate canonicalization
-// change. Unexported until an external consumer needs to compare it; promote when that day comes.
-const digestScheme = "awf-d1:sha256:"
+// DigestScheme is the self-describing content-address prefix shared by workflow
+// digests and state blob refs. Bump (awf-d2) only on a deliberate
+// canonicalization change; state.blobRefPrefix and
+// container/docker.snapshotBlobScheme are pinned equal to this by tests.
+const DigestScheme = "awf-d1:sha256:"
 
 // ComputeDigest returns the self-describing content digest of the workflow, folding in the sha256
 // of each referenced compose file (keyed by cleaned, workflow-relative path supplied by the
@@ -73,7 +75,7 @@ func (w *Workflow) ComputeDigest(composeFiles map[string][]byte, assets map[stri
 			h.Write(fh[:])
 		}
 	}
-	return digestScheme + hex.EncodeToString(h.Sum(nil)), nil
+	return DigestScheme + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // ComputeDigest returns the content digest of the fully loaded definition. For a root-only
@@ -131,7 +133,7 @@ func (ld *LoadedDefinition) ComputeDigest() (string, error) {
 		return "", err
 	}
 
-	return digestScheme + hex.EncodeToString(h.Sum(nil)), nil
+	return DigestScheme + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (ld *LoadedDefinition) computeModuleWorkflowDigest(module *LoadedModule) (string, error) {
