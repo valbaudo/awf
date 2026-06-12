@@ -10,11 +10,11 @@ import (
 )
 
 const (
-	// contentInlineCap bounds an inlined content value. Mirrors the log's
-	// agentEventInlineThreshold (engine, 4096) — beyond this, content lives in a
-	// blob and is referenced, not inlined verbatim (the OTel Go SDK does NOT cap
-	// attribute value length by default, so obs must bound it).
-	contentInlineCap = 4096
+	// contentInlineCap bounds an inlined content value — kept equal to
+	// engine.AgentEventInlineThreshold so a payload the log inlines is never
+	// truncated here (the OTel Go SDK does NOT cap attribute length). One source
+	// via the engine const so they cannot drift.
+	contentInlineCap = engine.AgentEventInlineThreshold
 	// contentPreviewCap bounds the preview of blob-backed content (the full bytes
 	// stay retrievable via the emitted CAS ref).
 	contentPreviewCap = 256
@@ -82,7 +82,7 @@ func attachAgentEventContent(s *Span, d engine.AgentEventData, blobs state.Blobs
 	switch {
 	case d.PayloadInline != nil:
 		// Inline payloads are below the log's 4 KiB offload threshold
-		// (engine.agentEventInlineThreshold); boundedString is defensive
+		// (engine.AgentEventInlineThreshold); boundedString is defensive
 		// against a corrupt/synthetic oversized inline payload, since the
 		// OTel SDK does not cap attribute value length.
 		attrs[AttrAgentEventPayload] = boundedAgentEventPayload(d.PayloadInline, contentInlineCap, d.Live)

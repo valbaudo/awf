@@ -447,7 +447,7 @@ const (
 // stream alongside the node it belongs to).
 //
 // Payload offload policy: PayloadInline carries the event bytes when
-// `Size < agentEventInlineThreshold` (4096 bytes, mirroring io.chunk per
+// `Size < AgentEventInlineThreshold` (4096 bytes, mirroring io.chunk per
 // the Phase 5 spec slice 5.2 row). Payloads at or above that threshold land
 // in Blobs and PayloadRef carries the CAS pointer; PayloadInline is then nil. Strict
 // adapters may continue to write raw harness bytes. Live adapters set Live;
@@ -473,10 +473,12 @@ type AgentEventData struct {
 	PayloadRef     string `json:"payload_ref,omitempty"`      // CAS pointer when Size >= threshold
 }
 
-// agentEventInlineThreshold is the per-event inline/offload boundary, in
-// bytes. Payloads at or above this size are offloaded to Blobs. Private
-// because slice 5.2 is the only consumer (engine/agent_step.go in Task 8).
-const agentEventInlineThreshold = 4096
+// AgentEventInlineThreshold is the per-event inline/offload boundary, in bytes.
+// Payloads at or above this size are offloaded to Blobs; below it they are
+// inlined. Exported so obs (obs/content.go) bounds inlined payloads by the SAME
+// value — the two must not drift or an inlined payload could be truncated in the
+// trace with no CAS ref to recover it.
+const AgentEventInlineThreshold = 4096
 
 // SkillsSelectedData is the payload of skills.selected. The metadata pins the
 // exact corpus/router snapshot used to produce Selected; on resume, runAgentStep
