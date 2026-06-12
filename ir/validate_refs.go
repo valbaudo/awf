@@ -947,20 +947,26 @@ func staticValueMatchesSchemaType(value any, prop any) bool {
 // outputStepRefs returns the step ids referenced by an output's value, using the
 // REAL template parser (walkTemplateRefs), NOT a regex — slot-aware (ignores
 // literal text outside {{ }}) and matches the ref grammar checkRef uses. Recurses
-// into arrays/objects. Used only for the AWF1048 conditional-scope WARNING.
+// into arrays/objects. Each step id is returned at most once (deduped). Used only
+// for the AWF3012 conditional-scope WARNING.
 func outputStepRefs(tv TemplateValue) []string {
 	var decoded any
 	if err := json.Unmarshal(tv, &decoded); err != nil {
 		return nil
 	}
 	var ids []string
+	seen := map[string]bool{}
 	var walk func(v any)
 	walk = func(v any) {
 		switch x := v.(type) {
 		case string:
 			walkTemplateRefs(x, "", &collector{}, func(ref template.Ref) {
 				if len(ref.Segments) >= 2 && ref.Segments[0].Ident == "step" && !ref.Segments[1].IsIndex {
-					ids = append(ids, ref.Segments[1].Ident)
+					id := ref.Segments[1].Ident
+					if !seen[id] {
+						seen[id] = true
+						ids = append(ids, id)
+					}
 				}
 			})
 		case []any:
@@ -1026,7 +1032,7 @@ func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *coll
 		validateTemplateValueRefs(c, "AWF1048", path, map[string]TemplateValue{"": wf.Outputs[key]}, producers, maps, nil)
 		for _, refID := range outputStepRefs(wf.Outputs[key]) {
 			if p, ok := producers[refID]; ok && conditionallyScoped(p.path) {
-				c.warnf(path, "AWF1048", fmt.Sprintf("%s: output %q binds step %q inside a conditional scope (%s); it may not commit, and `awf outputs` will then error", catalog["AWF1048"], key, refID, p.path))
+				c.warnf(path, "AWF3012", fmt.Sprintf("%s: output %q binds step %q in conditional scope %s; it may not commit, and `awf outputs` will then error", catalog["AWF3012"], key, refID, p.path))
 			}
 		}
 	}

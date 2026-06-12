@@ -695,6 +695,13 @@ func TestOutputStepRefsIgnoresLiteralText(t *testing.T) {
 	}
 }
 
+func TestOutputStepRefsDedups(t *testing.T) {
+	got := outputStepRefs(TemplateValue(`"{{ step.draft.x }} and {{ step.draft.y }}"`))
+	if len(got) != 1 || got[0] != "draft" {
+		t.Fatalf("outputStepRefs = %v, want [draft] (deduped)", got)
+	}
+}
+
 func TestValidateWarnsOutputBindsIfNestedStep(t *testing.T) {
 	// A top-level output binding a step inside if.then validates CLEAN (if is
 	// transparent) but may not commit at runtime. After Step 5 wiring, expect a
@@ -736,11 +743,11 @@ func TestValidateWarnsOutputBindsIfNestedStep(t *testing.T) {
 	}
 	found := false
 	for _, d := range diags {
-		if d.Severity == Warning && d.Code == "AWF1048" && d.Path == "outputs.summary" {
+		if d.Severity == Warning && d.Code == "AWF3012" && d.Path == "outputs.summary" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected AWF1048 WARNING at outputs.summary; got %+v", diags)
+		t.Fatalf("expected AWF3012 WARNING at outputs.summary; got %+v", diags)
 	}
 }

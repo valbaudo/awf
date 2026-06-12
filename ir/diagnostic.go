@@ -184,6 +184,7 @@ var catalog = map[string]string{
 	"AWF3009": "output_files contract metadata is invalid",
 	"AWF3010": "loaded skill corpus has invalid skill directory layout",
 	"AWF3011": "loaded skill corpus contains an unsafe skill id or unsafe skill file path",
+	"AWF3012": "top-level output binds a step inside a conditional scope that may not commit at runtime",
 	"AWF5001": "reference to `evaluate.<field>` outside a gate's generate or until",
 	"AWF5002": "map output aggregation across nested or loop-multiplied maps is not yet defined",
 	"AWF5003": "reference to a step inside a gate or map body from outside that scope — gate/map-internal steps resolve only within the same attempt/item (read a gate's product via evaluate.<field>)",
