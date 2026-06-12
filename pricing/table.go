@@ -1,8 +1,8 @@
 package pricing
 
 import (
-	"encoding/json"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
