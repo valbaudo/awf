@@ -38,6 +38,76 @@ func TestPrintRunCostSummary(t *testing.T) {
 	}
 }
 
+// TestPrintRunCostSummaryDerived asserts that a run whose cost comes from a
+// derived adapter surfaces the input/output dollar split in the summary line.
+func TestPrintRunCostSummaryDerived(t *testing.T) {
+	dir := t.TempDir()
+	lg, err := state.OpenLog(filepath.Join(dir, "log"), clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	t.Cleanup(func() { _ = lg.Close() })
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a1", Data: d(engine.NodeCompletedData{
+		Outcome: "ok",
+		Metrics: &agent.MetricSet{
+			Cost:   agent.MetricCost{Source: agent.CostSourceDerived, Total: 1.2, Input: 0.3, Output: 0.9},
+			Tokens: agent.MetricTokens{Input: 200, Output: 100},
+			Turns:  3,
+		},
+	})})
+
+	var out bytes.Buffer
+	printRunCostSummary(&out, lg)
+	got := out.String()
+
+	if !strings.Contains(got, "in $0.3000") {
+		t.Errorf("derived summary missing input split, got:\n%s", got)
+	}
+	if !strings.Contains(got, "out $0.9000") {
+		t.Errorf("derived summary missing output split, got:\n%s", got)
+	}
+	if !strings.Contains(got, "$1.2000") {
+		t.Errorf("derived summary missing total, got:\n%s", got)
+	}
+}
+
+// TestPrintRunCostSummaryReportedNoSplit asserts that a reported-only run does
+// NOT show a dollar split (in $/out $) in the summary line.
+func TestPrintRunCostSummaryReportedNoSplit(t *testing.T) {
+	dir := t.TempDir()
+	lg, err := state.OpenLog(filepath.Join(dir, "log"), clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	t.Cleanup(func() { _ = lg.Close() })
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a1", Data: d(engine.NodeCompletedData{
+		Outcome: "ok",
+		Metrics: &agent.MetricSet{
+			Cost:   agent.MetricCost{Source: agent.CostSourceReported, Total: 1.2},
+			Tokens: agent.MetricTokens{Input: 200, Output: 100},
+			Turns:  3,
+		},
+	})})
+
+	var out bytes.Buffer
+	printRunCostSummary(&out, lg)
+	got := out.String()
+
+	if strings.Contains(got, "in $") {
+		t.Errorf("reported-only summary must NOT show input dollar split, got:\n%s", got)
+	}
+	if strings.Contains(got, "out $") {
+		t.Errorf("reported-only summary must NOT show output dollar split, got:\n%s", got)
+	}
+	if !strings.Contains(got, "$1.2000") {
+		t.Errorf("reported-only summary missing total, got:\n%s", got)
+	}
+}
+
 func TestPrintRunCostSummaryNoAgentSteps(t *testing.T) {
 	dir := t.TempDir()
 	lg, _ := state.OpenLog(filepath.Join(dir, "log"), clock.System{})

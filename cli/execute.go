@@ -146,9 +146,14 @@ func (r *Runner) runAndFinish(
 // HasCost is true iff at least one agent step carried a reported cost source,
 // which is distinct from TotalUSD==0: an unpriced adapter (no pricing package)
 // should read as "cost unknown", never a misleading "$0".
+// HasSplit is true iff at least one derived step contributed an input/output
+// dollar split; InUSD/OutUSD accumulate that split across all derived steps.
 type runMetrics struct {
 	TotalUSD   float64
 	HasCost    bool
+	InUSD      float64
+	OutUSD     float64
+	HasSplit   bool
 	InTok      int
 	OutTok     int
 	Turns      int
@@ -173,6 +178,11 @@ func foldRunMetrics(events []state.Event) runMetrics {
 		if d.Metrics.Cost.Source != "" {
 			m.HasCost = true
 		}
+		if d.Metrics.Cost.Source == agent.CostSourceDerived {
+			m.InUSD += d.Metrics.Cost.Input
+			m.OutUSD += d.Metrics.Cost.Output
+			m.HasSplit = true
+		}
 		m.InTok += d.Metrics.Tokens.Input
 		m.OutTok += d.Metrics.Tokens.Output
 		m.Turns += d.Metrics.Turns
@@ -194,6 +204,10 @@ func printRunCostSummary(stdout io.Writer, log state.Log) {
 	if m.AgentSteps == 0 {
 		return
 	}
+	costStr := formatUSD(m.TotalUSD)
+	if m.HasSplit {
+		costStr = formatUSD(m.TotalUSD) + " (in " + formatUSD(m.InUSD) + " / out " + formatUSD(m.OutUSD) + ")"
+	}
 	fprintf(stdout, "  cost: %s · %d tok (%d in / %d out) · %d turns across %d agent step(s)\n",
-		formatUSD(m.TotalUSD), m.InTok+m.OutTok, m.InTok, m.OutTok, m.Turns, m.AgentSteps)
+		costStr, m.InTok+m.OutTok, m.InTok, m.OutTok, m.Turns, m.AgentSteps)
 }
