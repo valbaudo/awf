@@ -16,7 +16,11 @@ const (
 	LayoutSkillDirs   = "skill_dirs"
 	MaxSelectionLimit = 64
 
-	RouterName      = "bm25"
+	RouterName = "bm25"
+	// RouterVersion must be bumped whenever the scoring formula (bm25.go score/idf),
+	// tokenization, weighting, the textLike threshold, or any RouterParams value changes.
+	// TestBM25ScoreRegression (quality_test.go) pins exact scores so a formula change
+	// is caught in CI, ensuring the bump is never forgotten.
 	RouterVersion   = "bm25-weighted-v1"
 	SkillMDWeight   = 4
 	PathWeight      = 2

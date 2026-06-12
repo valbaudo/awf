@@ -722,8 +722,8 @@ func TestAgentEventData_OffloadedRefShape(t *testing.T) {
 		Size:       12345,
 		PayloadRef: "sha256:abc",
 	}
-	if in.Size <= agentEventInlineThreshold {
-		t.Fatalf("test bug: Size %d must exceed agentEventInlineThreshold %d to exercise the offloaded-ref branch", in.Size, agentEventInlineThreshold)
+	if in.Size <= AgentEventInlineThreshold {
+		t.Fatalf("test bug: Size %d must exceed AgentEventInlineThreshold %d to exercise the offloaded-ref branch", in.Size, AgentEventInlineThreshold)
 	}
 	b, _ := json.Marshal(in)
 	if !strings.Contains(string(b), `"payload_ref":"sha256:abc"`) {

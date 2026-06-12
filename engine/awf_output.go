@@ -1,6 +1,10 @@
 package engine
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/valbaudo/awf/container"
+)
 
 // awfOutputTempPath returns the per-step path the Backend's Exec reads
 // $AWF_OUTPUT from, per AWF spec §4.1. Format:
@@ -22,7 +26,7 @@ import "strings"
 // runCode). The Docker Backend's Exec passes Env through to the container
 // unchanged; the author's script writes to "$AWF_OUTPUT".
 func awfOutputTempPath(nodePath string) string {
-	return "/tmp/awf/" + sanitizeForFilename(nodePath) + ".json"
+	return container.AWFOutputDir + "/" + sanitizeForFilename(nodePath) + ".json"
 }
 
 // sanitizeForFilename returns s with every rune outside [a-zA-Z0-9_-] replaced

@@ -3,12 +3,12 @@
     "Severity": "error",
     "Path": "env[1]",
     "Code": "AWF1024",
-    "Message": "env entry is not a valid environment-variable name (must match [A-Za-z_][A-Za-z0-9_]*): \"BAD-NAME\""
+    "Message": "env entry is not a valid environment-variable name: \"BAD-NAME\" (must match ^[A-Za-z_][A-Za-z0-9_]*$)"
   },
   {
     "Severity": "error",
     "Path": "env[2]",
     "Code": "AWF1024",
-    "Message": "env entry is not a valid environment-variable name (must match [A-Za-z_][A-Za-z0-9_]*): \"\""
+    "Message": "env entry is not a valid environment-variable name: \"\" (must match ^[A-Za-z_][A-Za-z0-9_]*$)"
   }
 ]

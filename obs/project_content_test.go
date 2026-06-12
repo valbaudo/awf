@@ -237,3 +237,9 @@ func TestCaptureContentDegradesOnMissingBlob(t *testing.T) {
 		t.Errorf("missing-blob capture must still emit the ref: %v", s.Attributes["awf.node.output_ref"])
 	}
 }
+
+func TestContentInlineCapTracksEngineThreshold(t *testing.T) {
+	if contentInlineCap != engine.AgentEventInlineThreshold {
+		t.Fatalf("contentInlineCap %d != engine.AgentEventInlineThreshold %d — an inlined payload could be truncated in the trace", contentInlineCap, engine.AgentEventInlineThreshold)
+	}
+}

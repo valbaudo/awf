@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -33,13 +32,6 @@ func printRunUsage(w io.Writer) {
 	fprintln(w, "  --backend <kind>   container backend: \"auto\", \"native\", \"docker\", or \"fake\" (default: auto)")
 	fprintln(w, "  --agent-env <CSV>  env-var allowlist forwarded into agent CLIs (default: "+strings.Join(defaultAgentEnv, ",")+")")
 }
-
-// teardownGrace is how long Backend.Destroy gets after the run's ctx has been
-// cancelled (Ctrl-C / SIGTERM). The user's signal cancels in-flight work via
-// ctx, but the deferred Destroy needs a non-cancelled ctx so containers
-// actually come down. 30s is generous for Phase 2 fake (instant) and Phase 4
-// Docker (`docker stop --time=10s` + cleanup is typically <30s).
-const teardownGrace = 30 * time.Second
 
 // cliRun implements `awf run`. See plan §G + slice 2.5 self-critique round 2
 // for the operation ordering rationale (OpenLogExclusive runs LAST among
@@ -65,13 +57,6 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if flags.NArg() != 1 {
 		printRunUsage(stderr)
-		return ExitUsage
-	}
-	switch *backendKind {
-	case backendAuto, engine.BackendNative, engine.BackendDocker, engine.BackendFake:
-		// ok
-	default:
-		fprintf(stderr, "awf run: invalid --backend value %q; want %q, %q, %q, or %q\n", *backendKind, backendAuto, engine.BackendNative, engine.BackendDocker, engine.BackendFake)
 		return ExitUsage
 	}
 	path := flags.Arg(0)
@@ -200,7 +185,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		if skipTeardown {
 			return
 		}
-		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
+		teardownCtx, cancel := context.WithTimeout(context.Background(), container.TeardownGrace)
 		defer cancel()
 		for _, h := range handles {
 			_ = backend.Destroy(teardownCtx, h)

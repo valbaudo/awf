@@ -433,3 +433,18 @@ func TestDefaultAgentEnv_NoDuplicateOpenAIKey(t *testing.T) {
 		t.Errorf("OPENAI_API_KEY appears %d times in defaultAgentEnv, want 1 (dedup)", seen)
 	}
 }
+
+func TestDefaultAgentEnv_CoversEveryRegisteredAdapter(t *testing.T) {
+	root, err := live.OpenRoot(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	// Permissive (non-empty) allowlist => every adapter registers.
+	reg, err := buildAgentRegistryWithLiveRoot(defaultAgentEnv, container.NewFake(), root)
+	if err != nil {
+		t.Fatalf("buildAgentRegistryWithLiveRoot: %v", err)
+	}
+	if got, want := len(reg.Refs()), len(adapterEnvAllowlists); got != want {
+		t.Fatalf("registry registered %d adapters %v but defaultAgentEnv unions over %d allowlists — an adapter was added to one path but not the other", got, reg.Refs(), want)
+	}
+}

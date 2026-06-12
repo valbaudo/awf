@@ -5,13 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 )
-
-const callTeardownGrace = 30 * time.Second
 
 func createRuntimeHandles(ctx context.Context, ld *LocalDispatcher, wf *ir.Workflow, composeFiles map[string][]byte, runtimeParent string, runstate *RunState) (map[string]container.Handle, error) {
 	handles := make(map[string]container.Handle, len(wf.Containers))
@@ -53,7 +50,7 @@ func createOrRestoreRuntimeHandle(ctx context.Context, ld *LocalDispatcher, ctr 
 func destroyRuntimeHandles(backend container.Backend, handles map[string]container.Handle) error {
 	var out error
 	for key, h := range handles {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), callTeardownGrace)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), container.TeardownGrace)
 		err := backend.Destroy(cleanupCtx, h)
 		cancel()
 		if err != nil {

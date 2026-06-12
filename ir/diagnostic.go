@@ -146,7 +146,7 @@ var catalog = map[string]string{
 	"AWF1013": "gate.generate must be non-empty",
 	"AWF1014": "gate.evaluate final node must declare output_schema",
 	"AWF1015": "gate missing until",
-	"AWF1016": "expression or template exceeds size limit (default 64 KiB)",
+	"AWF1016": "expression or template exceeds size limit",
 	"AWF1017": "workflow `version` is not the supported value (only 1 is defined by AWF §2)",
 	// AWF1018 is intentionally skipped (folded into AWF1009 after critique).
 	"AWF1019": "container or service reference uses template syntax (`{{ }}`); these fields must be static names",
@@ -154,7 +154,7 @@ var catalog = map[string]string{
 	"AWF1021": "container snapshot value is not supported (only \"workspace\" or empty)",
 	"AWF1022": "snapshot: workspace is only supported on image-mode containers, not compose",
 	"AWF1023": "snapshot: workspace inside a map body is not yet supported (per-item snapshots land with the map slice); remove snapshot from this container or move it out of the map",
-	"AWF1024": "env entry is not a valid environment-variable name (must match [A-Za-z_][A-Za-z0-9_]*)",
+	"AWF1024": "env entry is not a valid environment-variable name",
 	"AWF1025": "container is a map `image:` target and also declares a static image/compose; the static pin is silently overwritten per-element at dispatch — remove the static image/compose, or do not target it with a map `image:`",
 	"AWF1026": "continues target is not an agent step (must be the id of another agent step, not code/signal/control)",
 	"AWF1027": "continues target does not dominate this turn (must precede it in document order and every gate/map/loop/if-branch scope enclosing the target must also enclose this turn — forward/self refs, sibling branches, and gate/map/loop-internal targets are rejected)",

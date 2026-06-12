@@ -19,16 +19,27 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
+// adapterEnvAllowlists is the one list the --agent-env default (defaultAgentEnv)
+// and the registry coverage test (agent_registry_test.go) key off. Adding an
+// adapter means adding it here AND in buildAgentRegistryWithLiveRoot; the
+// coverage test fails loudly if the two drift.
+var adapterEnvAllowlists = [][]string{
+	claude.DefaultEnvAllowlist,
+	droid.DefaultEnvAllowlist,
+	goose.DefaultEnvAllowlist,
+	codex.DefaultEnvAllowlist,
+	codexlive.DefaultEnvAllowlist,
+	awfllm.DefaultEnvAllowlist,
+}
+
 // defaultAgentEnv is the union of every registered adapter's DefaultEnvAllowlist.
 // It is the default for `awf run --agent-env` and the implicit allowlist for
 // `awf resume`. New adapters extend it by appending their DefaultEnvAllowlist.
 var defaultAgentEnv = func() []string {
-	out := append([]string{}, claude.DefaultEnvAllowlist...)
-	out = append(out, droid.DefaultEnvAllowlist...)
-	out = append(out, goose.DefaultEnvAllowlist...)
-	out = append(out, codex.DefaultEnvAllowlist...)
-	out = append(out, codexlive.DefaultEnvAllowlist...)
-	out = append(out, awfllm.DefaultEnvAllowlist...)
+	var out []string
+	for _, al := range adapterEnvAllowlists {
+		out = append(out, al...)
+	}
 	// Dedup: goose's ANTHROPIC_API_KEY overlaps claude's; OPENAI_API_KEY overlaps
 	// goose/codex/awfllm — keep first occurrence, preserve order (don't surface a
 	// duplicate in the --agent-env default).
