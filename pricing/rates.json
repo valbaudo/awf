@@ -1,0 +1,38 @@
+{
+  "claude-opus-4-8": {
+    "currency": "USD",
+    "input_per_m": 5,
+    "output_per_m": 25,
+    "cache_read_per_m": 0.5,
+    "cache_write_per_m": 6.25,
+    "updated_on": "2026-06-12",
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  "claude-sonnet-4-6": {
+    "currency": "USD",
+    "input_per_m": 3,
+    "output_per_m": 15,
+    "cache_read_per_m": 0.3,
+    "cache_write_per_m": 3.75,
+    "updated_on": "2026-06-12",
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  "claude-haiku-4-5": {
+    "currency": "USD",
+    "input_per_m": 1,
+    "output_per_m": 5,
+    "cache_read_per_m": 0.1,
+    "cache_write_per_m": 1.25,
+    "updated_on": "2026-06-12",
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+  },
+  "gpt-5.3-codex": {
+    "currency": "USD",
+    "input_per_m": 1.75,
+    "output_per_m": 14,
+    "cache_read_per_m": 0.175,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-06-12",
+    "source": "https://developers.openai.com/api/docs/pricing"
+  }
+}
