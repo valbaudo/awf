@@ -58,15 +58,15 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			fprintf(stderr, "awf outputs: no run with id %q at %q\n", runID, logPath)
-		} else {
-			fprintf(stderr, "awf outputs: fold log %q: %v\n", logPath, err)
+			return ExitUsage // run-not-found is a bad invocation
 		}
-		return ExitUsage
+		fprintf(stderr, "awf outputs: fold log %q: %v\n", logPath, err)
+		return ExitRunFailed // corrupt/unreadable log is a read failure
 	}
 	blobs, err := state.OpenBlobs(filepath.Join(*stateDir, "blobs"))
 	if err != nil {
 		fprintf(stderr, "awf outputs: open blobs: %v\n", err)
-		return ExitUsage
+		return ExitRunFailed // blob-store open failure is a read-infra failure
 	}
 
 	if *step != "" {
@@ -87,6 +87,7 @@ func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout,
 	}
 	ref := ""
 	found := false
+	// Last node.completed for this id wins (a resumed run may re-commit it).
 	for _, e := range events {
 		if e.Type == engine.EventNodeCompleted && e.Path == nodeID {
 			var d engine.NodeCompletedData
