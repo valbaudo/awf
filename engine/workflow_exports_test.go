@@ -233,3 +233,22 @@ func awfHasDiagnostic(diags []ir.Diagnostic, code, path string) bool {
 	}
 	return false
 }
+
+func TestEvaluateExportsTopLevel(t *testing.T) {
+	// Top-level run: the producer is keyed at its BARE id "summarize" (no prefix),
+	// ctxPath is "", input is nil. This is the shape cli/outputs.go uses.
+	wf := awfChildWorkflowWithOutput("root", "summary")
+	rs := NewRunState("run-1", "digest-1", nil)
+	rs.RecordCompleted("summarize", NodeResult{
+		Outcome: OutcomeOK,
+		Outputs: map[string]any{"summary": "top-level"},
+	})
+
+	got, err := EvaluateExports(rs, wf, "", nil, state.NewInMemoryBlobs())
+	if err != nil {
+		t.Fatalf("EvaluateExports: %v", err)
+	}
+	if got.Outputs["summary"] != "top-level" {
+		t.Fatalf("Outputs[summary] = %v, want top-level", got.Outputs["summary"])
+	}
+}

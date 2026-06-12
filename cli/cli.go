@@ -140,6 +140,8 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return cliUI(args[1:], stdout, stderr)
 	case "trace":
 		return cliTrace(args[1:], stdout, stderr)
+	case "outputs":
+		return cliOutputs(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return ExitOK
@@ -194,6 +196,7 @@ func printUsage(w io.Writer) {
 	fprintln(w, "                              --capture-content  attach agent I/O + outputs (default OFF)")
 	fprintln(w, "                              --output <fmt>     otel (default) or json")
 	fprintln(w, "                              --state-dir <dir>  state directory")
+	fprintln(w, "  outputs <run-id>          read a completed run's typed outputs as JSON")
 	fprintln(w, "  help                      print this usage")
 }
 
