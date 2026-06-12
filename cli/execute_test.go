@@ -122,3 +122,39 @@ func TestPrintRunCostSummaryNoAgentSteps(t *testing.T) {
 		t.Errorf("code-step-only run must print no cost summary, got:\n%s", out.String())
 	}
 }
+
+func TestPrintRunCostSummaryMixedReportedAndDerived(t *testing.T) {
+	dir := t.TempDir()
+	lg, err := state.OpenLog(filepath.Join(dir, "log"), clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	t.Cleanup(func() { _ = lg.Close() })
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+
+	// Derived step: Total == Input + Output.
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a1", Data: d(engine.NodeCompletedData{
+		Outcome: "ok",
+		Metrics: &agent.MetricSet{
+			Cost: agent.MetricCost{Source: agent.CostSourceDerived, Total: 1.2, Input: 0.3, Output: 0.9},
+		},
+	})})
+	// Reported step: Total only (Claude), Input/Output zero.
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a2", Data: d(engine.NodeCompletedData{
+		Outcome: "ok",
+		Metrics: &agent.MetricSet{
+			Cost: agent.MetricCost{Source: agent.CostSourceReported, Total: 0.5},
+		},
+	})})
+
+	var out bytes.Buffer
+	printRunCostSummary(&out, lg)
+	got := out.String()
+
+	if !strings.Contains(got, "$1.7000") {
+		t.Errorf("mixed summary missing total $1.7000, got:\n%s", got)
+	}
+	if !strings.Contains(got, "in $0.3000 / out $0.9000 + reported $0.5000") {
+		t.Errorf("mixed summary breakdown does not reconcile with total, got:\n%s", got)
+	}
+}
