@@ -116,12 +116,12 @@ func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout,
 		fprintf(stderr, "awf outputs: read output blob for %q: %v\n", nodeID, err)
 		return ExitRunFailed
 	}
-	var outMap map[string]any
-	if err := json.Unmarshal(raw, &outMap); err != nil {
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
 		fprintf(stderr, "awf outputs: parse output blob for %q: %v\n", nodeID, err)
 		return ExitRunFailed
 	}
-	return emitJSON(stdout, stderr, outMap)
+	return emitJSON(stdout, stderr, out)
 }
 
 // isRuntimeSuffixedPath rejects gate/map-internal runtime paths: only top-level

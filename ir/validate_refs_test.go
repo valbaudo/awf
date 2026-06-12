@@ -651,7 +651,7 @@ func TestAggregateNestedMapDeferredAWF5002(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF5002", "map[2].over")
 }
 
-// --- Task 4: AWF1048 conditional-scope WARNING ---
+// --- Task 4: AWF3012 conditional-scope WARNING ---
 
 func TestConditionallyScoped(t *testing.T) {
 	cases := []struct {
@@ -705,7 +705,7 @@ func TestOutputStepRefsDedups(t *testing.T) {
 func TestValidateWarnsOutputBindsIfNestedStep(t *testing.T) {
 	// A top-level output binding a step inside if.then validates CLEAN (if is
 	// transparent) but may not commit at runtime. After Step 5 wiring, expect a
-	// non-fatal AWF1048 WARNING at outputs.summary. Mutation-grade: deleting the
+	// non-fatal AWF3012 WARNING at outputs.summary. Mutation-grade: deleting the
 	// Step-5 warning turns this RED.
 	strObj := func(field string) *JSONSchema {
 		return &JSONSchema{
