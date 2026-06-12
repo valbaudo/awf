@@ -27,6 +27,8 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **trace** _run-id_ [**--state-dir** _dir_] [**--otlp** _endpoint_] [**--capture-content**] [**--output** _otel_|_json_]
 
+**awf** **outputs** _run-id_ [**--workflow** _path_|**--step** _node-id_] [**--state-dir** _dir_]
+
 **awf** **graph** _path_ [**--run** _id_] [**--state-dir** _dir_] [**--output** _json_]
 
 **awf** **ui** _path_ [**--state-dir** _dir_] [**--port** _n_] [**--open**]
@@ -261,6 +263,54 @@ and executes nothing.
 
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).
+
+## awf outputs _run-id_
+
+Read a completed run's typed outputs as JSON (pretty-printed). Read-only. Pass
+exactly one of **--workflow** or **--step**; passing both or neither is a usage
+error (exit 2).
+
+**--workflow** _path_
+:   Evaluate that workflow's top-level `outputs:` contract. The file is
+    re-loaded and its content-addressed digest is checked against the run's
+    pinned WorkflowDigest — a mismatch is refused (exit 2), exactly as
+    **awf resume** refuses workflow drift. When the digest matches, the
+    `outputs:` block is evaluated and emitted as a JSON object on standard
+    output. If the workflow declares no `outputs:` block the command exits 2.
+
+**--step** _node-id_
+:   Emit one top-level code or agent step's typed output, read directly from
+    the log and blob store. No workflow file is needed. _node-id_ must be a
+    top-level node id in the run's addressing tree; gate-internal and
+    map-internal runtime paths are not addressable (exit 2). Map aggregates
+    and sub-workflow results are accessed via **--workflow**, not **--step**.
+
+**--state-dir** _dir_
+:   Base directory holding `runs/` and `blobs/` (default `./.awf`).
+
+Exit codes for **awf outputs** differ from the global convention: the exit
+reflects the *read*, not the run's outcome.
+
+**0**
+:   Output emitted successfully. The referenced step or workflow outputs were
+    committed and could be produced.
+
+**1**
+:   The output could not be produced: the referenced step did not commit a
+    typed output, or the workflow fails validation.
+
+**2**
+:   Bad invocation: both or neither of **--workflow**/**--step** given; a
+    digest mismatch between the supplied file and the run's pinned
+    WorkflowDigest; run not found; or no `outputs:` block declared.
+
+Note: a workflow whose `outputs:` binds a step inside a transparent
+conditional scope (an `if` branch or `loop` body) produces an **awf
+validate** warning — the output may not be producible if that branch was
+not taken. Binding a gate- or map-internal step is a hard validation error
+(**awf validate** rejects it as exit 1). Use **awf ls** or check the run's
+terminal status to determine whether the run itself succeeded before
+reading outputs.
 
 ## awf graph _path_
 
