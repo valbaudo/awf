@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/loader"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -143,10 +145,46 @@ func emitJSON(stdout, stderr io.Writer, v any) int {
 	return ExitOK
 }
 
-// outputsContract is implemented in Task 3 (which adds the loader/ir imports with
-// the real body). Stub keeps the file compiling — unused params use `_` so lint
-// stays clean; Task 3 names them.
-func outputsContract(_ []state.Event, _ state.Blobs, _, _ string, _, stderr io.Writer) int {
-	fprintf(stderr, "awf outputs: outputs: form not yet implemented\n")
-	return ExitUsage
+// outputsContract evaluates the workflow's outputs: contract against the run.
+// Folds the log to a *RunState, re-loads + digest-checks the workflow (spec §8
+// pinning, like awf resume), then runs the shared engine.EvaluateExports with a
+// top-level scope (ctxPath="", input=nil → input.* resolves against the run's
+// own input, matching the engine).
+func outputsContract(events []state.Event, blobs state.Blobs, runID, wfPath string, stdout, stderr io.Writer) int {
+	rs, err := engine.Fold(events, blobs)
+	if err != nil {
+		fprintf(stderr, "awf outputs: build run state: %v\n", err)
+		return ExitRunFailed
+	}
+	ld, err := loader.Load(wfPath)
+	if err != nil {
+		fprintf(stderr, "awf outputs: %v\n", err)
+		return ExitUsage
+	}
+	if diags := ir.Validate(ld); ir.HasErrors(diags) {
+		fprintf(stderr, "awf outputs: workflow %q has validation errors\n", wfPath)
+		return ExitRunFailed
+	}
+	digest, err := ld.ComputeDigest()
+	if err != nil {
+		fprintf(stderr, "awf outputs: compute digest: %v\n", err)
+		return ExitUsage
+	}
+	if rs.WorkflowDigest != digest {
+		fprintf(stderr, "awf outputs: workflow digest mismatch — run %q was started with digest %q, file %q now hashes to %q (spec §8 forbids reading outputs against a changed definition)\n", runID, rs.WorkflowDigest, wfPath, digest)
+		return ExitUsage
+	}
+	if len(ld.Workflow.Outputs) == 0 {
+		fprintf(stderr, "awf outputs: workflow %q declares no outputs:; use --step <node-id>\n", wfPath)
+		return ExitUsage
+	}
+	res, err := engine.EvaluateExports(rs, ld.Workflow, "", nil, blobs)
+	if err != nil {
+		// A referenced step did not commit (skipped or never ran), or a schema
+		// mismatch — a data condition (the run did not produce this output),
+		// distinct from a usage error. See spec §2.4 (run-success != output-success).
+		fprintf(stderr, "awf outputs: could not produce outputs (a referenced step did not commit, or schema mismatch): %v\n", err)
+		return ExitRunFailed
+	}
+	return emitJSON(stdout, stderr, res.Outputs)
 }
