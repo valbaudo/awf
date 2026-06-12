@@ -15,9 +15,15 @@ type WorkflowExportResult struct {
 	Files   map[string]string
 }
 
-func evaluateWorkflowExports(parent *RunState, wf *ir.Workflow, callPath string, input map[string]any, blobs state.Blobs) (WorkflowExportResult, error) {
-	child := childRunStateForCall(parent, callPath, input)
-	scope := NewScopeWithInput(child, wf, ir.CallWorkflowParentPath(callPath), input)
+// EvaluateExports evaluates a workflow's outputs:/output_schema/output_files
+// against an ALREADY-CORRECT (rs, ctxPath, input). The caller constructs rs:
+// a sub-workflow call prefix-strips via childRunStateForCall and passes the
+// parent path; a top-level run (awf outputs) passes the folded RunState
+// directly with ctxPath="" and input=nil. Shared so both paths are one
+// implementation (mirrors the engine's top-level-vs-call split in
+// interpreter_context.go).
+func EvaluateExports(rs *RunState, wf *ir.Workflow, ctxPath string, input map[string]any, blobs state.Blobs) (WorkflowExportResult, error) {
+	scope := NewScopeWithInput(rs, wf, ctxPath, input)
 
 	var out WorkflowExportResult
 	if wf.OutputSchema != nil {
@@ -74,6 +80,14 @@ func evaluateWorkflowExports(parent *RunState, wf *ir.Workflow, callPath string,
 	}
 
 	return out, nil
+}
+
+// evaluateWorkflowExports is the sub-workflow-CALL path: build the child
+// RunState (prefix-strip the parent's keys) then delegate to the shared
+// EvaluateExports. Call-specific construction stays here.
+func evaluateWorkflowExports(parent *RunState, wf *ir.Workflow, callPath string, input map[string]any, blobs state.Blobs) (WorkflowExportResult, error) {
+	child := childRunStateForCall(parent, callPath, input)
+	return EvaluateExports(child, wf, ir.CallWorkflowParentPath(callPath), input, blobs)
 }
 
 func childRunStateForCall(parent *RunState, callPath string, input map[string]any) *RunState {
