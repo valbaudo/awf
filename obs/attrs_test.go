@@ -13,7 +13,7 @@ func TestStepAttributesAgentWithMetrics(t *testing.T) {
 		Outcome:  "ok",
 		ExitCode: &exit,
 		Metrics: &agent.MetricSet{
-			Cost:   agent.MetricCost{USD: 0.04, Source: agent.CostSourceReported},
+			Cost:   agent.MetricCost{Total: 0.04, Source: agent.CostSourceReported},
 			Tokens: agent.MetricTokens{Input: 100, Output: 50, CacheReadInput: 10},
 			Turns:  3,
 		},

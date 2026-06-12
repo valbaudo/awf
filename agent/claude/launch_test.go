@@ -48,8 +48,8 @@ func TestLaunch_HappyPath_StructuredOutput(t *testing.T) {
 	if len(events) < 3 {
 		t.Errorf("events len = %d, want >=3 (system + text + result)", len(events))
 	}
-	if outcome.Result.Metrics.Cost.USD != 0.001 {
-		t.Errorf("Cost.USD = %v", outcome.Result.Metrics.Cost.USD)
+	if outcome.Result.Metrics.Cost.Total != 0.001 {
+		t.Errorf("Cost.Total = %v", outcome.Result.Metrics.Cost.Total)
 	}
 	if v, ok := outcome.Result.Output["answer"].(float64); !ok || v != 42 {
 		t.Errorf("Output[answer] = %v (%T)", outcome.Result.Output["answer"], outcome.Result.Output["answer"])

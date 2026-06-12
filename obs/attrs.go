@@ -106,7 +106,7 @@ func stepAttributes(path, kind string, nc engine.NodeCompletedData) map[string]a
 	if kind == "agent" && nc.Metrics != nil {
 		m := nc.Metrics
 		if m.Cost.Source != "" {
-			attrs[AttrCostUSD] = m.Cost.USD
+			attrs[AttrCostUSD] = m.Cost.Total
 			attrs[AttrCostSource] = m.Cost.Source
 		}
 		attrs[AttrGenAIInputTokens] = int64(m.Tokens.Input)

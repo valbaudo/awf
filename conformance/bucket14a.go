@@ -13,7 +13,7 @@ import (
 // Drives the factory's Adapter against a trivial prompt + integer-
 // returning schema. Asserts typed Output correctness.
 //
-// NO cost-billing assertion: Metrics.Cost.USD can be 0 legitimately
+// NO cost-billing assertion: Metrics.Cost.Total can be 0 legitimately
 // (cache hits, Cost.Source="unavailable"). The bucket locks typed-
 // output round-trip — billing is observability, not contract.
 //

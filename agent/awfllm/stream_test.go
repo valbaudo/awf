@@ -42,8 +42,8 @@ func TestBuildResult_SchemaParsesReassembledText(t *testing.T) {
 	if res.Metrics.Tokens.Input != 20 || res.Metrics.Tokens.Output != 5 || res.Metrics.Tokens.CacheReadInput != 2 {
 		t.Errorf("tokens = %+v", res.Metrics.Tokens)
 	}
-	if res.Metrics.Cost.USD != 0 || res.Metrics.Turns != 1 {
-		t.Errorf("cost=%v turns=%d, want 0 and 1", res.Metrics.Cost.USD, res.Metrics.Turns)
+	if res.Metrics.Cost.Total != 0 || res.Metrics.Turns != 1 {
+		t.Errorf("cost=%v turns=%d, want 0 and 1", res.Metrics.Cost.Total, res.Metrics.Turns)
 	}
 }
 

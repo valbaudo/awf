@@ -214,7 +214,7 @@ func extractResult(msg streamMessage) (agent.AgentResult, error) {
 			Output:   output,
 			ExitCode: 0,
 			Metrics: agent.MetricSet{
-				Cost:   agent.MetricCost{USD: msg.TotalCostUSD, Source: agent.CostSourceReported},
+				Cost:   agent.MetricCost{Total: msg.TotalCostUSD, Source: agent.CostSourceReported},
 				Tokens: tokens,
 				Turns:  msg.NumTurns,
 			},

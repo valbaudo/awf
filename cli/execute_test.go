@@ -25,7 +25,7 @@ func TestPrintRunCostSummary(t *testing.T) {
 	// one agent step with metrics + one code step without.
 	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a1", Data: d(engine.NodeCompletedData{
 		Outcome: "ok",
-		Metrics: &agent.MetricSet{Cost: agent.MetricCost{USD: 0.04, Source: "reported"}, Tokens: agent.MetricTokens{Input: 100, Output: 50}, Turns: 2},
+		Metrics: &agent.MetricSet{Cost: agent.MetricCost{Total: 0.04, Source: "reported"}, Tokens: agent.MetricTokens{Input: 100, Output: 50}, Turns: 2},
 	})})
 	exit0 := 0
 	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "c1", Data: d(engine.NodeCompletedData{Outcome: "ok", ExitCode: &exit0})})

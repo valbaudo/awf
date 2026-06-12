@@ -210,7 +210,7 @@ func TestCommitPersistsMetrics(t *testing.T) {
 	log := state.NewInMemoryLog(clock.System{})
 	blobs := state.NewInMemoryBlobs()
 
-	ms := &agent.MetricSet{Cost: agent.MetricCost{USD: 0.5, Source: agent.CostSourceReported}, Tokens: agent.MetricTokens{Input: 10, Output: 20}, Turns: 1}
+	ms := &agent.MetricSet{Cost: agent.MetricCost{Total: 0.5, Source: agent.CostSourceReported}, Tokens: agent.MetricTokens{Input: 10, Output: 20}, Turns: 1}
 	if _, err := engine.Commit(log, blobs, "triage", engine.DispatchResult{Outcome: engine.OutcomeOK, Outputs: map[string]any{"x": 1}, Metrics: ms}, false); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestCommitPersistsMetrics(t *testing.T) {
 	if err := json.Unmarshal(last.Data, &d); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if d.Metrics == nil || d.Metrics.Cost.USD != 0.5 {
+	if d.Metrics == nil || d.Metrics.Cost.Total != 0.5 {
 		t.Fatalf("node.completed.Metrics = %+v, want cost 0.5", d.Metrics)
 	}
 }

@@ -13,7 +13,7 @@ import (
 func TestProjectRootSpanAndRollup(t *testing.T) {
 	t0 := time.Unix(1000, 0).UTC()
 	mk := func(usd float64) engine.NodeCompletedData {
-		return engine.NodeCompletedData{Outcome: "ok", Metrics: &agent.MetricSet{Cost: agent.MetricCost{USD: usd, Source: agent.CostSourceReported}}}
+		return engine.NodeCompletedData{Outcome: "ok", Metrics: &agent.MetricSet{Cost: agent.MetricCost{Total: usd, Source: agent.CostSourceReported}}}
 	}
 	events := []state.Event{
 		ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "r1", WorkflowID: "cve", WorkflowVersion: 2, WorkflowDigest: "awf-d1:sha256:zz"}),
@@ -55,7 +55,7 @@ func TestProjectAgentConversationID(t *testing.T) {
 	events := []state.Event{
 		ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "run-xyz"}),
 		ev(t, engine.EventNodeStarted, "triage", t0.Add(1*time.Second), engine.NodeStartedData{Kind: "agent"}),
-		ev(t, engine.EventNodeCompleted, "triage", t0.Add(2*time.Second), engine.NodeCompletedData{Outcome: "ok", Metrics: &agent.MetricSet{Cost: agent.MetricCost{USD: 0.01, Source: "reported"}}}),
+		ev(t, engine.EventNodeCompleted, "triage", t0.Add(2*time.Second), engine.NodeCompletedData{Outcome: "ok", Metrics: &agent.MetricSet{Cost: agent.MetricCost{Total: 0.01, Source: "reported"}}}),
 	}
 	spans, _ := Project(events, nil)
 	s, _ := findSpan(spans, "triage")

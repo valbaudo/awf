@@ -63,8 +63,8 @@ func TestFake_ScriptAndLaunch(t *testing.T) {
 	if r.Output["verdict"] != "pass" {
 		t.Errorf("Launch[0].Output[verdict] = %v, want %q", r.Output["verdict"], "pass")
 	}
-	if r.Metrics.Cost.USD != 0.01 {
-		t.Errorf("Launch[0].Metrics.Cost.USD = %v, want 0.01", r.Metrics.Cost.USD)
+	if r.Metrics.Cost.Total != 0.01 {
+		t.Errorf("Launch[0].Metrics.Cost.Total = %v, want 0.01", r.Metrics.Cost.Total)
 	}
 	_ = count // events not asserted in this test (next test covers it)
 

@@ -127,7 +127,7 @@ func TestAgentResult_OutputIsMap(t *testing.T) {
 		Output:   map[string]any{"verdict": "pass", "score": 5.0},
 		ExitCode: 0,
 		Metrics: agent.MetricSet{
-			Cost:   agent.MetricCost{USD: 0.0125, Source: agent.CostSourceReported},
+			Cost:   agent.MetricCost{Total: 0.0125, Source: agent.CostSourceReported},
 			Tokens: agent.MetricTokens{Input: 100, Output: 50},
 			Turns:  2,
 		},
@@ -143,8 +143,8 @@ func TestAgentResult_OutputIsMap(t *testing.T) {
 	if !reflect.DeepEqual(got.Output, r.Output) {
 		t.Errorf("Output not preserved: got %+v, want %+v", got.Output, r.Output)
 	}
-	if got.Metrics.Cost.USD != r.Metrics.Cost.USD {
-		t.Errorf("Metrics.Cost.USD = %v, want %v", got.Metrics.Cost.USD, r.Metrics.Cost.USD)
+	if got.Metrics.Cost.Total != r.Metrics.Cost.Total {
+		t.Errorf("Metrics.Cost.Total = %v, want %v", got.Metrics.Cost.Total, r.Metrics.Cost.Total)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestAgentOutcome_HappyPath(t *testing.T) {
 		Result: agent.AgentResult{
 			Output: map[string]any{"verdict": "pass"},
 			Metrics: agent.MetricSet{
-				Cost: agent.MetricCost{USD: 0.01, Source: agent.CostSourceReported},
+				Cost: agent.MetricCost{Total: 0.01, Source: agent.CostSourceReported},
 			},
 		},
 		Err: nil,
@@ -321,4 +321,15 @@ func yesNo(v bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+func TestMetricCostShape(t *testing.T) {
+	r := agent.MetricCost{Source: agent.CostSourceReported, Total: 1.23}
+	if r.Total != 1.23 || r.Input != 0 || r.Output != 0 {
+		t.Fatalf("reported cost = %+v", r)
+	}
+	d := agent.MetricCost{Source: agent.CostSourceDerived, Currency: "USD", Input: 0.30, Output: 0.90, Total: 1.20}
+	if d.Total != d.Input+d.Output {
+		t.Fatalf("derived invariant violated: %+v", d)
+	}
 }

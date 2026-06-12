@@ -169,7 +169,7 @@ func foldRunMetrics(events []state.Event) runMetrics {
 			continue
 		}
 		m.AgentSteps++
-		m.TotalUSD += d.Metrics.Cost.USD
+		m.TotalUSD += d.Metrics.Cost.Total
 		if d.Metrics.Cost.Source != "" {
 			m.HasCost = true
 		}

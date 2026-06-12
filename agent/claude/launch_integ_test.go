@@ -84,8 +84,8 @@ func TestClaudeAdapterSimpleSchemaOutput(t *testing.T) {
 	if v, ok := res.Output["answer"].(float64); !ok || v != 4 {
 		t.Errorf("Output[answer] = %v (%T), want 4", v, res.Output["answer"])
 	}
-	if res.Metrics.Cost.USD <= 0 {
-		t.Errorf("Cost.USD = %v, want > 0 (claude reports total_cost_usd)", res.Metrics.Cost.USD)
+	if res.Metrics.Cost.Total <= 0 {
+		t.Errorf("Cost.Total = %v, want > 0 (claude reports total_cost_usd)", res.Metrics.Cost.Total)
 	}
 }
 

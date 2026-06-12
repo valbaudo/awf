@@ -171,8 +171,8 @@ func TestBuildResult_NoSchema_NilOutput_TokensCostZero(t *testing.T) {
 	if res.Metrics.Tokens.Input != 10 || res.Metrics.Tokens.Output != 5 || res.Metrics.Tokens.CacheReadInput != 3 {
 		t.Errorf("tokens = %+v, want Input:10 Output:5 CacheReadInput:3", res.Metrics.Tokens)
 	}
-	if res.Metrics.Cost.USD != 0 {
-		t.Errorf("cost = %v, want 0", res.Metrics.Cost.USD)
+	if res.Metrics.Cost.Total != 0 {
+		t.Errorf("cost = %v, want 0", res.Metrics.Cost.Total)
 	}
 }
 

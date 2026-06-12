@@ -222,7 +222,7 @@ func TestLaunch_TokensPropagated_CostZero(t *testing.T) {
 	if outcome.Result.Metrics.Tokens.Input != 10 || outcome.Result.Metrics.Tokens.Output != 5 {
 		t.Errorf("tokens = %+v, want Input:10 Output:5", outcome.Result.Metrics.Tokens)
 	}
-	if outcome.Result.Metrics.Cost.USD != 0 {
-		t.Errorf("cost = %v, want 0 (goose reports no USD)", outcome.Result.Metrics.Cost.USD)
+	if outcome.Result.Metrics.Cost.Total != 0 {
+		t.Errorf("cost = %v, want 0 (goose reports no USD)", outcome.Result.Metrics.Cost.Total)
 	}
 }

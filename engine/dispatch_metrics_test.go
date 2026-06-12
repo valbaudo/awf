@@ -44,7 +44,7 @@ func TestRunAgentCarriesMetrics(t *testing.T) {
 	if dr.Metrics == nil {
 		t.Fatal("DispatchResult.Metrics is nil; want the adapter's MetricSet")
 	}
-	if dr.Metrics.Cost.USD != 0.0123 || dr.Metrics.Cost.Source != agent.CostSourceReported {
+	if dr.Metrics.Cost.Total != 0.0123 || dr.Metrics.Cost.Source != agent.CostSourceReported {
 		t.Errorf("Metrics.Cost = %+v, want {0.0123 reported}", dr.Metrics.Cost)
 	}
 	if dr.Metrics.Tokens.Input != 100 || dr.Metrics.Tokens.Output != 50 {

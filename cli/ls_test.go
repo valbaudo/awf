@@ -97,7 +97,7 @@ func TestLSReportsCostAndTokens(t *testing.T) {
 		state.Event{Type: engine.EventNodeCompleted, Path: "s1", Data: mustData(engine.NodeCompletedData{
 			Outcome: "ok",
 			Metrics: &agent.MetricSet{
-				Cost:   agent.MetricCost{USD: 0.0123, Source: agent.CostSourceReported},
+				Cost:   agent.MetricCost{Total: 0.0123, Source: agent.CostSourceReported},
 				Tokens: agent.MetricTokens{Input: 1000, Output: 200},
 			},
 		})},
@@ -105,7 +105,7 @@ func TestLSReportsCostAndTokens(t *testing.T) {
 		state.Event{Type: engine.EventNodeCompleted, Path: "s2", Data: mustData(engine.NodeCompletedData{
 			Outcome: "ok",
 			Metrics: &agent.MetricSet{
-				Cost:   agent.MetricCost{USD: 0.0077, Source: agent.CostSourceReported},
+				Cost:   agent.MetricCost{Total: 0.0077, Source: agent.CostSourceReported},
 				Tokens: agent.MetricTokens{Input: 200, Output: 140},
 			},
 		})},
@@ -124,7 +124,7 @@ func TestLSReportsCostAndTokens(t *testing.T) {
 	}
 	r := got[0]
 	if r.CostUSD == nil || *r.CostUSD < 0.0199 || *r.CostUSD > 0.0201 {
-		t.Errorf("cost_usd = %v, want ~0.0200 (0.0123+0.0077)", r.CostUSD)
+		t.Errorf("cost = %v, want ~0.0200 (0.0123+0.0077)", r.CostUSD)
 	}
 	if r.InputTokens == nil || *r.InputTokens != 1200 {
 		t.Errorf("input_tokens = %v, want 1200 (1000+200)", r.InputTokens)
@@ -167,7 +167,7 @@ func TestLSOmitsCostWhenUnreportedButKeepsTokens(t *testing.T) {
 		rows[r.RunID] = r
 	}
 	if up := rows["unpriced"]; up.CostUSD != nil {
-		t.Errorf("unpriced cost_usd = %v, want nil (no cost source reported)", *up.CostUSD)
+		t.Errorf("unpriced cost = %v, want nil (no cost source reported)", *up.CostUSD)
 	}
 	if up := rows["unpriced"]; up.InputTokens == nil || *up.InputTokens != 500 {
 		t.Errorf("unpriced input_tokens = %v, want 500", up.InputTokens)

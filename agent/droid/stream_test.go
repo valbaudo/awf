@@ -23,8 +23,8 @@ func TestResultFromCompletion_SuccessNoSchema_NilOutput(t *testing.T) {
 	if res.Metrics.Tokens.Input != 10 || res.Metrics.Tokens.Output != 4 || res.Metrics.Turns != 2 {
 		t.Errorf("metrics = %+v", res.Metrics)
 	}
-	if res.Metrics.Cost.USD != 0 {
-		t.Errorf("Cost.USD = %v, want 0 (droid reports no cost)", res.Metrics.Cost.USD)
+	if res.Metrics.Cost.Total != 0 {
+		t.Errorf("Cost.Total = %v, want 0 (droid reports no cost)", res.Metrics.Cost.Total)
 	}
 }
 

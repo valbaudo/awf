@@ -147,7 +147,7 @@ func TestInspectTokensFlag(t *testing.T) {
 		state.Event{Type: engine.EventNodeCompleted, Path: "gen", Data: d(engine.NodeCompletedData{
 			Outcome: "ok",
 			Metrics: &agent.MetricSet{
-				Cost:   agent.MetricCost{USD: 0.01, Source: agent.CostSourceReported},
+				Cost:   agent.MetricCost{Total: 0.01, Source: agent.CostSourceReported},
 				Tokens: agent.MetricTokens{Input: 45000, Output: 8000},
 				Turns:  2,
 			},

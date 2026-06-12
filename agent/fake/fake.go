@@ -33,7 +33,7 @@ const defaultVersion = "fake-v1"
 type Result struct {
 	Output     map[string]any
 	Events     []agent.AgentEvent
-	Cost       float64 // dollars; stamped into AgentResult.Metrics.Cost.USD
+	Cost       float64 // dollars; stamped into AgentResult.Metrics.Cost.Total
 	Tokens     agent.MetricTokens
 	Files      map[string][]byte
 	Live       *agent.LiveDispatch
@@ -205,7 +205,7 @@ func (f *Fake) Launch(ctx context.Context, _ container.Handle, inv agent.AgentIn
 				Output:   r.Output,
 				ExitCode: 0,
 				Metrics: agent.MetricSet{
-					Cost:   agent.MetricCost{USD: r.Cost, Source: agent.CostSourceReported},
+					Cost:   agent.MetricCost{Total: r.Cost, Source: agent.CostSourceReported},
 					Tokens: r.Tokens,
 				},
 				Files:      r.Files,

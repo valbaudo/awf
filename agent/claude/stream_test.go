@@ -155,8 +155,8 @@ func TestExtractResult_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractResult: %v", err)
 	}
-	if res.Metrics.Cost.USD != 0.012 {
-		t.Errorf("Cost.USD = %v, want 0.012", res.Metrics.Cost.USD)
+	if res.Metrics.Cost.Total != 0.012 {
+		t.Errorf("Cost.Total = %v, want 0.012", res.Metrics.Cost.Total)
 	}
 	if res.Metrics.Tokens.Input != 100 {
 		t.Errorf("Tokens.Input = %d", res.Metrics.Tokens.Input)

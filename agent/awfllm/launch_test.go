@@ -336,8 +336,8 @@ func TestLaunch_HappyMetrics(t *testing.T) {
 	if m.Tokens.Input != 20 || m.Tokens.Output != 5 {
 		t.Errorf("tokens = %+v, want In:20 Out:5", m.Tokens)
 	}
-	if m.Cost.USD != 0 {
-		t.Errorf("cost.USD = %v, want 0 (no pricing pkg)", m.Cost.USD)
+	if m.Cost.Total != 0 {
+		t.Errorf("cost.Total = %v, want 0 (no pricing pkg)", m.Cost.Total)
 	}
 	if m.Turns != 1 {
 		t.Errorf("turns = %d, want 1", m.Turns)

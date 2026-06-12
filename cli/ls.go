@@ -34,7 +34,7 @@ type lsRow struct {
 	RunID        string   `json:"run_id"`
 	Status       string   `json:"status"`
 	Workflow     string   `json:"workflow,omitempty"`
-	CostUSD      *float64 `json:"cost_usd,omitempty"`
+	CostUSD      *float64 `json:"cost,omitempty"`
 	InputTokens  *int     `json:"input_tokens,omitempty"`
 	OutputTokens *int     `json:"output_tokens,omitempty"`
 }

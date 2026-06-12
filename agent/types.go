@@ -202,6 +202,9 @@ type MetricSet struct {
 	Cost   MetricCost   `json:"cost"`
 	Tokens MetricTokens `json:"tokens"`
 	Turns  int          `json:"turns"`
+	// Model is the id pricing keyed on: the resolved model if the harness reported it
+	// (claude system/init, codexlive thread/start), else the requested with:{model}, else empty.
+	Model  string `json:"model,omitempty"`
 }
 
 // Agent event Kind values that denote a tool call (Claude emits "tool_use";
@@ -220,9 +223,15 @@ const (
 	CostSourceDerived  = "derived"
 )
 
+// MetricCost is a step's cost. Two states discriminated by Source:
+//   reported = harness gave a per-call total (Claude total_cost_usd): Total set, NO split.
+//   derived  = computed from rates: INVARIANT Total == Input + Output.
 type MetricCost struct {
-	USD    float64 `json:"usd"`
-	Source string  `json:"source,omitempty"` // CostSourceReported | CostSourceDerived
+	Source   string  `json:"source,omitempty"`   // CostSourceReported | CostSourceDerived
+	Currency string  `json:"currency,omitempty"` // ISO-4217; empty == USD
+	Total    float64 `json:"total,omitempty"`
+	Input    float64 `json:"input,omitempty"`  // derived only; includes cache, folded (future task)
+	Output   float64 `json:"output,omitempty"` // derived only
 }
 
 type MetricTokens struct {

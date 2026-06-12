@@ -394,7 +394,7 @@ func (d *LocalDispatcher) eventRenderer() func(io.Writer, agent.AgentEvent) {
 // adapter's MetricSet — no harness parsing, no obs.
 func writeAgentCostLine(w io.Writer, path string, m agent.MetricSet) {
 	_, _ = fmt.Fprintf(w, "%s %s — $%.4f · %d tok (%d in / %d out) · %d turns\n",
-		"·", path, m.Cost.USD, m.Tokens.Input+m.Tokens.Output, m.Tokens.Input, m.Tokens.Output, m.Turns)
+		"·", path, m.Cost.Total, m.Tokens.Input+m.Tokens.Output, m.Tokens.Input, m.Tokens.Output, m.Turns)
 }
 
 // writeAgentEventTap emits one line per AgentEvent to the tap writer.
