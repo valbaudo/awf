@@ -488,6 +488,38 @@ func TestLoadAssetRejectsSingleFileOverLimit(t *testing.T) {
 	}
 }
 
+func TestLoadedAssetFileSiblingInvariant(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("hello asset\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "fixtures")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"a.txt": "alpha", "b.txt": "bravo bravo"} {
+		if err := os.WriteFile(filepath.Join(sub, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wfPath := writeWorkflow(t, dir, "workflow: asset-inv\nversion: 1\nassets:\n  prompt: prompt.txt\n  fixtures: fixtures\ncontainers: {}\ngraph: []\n")
+	ld, err := Load(wfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, asset := range ld.Assets {
+		for _, f := range asset.Files {
+			if f.Size != int64(len(f.Bytes)) {
+				t.Errorf("asset %q file %q: Size %d != len(Bytes) %d", key, f.Path, f.Size, len(f.Bytes))
+			}
+			sum := sha256.Sum256(f.Bytes)
+			if want := hex.EncodeToString(sum[:]); f.SHA256 != want {
+				t.Errorf("asset %q file %q: SHA256 %q != sha256(Bytes) %q", key, f.Path, f.SHA256, want)
+			}
+		}
+	}
+}
+
 func writeWorkflow(t *testing.T, dir, body string) string {
 	t.Helper()
 	wfPath := filepath.Join(dir, "wf.yaml")
