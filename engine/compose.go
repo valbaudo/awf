@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -17,8 +16,6 @@ import (
 	"github.com/valbaudo/awf/state"
 	"github.com/valbaudo/awf/template"
 )
-
-const runtimeComposeTeardownGrace = 30 * time.Second
 
 func runCompose(
 	ctx context.Context,
@@ -88,7 +85,7 @@ func runComposeWithContext(
 	bodyCtx.dispatcher = scopedDispatcher
 	bodyOC, bodyErr := interpNodes(ctx, n.Body, path+".body", bodyCtx)
 
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), runtimeComposeTeardownGrace)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), container.TeardownGrace)
 	destroyErr := ld.Backend.Destroy(cleanupCtx, h)
 	cancel()
 	if destroyErr != nil {

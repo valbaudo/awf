@@ -18,7 +18,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
+
+// TeardownGrace is how long Backend.Destroy / Backend.Down gets after the run's
+// ctx has been cancelled (Ctrl-C / SIGTERM). The signal cancels in-flight work
+// via ctx, but the deferred teardown needs a non-cancelled ctx so containers
+// actually come down. 30s is generous for the instant Fake and for Docker
+// (`docker stop --time=10s` + cleanup typically <30s). One source so every
+// teardown site shares one deadline.
+const TeardownGrace = 30 * time.Second
 
 // AWFOutputDir is the base directory the engine dispatcher derives AWF_OUTPUT
 // tempfile paths under — AWFOutputDir/<sanitized-step>.json (see

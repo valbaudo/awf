@@ -295,7 +295,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		if skipTeardown {
 			return
 		}
-		teardownCtx, cancel := context.WithTimeout(context.Background(), teardownGrace)
+		teardownCtx, cancel := context.WithTimeout(context.Background(), container.TeardownGrace)
 		defer cancel()
 		for _, h := range handles {
 			_ = backend.Destroy(teardownCtx, h)
