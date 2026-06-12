@@ -175,7 +175,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			// reconnect notice) the turn recovered from never masks a good result.
 			// (turn.completed and turn.failed are mutually exclusive, so this can't
 			// race the sawTurnFailed branch.)
-			res, eerr := buildResult(finalText, usage, inv)
+			res, eerr := buildResult(finalText, usage, inv, a.pricer)
 			var unparseable *agent.ErrUnparseableOutput
 			switch {
 			case eerr == nil:

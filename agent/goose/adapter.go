@@ -18,6 +18,7 @@ package goose
 import (
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/pricing"
 )
 
 // Adapter is the agent.Adapter implementation for Block goose. One Adapter
@@ -26,6 +27,7 @@ import (
 type Adapter struct {
 	env     agent.SecretEnv   // env-var allowlist (NAME → VALUE) forwarded into each `goose run`
 	backend container.Backend // for Version + Launch; nil → those methods error
+	pricer  pricing.Table     // model→rates for the derived USD cost; defaults to pricing.Default()
 }
 
 // Option configures the Adapter at construction time (functional-options).
@@ -53,11 +55,21 @@ func WithBackend(b container.Backend) Option {
 	return func(a *Adapter) { a.backend = b }
 }
 
+// WithPricing injects the pricing.Table used to derive a USD cost from token
+// usage. Tests pass a self-contained fixture table; production leaves it unset so
+// New defaults it to pricing.Default() (embedded rates ⊕ $AWF_PRICING_FILE).
+func WithPricing(t pricing.Table) Option {
+	return func(a *Adapter) { a.pricer = t }
+}
+
 // New constructs an Adapter.
 func New(opts ...Option) (*Adapter, error) {
 	a := &Adapter{env: agent.SecretEnv{}}
 	for _, opt := range opts {
 		opt(a)
+	}
+	if a.pricer == nil {
+		a.pricer = pricing.Default()
 	}
 	return a, nil
 }

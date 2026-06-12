@@ -5,14 +5,23 @@ import (
 	"strings"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/pricing"
 )
 
 // buildResult builds the AgentResult from the LAST agent_message text and the
 // terminal usage. With a schema, STRICT json.Unmarshal of the API-constrained text
 // (no tolerant brace-scan — a tolerant scan would only hide a real schema
 // regression); a parse failure → *agent.ErrUnparseableOutput. Without a schema,
-// Output is nil. Cost zero (codex reports no USD).
-func buildResult(finalText string, usage *usageRec, inv agent.AgentInvocation) (agent.AgentResult, error) {
+// Output is nil.
+//
+// Cost is DERIVED from tokens via pricer (the adapter's injected pricing.Table —
+// never the global pricing.Default() here, so tests can swap a fixture table).
+// codex's harness emits no model id, so we price on the REQUESTED with:{model}:
+// unset/empty model OR a model the table doesn't know → cost ABSENT (Source==""),
+// which is correct, not $0. Because codex's input_tokens INCLUDES the cached
+// subset, we subtract CacheReadInput to get the normalized (uncached) Input the
+// pricing package expects, and pass the cached subset as CacheRead.
+func buildResult(finalText string, usage *usageRec, inv agent.AgentInvocation, pricer pricing.Table) (agent.AgentResult, error) {
 	var output map[string]any
 	if inv.OutputSchema != nil {
 		if err := json.Unmarshal([]byte(strings.TrimSpace(finalText)), &output); err != nil {
@@ -37,7 +46,19 @@ func buildResult(finalText string, usage *usageRec, inv agent.AgentInvocation) (
 	// Metrics.Turns left 0: `codex exec` is single-turn and reports no num_turns in
 	// --json usage (claude fills it from result.num_turns; codex has no equivalent).
 	// Observability-only; not a contract field.
-	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: agent.MetricSet{Tokens: tokens}}, nil
+	model, _ := inv.With[keyModel].(string)
+	ms := agent.MetricSet{Tokens: tokens, Model: model}
+	if model != "" {
+		b := pricing.Breakdown{
+			Input:     tokens.Input - tokens.CacheReadInput, // codex input_tokens includes cached; normalize
+			Output:    tokens.Output,
+			CacheRead: tokens.CacheReadInput,
+		}
+		if c, ok := pricer.Derive(model, b); ok {
+			ms.Cost = agent.MetricCost{Source: agent.CostSourceDerived, Currency: c.Currency, Total: c.Total, Input: c.Input, Output: c.Output}
+		}
+	}
+	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: ms}, nil
 }
 
 // isPermanentCodexError parses a codex error message (a JSON-encoded API error)

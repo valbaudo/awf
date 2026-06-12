@@ -110,7 +110,7 @@ func TestAgentMessageText_Discriminates(t *testing.T) {
 func TestBuildResult_StrictSchema(t *testing.T) {
 	schema := &ir.JSONSchema{"type": "object"}
 	inv := agent.AgentInvocation{NodePath: "graph[0]", OutputSchema: schema}
-	res, err := codex.BuildResultForTest(`{"answer":4}`, nil, inv)
+	res, err := codex.BuildResultForTest(`{"answer":4}`, nil, inv, nil)
 	if err != nil {
 		t.Fatalf("buildResult: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestBuildResult_StrictSchema_AllowsOnlyWholeJSONDocument(t *testing.T) {
 	schema := &ir.JSONSchema{"type": "object"}
 	inv := agent.AgentInvocation{NodePath: "graph[0]", OutputSchema: schema}
 
-	res, err := codex.BuildResultForTest("\n\t {\"answer\":4} \n", nil, inv)
+	res, err := codex.BuildResultForTest("\n\t {\"answer\":4} \n", nil, inv, nil)
 	if err != nil {
 		t.Fatalf("buildResult(whitespace-wrapped JSON): %v", err)
 	}
@@ -140,7 +140,7 @@ func TestBuildResult_StrictSchema_AllowsOnlyWholeJSONDocument(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := codex.BuildResultForTest(tc.text, nil, inv)
+			_, err := codex.BuildResultForTest(tc.text, nil, inv, nil)
 			var unp *agent.ErrUnparseableOutput
 			if err == nil || !errors.As(err, &unp) {
 				t.Fatalf("buildResult(%q) = %v, want *agent.ErrUnparseableOutput", tc.text, err)
@@ -152,7 +152,7 @@ func TestBuildResult_StrictSchema_AllowsOnlyWholeJSONDocument(t *testing.T) {
 func TestBuildResult_NonJSON_Unparseable(t *testing.T) {
 	schema := &ir.JSONSchema{"type": "object"}
 	inv := agent.AgentInvocation{NodePath: "graph[0]", OutputSchema: schema}
-	_, err := codex.BuildResultForTest("not json at all", nil, inv)
+	_, err := codex.BuildResultForTest("not json at all", nil, inv, nil)
 	var unp *agent.ErrUnparseableOutput
 	if err == nil || !errors.As(err, &unp) {
 		t.Fatalf("buildResult(non-JSON) = %v, want *agent.ErrUnparseableOutput", err)
@@ -161,7 +161,7 @@ func TestBuildResult_NonJSON_Unparseable(t *testing.T) {
 
 func TestBuildResult_NoSchema_NilOutput_TokensCostZero(t *testing.T) {
 	inv := agent.AgentInvocation{NodePath: "graph[0]"} // no schema
-	res, err := codex.BuildResultForTest("free text answer", codex.NewUsageForTest(10, 3, 5), inv)
+	res, err := codex.BuildResultForTest("free text answer", codex.NewUsageForTest(10, 3, 5), inv, nil)
 	if err != nil {
 		t.Fatalf("buildResult: %v", err)
 	}

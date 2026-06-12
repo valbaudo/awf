@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/pricing"
 )
 
 // streamEvent is one line of goose's `--output-format stream-json` NDJSON. Three
@@ -59,8 +60,15 @@ func assistantText(ev *streamEvent) string {
 // buildResult builds the AgentResult from the fully-reassembled final assistant
 // text and the terminal "complete" event. With a schema, extracts a JSON object
 // (layer-2); non-parseable → *agent.ErrUnparseableOutput. Without a schema, Output
-// is nil. Cost zero (goose reports no USD).
-func buildResult(finalText string, complete *streamEvent, inv agent.AgentInvocation) (agent.AgentResult, error) {
+// is nil.
+//
+// Cost is DERIVED from tokens via pricer (the adapter's injected pricing.Table —
+// never the global pricing.Default() here, so tests can swap a fixture table).
+// goose's harness emits no model id, so we price on the REQUESTED with:{model}:
+// unset/empty model OR a model the table doesn't know → cost ABSENT (Source==""),
+// which is correct, not $0. goose reports no cache fields, so Input is passed to
+// the pricing package as-is (no cache subset to subtract).
+func buildResult(finalText string, complete *streamEvent, inv agent.AgentInvocation, pricer pricing.Table) (agent.AgentResult, error) {
 	var output map[string]any
 	if inv.OutputSchema != nil {
 		parsed, perr := extractJSONObject(finalText)
@@ -74,7 +82,15 @@ func buildResult(finalText string, complete *streamEvent, inv agent.AgentInvocat
 		tokens.Input = complete.InputTokens
 		tokens.Output = complete.OutputTokens
 	}
-	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: agent.MetricSet{Tokens: tokens}}, nil
+	model, _ := inv.With[keyModel].(string)
+	ms := agent.MetricSet{Tokens: tokens, Model: model}
+	if model != "" {
+		b := pricing.Breakdown{Input: tokens.Input, Output: tokens.Output} // goose has no cache subset
+		if c, ok := pricer.Derive(model, b); ok {
+			ms.Cost = agent.MetricCost{Source: agent.CostSourceDerived, Currency: c.Currency, Total: c.Total, Input: c.Input, Output: c.Output}
+		}
+	}
+	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: ms}, nil
 }
 
 // extractJSONObject pulls a JSON object out of goose's free-text result. goose

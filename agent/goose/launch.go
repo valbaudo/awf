@@ -194,7 +194,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 
 		case sawComplete && strings.TrimSpace(ft) != "":
 			// Happy path: terminal complete event and non-empty assistant text.
-			res, eerr := buildResult(ft, completeEv, inv)
+			res, eerr := buildResult(ft, completeEv, inv, a.pricer)
 			var unparseable *agent.ErrUnparseableOutput
 			switch {
 			case eerr == nil:
