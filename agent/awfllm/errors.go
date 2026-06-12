@@ -7,10 +7,12 @@ import (
 // AdapterRef must match the workflow `uses:` literal byte-for-byte.
 const AdapterRef = "awf/llm"
 
-// DefaultEnvAllowlist — env names forwarded as candidate API keys. OPENAI_API_KEY
+// DefaultEnvAllowlist — env names forwarded as candidate API keys. The head is
+// defaultAPIKeyEnv (validate.go), which is the single source for the default key
+// name; this slice is derived from it so the two cannot drift. OPENAI_API_KEY
 // overlaps goose/codex → defaultAgentEnv dedups (cli/agent_registry.go). A user
 // pointing at a local server sets OPENAI_API_KEY to any non-empty placeholder.
-var DefaultEnvAllowlist = []string{"OPENAI_API_KEY"}
+var DefaultEnvAllowlist = []string{defaultAPIKeyEnv}
 
 // wrapInvalidConfig builds the engine-classified *agent.ErrInvalidConfig (permanent).
 func wrapInvalidConfig(reason, key string) error {
