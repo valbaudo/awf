@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: build test lint integ integ-live man ui ui-test e2e-ui
+.PHONY: build test lint integ integ-live man ui ui-test e2e-ui pricing-staleness
 
 build:
 	go build -o bin/awf ./cmd/awf
@@ -33,6 +33,9 @@ man: man/awf.1 man/awf-workflow.5
 
 man/%: man/%.md
 	$(MD2MAN) -in $< -out $@
+
+pricing-staleness:
+	go run ./cmd/pricing-staleness
 
 test:
 	go test -race ./...
