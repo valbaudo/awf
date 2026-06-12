@@ -82,7 +82,7 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 	// definition; only the names here fold into the digest.
 	for i, name := range wf.Env {
 		if !envNamePattern.MatchString(name) {
-			c.errf(fmt.Sprintf("env[%d]", i), "AWF1024", fmt.Sprintf("%s: %q", catalog["AWF1024"], name))
+			c.errf(fmt.Sprintf("env[%d]", i), "AWF1024", fmt.Sprintf("%s: %q (must match %s)", catalog["AWF1024"], name, envNamePattern))
 		}
 	}
 

@@ -717,3 +717,24 @@ func TestAWF1016MessageReflectsLimitConst(t *testing.T) {
 		t.Errorf("AWF1016 message %q still hardcodes a KiB magnitude that can drift from the const", msg)
 	}
 }
+
+func TestAWF1024MessageReflectsEnvPattern(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "env", Version: 1,
+		Env:        []string{"BAD-NAME"},
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph:      NodeList{},
+	})
+	var msg string
+	for _, d := range Validate(ld) {
+		if d.Code == "AWF1024" {
+			msg = d.Message
+		}
+	}
+	if msg == "" {
+		t.Fatal("no AWF1024 diagnostic emitted")
+	}
+	if !strings.Contains(msg, envNamePattern.String()) {
+		t.Errorf("AWF1024 message %q must contain the enforcing regex %q (derived, not a hand-typed copy)", msg, envNamePattern.String())
+	}
+}
