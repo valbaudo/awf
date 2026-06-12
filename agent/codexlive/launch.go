@@ -251,13 +251,16 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
 					return
 				}
+			case EventThreadTokenUsage:
+				// Usage rides its own notification (the turn/completed payload has
+				// none); latch the latest before the terminal event commits it.
+				usage = ev.Usage
 			case EventTurnCompleted:
 				if !turnCompletedSuccessfully(ev) {
 					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: fmt.Errorf("agent/codexlive: turn %s ended with status %q: %s", turn.TurnID, ev.Status, ev.Error)}}
 					return
 				}
 				output = ev.Output
-				usage = ev.Usage
 				if output == nil && inv.OutputSchema != nil && strings.TrimSpace(finalText) != "" {
 					if err := json.Unmarshal([]byte(strings.TrimSpace(finalText)), &output); err != nil {
 						outcomes <- agent.AgentOutcome{Err: agent.ErrLiveReplayRequired}

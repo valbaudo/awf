@@ -11,6 +11,7 @@ const (
 	EventAgentMessageDelta = "item/agentMessage/delta"
 	EventItemCompleted     = "item/completed"
 	EventTurnCompleted     = "turn/completed"
+	EventThreadTokenUsage  = "thread/tokenUsage/updated"
 	EventPermissionRequest = "server/request/permission"
 )
 

@@ -16,7 +16,7 @@ type appServerSchemaShape struct {
 func AppServerSchemaDigest() string {
 	shape := appServerSchemaShape{
 		Methods:  []string{"thread/start", "thread/resume", "turn/start"},
-		Events:   []string{EventAgentMessageDelta, EventItemCompleted, EventTurnCompleted},
+		Events:   []string{EventAgentMessageDelta, EventItemCompleted, EventThreadTokenUsage, EventTurnCompleted},
 		Requests: []string{EventPermissionRequest},
 	}
 	data, err := json.Marshal(shape)

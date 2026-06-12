@@ -538,6 +538,28 @@ type turnCompletedNotification struct {
 	Turn     turnDTO `json:"turn"`
 }
 
+// threadTokenUsageNotification is thread/tokenUsage/updated. tokenUsage.last is the
+// just-completed turn's breakdown; tokenUsage.total is the cumulative thread total.
+// AWF metrics are per-step (per-turn), so we read `last`. reasoningOutputTokens is a
+// subset of outputTokens (matches agent/codex's documented mapping) so it is not
+// added, to avoid double-counting output.
+type threadTokenUsageNotification struct {
+	ThreadID   string              `json:"threadId"`
+	TurnID     string              `json:"turnId"`
+	TokenUsage threadTokenUsageDTO `json:"tokenUsage"`
+}
+
+type threadTokenUsageDTO struct {
+	Last  tokenUsageBreakdownDTO `json:"last"`
+	Total tokenUsageBreakdownDTO `json:"total"`
+}
+
+type tokenUsageBreakdownDTO struct {
+	InputTokens       int `json:"inputTokens"`
+	OutputTokens      int `json:"outputTokens"`
+	CachedInputTokens int `json:"cachedInputTokens"`
+}
+
 type threadItemProbe struct {
 	Type             string `json:"type"`
 	Text             string `json:"text"`
@@ -594,6 +616,16 @@ func providerEventFromNotification(method string, params json.RawMessage) (Provi
 			return ProviderEvent{}, "", false, false
 		}
 		return ProviderEvent{Type: EventItemCompleted, Text: item.Text}, p.TurnID, false, true
+	case EventThreadTokenUsage:
+		var p threadTokenUsageNotification
+		if err := json.Unmarshal(params, &p); err != nil {
+			return ProviderEvent{}, "", false, false
+		}
+		return ProviderEvent{Type: EventThreadTokenUsage, Usage: Usage{
+			InputTokens:       p.TokenUsage.Last.InputTokens,
+			OutputTokens:      p.TokenUsage.Last.OutputTokens,
+			CachedInputTokens: p.TokenUsage.Last.CachedInputTokens,
+		}}, p.TurnID, false, true
 	case EventTurnCompleted:
 		var p turnCompletedNotification
 		if err := json.Unmarshal(params, &p); err != nil {

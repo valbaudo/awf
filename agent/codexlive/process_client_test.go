@@ -33,6 +33,30 @@ func TestProcessClientBuffersEarlyTurnEventsAndRequests(t *testing.T) {
 	}
 }
 
+func TestProviderEventFromNotificationCarriesTokenUsage(t *testing.T) {
+	// thread/tokenUsage/updated carries `last` (this turn) and `total` (cumulative
+	// thread). Per-step AWF metrics are per-turn, so we take `last`, not `total`.
+	params := []byte(`{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{` +
+		`"last":{"inputTokens":1200,"outputTokens":340,"cachedInputTokens":800,"reasoningOutputTokens":50,"totalTokens":1540},` +
+		`"total":{"inputTokens":5000,"outputTokens":900,"cachedInputTokens":3000,"reasoningOutputTokens":120,"totalTokens":5900}}}`)
+	ev, turnID, closeTurn, ok := providerEventFromNotification(EventThreadTokenUsage, params)
+	if !ok {
+		t.Fatal("providerEventFromNotification ok = false")
+	}
+	if closeTurn {
+		t.Fatal("token-usage update must not close the turn")
+	}
+	if turnID != "turn-1" {
+		t.Fatalf("turnID = %q, want turn-1", turnID)
+	}
+	if ev.Type != EventThreadTokenUsage {
+		t.Fatalf("ev.Type = %q, want %q", ev.Type, EventThreadTokenUsage)
+	}
+	if ev.Usage.InputTokens != 1200 || ev.Usage.OutputTokens != 340 || ev.Usage.CachedInputTokens != 800 {
+		t.Fatalf("ev.Usage = %+v, want {Input:1200 Output:340 Cached:800} from `last`", ev.Usage)
+	}
+}
+
 func TestProviderEventFromNotificationCarriesTurnFailureStatus(t *testing.T) {
 	ev, turnID, closeTurn, ok := providerEventFromNotification(EventTurnCompleted, []byte(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":{"message":"boom","codexErrorInfo":null,"additionalDetails":null}}}`))
 	if !ok {

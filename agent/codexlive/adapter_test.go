@@ -71,6 +71,30 @@ func TestCodexLiveStartsAndResumesThread(t *testing.T) {
 	}
 }
 
+func TestCodexLiveCapturesTokenUsageMetrics(t *testing.T) {
+	root := testRoot(t)
+	cwd := t.TempDir()
+	fake := &fakeClient{
+		info:        ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"},
+		startThread: ThreadInfo{ID: "thread-1"},
+		turns: []fakeTurn{{
+			turnID: "turn-1",
+			events: []ProviderEvent{
+				// usage arrives on its own notification, before turn/completed
+				{Type: EventThreadTokenUsage, Usage: Usage{InputTokens: 1200, OutputTokens: 340, CachedInputTokens: 800}},
+				{Type: EventTurnCompleted, Output: map[string]any{"ok": true}},
+			},
+		}},
+	}
+	a := newTestAdapter(t, root, fake)
+	inv := testInvocation(cwd, "metered")
+	outcome := drainLaunch(t, a, inv)
+	got := outcome.Result.Metrics.Tokens
+	if got.Input != 1200 || got.Output != 340 || got.CacheReadInput != 800 {
+		t.Fatalf("Metrics.Tokens = %+v, want Input=1200 Output=340 CacheReadInput=800", got)
+	}
+}
+
 func TestCodexLiveUsesNativeOutputSchema(t *testing.T) {
 	root := testRoot(t)
 	cwd := t.TempDir()
