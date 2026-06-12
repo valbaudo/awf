@@ -58,8 +58,6 @@ func validateLoadedSkillCorpus(corpusPath string, asset LoadedAsset, c *collecto
 		files = append(files, skillroute.File{
 			Path:    f.Path,
 			Content: f.Bytes,
-			Size:    f.Size,
-			SHA256:  f.SHA256,
 		})
 	}
 	for _, issue := range skillroute.ValidateFiles(files) {

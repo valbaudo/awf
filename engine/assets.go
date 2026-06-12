@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 
@@ -75,16 +73,11 @@ func storeRunStartedAsset(blobs state.Blobs, key string, asset ir.LoadedAsset) (
 		if err != nil {
 			return RunStartedAsset{}, fmt.Errorf("put asset %q file %q: %w", key, file.Path, err)
 		}
-		sha := file.SHA256
-		if sha == "" {
-			sum := sha256.Sum256(file.Bytes)
-			sha = hex.EncodeToString(sum[:])
-		}
 		files = append(files, RunStartedAssetFile{
 			Path:   file.Path,
 			Ref:    ref,
-			Size:   file.Size,
-			SHA256: sha,
+			Size:   file.Size(),
+			SHA256: file.SHA256(),
 		})
 	}
 	return RunStartedAsset{

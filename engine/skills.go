@@ -93,8 +93,6 @@ func buildSkillCorpus(id string, wf *ir.Workflow, assets map[string]RunStartedAs
 		files = append(files, skillroute.File{
 			Path:    f.Path,
 			Content: b,
-			Size:    f.Size,
-			SHA256:  f.SHA256,
 		})
 	}
 	corpus, err := skillroute.NewCorpus(files)

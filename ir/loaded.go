@@ -1,6 +1,10 @@
 package ir
 
-import "sort"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"sort"
+)
 
 // LoadedDefinition is the loader's output and the validator's input — the parsed Workflow plus the
 // raw bytes of every referenced compose file, keyed by the cleaned workflow-relative forward-slash
@@ -143,10 +147,17 @@ func (ld *LoadedDefinition) WalkImportEdges(fn func(LoadedImportEdge) error) err
 }
 
 type LoadedAssetFile struct {
-	Path   string `json:"path"`
-	Bytes  []byte `json:"bytes"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
+	Path  string `json:"path"`
+	Bytes []byte `json:"bytes"`
+}
+
+// Size and SHA256 are derived from Bytes — never stored, so they cannot drift
+// from the content. The durable manifest (RunStartedAssetFile), the digest, and
+// skillroute all derive from Bytes too.
+func (f LoadedAssetFile) Size() int64 { return int64(len(f.Bytes)) }
+func (f LoadedAssetFile) SHA256() string {
+	sum := sha256.Sum256(f.Bytes)
+	return hex.EncodeToString(sum[:])
 }
 
 type LoadedAsset struct {

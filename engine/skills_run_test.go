@@ -110,7 +110,7 @@ func TestRunAgentStep_SkillsInputFilesCollisionFailsBeforeDispatch(t *testing.T)
 			DeclaredPath: "prompt.txt",
 			IsDir:        false,
 			Files: []ir.LoadedAssetFile{
-				{Path: ".", Bytes: []byte("author prompt\n"), Size: int64(len("author prompt\n"))},
+				{Path: ".", Bytes: []byte("author prompt\n")},
 			},
 		},
 	})

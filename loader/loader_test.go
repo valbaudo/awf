@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -236,12 +237,12 @@ func TestLoadAssetFileSnapshot(t *testing.T) {
 		t.Fatalf("asset file count = %d, want 1", len(asset.Files))
 	}
 	f := asset.Files[0]
-	if f.Path != "." || string(f.Bytes) != string(content) || f.Size != int64(len(content)) {
+	if f.Path != "." || string(f.Bytes) != string(content) || f.Size() != int64(len(content)) {
 		t.Fatalf("asset file = %+v", f)
 	}
 	sum := sha256.Sum256(content)
-	if f.SHA256 != hex.EncodeToString(sum[:]) {
-		t.Fatalf("SHA256 = %q, want %x", f.SHA256, sum)
+	if f.SHA256() != hex.EncodeToString(sum[:]) {
+		t.Fatalf("SHA256() = %q, want %x", f.SHA256(), sum)
 	}
 }
 
@@ -488,7 +489,7 @@ func TestLoadAssetRejectsSingleFileOverLimit(t *testing.T) {
 	}
 }
 
-func TestLoadedAssetFileSiblingInvariant(t *testing.T) {
+func TestLoadAssetDirectoryFilesContent(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("hello asset\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -507,16 +508,10 @@ func TestLoadedAssetFileSiblingInvariant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for key, asset := range ld.Assets {
-		for _, f := range asset.Files {
-			if f.Size != int64(len(f.Bytes)) {
-				t.Errorf("asset %q file %q: Size %d != len(Bytes) %d", key, f.Path, f.Size, len(f.Bytes))
-			}
-			sum := sha256.Sum256(f.Bytes)
-			if want := hex.EncodeToString(sum[:]); f.SHA256 != want {
-				t.Errorf("asset %q file %q: SHA256 %q != sha256(Bytes) %q", key, f.Path, f.SHA256, want)
-			}
-		}
+	files := ld.Assets["fixtures"].Files
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	if len(files) != 2 || string(files[0].Bytes) != "alpha" || string(files[1].Bytes) != "bravo bravo" {
+		t.Fatalf("fixtures asset = %+v, want two files sorted by path: alpha, bravo bravo", files)
 	}
 }
 

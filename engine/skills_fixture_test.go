@@ -146,10 +146,10 @@ func storeTestSkillAssets(t *testing.T, blobs state.Blobs) map[string]engine.Run
 			DeclaredPath: "skills",
 			IsDir:        true,
 			Files: []ir.LoadedAssetFile{
-				{Path: "billing/SKILL.md", Bytes: []byte("# Billing Helper\nReconcile invoices, payments, taxes, and customer charges.\n"), Size: int64(len("# Billing Helper\nReconcile invoices, payments, taxes, and customer charges.\n"))},
-				{Path: "billing/examples/taxes.md", Bytes: []byte("Review tax rules, invoice line items, and customer balances.\n"), Size: int64(len("Review tax rules, invoice line items, and customer balances.\n"))},
-				{Path: "kube/SKILL.md", Bytes: []byte("# Kubernetes Diagnostic\nDiagnose pod crash loops, cluster network outages, and service incidents.\n"), Size: int64(len("# Kubernetes Diagnostic\nDiagnose pod crash loops, cluster network outages, and service incidents.\n"))},
-				{Path: "kube/examples/network.md", Bytes: []byte("Inspect pod DNS, NetworkPolicy, and service routing.\n"), Size: int64(len("Inspect pod DNS, NetworkPolicy, and service routing.\n"))},
+				{Path: "billing/SKILL.md", Bytes: []byte("# Billing Helper\nReconcile invoices, payments, taxes, and customer charges.\n")},
+				{Path: "billing/examples/taxes.md", Bytes: []byte("Review tax rules, invoice line items, and customer balances.\n")},
+				{Path: "kube/SKILL.md", Bytes: []byte("# Kubernetes Diagnostic\nDiagnose pod crash loops, cluster network outages, and service incidents.\n")},
+				{Path: "kube/examples/network.md", Bytes: []byte("Inspect pod DNS, NetworkPolicy, and service routing.\n")},
 			},
 		},
 	})

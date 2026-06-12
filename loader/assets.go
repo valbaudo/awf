@@ -1,8 +1,6 @@
 package loader
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -185,12 +183,9 @@ func readAssetFile(root *os.Root, id, rootPath, manifestPath string, tracker *as
 	if int64(len(b)) > fileLimit {
 		return ir.LoadedAssetFile{}, fmt.Errorf("asset %q path %q: file size exceeds limit %d", id, manifestPath, fileLimit)
 	}
-	sum := sha256.Sum256(b)
 	return ir.LoadedAssetFile{
-		Path:   manifestPath,
-		Bytes:  b,
-		Size:   int64(len(b)),
-		SHA256: hex.EncodeToString(sum[:]),
+		Path:  manifestPath,
+		Bytes: b,
 	}, nil
 }
 

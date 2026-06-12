@@ -210,7 +210,6 @@ func TestDigestChangesWhenSkillCorpusChanges(t *testing.T) {
 		Files: []LoadedAssetFile{{
 			Path:  "alpha/SKILL.md",
 			Bytes: []byte("# Alpha\n"),
-			Size:  int64(len("# Alpha\n")),
 		}},
 	}
 	assets := map[string]LoadedAsset{"skill_assets": asset}
@@ -560,10 +559,8 @@ func digestTestAsset(id, declaredPath, manifestPath string, bytes []byte) Loaded
 		ID:           id,
 		DeclaredPath: declaredPath,
 		Files: []LoadedAssetFile{{
-			Path:   manifestPath,
-			Bytes:  append([]byte(nil), bytes...),
-			Size:   int64(len(bytes)),
-			SHA256: "will-be-recomputed",
+			Path:  manifestPath,
+			Bytes: append([]byte(nil), bytes...),
 		}},
 	}
 }
@@ -618,8 +615,8 @@ func TestDigestAssetDirectoryOrderingStable(t *testing.T) {
 		DeclaredPath: "fixtures",
 		IsDir:        true,
 		Files: []LoadedAssetFile{
-			{Path: "b.txt", Bytes: []byte("b"), Size: 1},
-			{Path: "a.txt", Bytes: []byte("a"), Size: 1},
+			{Path: "b.txt", Bytes: []byte("b")},
+			{Path: "a.txt", Bytes: []byte("a")},
 		},
 	}
 	b := LoadedAsset{
@@ -627,8 +624,8 @@ func TestDigestAssetDirectoryOrderingStable(t *testing.T) {
 		DeclaredPath: "fixtures",
 		IsDir:        true,
 		Files: []LoadedAssetFile{
-			{Path: "a.txt", Bytes: []byte("a"), Size: 1},
-			{Path: "b.txt", Bytes: []byte("b"), Size: 1},
+			{Path: "a.txt", Bytes: []byte("a")},
+			{Path: "b.txt", Bytes: []byte("b")},
 		},
 	}
 	da, err := wf.ComputeDigest(nil, map[string]LoadedAsset{"fixtures": a})
