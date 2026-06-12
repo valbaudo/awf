@@ -59,13 +59,6 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		printRunUsage(stderr)
 		return ExitUsage
 	}
-	switch *backendKind {
-	case backendAuto, engine.BackendNative, engine.BackendDocker, engine.BackendFake:
-		// ok
-	default:
-		fprintf(stderr, "awf run: invalid --backend value %q; want %q, %q, %q, or %q\n", *backendKind, backendAuto, engine.BackendNative, engine.BackendDocker, engine.BackendFake)
-		return ExitUsage
-	}
 	path := flags.Arg(0)
 
 	// Step 1: load + validate + digest.

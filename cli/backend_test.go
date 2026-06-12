@@ -328,3 +328,13 @@ func TestSelectRunBackendExplicitFakeRemainsExplicit(t *testing.T) {
 func simpleBackendWF() *ir.Workflow {
 	return &ir.Workflow{Containers: map[string]ir.Container{}}
 }
+
+func TestSelectRunBackendRejectsUnknownKind(t *testing.T) {
+	_, err := cli.SelectRunBackendForTest("containerd", simpleBackendWF())
+	if err == nil {
+		t.Fatal("unknown --backend kind accepted; want error")
+	}
+	if !strings.Contains(err.Error(), "containerd") || !strings.Contains(err.Error(), "invalid --backend value") {
+		t.Fatalf("error %q must name the offending kind and be the invalid-value diagnostic", err)
+	}
+}
