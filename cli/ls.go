@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -24,11 +25,18 @@ func printLSUsage(w io.Writer) {
 	fprintln(w, "  --output <fmt>     text (default) or json")
 }
 
-// lsRow is one run's row (the --output json schema).
+// lsRow is one run's row (the --output json schema). CostUSD/InputTokens/
+// OutputTokens are pointers so absent (no agent step, or no reported cost) is
+// distinguishable from a real zero — a $0.0000 on an unpriced adapter would
+// read as "free", which it isn't. omitempty keeps code-only runs byte-identical
+// to the pre-metrics schema.
 type lsRow struct {
-	RunID    string `json:"run_id"`
-	Status   string `json:"status"`
-	Workflow string `json:"workflow,omitempty"`
+	RunID        string   `json:"run_id"`
+	Status       string   `json:"status"`
+	Workflow     string   `json:"workflow,omitempty"`
+	CostUSD      *float64 `json:"cost_usd,omitempty"`
+	InputTokens  *int     `json:"input_tokens,omitempty"`
+	OutputTokens *int     `json:"output_tokens,omitempty"`
 }
 
 func cliLS(args []string, stdout, stderr io.Writer) int {
@@ -86,7 +94,17 @@ func cliLS(args []string, stdout, stderr io.Writer) int {
 				status = obs.RunCrashed
 			}
 		}
-		rows = append(rows, lsRow{RunID: e.Name(), Status: string(status), Workflow: workflowIDFromEvents(events)})
+		row := lsRow{RunID: e.Name(), Status: string(status), Workflow: workflowIDFromEvents(events)}
+		// Reuse the same folded events for the cost/token rollup — no extra read.
+		if m := foldRunMetrics(events); m.AgentSteps > 0 {
+			in, out := m.InTok, m.OutTok
+			row.InputTokens, row.OutputTokens = &in, &out
+			if m.HasCost {
+				usd := m.TotalUSD
+				row.CostUSD = &usd
+			}
+		}
+		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].RunID < rows[j].RunID })
 	return emitLS(stdout, *output, rows)
@@ -120,10 +138,25 @@ func emitLS(stdout io.Writer, output string, rows []lsRow) int {
 	}
 	for _, r := range rows {
 		if r.Workflow != "" {
-			fprintf(stdout, "%-24s  %-9s  %s\n", r.RunID, r.Status, r.Workflow)
+			fprintf(stdout, "%-24s  %-9s  %-16s%s\n", r.RunID, r.Status, r.Workflow, lsMetricsSuffix(r))
 		} else {
-			fprintf(stdout, "%-24s  %s\n", r.RunID, r.Status)
+			fprintf(stdout, "%-24s  %-9s%s\n", r.RunID, r.Status, lsMetricsSuffix(r))
 		}
 	}
 	return ExitOK
+}
+
+// lsMetricsSuffix renders the trailing cost/token columns for the text view.
+// Empty for runs with no agent steps. Cost shows "—" (not "$0.0000") when no
+// adapter reported a cost, so an unpriced run never reads as free. Tokens are
+// always input/output split — a combined total hides the in-vs-out ratio.
+func lsMetricsSuffix(r lsRow) string {
+	if r.InputTokens == nil {
+		return ""
+	}
+	cost := "—"
+	if r.CostUSD != nil {
+		cost = fmt.Sprintf("$%.4f", *r.CostUSD)
+	}
+	return fmt.Sprintf("  %-9s  %d in / %d out tok", cost, *r.InputTokens, *r.OutputTokens)
 }
