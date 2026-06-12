@@ -96,6 +96,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		// "fatal" = other extract error.
 		var kind string
 		var captureErr error
+		var initModel string // model from system/init for Metrics.Model
 
 		scanner := bufio.NewScanner(pr)
 		// Default Scanner buffer is 64KiB; stream-json system/init lines run
@@ -113,6 +114,10 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 				captureErr = perr
 				continue
 			}
+			// Capture the model reported in system/init for auditability.
+			if msg.Type == "system" && msg.Subtype == "init" && msg.Model != "" {
+				initModel = msg.Model
+			}
 			// PROGRESSIVE EMISSION: events fan out to the caller HERE,
 			// AS SOON AS each stream-json line parses. ctx-aware send
 			// so the caller dropping the channel doesn't hang us
@@ -126,7 +131,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 				}
 			}
 			if msg.Type == "result" {
-				res, eerr := extractResult(msg)
+				res, eerr := extractResult(msg, initModel)
 				switch {
 				case eerr == nil:
 					capturedResult = res

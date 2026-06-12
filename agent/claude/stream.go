@@ -187,7 +187,11 @@ var ErrAuthFailureSentinel = errors.New("agent/claude: result event has is_error
 // error, silently masking the auth failure as a schema-violation retry.
 // We check is_error FIRST inside the success case and return a wrapped
 // error carrying the result text so Launch can produce *agent.ErrAgentLaunch.
-func extractResult(msg streamMessage) (agent.AgentResult, error) {
+//
+// model is the value captured from the system/init event's "model" field.
+// It is stored in Metrics.Model for auditability. The result event itself
+// does not carry the model — the caller must thread it from the init event.
+func extractResult(msg streamMessage, model string) (agent.AgentResult, error) {
 	if msg.Type != "result" {
 		return agent.AgentResult{}, ErrNoResultEvent
 	}
@@ -217,6 +221,7 @@ func extractResult(msg streamMessage) (agent.AgentResult, error) {
 				Cost:   agent.MetricCost{Total: msg.TotalCostUSD, Source: agent.CostSourceReported},
 				Tokens: tokens,
 				Turns:  msg.NumTurns,
+				Model:  model,
 			},
 		}, nil
 	case "error_max_structured_output_retries":

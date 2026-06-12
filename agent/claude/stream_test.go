@@ -79,7 +79,7 @@ func TestExtractResult_AuthFailureSubtypeSuccessIsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	_, eerr := extractResult(msg)
+	_, eerr := extractResult(msg, "")
 	if eerr == nil {
 		t.Fatal("extractResult returned nil error; want ErrAuthFailureSentinel")
 	}
@@ -151,7 +151,7 @@ func TestMessageToEvents_RateLimit(t *testing.T) {
 
 func TestExtractResult_Success(t *testing.T) {
 	msg, _ := parseStreamLine([]byte(resultSuccessLine))
-	res, err := extractResult(msg)
+	res, err := extractResult(msg, "")
 	if err != nil {
 		t.Fatalf("extractResult: %v", err)
 	}
@@ -177,12 +177,37 @@ func TestExtractResult_Success(t *testing.T) {
 
 func TestExtractResult_ErrorMaxStructuredOutputRetries(t *testing.T) {
 	msg, _ := parseStreamLine([]byte(resultErrorLine))
-	_, err := extractResult(msg)
+	_, err := extractResult(msg, "")
 	if err == nil {
 		t.Fatal("err nil; want non-nil for error_max_structured_output_retries")
 	}
 	if !strings.Contains(err.Error(), "structured_output") {
 		t.Errorf("err = %v; want mention of structured_output", err)
+	}
+}
+
+func TestExtractResult_CapturesSystemInitModel(t *testing.T) {
+	// Simulate the streaming loop: parse system/init to capture the model,
+	// then parse the result event and assert Metrics.Model is populated.
+	initMsg, err := parseStreamLine([]byte(systemInitLine))
+	if err != nil {
+		t.Fatalf("parse system/init: %v", err)
+	}
+	if initMsg.Type != "system" || initMsg.Subtype != "init" {
+		t.Fatalf("unexpected message type: %s/%s", initMsg.Type, initMsg.Subtype)
+	}
+	capturedModel := initMsg.Model // "claude-opus-4-7"
+
+	resultMsg, err := parseStreamLine([]byte(resultSuccessLine))
+	if err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	res, err := extractResult(resultMsg, capturedModel)
+	if err != nil {
+		t.Fatalf("extractResult: %v", err)
+	}
+	if res.Metrics.Model != "claude-opus-4-7" {
+		t.Errorf("Metrics.Model = %q, want %q", res.Metrics.Model, "claude-opus-4-7")
 	}
 }
 

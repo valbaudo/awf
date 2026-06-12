@@ -342,3 +342,45 @@ func TestFake_Launch_TranscriptRoundTrip(t *testing.T) {
 		t.Errorf("Transcript = %+v, want %+v", got, want)
 	}
 }
+
+func TestFakeStampsReportedSourceOnlyWhenCostNonZero(t *testing.T) {
+	// A scripted zero cost must NOT be marked "reported" (no cost was reported).
+	fZero := fake.New("anthropic/claude-code").
+		Script(0, fake.Result{Output: map[string]any{"ok": true}, Cost: 0})
+	evZ, outZ, err := fZero.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	if err != nil {
+		t.Fatalf("Launch(zero): %v", err)
+	}
+	for range evZ {
+	}
+	outcomeZ := <-outZ
+	if outcomeZ.Err != nil {
+		t.Fatalf("Launch(zero) outcome.Err = %v", outcomeZ.Err)
+	}
+	if got := outcomeZ.Result.Metrics.Cost.Source; got != "" {
+		t.Errorf("zero cost: Metrics.Cost.Source = %q, want %q (empty)", got, "")
+	}
+	if got := outcomeZ.Result.Metrics.Cost.Total; got != 0 {
+		t.Errorf("zero cost: Metrics.Cost.Total = %v, want 0", got)
+	}
+
+	// A scripted non-zero cost IS marked "reported".
+	fPaid := fake.New("anthropic/claude-code").
+		Script(0, fake.Result{Output: map[string]any{"ok": true}, Cost: 0.02})
+	evP, outP, err := fPaid.Launch(context.Background(), container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	if err != nil {
+		t.Fatalf("Launch(paid): %v", err)
+	}
+	for range evP {
+	}
+	outcomeP := <-outP
+	if outcomeP.Err != nil {
+		t.Fatalf("Launch(paid) outcome.Err = %v", outcomeP.Err)
+	}
+	if got := outcomeP.Result.Metrics.Cost.Source; got != agent.CostSourceReported {
+		t.Errorf("paid cost: Metrics.Cost.Source = %q, want %q", got, agent.CostSourceReported)
+	}
+	if got := outcomeP.Result.Metrics.Cost.Total; got != 0.02 {
+		t.Errorf("paid cost: Metrics.Cost.Total = %v, want 0.02", got)
+	}
+}

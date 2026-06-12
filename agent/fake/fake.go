@@ -200,12 +200,16 @@ func (f *Fake) Launch(ctx context.Context, _ container.Handle, inv agent.AgentIn
 			}
 		}
 
+		cost := agent.MetricCost{}
+		if r.Cost != 0 {
+			cost = agent.MetricCost{Total: r.Cost, Source: agent.CostSourceReported}
+		}
 		outcomeCh <- agent.AgentOutcome{
 			Result: agent.AgentResult{
 				Output:   r.Output,
 				ExitCode: 0,
 				Metrics: agent.MetricSet{
-					Cost:   agent.MetricCost{Total: r.Cost, Source: agent.CostSourceReported},
+					Cost:   cost,
 					Tokens: r.Tokens,
 				},
 				Files:      r.Files,
