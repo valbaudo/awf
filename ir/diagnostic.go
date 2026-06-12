@@ -146,7 +146,7 @@ var catalog = map[string]string{
 	"AWF1013": "gate.generate must be non-empty",
 	"AWF1014": "gate.evaluate final node must declare output_schema",
 	"AWF1015": "gate missing until",
-	"AWF1016": "expression or template exceeds size limit (default 64 KiB)",
+	"AWF1016": "expression or template exceeds size limit",
 	"AWF1017": "workflow `version` is not the supported value (only 1 is defined by AWF §2)",
 	// AWF1018 is intentionally skipped (folded into AWF1009 after critique).
 	"AWF1019": "container or service reference uses template syntax (`{{ }}`); these fields must be static names",

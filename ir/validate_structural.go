@@ -467,7 +467,7 @@ func nodeHasOutputSchema(n Node) bool {
 // with a multi-megabyte condition.
 func checkFieldSize(src, path string, c *collector) {
 	if len(src) > maxExpressionBytes {
-		c.errf(path, "AWF1016", fmt.Sprintf("%s (got %d bytes)", catalog["AWF1016"], len(src)))
+		c.errf(path, "AWF1016", fmt.Sprintf("%s (limit %d bytes, got %d bytes)", catalog["AWF1016"], maxExpressionBytes, len(src)))
 	}
 }
 

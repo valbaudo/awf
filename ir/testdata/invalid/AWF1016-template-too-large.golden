@@ -3,6 +3,6 @@
     "Severity": "error",
     "Path": "a",
     "Code": "AWF1016",
-    "Message": "expression or template exceeds size limit (default 64 KiB) (got 66005 bytes)"
+    "Message": "expression or template exceeds size limit (limit 65536 bytes, got 66005 bytes)"
   }
 ]

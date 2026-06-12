@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -690,5 +691,29 @@ func TestValidateSnapshotField(t *testing.T) {
 				t.Errorf("snapshot=%q compose=%v inMap=%v: got %q, want %q (diags: %v)", c.snapshot, c.compose, c.inMap, got, c.wantCode, diags)
 			}
 		})
+	}
+}
+
+func TestAWF1016MessageReflectsLimitConst(t *testing.T) {
+	big := strings.Repeat("a", 65*1024)
+	ld := makeLD(&Workflow{
+		ID: "big-expr", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph:      NodeList{&If{Cond: Expr("{{ " + big + " }}")}},
+	})
+	var msg string
+	for _, d := range Validate(ld) {
+		if d.Code == "AWF1016" {
+			msg = d.Message
+		}
+	}
+	if msg == "" {
+		t.Fatal("no AWF1016 diagnostic emitted")
+	}
+	if !strings.Contains(msg, strconv.Itoa(maxExpressionBytes)) {
+		t.Errorf("AWF1016 message %q must state the real limit %d bytes (derived from the const)", msg, maxExpressionBytes)
+	}
+	if strings.Contains(msg, "KiB") {
+		t.Errorf("AWF1016 message %q still hardcodes a KiB magnitude that can drift from the const", msg)
 	}
 }
