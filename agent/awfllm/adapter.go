@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/pricing"
 )
 
 // Adapter is the agent.Adapter for a single streaming LLM call. One Adapter per
@@ -24,6 +25,7 @@ import (
 type Adapter struct {
 	env        agent.SecretEnv // env-var allowlist (NAME → VALUE); the API key rides here
 	httpClient *http.Client    // injected for determinism + fake-transport tests
+	pricer     pricing.Table   // model→rates for derived USD cost; defaults to pricing.Default()
 }
 
 // Option configures the Adapter (functional options).
@@ -52,6 +54,13 @@ func WithHTTPClient(c *http.Client) Option {
 	return func(a *Adapter) { a.httpClient = c }
 }
 
+// WithPricing injects the pricing.Table used to derive a USD cost from token
+// usage. Tests pass a self-contained fixture table; production leaves it unset so
+// New defaults it to pricing.Default() (embedded rates + $AWF_PRICING_FILE).
+func WithPricing(t pricing.Table) Option {
+	return func(a *Adapter) { a.pricer = t }
+}
+
 // New constructs an Adapter.
 func New(opts ...Option) (*Adapter, error) {
 	a := &Adapter{env: agent.SecretEnv{}}
@@ -62,6 +71,9 @@ func New(opts ...Option) (*Adapter, error) {
 		// Generous timeout: ctx (carrying the step `timeout:`) is the real
 		// deadline authority; this is only a backstop against a hung socket.
 		a.httpClient = &http.Client{Timeout: 10 * time.Minute}
+	}
+	if a.pricer == nil {
+		a.pricer = pricing.Default()
 	}
 	return a, nil
 }

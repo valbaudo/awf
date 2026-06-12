@@ -48,7 +48,7 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 			}
 		}
 
-		full, usage, finish, serr := a.stream(ctx, cfg, prompt, inv.OutputSchema, inv.Thread, emit)
+		full, usage, wireModel, finish, serr := a.stream(ctx, cfg, prompt, inv.OutputSchema, inv.Thread, emit)
 		if serr != nil {
 			errText := liveEventText(serr.Error())
 			// spec §B.7 step 4: emit a terminal DisplayError event before the
@@ -76,7 +76,7 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrUnparseableOutput{NodePath: inv.NodePath}}
 			return
 		}
-		res, berr := buildResult(full, usage, inv)
+		res, berr := buildResult(full, usage, wireModel, a.pricer, inv)
 		if berr != nil {
 			outcomeCh <- agent.AgentOutcome{Err: berr} // ErrUnparseableOutput (retryable)
 			return

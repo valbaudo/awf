@@ -54,7 +54,7 @@ func TestStream_OpenAICompat_AccumulatesAndEmits(t *testing.T) {
 		BaseURL: "https://api.example.com/v1", APIKey: "sk-test", Model: "gpt-x",
 		StructuredOutput: "response_format", IdempotencyKey: "idem-1",
 	}
-	full, usage, finish, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object"}, nil,
+	full, usage, _, finish, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object"}, nil,
 		func(d string, _ []byte) { deltas = append(deltas, d) })
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -97,7 +97,7 @@ func TestStream_OpenAICompat_400IsPermanent(t *testing.T) {
 	})
 	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
 	cfg := awfllm.ReqConfigForTest{BaseURL: "https://x/v1", APIKey: "k", Model: "nope", StructuredOutput: "response_format"}
-	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", &ir.JSONSchema{"type": "object"}, nil, func(string, []byte) {})
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", &ir.JSONSchema{"type": "object"}, nil, func(string, []byte) {})
 	if err == nil || !awfllm.IsPermanentLLMErrorForTest(err) {
 		t.Fatalf("err = %v, want permanent (400 invalid_request_error)", err)
 	}
@@ -118,7 +118,7 @@ func TestStream_OpenAICompat_NoDoubleCallOn429(t *testing.T) {
 	})
 	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
 	cfg := awfllm.ReqConfigForTest{BaseURL: "https://x/v1", APIKey: "k", Model: "m", StructuredOutput: "off"}
-	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", nil, nil, func(string, []byte) {})
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", nil, nil, func(string, []byte) {})
 	if err == nil {
 		t.Fatal("err = nil, want an error for 429")
 	}
@@ -151,7 +151,7 @@ func TestStream_OpenAICompat_TempAndCap(t *testing.T) {
 		HasMaxTokens:     true,
 		MaxTokens:        256,
 	}
-	_, _, _, err := a.StreamForTest(context.Background(), cfg, "hello", &ir.JSONSchema{"type": "object"}, nil, func(string, []byte) {})
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "hello", &ir.JSONSchema{"type": "object"}, nil, func(string, []byte) {})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestStream_OllamaNative_AccumulatesAndFormat(t *testing.T) {
 		StructuredOutput: "ollama_format",
 	}
 	var deltas []string
-	full, usage, _, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "integer"}}}, nil,
+	full, usage, _, _, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "integer"}}}, nil,
 		func(d string, _ []byte) { deltas = append(deltas, d) })
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -285,7 +285,7 @@ func TestStream_T7_OpenAI_ThreadRendered(t *testing.T) {
 		SystemPrompt: "SYS",
 		// StructuredOutput intentionally omitted ("") → OpenAI compat, no response_format
 	}
-	_, _, _, err := a.StreamForTest(context.Background(), cfg, "now", nil, thread, func(string, []byte) {})
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "now", nil, thread, func(string, []byte) {})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestStream_T7_Ollama_ThreadRendered(t *testing.T) {
 		SystemPrompt:     "SYS",
 		StructuredOutput: "ollama_format",
 	}
-	_, _, _, err := a.StreamForTest(context.Background(), cfg, "now", &ir.JSONSchema{"type": "object"}, thread, func(string, []byte) {})
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "now", &ir.JSONSchema{"type": "object"}, thread, func(string, []byte) {})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -393,5 +393,36 @@ func TestStream_T7_Ollama_ThreadRendered(t *testing.T) {
 			t.Errorf("messages[%d] = {role:%q, content:%q}, want {role:%q, content:%q}",
 				i, got.Role, got.Content, w.role, w.content)
 		}
+	}
+}
+
+// openAISSEWithModel is a canned OpenAI SSE stream where chunks carry the model
+// field (OpenAI puts model on every streamed chunk). The final chunk also includes
+// usage with cached_tokens.
+const openAISSEWithModel = `data: {"model":"gpt-5.3-codex","choices":[{"index":0,"delta":{"content":"hi"}}]}
+
+data: {"model":"gpt-5.3-codex","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000000,"completion_tokens":1000000,"prompt_tokens_details":{"cached_tokens":200000}}}
+
+data: [DONE]
+
+`
+
+// TestStream_OpenAICompat_WireModelCaptured verifies that the model field carried
+// on each SSE chunk is returned as the third return value from StreamForTest.
+func TestStream_OpenAICompat_WireModelCaptured(t *testing.T) {
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return sseResponse(openAISSEWithModel), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test", Model: "gpt-5.3-codex",
+		StructuredOutput: "off",
+	}
+	_, _, gotModel, _, err := a.StreamForTest(context.Background(), cfg, "hello", nil, nil, func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if gotModel != "gpt-5.3-codex" {
+		t.Errorf("wire model = %q, want %q", gotModel, "gpt-5.3-codex")
 	}
 }

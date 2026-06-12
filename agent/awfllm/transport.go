@@ -48,12 +48,12 @@ func (a *Adapter) clientFor(insecure bool) *http.Client {
 }
 
 // stream issues a STREAMING chat completion, calling emit(delta, rawChunk) per
-// content delta, and returns the reassembled text, usage, finish_reason, and a
-// classified error (apiError for HTTP faults). Switches on StructuredOutput:
+// content delta, and returns the reassembled text, usage, wire model, finish_reason,
+// and a classified error (apiError for HTTP faults). Switches on StructuredOutput:
 // ollama_format → the native /api/chat path (Task B6); else → OpenAI-compat.
 // thread contains the engine-assembled prior turns (continues: threading) to
 // prepend in the message array between the system message and the current prompt.
-func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, error) {
+func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	if cfg.StructuredOutput == soOllamaFormat {
 		return a.streamOllama(ctx, cfg, prompt, schema, thread, emit)
 	}
@@ -63,7 +63,7 @@ func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, sche
 // streamOpenAI uses openai-go (v3) against any OpenAI-compatible base_url. The
 // wire (request body + SSE response) is asserted by transport_test; the openai-go
 // Go symbols below are pinned against v3.39.0 (go doc, Task B5 Step 1).
-func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, error) {
+func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	client := openai.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
@@ -124,10 +124,13 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 
 	var full strings.Builder
 	var usage usageRec
-	var finish string
+	var model, finish string
 	for streamResp.Next() {
 		chunk := streamResp.Current()
 		raw := []byte(chunk.RawJSON())
+		if chunk.Model != "" {
+			model = chunk.Model
+		}
 		if len(chunk.Choices) > 0 {
 			delta := chunk.Choices[0].Delta.Content
 			if delta != "" {
@@ -145,9 +148,9 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 		}
 	}
 	if err := streamResp.Err(); err != nil {
-		return full.String(), usage, finish, classifyOpenAIErr(err)
+		return full.String(), usage, model, finish, classifyOpenAIErr(err)
 	}
-	return full.String(), usage, finish, nil
+	return full.String(), usage, model, finish, nil
 }
 
 // classifyOpenAIErr maps an *openai.Error to our wire-shaped apiError so
@@ -172,7 +175,7 @@ func classifyOpenAIErr(err error) error {
 //
 // Do NOT prepend the schema to the prompt here — schema restatement is
 // centralized in assemblePrompt (Task B7) for ALL modes. Send prompt as-is.
-func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, error) {
+func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/api/chat"
 
 	type msg struct {
@@ -209,7 +212,7 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
 	if err != nil {
-		return "", usageRec{}, "", err
+		return "", usageRec{}, "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if cfg.APIKey != "" {
@@ -221,17 +224,17 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 
 	resp, err := a.clientFor(cfg.TLSInsecure).Do(req)
 	if err != nil {
-		return "", usageRec{}, "", err // transport → retryable
+		return "", usageRec{}, "", "", err // transport → retryable
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		tail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", usageRec{}, "", &apiError{Status: resp.StatusCode, Type: ollamaErrType(tail), Body: string(tail)}
+		return "", usageRec{}, "", "", &apiError{Status: resp.StatusCode, Type: ollamaErrType(tail), Body: string(tail)}
 	}
 
 	var full strings.Builder
 	var usage usageRec
-	var finish string
+	var model, finish string
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -240,6 +243,7 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 			continue
 		}
 		var ev struct {
+			Model   string `json:"model"`
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
@@ -250,6 +254,9 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 		}
 		if err := json.Unmarshal(line, &ev); err != nil {
 			continue // tolerate a stray non-JSON line
+		}
+		if ev.Model != "" {
+			model = ev.Model
 		}
 		if ev.Message.Content != "" {
 			full.WriteString(ev.Message.Content)
@@ -262,9 +269,9 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return full.String(), usage, finish, err // mid-stream drop → retryable
+		return full.String(), usage, model, finish, err // mid-stream drop → retryable
 	}
-	return full.String(), usage, finish, nil
+	return full.String(), usage, model, finish, nil
 }
 
 // ollamaErrType extracts an error type hint from an Ollama error body

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/pricing"
 )
 
 // usageRec is the normalized token usage both transports fill (OpenAI
@@ -50,9 +51,17 @@ func isPermanentLLMError(err error) bool {
 // buildResult parses the reassembled full text (layer 2) and fills metrics. With
 // a schema, extractJSONObject (fence/prose-tolerant, last-object-wins) → a parse
 // failure is *agent.ErrUnparseableOutput (retryable). Without a schema, Output is
-// nil. Cost is 0 (no pricing pkg); Turns is 1 (one call). The engine re-validates
-// Output against output_schema (ValidateOutputMap) — this adapter never imports engine.
-func buildResult(full string, usage usageRec, inv agent.AgentInvocation) (agent.AgentResult, error) {
+// nil. Turns is 1 (one call). Cost is DERIVED from tokens via the injected pricer
+// (never the global pricing.Default() — that is set once at New). The engine
+// re-validates Output against output_schema (ValidateOutputMap) — this adapter
+// never imports engine.
+//
+// model is the wire model id captured from the streamed response (last non-empty
+// across chunks); it is always stamped into Metrics.Model even on a pricing miss.
+// An unknown or empty model → cost ABSENT (Source == ""), never $0.
+// Because OpenAI's prompt_tokens includes cached tokens, the Breakdown normalizes:
+// Input = usage.Input - usage.CacheRead; CacheRead = usage.CacheRead.
+func buildResult(full string, usage usageRec, model string, pricer pricing.Table, inv agent.AgentInvocation) (agent.AgentResult, error) {
 	var output map[string]any
 	if inv.OutputSchema != nil {
 		obj, err := extractJSONObject(full)
@@ -61,13 +70,22 @@ func buildResult(full string, usage usageRec, inv agent.AgentInvocation) (agent.
 		}
 		output = obj
 	}
+	tokens := agent.MetricTokens{Input: usage.Input, Output: usage.Output, CacheReadInput: usage.CacheRead}
+	ms := agent.MetricSet{Tokens: tokens, Turns: 1, Model: model}
+	if model != "" {
+		b := pricing.Breakdown{
+			Input:     usage.Input - usage.CacheRead, // prompt_tokens includes cached; normalize
+			Output:    usage.Output,
+			CacheRead: usage.CacheRead,
+		}
+		if c, ok := pricer.Derive(model, b); ok {
+			ms.Cost = agent.MetricCost{Source: agent.CostSourceDerived, Currency: c.Currency, Total: c.Total, Input: c.Input, Output: c.Output}
+		}
+	}
 	return agent.AgentResult{
 		Output:   output,
 		ExitCode: 0,
-		Metrics: agent.MetricSet{
-			Tokens: agent.MetricTokens{Input: usage.Input, Output: usage.Output, CacheReadInput: usage.CacheRead},
-			Turns:  1,
-		},
+		Metrics:  ms,
 		// Transcript.User is the CLEAN authored prompt (with["prompt"]), deliberately NOT the
 		// assembled prompt the model saw (assemblePrompt adds the schema directive and, on a gate
 		// repair attempt, the prior verdict). Rationale: a successor's thread should show the logical
