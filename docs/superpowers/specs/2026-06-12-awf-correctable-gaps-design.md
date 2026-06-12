@@ -96,21 +96,25 @@ Artifact (file) read-back is **deferred** from P1 — see §2.10.
    Re-load + validate + digest the workflow file and **refuse on digest mismatch against the
    run's pinned `WorkflowDigest`** — identical to how `awf resume` already guards
    (`cli/resume.go:209-224`, spec §8 hard error). Then fold the run log
-   (`state.FoldFile → []Event`, then `engine.Fold(events, blobs) → *RunState`), build a top-level
-   scope (`engine.NewScope(rs, wf, "")`), and evaluate `wf.Outputs` / validate `wf.OutputSchema`
-   via the **new shared exported** `engine.EvaluateExports` (§2.6 — factored out of
-   `evaluateWorkflowExports` so the sub-workflow-call path and this top-level path are one
-   implementation). Emit the resulting map as JSON to stdout.
+   (`state.FoldFile → []Event`, then `engine.Fold(events, blobs) → *RunState`) and evaluate
+   `wf.Outputs` / validate `wf.OutputSchema` via the **new shared exported** `engine.EvaluateExports`
+   (§2.6 — factored out of `evaluateWorkflowExports` so the sub-workflow-call path and this
+   top-level path are one implementation). The shared function builds the scope itself; the
+   top-level caller passes **`input=nil`**, so `input.*` resolves against the run's own input
+   exactly as the engine does at top level (see §2.6). Emit the resulting map as JSON to stdout.
 
-2. **`--step <node-id>` — one top-level node's typed output.** **No workflow file needed.**
-   Fold the log; `engine.Fold` already materializes `Completed[<node-id>].Outputs` from each
-   step's `OutputsRef` (`engine/fold.go`). `<node-id>` is a **top-level node id** — a step, agent,
-   call, `map`, or `loop` id (a top-level `map`'s aggregate is readable via its id). It is **not** a
-   runtime-suffixed internal path: a value containing `[`, `.iter-`, `.attempt-`, or `.item-` is
-   rejected — "P1 reads top-level node ids; gate/map-internal outputs are out of scope; use
-   `awf inspect`/`awf trace`." (The engine itself refuses cross-attempt/cross-item external refs,
-   and a gate commits no bare-path `Completed` entry, so there is no stable address to expose
-   anyway.) A `--step` whose node has no `output_schema` (no typed output) is an explicit error.
+2. **`--step <node-id>` — one top-level node's typed output.** **No workflow file needed, and no
+   full fold.** Scan the log events for the `node.completed` at `<node-id>`, `blobs.Get` its single
+   `OutputsRef`, and decode — a *targeted* read, not `engine.Fold`. (Full `engine.Fold` errors if
+   *any* committed blob is missing (`engine/fold.go:62-63`); reading one step's output must not
+   require the whole run's blob integrity — a real concern for a partially-completed or interrupted
+   run.) `<node-id>` is a **top-level node id** — a step, agent, call, `map`, or `loop` id (a
+   top-level `map`'s aggregate is readable via its id). It is **not** a runtime-suffixed internal
+   path: a value containing `[`, `.iter-`, `.attempt-`, or `.item-` is rejected — "P1 reads top-level
+   node ids; gate/map-internal outputs are out of scope; use `awf inspect`/`awf trace`." (The engine
+   itself refuses cross-attempt/cross-item external refs, and a gate commits no bare-path `Completed`
+   entry, so there is no stable address to expose anyway.) A `--step` whose node has no
+   `output_schema` (no typed output) is an explicit error.
 
 **The two forms must not be mixed.** The *export-contract form* needs `<workflow-path>`; the
 *log-only form* needs `--step`. Supplying `--step` together with `<workflow-path>` is a usage error.
@@ -129,8 +133,8 @@ Top-level `outputs:` are **inert during a normal run** — `engine.Run` never ev
 time** at read-time. Consequence: **a run can succeed yet `awf outputs` fail** — e.g. an output
 binds `{{ step.X.field }}` where `X` sits in the not-taken branch of an `if` (so `X` never
 committed → AWF4002 "step not yet committed"), or the bound value mismatches `output_schema`.
-`validate` does not catch this: it checks producer-existence + schema-field, not runtime
-reachability (`ir/validate_refs.go:947-979`).
+`validate` does not *error* on this — it checks producer-existence + schema-field, not runtime
+reachability (`ir/validate_refs.go:947-979`); P1 adds a non-fatal *warning* (below).
 
 This is the documented failure mode of Argo (issue #2167: Argo hard-failed a workflow when a
 declared output referenced a `when:false`-skipped step; treated as a bug, fixed to skip
@@ -170,10 +174,11 @@ gracefully). AWF's stance + mitigations:
 | P1 piece | Code |
 |---|---|
 | Subcommand dispatch | `cli/cli.go:120-145` switch + `cli/util.go` helpers |
+| Blob store | `state.OpenBlobs(filepath.Join(stateDir, "blobs"))` (precedent: `resume.go:129`, `run.go:135`, `trace.go:67`) |
 | Log → events | `state.FoldFile` (concurrent-safe; used by `cli/resume.go`, integ tests) |
-| Events → `*RunState` | `engine.Fold(events, blobs)` (`engine/fold.go:67`) — exported; populates `Completed`/`Branches`/`Input`/… |
-| Top-level scope | `engine.NewScope(rs, wf, "")` (`engine/scope.go:49`) — exported |
-| Step output (`--step`) | `rs.Completed[<node-id>].Outputs` (materialized by `engine.Fold` from `OutputsRef`) |
+| `outputs:` form: events → `*RunState` | `engine.Fold(events, blobs)` (`engine/fold.go:67`) — exported; populates `Completed`/`Branches`/`Input`/… |
+| `outputs:` evaluation | the new exported `engine.EvaluateExports` (builds the top-level scope itself — see below) |
+| `--step` form: targeted read | scan events for `node.completed` at the id → `blobs.Get(OutputsRef)` → decode (no full fold) |
 | Digest guard | `cli/resume.go:209-224` pattern (`ld.ComputeDigest` vs `rs.WorkflowDigest`) |
 
 **The one refactor (`outputs:` form).** `evaluateWorkflowExports` (`engine/workflow_exports.go:18`)
@@ -192,43 +197,50 @@ func EvaluateExports(rs *RunState, wf *ir.Workflow, ctxPath string, input map[st
 
 - `call_step.go:121` keeps the call-specific lines: `child := childRunStateForCall(...)` then
   `EvaluateExports(child, wf, ir.CallWorkflowParentPath(path), callInput, blobs)`.
-- `cli/outputs.go` calls `EvaluateExports(foldedRS, wf, "", foldedRS.Input, blobs)` — no
-  prefix-strip, `ctxPath=""`, `input` = the run's own input.
+- `cli/outputs.go` calls `EvaluateExports(foldedRS, wf, "", nil, blobs)` — no prefix-strip,
+  `ctxPath=""`, **`input=nil`** so `input.*` falls back to `foldedRS.Input` via the default path
+  (`hasInputOverride=false`, `engine/scope.go:94`), matching the engine's own top-level scope rather
+  than taking the override branch.
 
 This makes `awf outputs`' result **equal to the sub-workflow export of the same run by
-construction** (one implementation) — locked by a test (§2.8).
+construction** (one implementation) — guarded by a unit test of `EvaluateExports` (§2.8).
 
 ### 2.7 Errors and exit codes
 
 `awf outputs`' exit code reflects the **read operation**, not the run's outcome — it deliberately
 succeeds on a committed output even if a later step failed (the GitHub Actions model: output-read is
-decoupled from `needs.<job>.result`; a caller checks `awf run`/`awf ls` for run success). Codes use
-the existing constants (`cli/cli.go:34-39`: `ExitOK=0`, `ExitInvalid`/`ExitRunFailed=1`,
-`ExitUsage=2`):
+decoupled from `needs.<job>.result`; a caller checks `awf run`/`awf ls` for run success). With only
+three values available (`cli/cli.go:34-39`: `ExitOK=0`, `ExitInvalid`/`ExitRunFailed=1`,
+`ExitUsage=2`) the code is **coarse — the stderr message disambiguates within a code**, not the code
+itself. Not renumbering to sysexits (64/66): `2` aligns with Go's `flag` package and the three values
+are test-locked (`validate_test.go:305-311`).
 
-| Condition | Exit | Note |
+| Class | Exit | Conditions (the message carries the detail) |
 |---|---|---|
-| Usage: bad flags, or `--step` mixed with `<workflow-path>` | 2 | matches Go `flag` pkg + POSIX |
-| No `<workflow-path>` and no `--step` | 2 | point at `--step` or the workflow file |
-| Workflow digest mismatch | 2 | mirror `awf resume`'s §8 message |
-| Run dir missing (run-id not found) | 2 | reuse `requireRunDir` (`cli/util.go:66`); consistent with `inspect`/`trace` today |
-| Workflow declares no `outputs:` (no-`--step` form) | 2 | "declares no `outputs:`; use `--step <id>`" |
-| **Requested output not producible** — `outputs:` ref to an uncommitted step, or unknown `--step` id | **1** | a *data* condition (run didn't produce it), not a typo — distinct from usage so a consumer can branch |
+| Output emitted | 0 | success |
+| Bad invocation / precondition | 2 | bad flags; `--step` mixed with `<workflow-path>`; neither `<workflow-path>` nor `--step`; digest mismatch; run dir missing (not-found, via `requireRunDir`, as `inspect`/`trace`); workflow declares no `outputs:` |
+| Read failed | 1 | `outputs:` references an uncommitted step; unknown `--step` id; the re-loaded workflow fails validation |
 
-The "not-producible → 1" split is deliberate: today a missing output and a bad flag both return 2,
-conflating "you asked wrong" with "the run didn't produce this." Not renumbering to sysexits (64/66):
-`2` aligns with Go's `flag` package and the three values are test-locked (`validate_test.go:305-311`).
+(An earlier draft split "not-producible → 1" from "usage → 2" as if the code finely classified — it
+does not: `1` already covers both `ExitInvalid` and `ExitRunFailed`. The honest contract is the three
+classes above, with the message carrying the rest.)
 
 ### 2.8 Testing
 
 Unit tests over a folded fixture log (the `state.FoldFile` + fake-blobs pattern in `cli/*_test.go`):
 the two forms (`outputs:`, `--step`); digest mismatch; missing-`outputs:`; unknown / rejected
-`--step` (including a runtime-suffixed path → rejected); an `outputs:` ref to an uncommitted step
-→ exit 1 with the classified message; and the **equivalence test** — `awf outputs R` equals the
-sub-workflow export of the same workflow+input (guards the §2.6 shared-function refactor against
-drift). Plus an `ir` test for the §2.4 **conditional-scope warning**. No conformance bucket
-(read-only; no new durable state/event, so the deterministic-replay invariant is unaffected).
-`make lint test` is the green bar.
+`--step` (including a runtime-suffixed path → rejected); a targeted `--step` read that **succeeds
+even when an *unrelated* step's blob is absent** (locks the R2 no-full-fold behavior); and an
+`outputs:` ref to an uncommitted step → exit 1 with the classified message. A focused **unit test of
+`engine.EvaluateExports`** over a hand-built `RunState` asserts it yields the expected map — the
+top-level vs sub-workflow-call equivalence is true *by construction* (both call the one function), so
+no run-both-and-compare integration test is needed. Plus an `ir` test for the §2.4
+**conditional-scope warning** (and a check that no existing fixture/example trips it).
+
+**Regression guard:** the refactor edits `engine/call_step.go` + `engine/workflow_exports.go`, so the
+existing `workflow_exports_test.go` and the sub-workflow export conformance must stay green — the
+call-path behavior must not change. No new conformance bucket (read-only; no new durable state/event,
+so the deterministic-replay invariant is unaffected). `make lint test` is the green bar.
 
 ### 2.9 Doc hygiene (same phase, trivial)
 
@@ -257,8 +269,16 @@ would serve. Every mature engine **streams** artifacts (Dagger `export --path`, 
 download, Nextflow `publishDir`, Gitaly `catfile` returning an `io.Reader`). So artifact read-back is
 a follow-up that adds a streaming seam — `state.Blobs.Open(ref) (io.ReadCloser, error)` + `io.Copy`
 to the sink, plus an optional `awf outputs <run-id> --file <name> --path <dest>` to write to disk
-(the Dagger/Nextflow pattern). The typed `outputs:` map + `--step` (P1) cover the core embedder
-need; artifact streaming is its own small slice.
+(the Dagger/Nextflow pattern).
+
+**Honest interim gap.** With `--file` deferred, **P1 has no clean way to extract a produced file** —
+only typed JSON (`outputs:` / `--step`). The sole workaround is the raw blob layout or `awf trace`'s
+4 KB-bounded preview. For *artifact-centric* workflows (an offensive-security pipeline whose
+deliverable *is* the captured payload / PoC / corpus), that is a real limitation: P1 ships
+**typed-output-complete but artifact-incomplete**. If artifact retrieval is load-bearing for the
+first real consumer, promote the streaming `Blobs.Open` slice **ahead of P2** rather than after.
+(Chosen over building it into P1 now to avoid silently expanding the `state.Blobs` interface —
+CLAUDE.md "don't assume architecture"; flip to "build streamed `--file` in P1" on request.)
 
 ---
 
