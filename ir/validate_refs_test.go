@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -648,4 +649,98 @@ func TestAggregateNestedMapDeferredAWF5002(t *testing.T) {
 			}},
 		}})
 	assertErrorAt(t, Validate(ld), "AWF5002", "map[2].over")
+}
+
+// --- Task 4: AWF1048 conditional-scope WARNING ---
+
+func TestConditionallyScoped(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"summarize", false},
+		{"recon.scan", false},
+		{"if[0].then.draft", true},
+		{"loop[0].body.work", true},
+		// gate[ and map[ are OPAQUE: a top-level output ref into them is ALREADY a
+		// hard error (AWF5003 / AWF5004), so the warning must NOT fire there.
+		{"gate[0].generate.draft", false},
+		{"map[0].body.x", false},
+	}
+	for _, c := range cases {
+		if got := conditionallyScoped(c.path); got != c.want {
+			t.Errorf("conditionallyScoped(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestOutputStepRefs(t *testing.T) {
+	got := outputStepRefs(TemplateValue(`"{{ step.foo.bar }} and {{ step.baz.qux }}"`))
+	want := []string{"foo", "baz"}
+	if len(got) != len(want) {
+		t.Fatalf("outputStepRefs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("outputStepRefs[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// Parser-accuracy: a literal `step.x.` OUTSIDE a {{ }} slot must NOT be harvested.
+func TestOutputStepRefsIgnoresLiteralText(t *testing.T) {
+	got := outputStepRefs(TemplateValue(`"see step.foo.bar in the docs"`))
+	if len(got) != 0 {
+		t.Fatalf("outputStepRefs = %v, want none (literal text, no slot)", got)
+	}
+}
+
+func TestValidateWarnsOutputBindsIfNestedStep(t *testing.T) {
+	// A top-level output binding a step inside if.then validates CLEAN (if is
+	// transparent) but may not commit at runtime. After Step 5 wiring, expect a
+	// non-fatal AWF1048 WARNING at outputs.summary. Mutation-grade: deleting the
+	// Step-5 warning turns this RED.
+	strObj := func(field string) *JSONSchema {
+		return &JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{field},
+			"properties":           map[string]any{field: map[string]any{"type": "string"}},
+		}
+	}
+	wf := &Workflow{
+		ID:         "cond-out",
+		Version:    1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		Input: &JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"do_it"},
+			"properties":           map[string]any{"do_it": map[string]any{"type": "boolean"}},
+		},
+		OutputSchema: strObj("summary"),
+		Outputs:      map[string]TemplateValue{"summary": json.RawMessage(`"{{ step.draft.summary }}"`)},
+		Graph: NodeList{
+			&If{
+				Cond: Expr("{{ input.do_it }}"),
+				Then: NodeList{
+					&CodeStep{ID: "draft", Container: "c", Run: "true", OutputSchema: strObj("summary")},
+				},
+			},
+		},
+	}
+	ld := makeLD(wf)
+	diags := Validate(ld)
+	if HasErrors(diags) {
+		t.Fatalf("workflow should validate clean (if is transparent); got errors: %+v", diags)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Severity == Warning && d.Code == "AWF1048" && d.Path == "outputs.summary" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected AWF1048 WARNING at outputs.summary; got %+v", diags)
+	}
 }

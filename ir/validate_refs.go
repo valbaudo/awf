@@ -944,6 +944,53 @@ func staticValueMatchesSchemaType(value any, prop any) bool {
 	}
 }
 
+// outputStepRefs returns the step ids referenced by an output's value, using the
+// REAL template parser (walkTemplateRefs), NOT a regex — slot-aware (ignores
+// literal text outside {{ }}) and matches the ref grammar checkRef uses. Recurses
+// into arrays/objects. Used only for the AWF1048 conditional-scope WARNING.
+func outputStepRefs(tv TemplateValue) []string {
+	var decoded any
+	if err := json.Unmarshal(tv, &decoded); err != nil {
+		return nil
+	}
+	var ids []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			walkTemplateRefs(x, "", &collector{}, func(ref template.Ref) {
+				if len(ref.Segments) >= 2 && ref.Segments[0].Ident == "step" && !ref.Segments[1].IsIndex {
+					ids = append(ids, ref.Segments[1].Ident)
+				}
+			})
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(decoded)
+	return ids
+}
+
+// conditionallyScoped reports whether a producer's STATIC path lies inside a
+// TRANSPARENT-but-conditionally-reached scope — `if` (branch may not be taken) or
+// `loop` (zero iterations) — where a top-level output ref validates CLEAN today
+// yet may not commit at runtime. It EXCLUDES gate[ and map[: those are OPAQUE
+// scopes whose cross-scope refs already hard-error (AWF5003 / AWF5004).
+func conditionallyScoped(staticPath string) bool {
+	for _, seg := range strings.Split(staticPath, ".") {
+		if strings.HasPrefix(seg, "if[") || strings.HasPrefix(seg, "loop[") {
+			return true
+		}
+	}
+	return false
+}
+
 func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *collector) {
 	wf := mod.Workflow
 	producers := map[string]producer{}
@@ -977,6 +1024,11 @@ func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *coll
 			}
 		}
 		validateTemplateValueRefs(c, "AWF1048", path, map[string]TemplateValue{"": wf.Outputs[key]}, producers, maps, nil)
+		for _, refID := range outputStepRefs(wf.Outputs[key]) {
+			if p, ok := producers[refID]; ok && conditionallyScoped(p.path) {
+				c.warnf(path, "AWF1048", fmt.Sprintf("%s: output %q binds step %q inside a conditional scope (%s); it may not commit, and `awf outputs` will then error", catalog["AWF1048"], key, refID, p.path))
+			}
+		}
 	}
 
 	if len(wf.ArtifactExports) == 0 {
