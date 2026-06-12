@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -74,15 +75,29 @@ func (CryptoIDGen) NewRunID() string {
 }
 
 // Fake is a deterministic Clock+IDGen for tests. NewRunID returns IDs in order.
+//
+// Fake is safe for concurrent use. The production System clock's Now/Sleep are
+// goroutine-safe (time.Now / time.NewTimer), so the Clock contract permits
+// concurrent callers — e.g. engine/agent_event_sink.go drives Sleep from
+// per-delta-timer goroutines. mu guards the mutable T and i fields; construct
+// Fake by named fields only (the zero-value mu is ready to use), and always use
+// it via *Fake so the mutex is never copied.
 type Fake struct {
+	mu  sync.Mutex
 	T   time.Time
 	IDs []string
 	i   int
 }
 
-func (f *Fake) Now() time.Time { return f.T }
+func (f *Fake) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.T
+}
 
 func (f *Fake) NewRunID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.i >= len(f.IDs) {
 		panic(fmt.Sprintf("clock.Fake: ran out of seeded IDs (seeded %d, call %d)", len(f.IDs), f.i+1))
 	}
@@ -96,7 +111,16 @@ func (f *Fake) NewRunID() string {
 // testing/synctest — Fake.Now() returns f.T regardless of any synctest bubble's
 // faked time.Now(). Whether retry tests use this method or synctest's time-fake
 // is slice 2.4's decision; 2.1 ships only the explicit-control primitive.
-func (f *Fake) Advance(d time.Duration) { f.T = f.T.Add(d) }
+func (f *Fake) Advance(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.advanceLocked(d)
+}
+
+// advanceLocked steps T forward by d; the caller must hold f.mu. It exists so
+// Sleep can advance under a single lock acquisition — sync.Mutex is not
+// reentrant, so a Sleep that called the public Advance would self-deadlock.
+func (f *Fake) advanceLocked(d time.Duration) { f.T = f.T.Add(d) }
 
 // Sleep is the Fake's non-blocking deterministic sleeper — advances T by d (if
 // the context is live) and returns immediately. Tests that drive retry
@@ -107,7 +131,9 @@ func (f *Fake) Sleep(ctx context.Context, d time.Duration) error {
 		return err
 	}
 	if d > 0 {
-		f.Advance(d)
+		f.mu.Lock()
+		f.advanceLocked(d)
+		f.mu.Unlock()
 	}
 	return nil
 }
