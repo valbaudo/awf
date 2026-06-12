@@ -798,8 +798,10 @@ func validateCallInputFiles(
 
 	parent, _ := ld.Module(moduleID)
 	assets := map[string]string(nil)
+	parentInputFiles := WorkflowInputFiles(nil)
 	if parent != nil && parent.Workflow != nil {
 		assets = parent.Workflow.Assets
+		parentInputFiles = parent.Workflow.InputFiles
 	}
 	inputKeys := make([]string, 0, len(inputFiles))
 	for name := range inputFiles {
@@ -812,7 +814,7 @@ func validateCallInputFiles(
 		if _, ok := childInputFiles[name]; !ok {
 			c.errf(path, "AWF1051", fmt.Sprintf("%s: child workflow input_files does not declare %q", catalog["AWF1051"], name))
 		}
-		validateInputFileRef(c, path, nodePath, "input_files."+name, raw, nil, assets, producers, order, outFiles, maps)
+		validateInputFileRef(c, path, nodePath, "input_files."+name, raw, parentInputFiles, assets, producers, order, outFiles, maps)
 		if id, ok := template.ParseAssetRef(raw); ok && parent != nil {
 			if asset, loaded := parent.Assets[id]; loaded && asset.IsDir {
 				c.errf(path, "AWF1051", fmt.Sprintf("%s: asset %s is a directory; call input_files require a file artifact", catalog["AWF1051"], id))

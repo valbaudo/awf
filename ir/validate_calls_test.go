@@ -244,6 +244,22 @@ func TestValidateCallInputFilesAccepted(t *testing.T) {
 	assertNoError(t, Validate(ld))
 }
 
+func TestValidateCallInputFilesAcceptsWorkflowInputFileRef(t *testing.T) {
+	root, child := validCallInputFilesValidationPair()
+	root.InputFiles = WorkflowInputFiles{"report": {}}
+	root.Graph = NodeList{
+		&CallStep{ID: "scan", Call: "scan",
+			InputFiles: map[string]string{"report": "input.files.report"}},
+	}
+	child.Graph = NodeList{
+		&CodeStep{ID: "use", Container: "c", Run: "true",
+			InputFiles: map[string]string{"/work/report.json": "input.files.report"}},
+	}
+	ld := loadedWithChild(root, child)
+
+	assertNoErrorCode(t, Validate(ld), "AWF3007")
+}
+
 func TestValidateCallInputFilesBindingShape(t *testing.T) {
 	cases := []struct {
 		name string
