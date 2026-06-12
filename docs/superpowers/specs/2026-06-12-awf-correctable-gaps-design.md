@@ -85,8 +85,14 @@ A new read-only subcommand, added as one `case "outputs":` arm in the dispatch s
 (`cli/cli.go:120-145`), mirroring the existing `ls`/`inspect`/`trace` commands:
 
 ```
-awf outputs <run-id> [<workflow-path>] [--step <node-id>] [--state-dir .awf]
+awf outputs <run-id> [--workflow <path>] [--step <node-id>] [--state-dir .awf]
 ```
+
+> Surface note (refined during implementation): the workflow is a **`--workflow` flag**,
+> not a second positional. Go's `flag` package stops at the first non-flag arg, so a
+> `<run-id> <workflow-path>` + interspersed-flags surface can't parse `<run-id> --step …`;
+> a single positional (run-id) + flags matches the `inspect`/`trace`/`ls` family
+> (`parseRunIDFirst`). "the workflow-path / the export form" below means `--workflow`.
 
 Artifact (file) read-back is **deferred** from P1 — see §2.10.
 

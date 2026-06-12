@@ -256,7 +256,7 @@ func TestOutputsStepRejectsRuntimePath(t *testing.T) {
 
 func TestOutputsMixingFormsIsUsage(t *testing.T) {
 	var out, errb bytes.Buffer
-	rc := cliOutputs([]string{"r1", "wf.yaml", "--step", "scan", "--state-dir", t.TempDir()}, &out, &errb)
+	rc := cliOutputs([]string{"r1", "--workflow", "wf.yaml", "--step", "scan", "--state-dir", t.TempDir()}, &out, &errb)
 	if rc != ExitUsage {
 		t.Fatalf("rc = %d (want %d)", rc, ExitUsage)
 	}
@@ -301,14 +301,14 @@ import (
 )
 
 func printOutputsUsage(w io.Writer) {
-	fprintln(w, "usage: awf outputs <run-id> [<workflow-path>] [--step <node-id>] [--state-dir <dir>]")
+	fprintln(w, "usage: awf outputs <run-id> [--workflow <path>] [--step <node-id>] [--state-dir <dir>]")
 	fprintln(w, "")
-	fprintln(w, "  read a completed run's typed outputs as JSON.")
-	fprintln(w, "  <workflow-path>    evaluate the workflow's outputs: contract (digest-checked")
+	fprintln(w, "  read a completed run's typed outputs as JSON. Pass exactly one of:")
+	fprintln(w, "  --workflow <path>  evaluate that workflow's outputs: contract (digest-checked")
 	fprintln(w, "                     against the run, like `awf resume`)")
-	fprintln(w, "  --step <node-id>   instead, emit one top-level code/agent step's typed output")
-	fprintln(w, "                     (no workflow file needed). Map aggregates and sub-workflow")
-	fprintln(w, "                     results are read via the workflow-export form, not --step.")
+	fprintln(w, "  --step <node-id>   emit one top-level code/agent step's typed output (no")
+	fprintln(w, "                     workflow file needed). Map aggregates and sub-workflow")
+	fprintln(w, "                     results are read via --workflow, not --step.")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 	fprintln(w, "")
 	fprintln(w, "  Exit reflects the READ, not the run: 0 ok, 2 bad invocation, 1 read failed.")
@@ -321,32 +321,21 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	step := fs0.String("step", "", "emit one top-level code/agent step's typed output")
-	if err := fs0.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printOutputsUsage(stdout)
-			return ExitOK
-		}
-		fprintf(stderr, "awf outputs: %v\n", err)
-		printOutputsUsage(stderr)
-		return ExitUsage
-	}
-	if fs0.NArg() < 1 {
-		printOutputsUsage(stderr)
-		return ExitUsage
-	}
-	runID := fs0.Arg(0)
-	wfPath := ""
-	if fs0.NArg() >= 2 {
-		wfPath = fs0.Arg(1)
+	workflow := fs0.String("workflow", "", "workflow file: evaluate its outputs: contract")
+	// Run-id is the leading positional; flags follow it (stdlib flag stops at the
+	// first non-flag). Mirrors awf inspect/trace/ls via parseRunIDFirst.
+	runID, code, ok := parseRunIDFirst(fs0, args, "awf outputs", printOutputsUsage, stdout, stderr)
+	if !ok {
+		return code
 	}
 
-	// Form check: --step is log-only; the outputs: form needs <workflow-path>.
-	if *step != "" && wfPath != "" {
-		fprintf(stderr, "awf outputs: use either --step (log-only) or the workflow-export form, not both\n")
+	// Form check: exactly one of --step (log-only) or --workflow (outputs: contract).
+	if *step != "" && *workflow != "" {
+		fprintf(stderr, "awf outputs: use either --step (log-only) or --workflow (the outputs: contract), not both\n")
 		return ExitUsage
 	}
-	if *step == "" && wfPath == "" {
-		fprintf(stderr, "awf outputs: provide a <workflow-path> (to read the outputs: contract) or --step <node-id>\n")
+	if *step == "" && *workflow == "" {
+		fprintf(stderr, "awf outputs: provide --workflow <path> (to read the outputs: contract) or --step <node-id>\n")
 		return ExitUsage
 	}
 
@@ -369,7 +358,7 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	if *step != "" {
 		return outputsStep(events, blobs, *step, stdout, stderr)
 	}
-	return outputsContract(events, blobs, runID, wfPath, stdout, stderr)
+	return outputsContract(events, blobs, runID, *workflow, stdout, stderr)
 }
 
 // outputsStep emits one top-level CODE/AGENT/SIGNAL step's typed output via a
@@ -556,7 +545,7 @@ func seedOutputsRun(t *testing.T, summarizeOutput string) (string, string) {
 func TestOutputsContractHappyPath(t *testing.T) {
 	wfPath, stateDir := seedOutputsRun(t, `{"summary":"hello"}`)
 	var out, errb bytes.Buffer
-	if rc := cliOutputs([]string{"r1", wfPath, "--state-dir", stateDir}, &out, &errb); rc != ExitOK {
+	if rc := cliOutputs([]string{"r1", "--workflow", wfPath, "--state-dir", stateDir}, &out, &errb); rc != ExitOK {
 		t.Fatalf("rc = %d (want %d); stderr=%s", rc, ExitOK, errb.String())
 	}
 	if !strings.Contains(out.String(), `"summary": "hello"`) {
@@ -571,7 +560,7 @@ func TestOutputsContractDigestMismatch(t *testing.T) {
 		state.Event{Type: engine.EventRunStarted, Data: marshal(t, engine.RunStartedData{RunID: "r2", WorkflowDigest: "WRONG"})},
 	)
 	var out, errb bytes.Buffer
-	if rc := cliOutputs([]string{"r2", wfPath, "--state-dir", stateDir}, &out, &errb); rc != ExitUsage {
+	if rc := cliOutputs([]string{"r2", "--workflow", wfPath, "--state-dir", stateDir}, &out, &errb); rc != ExitUsage {
 		t.Fatalf("rc = %d (want %d); stderr=%s", rc, ExitUsage, errb.String())
 	}
 	if !strings.Contains(errb.String(), "digest mismatch") {
@@ -594,7 +583,7 @@ func TestOutputsContractUncommittedRefIsReadFailure(t *testing.T) {
 		state.Event{Type: engine.EventRunStarted, Data: marshal(t, engine.RunStartedData{RunID: "r1", WorkflowDigest: digest})},
 	)
 	var out, errb bytes.Buffer
-	if rc := cliOutputs([]string{"r1", wfPath, "--state-dir", stateDir}, &out, &errb); rc != ExitRunFailed {
+	if rc := cliOutputs([]string{"r1", "--workflow", wfPath, "--state-dir", stateDir}, &out, &errb); rc != ExitRunFailed {
 		t.Fatalf("rc = %d (want %d); stderr=%s", rc, ExitRunFailed, errb.String())
 	}
 }
@@ -892,17 +881,17 @@ git commit -m "feat(ir): warn when a top-level output binds a conditionally-scop
 ```markdown
 ## awf outputs
 
-`awf outputs <run-id> [<workflow-path>] [--step <node-id>] [--state-dir <dir>]`
+`awf outputs <run-id> [--workflow <path>] [--step <node-id>] [--state-dir <dir>]`
 
 Read a completed run's typed outputs as JSON (pretty-printed). Read-only — it does
-not modify the run.
+not modify the run. Pass exactly one of `--workflow` or `--step`.
 
 Two forms:
 
-- **`outputs:` contract** (default): pass `<workflow-path>`. The file is re-loaded
-  and its digest is checked against the run's pinned `WorkflowDigest` (a mismatch is
-  refused, exactly like `awf resume`); the workflow's top-level `outputs:` block is
-  evaluated and emitted as a JSON object.
+- **`outputs:` contract**: pass `--workflow <path>`. The file is re-loaded and its
+  digest is checked against the run's pinned `WorkflowDigest` (a mismatch is refused,
+  exactly like `awf resume`); the workflow's top-level `outputs:` block is evaluated
+  and emitted as a JSON object.
 - **`--step <node-id>`**: emit one top-level code/agent step's typed output, read
   directly from the log + blob store (no workflow file needed). `<node-id>` is a
   top-level node id; gate/map-internal runtime paths are not addressable. Map
