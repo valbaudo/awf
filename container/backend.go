@@ -20,6 +20,14 @@ import (
 	"fmt"
 )
 
+// AWFOutputDir is the base directory the engine dispatcher derives AWF_OUTPUT
+// tempfile paths under — AWFOutputDir/<sanitized-step>.json (see
+// engine/awf_output.go) — and that the native Backend pre-creates at New() so
+// the author's `> $AWF_OUTPUT` redirect can write the file. Docker containers
+// get a fresh /tmp and don't need it. One source so the engine's derivation and
+// the native bootstrap cannot drift.
+const AWFOutputDir = "/tmp/awf"
+
 // Backend executes commands inside long-lived containers. One concrete impl
 // per phase: in-memory Fake (Phase 2, fake.go); Docker (Phase 4, docker.go).
 //

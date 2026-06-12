@@ -27,10 +27,6 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
-// awfOutputDir is the host directory the dispatcher writes AWF_OUTPUT
-// tempfiles into. Created once at New() per Phase 4 slice 4.7 decision 5.
-const awfOutputDir = "/tmp/awf"
-
 // Backend implements container.Backend by spawning host processes via
 // os/exec. Single concrete impl; not safe for concurrent runs of the
 // same workflow (see slice 4.7 design spec Appendix E for the
@@ -60,7 +56,7 @@ func New(workdirRoot string) (*Backend, error) {
 	if workdirRoot == "" {
 		return nil, errors.New("container/native: New: workdirRoot is required")
 	}
-	if err := os.MkdirAll(awfOutputDir, 0o755); err != nil {
+	if err := os.MkdirAll(container.AWFOutputDir, 0o755); err != nil {
 		return nil, err
 	}
 	return &Backend{
