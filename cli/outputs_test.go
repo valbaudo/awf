@@ -197,8 +197,14 @@ func TestOutputsContractUncommittedRefIsReadFailure(t *testing.T) {
 	if err := os.WriteFile(wfPath, []byte(outputsWF), 0o644); err != nil {
 		t.Fatalf("write wf: %v", err)
 	}
-	ld, _ := loader.Load(wfPath)
-	digest, _ := ld.ComputeDigest()
+	ld, err := loader.Load(wfPath)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	digest, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatalf("ComputeDigest: %v", err)
+	}
 	stateDir := t.TempDir()
 	writeRunLog(t, stateDir, "r1",
 		state.Event{Type: engine.EventRunStarted, Data: marshal(t, engine.RunStartedData{RunID: "r1", WorkflowDigest: digest})},

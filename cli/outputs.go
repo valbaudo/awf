@@ -162,7 +162,7 @@ func outputsContract(events []state.Event, blobs state.Blobs, runID, wfPath stri
 		return ExitUsage
 	}
 	if diags := ir.Validate(ld); ir.HasErrors(diags) {
-		fprintf(stderr, "awf outputs: workflow %q has validation errors\n", wfPath)
+		fprintf(stderr, "awf outputs: workflow %q has validation errors: %v\n", wfPath, diags)
 		return ExitRunFailed
 	}
 	digest, err := ld.ComputeDigest()
