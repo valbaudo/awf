@@ -13,7 +13,24 @@ import (
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/live"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/pricing"
 )
+
+// normalizeForPricing turns codex token usage into a pricing.Breakdown, using
+// totalTokens as a runtime cache-inclusion oracle. Codex's inputTokens is believed
+// to INCLUDE cachedInputTokens (cached ⊂ input), but the app-server schema doesn't
+// prove it. So subtract cached from input IFF totalTokens == inputTokens +
+// outputTokens (the inclusion identity holds); otherwise (e.g. total == input +
+// cached + output, the disjoint case) leave input whole. The bool reports whether
+// cached was subtracted, so the caller can warn when it declined to.
+func normalizeForPricing(u Usage) (pricing.Breakdown, bool) {
+	subtract := u.TotalTokens == u.InputTokens+u.OutputTokens // inclusion oracle
+	input := u.InputTokens
+	if subtract {
+		input -= u.CachedInputTokens
+	}
+	return pricing.Breakdown{Input: input, Output: u.OutputTokens, CacheRead: u.CachedInputTokens}, subtract
+}
 
 func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
 	if err := a.requireRootAndClient(); err != nil {
@@ -110,9 +127,16 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 		Epoch:          inv.RunContext.NextEpoch,
 	}
 
+	// Prefer the RESOLVED model the app-server reported on thread/start over the
+	// requested cfg.model (which may be empty when the request omitted model).
+	model := session.Model
+	if model == "" {
+		model = cfg.model
+	}
+
 	events := make(chan agent.AgentEvent, 16)
 	outcomes := make(chan agent.AgentOutcome, 1)
-	go a.drainTurn(ctx, events, outcomes, turn, session.ID, policy, inv, meta)
+	go a.drainTurn(ctx, events, outcomes, turn, session.ID, model, policy, inv, meta)
 	return events, outcomes, nil
 }
 
@@ -200,7 +224,7 @@ func (a *Adapter) startTurnWithBackoff(ctx context.Context, req TurnStartRequest
 	}
 }
 
-func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent, outcomes chan<- agent.AgentOutcome, turn TurnHandle, threadID string, policy permissionPolicy, inv agent.AgentInvocation, meta agent.LiveDispatch) {
+func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent, outcomes chan<- agent.AgentOutcome, turn TurnHandle, threadID, model string, policy permissionPolicy, inv agent.AgentInvocation, meta agent.LiveDispatch) {
 	defer close(outcomes)
 	defer close(events)
 	defer closeClientIfSupported(a.client)
@@ -268,15 +292,28 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 					}
 				}
 				meta.CommittedUnix = a.clock.Now().Unix()
+				ms := agent.MetricSet{
+					Tokens: agent.MetricTokens{
+						Input:          usage.InputTokens,
+						Output:         usage.OutputTokens,
+						CacheReadInput: usage.CachedInputTokens,
+					},
+					Model: model,
+				}
+				b, subtracted := normalizeForPricing(usage)
+				if !subtracted && usage.CachedInputTokens > 0 && usage.TotalTokens != 0 {
+					fmt.Fprintf(os.Stderr, "agent/codexlive: tokenUsage totalTokens %d != input+output %d; not subtracting cached %d\n", usage.TotalTokens, usage.InputTokens+usage.OutputTokens, usage.CachedInputTokens)
+				}
+				if model != "" {
+					if c, ok := a.pricer.Derive(model, b); ok {
+						ms.Cost = agent.MetricCost{Source: agent.CostSourceDerived, Currency: c.Currency, Total: c.Total, Input: c.Input, Output: c.Output}
+					}
+				}
 				outcomes <- agent.AgentOutcome{Result: agent.AgentResult{
 					Output:   output,
 					ExitCode: 0,
 					Live:     &meta,
-					Metrics: agent.MetricSet{Tokens: agent.MetricTokens{
-						Input:          usage.InputTokens,
-						Output:         usage.OutputTokens,
-						CacheReadInput: usage.CachedInputTokens,
-					}},
+					Metrics:  ms,
 				}}
 				return
 			}

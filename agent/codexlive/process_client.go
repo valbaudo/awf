@@ -75,7 +75,7 @@ func (c *processClient) StartThread(ctx context.Context, req ThreadStartRequest)
 	}, &resp); err != nil {
 		return ThreadInfo{}, err
 	}
-	return threadInfoFromResponse(resp.Thread), nil
+	return threadInfoFromResponse(resp.Thread, resp.Model), nil
 }
 
 func (c *processClient) ResumeThread(ctx context.Context, req ThreadResumeRequest) (ThreadInfo, error) {
@@ -88,7 +88,7 @@ func (c *processClient) ResumeThread(ctx context.Context, req ThreadResumeReques
 	}, &resp); err != nil {
 		return ThreadInfo{}, err
 	}
-	info := threadInfoFromResponse(resp.Thread)
+	info := threadInfoFromResponse(resp.Thread, resp.Model)
 	if info.ID == "" {
 		info.ID = req.ThreadID
 	}
@@ -502,6 +502,10 @@ type initializeResponse struct {
 
 type threadStartResponse struct {
 	Thread threadDTO `json:"thread"`
+	// Model is the RESOLVED model the app-server picked for the thread (a required,
+	// non-null string even when the request omitted model). It rides at the TOP
+	// level of the thread/start (and thread/resume) response, NOT inside `thread`.
+	Model string `json:"model"`
 }
 
 type threadDTO struct {
@@ -558,6 +562,10 @@ type tokenUsageBreakdownDTO struct {
 	InputTokens       int `json:"inputTokens"`
 	OutputTokens      int `json:"outputTokens"`
 	CachedInputTokens int `json:"cachedInputTokens"`
+	// TotalTokens is the runtime oracle for cache inclusion: whether cached is a
+	// subset of input (total == input+output) or disjoint (total == input+cached+
+	// output). normalizeForPricing reads it to decide if cached is subtracted.
+	TotalTokens int `json:"totalTokens"`
 }
 
 type threadItemProbe struct {
@@ -625,6 +633,7 @@ func providerEventFromNotification(method string, params json.RawMessage) (Provi
 			InputTokens:       p.TokenUsage.Last.InputTokens,
 			OutputTokens:      p.TokenUsage.Last.OutputTokens,
 			CachedInputTokens: p.TokenUsage.Last.CachedInputTokens,
+			TotalTokens:       p.TokenUsage.Last.TotalTokens,
 		}}, p.TurnID, false, true
 	case EventTurnCompleted:
 		var p turnCompletedNotification
@@ -698,8 +707,8 @@ func permissionRPCResult(method string, allow bool) any {
 	}
 }
 
-func threadInfoFromResponse(t threadDTO) ThreadInfo {
-	return ThreadInfo{ID: t.ID, TranscriptPath: t.Path}
+func threadInfoFromResponse(t threadDTO, model string) ThreadInfo {
+	return ThreadInfo{ID: t.ID, TranscriptPath: t.Path, Model: model}
 }
 
 func nullIfEmpty(s string) any {

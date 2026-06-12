@@ -16,6 +16,7 @@ import (
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/pricing"
 )
 
 const AdapterRef = "openai/codex-live"
@@ -28,6 +29,7 @@ type Adapter struct {
 	client  Client
 	clock   clock.Clock
 	backoff []time.Duration
+	pricer  pricing.Table // model→rates for the derived USD cost; defaults to pricing.Default()
 }
 
 type Option func(*Adapter)
@@ -68,6 +70,13 @@ func WithBackoff(durations []time.Duration) Option {
 	}
 }
 
+// WithPricing injects the pricing.Table used to derive a USD cost from token
+// usage. Tests pass a self-contained fixture table; production leaves it unset so
+// New defaults it to pricing.Default() (embedded rates ⊕ $AWF_PRICING_FILE).
+func WithPricing(t pricing.Table) Option {
+	return func(a *Adapter) { a.pricer = t }
+}
+
 func New(opts ...Option) (*Adapter, error) {
 	a := &Adapter{
 		env:     agent.SecretEnv{},
@@ -79,6 +88,9 @@ func New(opts ...Option) (*Adapter, error) {
 	}
 	if a.client == nil {
 		a.client = newProcessClient(a.env)
+	}
+	if a.pricer == nil {
+		a.pricer = pricing.Default()
 	}
 	return a, nil
 }

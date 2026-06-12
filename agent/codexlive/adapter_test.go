@@ -16,6 +16,7 @@ import (
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/pricing"
 )
 
 func TestCodexLiveStartsAndResumesThread(t *testing.T) {
@@ -93,6 +94,63 @@ func TestCodexLiveCapturesTokenUsageMetrics(t *testing.T) {
 	if got.Input != 1200 || got.Output != 340 || got.CacheReadInput != 800 {
 		t.Fatalf("Metrics.Tokens = %+v, want Input=1200 Output=340 CacheReadInput=800", got)
 	}
+}
+
+func TestCodexLiveDerivesCostFromResolvedModelAndInclusionTotals(t *testing.T) {
+	root := testRoot(t)
+	cwd := t.TempDir()
+	// thread/start surfaces the RESOLVED model; the token-usage event carries the
+	// INCLUSION totals (1200+340 == 1540 → cached 800 ⊂ input → subtract).
+	fake := &fakeClient{
+		info:        ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"},
+		startThread: ThreadInfo{ID: "thread-1", Model: "gpt-5.3-codex"},
+		turns: []fakeTurn{{
+			turnID: "turn-1",
+			events: []ProviderEvent{
+				{Type: EventThreadTokenUsage, Usage: Usage{InputTokens: 1200, OutputTokens: 340, CachedInputTokens: 800, TotalTokens: 1540}},
+				{Type: EventTurnCompleted, Output: map[string]any{"ok": true}},
+			},
+		}},
+	}
+	// Self-contained fixture rates: input $2/M, output $10/M, cache-read $0.5/M.
+	table := pricing.Table{"gpt-5.3-codex": {Currency: "USD", InputPerM: 2, OutputPerM: 10, CacheReadPerM: 0.5}}
+	a, err := New(WithLiveRoot(root), WithClient(fake), WithClock(&clock.Fake{T: time.Unix(100, 0).UTC()}), WithPricing(table))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	inv := testInvocation(cwd, "priced") // note: with-config carries NO model
+	outcome := drainLaunch(t, a, inv)
+
+	ms := outcome.Result.Metrics
+	if ms.Model != "gpt-5.3-codex" {
+		t.Fatalf("Metrics.Model = %q, want gpt-5.3-codex (resolved from thread/start)", ms.Model)
+	}
+	c := ms.Cost
+	if c.Source != agent.CostSourceDerived {
+		t.Fatalf("Cost.Source = %q, want %q", c.Source, agent.CostSourceDerived)
+	}
+	if c.Currency != "USD" {
+		t.Fatalf("Cost.Currency = %q, want USD", c.Currency)
+	}
+	// uncached input 400 tok·$2/M = $0.0008; cached 800·$0.5/M = $0.0004 → Input $0.0012.
+	if !approxUSD(c.Input, 0.0012) {
+		t.Fatalf("Cost.Input = %v, want 0.0012 (400·$2/M + 800·$0.5/M)", c.Input)
+	}
+	// output 340·$10/M = $0.0034.
+	if !approxUSD(c.Output, 0.0034) {
+		t.Fatalf("Cost.Output = %v, want 0.0034", c.Output)
+	}
+	if c.Total != c.Input+c.Output {
+		t.Fatalf("Total %v != Input+Output %v (exact invariant)", c.Total, c.Input+c.Output)
+	}
+}
+
+func approxUSD(a, b float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < 1e-12
 }
 
 func TestCodexLiveUsesNativeOutputSchema(t *testing.T) {

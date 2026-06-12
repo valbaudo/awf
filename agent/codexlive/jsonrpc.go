@@ -45,6 +45,10 @@ type ThreadInfo struct {
 	ID             string
 	TmuxSession    string
 	TranscriptPath string
+	// Model is the RESOLVED model the app-server picked, surfaced from the
+	// thread/start (or thread/resume) response. Preferred over the requested
+	// cfg.model when stamping MetricSet.Model and pricing.
+	Model string
 }
 
 type TurnStartRequest struct {
@@ -74,6 +78,10 @@ type Usage struct {
 	InputTokens       int
 	OutputTokens      int
 	CachedInputTokens int
+	// TotalTokens is the cache-inclusion oracle (see normalizeForPricing): when
+	// total == input+output, cached is a subset of input (safe to subtract for
+	// pricing); otherwise cached is disjoint and must not be subtracted.
+	TotalTokens int
 }
 
 type PermissionRequest struct {

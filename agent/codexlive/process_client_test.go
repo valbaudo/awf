@@ -1,6 +1,25 @@
 package codexlive
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestThreadStartResponseDecodesResolvedModel(t *testing.T) {
+	// thread/start carries the RESOLVED model at the TOP LEVEL (a required,
+	// non-null string even when the request omitted model) — NOT inside `thread`.
+	var resp threadStartResponse
+	if err := json.Unmarshal([]byte(`{"thread":{"id":"thread-1","path":"/tmp/t.jsonl","sessionId":"sess-1"},"model":"gpt-5.3-codex"}`), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	info := threadInfoFromResponse(resp.Thread, resp.Model)
+	if info.Model != "gpt-5.3-codex" {
+		t.Fatalf("ThreadInfo.Model = %q, want gpt-5.3-codex", info.Model)
+	}
+	if info.ID != "thread-1" {
+		t.Fatalf("ThreadInfo.ID = %q, want thread-1", info.ID)
+	}
+}
 
 func TestProcessClientBuffersEarlyTurnEventsAndRequests(t *testing.T) {
 	c := &processClient{}
