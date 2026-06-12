@@ -261,6 +261,20 @@ func TestOutputsMixingFormsIsUsage(t *testing.T) {
 		t.Fatalf("rc = %d (want %d)", rc, ExitUsage)
 	}
 }
+
+func TestOutputsReachableViaDispatch(t *testing.T) {
+	// Mutation-grade: drives the REAL Run entrypoint, so removing the
+	// `case "outputs":` arm from cli.go turns this RED (Run would hit the
+	// "unknown subcommand" default arm instead of the outputs handler).
+	var out, errb bytes.Buffer
+	rc := Run([]string{"outputs", "ghost", "--step", "x", "--state-dir", t.TempDir()}, &out, &errb)
+	if rc != ExitUsage {
+		t.Fatalf("rc = %d (want %d)", rc, ExitUsage)
+	}
+	if !strings.Contains(errb.String(), "awf outputs:") {
+		t.Fatalf("dispatch did not reach the outputs handler; stderr=%q", errb.String())
+	}
+}
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -283,8 +297,6 @@ import (
 	"strings"
 
 	"github.com/valbaudo/awf/engine"
-	"github.com/valbaudo/awf/ir"
-	"github.com/valbaudo/awf/loader"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -294,8 +306,9 @@ func printOutputsUsage(w io.Writer) {
 	fprintln(w, "  read a completed run's typed outputs as JSON.")
 	fprintln(w, "  <workflow-path>    evaluate the workflow's outputs: contract (digest-checked")
 	fprintln(w, "                     against the run, like `awf resume`)")
-	fprintln(w, "  --step <node-id>   instead, emit one top-level node's typed output (no")
-	fprintln(w, "                     workflow file needed)")
+	fprintln(w, "  --step <node-id>   instead, emit one top-level code/agent step's typed output")
+	fprintln(w, "                     (no workflow file needed). Map aggregates and sub-workflow")
+	fprintln(w, "                     results are read via the workflow-export form, not --step.")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 	fprintln(w, "")
 	fprintln(w, "  Exit reflects the READ, not the run: 0 ok, 2 bad invocation, 1 read failed.")
@@ -307,7 +320,7 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
-	step := fs0.String("step", "", "emit one top-level node's typed output")
+	step := fs0.String("step", "", "emit one top-level code/agent step's typed output")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printOutputsUsage(stdout)
@@ -359,9 +372,11 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	return outputsContract(events, blobs, runID, wfPath, stdout, stderr)
 }
 
-// outputsStep emits one top-level node's typed output via a TARGETED read —
-// scan events for the node.completed, read its single OutputsRef blob. Not a
-// full engine.Fold (which errors if any UNRELATED committed blob is missing).
+// outputsStep emits one top-level CODE/AGENT/SIGNAL step's typed output via a
+// TARGETED read — scan events for its node.completed, read the single OutputsRef
+// blob. Not a full engine.Fold (which errors if any UNRELATED committed blob is
+// missing). Map aggregates and sub-workflow call products commit different events
+// (map.item / call product) and are read via the outputs: form, not --step.
 func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout, stderr io.Writer) int {
 	if isRuntimeSuffixedPath(nodeID) {
 		fprintf(stderr, "awf outputs: %q is a runtime-internal path; P1 reads top-level node ids. Use `awf inspect`/`awf trace` for gate/map-internal outputs.\n", nodeID)
@@ -382,13 +397,15 @@ func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout,
 		}
 	}
 	if !found {
-		fprintf(stderr, "awf outputs: no committed step at %q\n", nodeID)
+		fprintf(stderr, "awf outputs: no committed step at %q (map aggregates / sub-workflow results are read via the workflow-export form, not --step)\n", nodeID)
 		return ExitRunFailed
 	}
 	if ref == "" {
 		fprintf(stderr, "awf outputs: step %q has no typed output (no output_schema)\n", nodeID)
 		return ExitRunFailed
 	}
+	// blobs.Get buffers the whole blob; typed outputs are conventionally small
+	// (there is no enforced cap) so buffering is acceptable for a read command.
 	raw, err := blobs.Get(ref)
 	if err != nil {
 		fprintf(stderr, "awf outputs: read output blob for %q: %v\n", nodeID, err)
@@ -423,21 +440,16 @@ func emitJSON(stdout, stderr io.Writer, v any) int {
 	return ExitOK
 }
 
-// outputsContract is implemented in Task 3. Stub keeps the file compiling.
+// outputsContract is implemented in Task 3 (which adds the loader/ir imports
+// with the real body). Stub keeps the file compiling — Go does not require
+// function parameters to be used, so no import-suppression is needed.
 func outputsContract(events []state.Event, blobs state.Blobs, runID, wfPath string, stdout, stderr io.Writer) int {
-	_ = events
-	_ = blobs
-	_ = runID
-	_ = wfPath
-	_ = loader.Load
-	_ = ir.HasErrors
-	_ = engine.Fold
 	fprintf(stderr, "awf outputs: outputs: form not yet implemented\n")
 	return ExitUsage
 }
 ```
 
-> Note: the `_ = loader.Load` / `_ = ir.HasErrors` / `_ = engine.Fold` lines in the stub keep the imports used until Task 3 fills the body; remove them in Task 3.
+> Note: `cli/outputs.go` imports only `engine`/`state` (+ stdlib) in this task — the `outputs:` form's `loader`/`ir` imports are added in Task 3 with the real body, so there is no unused-import hack.
 
 - [ ] **Step 4: Wire dispatch in `cli/cli.go`.** Add the case next to `case "trace":` (line ~141), using the identical free-function call shape:
 
@@ -455,7 +467,7 @@ And add `outputs` to the usage listing (the `fprintln(w, ...)` subcommand lines 
 - [ ] **Step 5: Run the Task-2 tests**
 
 Run: `go test ./cli/ -run TestOutputs -v`
-Expected: PASS for `TestOutputsStep`, `TestOutputsStepSucceedsWhenUnrelatedBlobMissing`, `TestOutputsStepRejectsRuntimePath`, `TestOutputsMixingFormsIsUsage`.
+Expected: PASS for `TestOutputsStep`, `TestOutputsStepSucceedsWhenUnrelatedBlobMissing`, `TestOutputsStepRejectsRuntimePath`, `TestOutputsMixingFormsIsUsage`, and `TestOutputsReachableViaDispatch` (exercises the Step-4 dispatch wiring).
 
 - [ ] **Step 6: Commit**
 
@@ -515,6 +527,11 @@ func seedOutputsRun(t *testing.T, summarizeOutput string) (string, string) {
 	ld, err := loader.Load(wfPath)
 	if err != nil {
 		t.Fatalf("loader.Load: %v", err)
+	}
+	// Fail fast on a bad fixture (matches cli/resume_test.go:178) so a malformed
+	// outputsWF surfaces here, not later as a confusing ExitRunFailed in a test.
+	if diags := ir.Validate(ld); ir.HasErrors(diags) {
+		t.Fatalf("fixture invalid: %v", diags)
 	}
 	digest, err := ld.ComputeDigest()
 	if err != nil {
@@ -583,7 +600,7 @@ func TestOutputsContractUncommittedRefIsReadFailure(t *testing.T) {
 }
 ```
 
-> Add `"os"` and `"github.com/valbaudo/awf/loader"` to the test file's imports.
+> Add `"os"`, `"github.com/valbaudo/awf/ir"`, and `"github.com/valbaudo/awf/loader"` to the test file's imports.
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -638,7 +655,7 @@ func outputsContract(events []state.Event, blobs state.Blobs, runID, wfPath stri
 }
 ```
 
-Then delete the throwaway `_ = loader.Load` / `_ = ir.HasErrors` / `_ = engine.Fold` lines from the old stub (the real body now uses these symbols).
+Also add `"github.com/valbaudo/awf/ir"` and `"github.com/valbaudo/awf/loader"` to `cli/outputs.go`'s import block (Task 2 deliberately left them out); the real body now uses `loader.Load`, `ir.Validate`, and `ir.HasErrors`.
 
 - [ ] **Step 4: Run the contract tests + the full cli package**
 
@@ -660,7 +677,7 @@ git commit -m "feat(cli): awf outputs: contract form (digest-checked, shared Eva
 - Modify: `ir/validate_refs.go` (two helpers + a 4-line insertion in `validateWorkflowExports` at line ~979)
 - Test: `ir/validate_refs_test.go`
 
-**Why:** Spec §2.4 — a top-level output may bind a step inside an `if`/`gate`/`map` scope that doesn't commit at runtime; that validates clean but fails `awf outputs`. Emit a non-fatal warning (AWF's `warnf` channel: `ir/validate.go:145`, `Severity: Warning`, "warnings inform but don't fail the run"). Do not attempt full reachability — a warning is the right altitude.
+**Why:** Spec §2.4 — a top-level output may bind a step inside a **transparent** scope (an `if` branch, or a `loop` body) that doesn't commit at runtime; that validates clean but fails `awf outputs`. Emit a non-fatal warning (AWF's `warnf` channel: `ir/validate.go:145`, `Severity: Warning`, "warnings inform but don't fail the run"). **`if`/`loop` only** — `gate`/`map` are *opaque* scopes whose cross-scope output refs already hard-error (AWF5003/AWF5004; verified empirically against `ir.Validate`), so a warning there is unreachable dead code. Do not attempt full reachability — a warning is the right altitude.
 
 - [ ] **Step 1: Write the failing helper tests** (append to `ir/validate_refs_test.go`)
 
@@ -673,9 +690,12 @@ func TestConditionallyScoped(t *testing.T) {
 		{"summarize", false},
 		{"recon.scan", false},
 		{"if[0].then.draft", true},
-		{"gate[0].generate.draft", true},
-		{"map[0].body.x", true},
-		{"loop[0].body.x", true},
+		{"loop[0].body.work", true},
+		// gate[ and map[ are OPAQUE: a top-level output ref into them is ALREADY a
+		// hard error (AWF5003 / AWF5004), so the warning must NOT fire there (it
+		// would double-signal). Excluded by design.
+		{"gate[0].generate.draft", false},
+		{"map[0].body.x", false},
 	}
 	for _, c := range cases {
 		if got := conditionallyScoped(c.path); got != c.want {
@@ -696,39 +716,134 @@ func TestOutputStepRefs(t *testing.T) {
 		}
 	}
 }
+
+// Parser-accuracy: a literal `step.x.` OUTSIDE a {{ }} slot must NOT be harvested
+// (the regex version false-positived here; the parser version does not).
+func TestOutputStepRefsIgnoresLiteralText(t *testing.T) {
+	got := outputStepRefs(TemplateValue(`"see step.foo.bar in the docs"`))
+	if len(got) != 0 {
+		t.Fatalf("outputStepRefs = %v, want none (literal text, no slot)", got)
+	}
+}
+
+func TestValidateWarnsOutputBindsIfNestedStep(t *testing.T) {
+	// A top-level output binding a step inside if.then validates CLEAN (if is
+	// transparent — opaqueScopePrefix is opaque only for gate[/map[.body) but the
+	// step may not commit at runtime. After Step 5 wiring, expect a non-fatal
+	// AWF1048 WARNING at outputs.summary. Mutation-grade: deleting the Step-5
+	// warning turns this RED. (Build the LoadedDefinition inline — same shape as
+	// the engine test helper awfLoadedDefinitionForWorkflow, ir types only.)
+	strObj := func(field string) *JSONSchema {
+		return &JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{field},
+			"properties":           map[string]any{field: map[string]any{"type": "string"}},
+		}
+	}
+	wf := &Workflow{
+		ID:         "cond-out",
+		Version:    1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		Input: &JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"do_it"},
+			"properties":           map[string]any{"do_it": map[string]any{"type": "boolean"}},
+		},
+		OutputSchema: strObj("summary"),
+		Outputs:      map[string]TemplateValue{"summary": json.RawMessage(`"{{ step.draft.summary }}"`)},
+		Graph: NodeList{
+			&If{
+				Cond: Expr("{{ input.do_it }}"),
+				Then: NodeList{
+					&CodeStep{ID: "draft", Container: "c", Run: "true", OutputSchema: strObj("summary")},
+				},
+			},
+		},
+	}
+	ld := &LoadedDefinition{
+		Workflow:     wf,
+		WorkflowPath: "/repo/wf.yaml",
+		ComposeFiles: map[string][]byte{},
+		Assets:       map[string]LoadedAsset{},
+		Modules: map[string]*LoadedModule{
+			"": {ID: "", Workflow: wf, WorkflowPath: "/repo/wf.yaml", ComposeFiles: map[string][]byte{}, Assets: map[string]LoadedAsset{}},
+		},
+	}
+	diags := Validate(ld)
+	if HasErrors(diags) {
+		t.Fatalf("workflow should validate clean (if is transparent); got errors: %+v", diags)
+	}
+	found := false
+	for _, d := range diags {
+		if d.Severity == Warning && d.Code == "AWF1048" && d.Path == "outputs.summary" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected AWF1048 WARNING at outputs.summary; got %+v", diags)
+	}
+}
 ```
+
+> Ensure `"encoding/json"` is imported in `ir/validate_refs_test.go` (for `json.RawMessage`). If the ir test package already has a `loadedDefForWorkflow`-style helper, use it instead of the inline `LoadedDefinition`.
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `go test ./ir/ -run 'TestConditionallyScoped|TestOutputStepRefs' -v`
 Expected: FAIL — `undefined: conditionallyScoped` / `undefined: outputStepRefs`.
 
-- [ ] **Step 3: Add the two helpers** to `ir/validate_refs.go` (near the other helpers; add `"regexp"` to the import block):
+- [ ] **Step 3: Add the two helpers** to `ir/validate_refs.go` (near the other helpers; no new imports — `encoding/json` and the `template` package are already imported):
 
 ```go
-// outputStepRefPattern extracts the <id> from `step.<id>.<field>` references
-// in an output template's source. Used only for the AWF1048 conditional-scope
-// WARNING — not for resolution (validateTemplateValueRefs owns that).
-var outputStepRefPattern = regexp.MustCompile(`step\.([A-Za-z0-9_-]+)\.`)
-
+// outputStepRefs returns the step ids referenced by an output's value, using the
+// REAL template parser (walkTemplateRefs → template.ParseRef), NOT a regex — so it
+// is slot-aware (ignores literal text outside `{{ }}`) and matches the exact ref
+// grammar checkRef uses (ir/validate_refs.go:512). Recurses into arrays/objects
+// like the existing walkTemplateValueStrings. Used only for the AWF1048
+// conditional-scope WARNING; validateTemplateValueRefs still owns resolution.
 func outputStepRefs(tv TemplateValue) []string {
-	var ids []string
-	for _, m := range outputStepRefPattern.FindAllStringSubmatch(string(tv), -1) {
-		ids = append(ids, m[1])
+	var decoded any
+	if err := json.Unmarshal(tv, &decoded); err != nil {
+		return nil
 	}
+	var ids []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			// Throwaway collector: walkTemplateRefs may emit slot-parse diagnostics
+			// we don't care about here (checkRef owns real resolution); we only want
+			// the visited step ids.
+			walkTemplateRefs(x, "", &collector{}, func(ref template.Ref) {
+				if len(ref.Segments) >= 2 && ref.Segments[0].Ident == "step" && !ref.Segments[1].IsIndex {
+					ids = append(ids, ref.Segments[1].Ident)
+				}
+			})
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(decoded)
 	return ids
 }
 
 // conditionallyScoped reports whether a producer's STATIC path lies inside a
-// conditional/multiplicity scope (if/gate/map/loop), i.e. it may not commit at
-// runtime. Mirrors the path-segment inspection in SingleMapBodyShape.
+// TRANSPARENT-but-conditionally-reached scope — `if` (branch may not be taken) or
+// `loop` (zero iterations) — where a top-level output ref validates CLEAN today
+// yet may not commit at runtime. It deliberately EXCLUDES gate[ and map[: those
+// are OPAQUE scopes whose cross-scope refs already hard-error (AWF5003 / AWF5004),
+// so a warning there would be unreachable dead code that double-signals.
 func conditionallyScoped(staticPath string) bool {
 	for _, seg := range strings.Split(staticPath, ".") {
-		switch {
-		case strings.HasPrefix(seg, "if["),
-			strings.HasPrefix(seg, "gate["),
-			strings.HasPrefix(seg, "map["),
-			strings.HasPrefix(seg, "loop["):
+		if strings.HasPrefix(seg, "if[") || strings.HasPrefix(seg, "loop[") {
 			return true
 		}
 	}
@@ -751,10 +866,10 @@ Expected: PASS.
 		}
 ```
 
-- [ ] **Step 6: Run the full `ir` suite (regression + no-false-positive guard)**
+- [ ] **Step 6: Run the integration test + the full `ir` suite (regression + no-false-positive guard)**
 
-Run: `go test ./ir/`
-Expected: PASS — no existing fixture should newly trip the warning (warnings don't fail validation, but a broken existing assertion would surface here).
+Run: `go test ./ir/ -run TestValidateWarnsOutputBindsIfNestedStep -v && go test ./ir/`
+Expected: PASS — `TestValidateWarnsOutputBindsIfNestedStep` now fires the warning end-to-end (goes RED if the Step-5 wiring is removed — mutation-grade); the full suite confirms no existing fixture newly trips the warning (warnings don't fail validation, but a broken assertion would surface here).
 
 - [ ] **Step 7: Commit**
 
@@ -788,9 +903,11 @@ Two forms:
   and its digest is checked against the run's pinned `WorkflowDigest` (a mismatch is
   refused, exactly like `awf resume`); the workflow's top-level `outputs:` block is
   evaluated and emitted as a JSON object.
-- **`--step <node-id>`**: emit one top-level node's typed output, read directly from
-  the log + blob store (no workflow file needed). `<node-id>` is a top-level node id;
-  gate/map-internal runtime paths are not addressable (use `awf inspect`/`awf trace`).
+- **`--step <node-id>`**: emit one top-level code/agent step's typed output, read
+  directly from the log + blob store (no workflow file needed). `<node-id>` is a
+  top-level node id; gate/map-internal runtime paths are not addressable. Map
+  aggregates and sub-workflow results commit different events and are read via the
+  `outputs:` form above, not `--step` (use `awf inspect`/`awf trace` to explore).
 
 The exit code reflects the READ, not the run's outcome (it succeeds on a committed
 output even if a later step failed — check `awf ls` or the original `awf run` for run
@@ -799,9 +916,10 @@ digest mismatch, run-not-found, no `outputs:` declared); `1` the requested outpu
 could not be produced (a referenced step did not commit, or the workflow fails
 validation).
 
-Note: a workflow whose `outputs:` binds a step inside a conditional scope (`if`,
-`gate`, `map`) produces an `awf validate` warning, because that output may not be
-producible if the step is skipped at runtime.
+Note: a workflow whose `outputs:` binds a step inside a transparent conditional
+scope (an `if` branch or `loop` body) produces an `awf validate` warning, because
+that output may not be producible if the branch is not taken / the loop runs zero
+times. (Binding a `gate`- or `map`-internal step is already a hard validation error.)
 ```
 
 - [ ] **Step 2: Commit**
