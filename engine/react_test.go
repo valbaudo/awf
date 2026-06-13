@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -551,5 +552,45 @@ func TestRunReactNaturalStopSchemaViolationIsRetryable(t *testing.T) {
 	oc, err := h.run(t)
 	if oc != OutcomeRetryableFailure || err == nil {
 		t.Fatalf("run: oc=%q err=%v, want retryable_failure + error", oc, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 4.6 — boundToolResult: byte-cap the model-facing tool output; non-UTF-8
+// becomes a descriptor (never raw/corrupted bytes).
+// ---------------------------------------------------------------------------
+
+func TestBoundToolResult(t *testing.T) {
+	big := bytes.Repeat([]byte("a"), 20000)
+	out := boundToolResult(container.ExecResult{ExitCode: 0, Stdout: big})
+	if len(out) > 17000 { // 16384 + marker headroom
+		t.Fatalf("not bounded: %d bytes", len(out))
+	}
+	if !strings.Contains(out, "truncated") {
+		t.Fatalf("missing truncation marker: %q", out[len(out)-64:])
+	}
+
+	// non-UTF-8 → descriptor, not raw bytes.
+	bin := boundToolResult(container.ExecResult{ExitCode: 0, Stdout: []byte{0xff, 0xfe, 0x00}})
+	if strings.ContainsRune(bin, '�') || strings.Contains(bin, "\x00") {
+		t.Fatalf("binary output must be a descriptor, not inlined bytes: %q", bin)
+	}
+	if !strings.Contains(bin, "non-text tool output") {
+		t.Fatalf("missing non-text descriptor: %q", bin)
+	}
+
+	// non-zero exit on valid UTF-8 gets an [exit N] prefix.
+	nz := boundToolResult(container.ExecResult{ExitCode: 7, Stdout: []byte("oops")})
+	if !strings.HasPrefix(nz, "[exit 7]") {
+		t.Fatalf("missing exit prefix: %q", nz)
+	}
+	if !strings.Contains(nz, "oops") {
+		t.Fatalf("lost stdout: %q", nz)
+	}
+
+	// small valid UTF-8, exit 0 → verbatim (no marker, no prefix).
+	ok := boundToolResult(container.ExecResult{ExitCode: 0, Stdout: []byte("hello")})
+	if ok != "hello" {
+		t.Fatalf("small ok output mangled: %q", ok)
 	}
 }
