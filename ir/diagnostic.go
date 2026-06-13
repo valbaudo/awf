@@ -173,6 +173,7 @@ var catalog = map[string]string{
 	"AWF1045": "agent step skills: requires a container and non-overlapping staging destination",
 	"AWF2001": "JSON Schema does not compile per the JSON Schema 2020-12 metaschema",
 	"AWF2002": "agent output_schema violates §7 conservative cross-backend floor",
+	"AWF2003": "containerless agent input_files per-file format/provider compatibility is checked at run time, not statically",
 	"AWF3001": "reference to a step field that is not declared in the producer's output_schema",
 	"AWF3002": "agent output_schema declared but no reference into it",
 	"AWF3003": "compose file contains a non-digest image (§3: every image in a referenced compose file must be @sha256:-pinned)",
