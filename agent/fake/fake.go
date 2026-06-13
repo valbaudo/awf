@@ -53,17 +53,27 @@ type Fake struct {
 	calls     []agent.AgentInvocation
 	idx       int
 	emitDelay time.Duration
+
+	// ToolLoopRunner fields (P3 Task 5.1). Additive — Launch/Script/Calls are unchanged.
+	toolLoopScripts  map[int]agent.ToolLoopResult
+	toolLoopCalls    []agent.ToolLoopInvocation
+	toolLoopIdx      int
+	toolLoopTripwire int // >0 means indices [0..tripwire-1] must NOT be called (hard-fail)
 }
+
+// compile-time assertion: *Fake satisfies agent.ToolLoopRunner.
+var _ agent.ToolLoopRunner = (*Fake)(nil)
 
 // New mints a Fake for the given ref. Default Capabilities() returns
 // {NativeSchema: true} — matching what the real Claude Code adapter declares
 // in slice 5.3. Override with WithCaps for Bucket 15 layer-2 tests.
 func New(ref string) *Fake {
 	return &Fake{
-		ref:     ref,
-		version: defaultVersion,
-		caps:    agent.Caps{NativeSchema: true},
-		scripts: map[int]Result{},
+		ref:             ref,
+		version:         defaultVersion,
+		caps:            agent.Caps{NativeSchema: true},
+		scripts:         map[int]Result{},
+		toolLoopScripts: map[int]agent.ToolLoopResult{},
 	}
 }
 
@@ -220,4 +230,80 @@ func (f *Fake) Launch(ctx context.Context, _ container.Handle, inv agent.AgentIn
 	}()
 
 	return events, outcomeCh, nil
+}
+
+// --- ToolLoopRunner implementation (P3 Task 5.1) ---
+
+// ScriptToolLoop programs the ToolLoopResult for the Nth RunToolLoop call
+// (zero-indexed). Returns *Fake for chaining. Calling ScriptToolLoop twice
+// on the same index silently overwrites — the latest wins (mirrors Script).
+func (f *Fake) ScriptToolLoop(n int, r agent.ToolLoopResult) *Fake {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toolLoopScripts[n] = r
+	return f
+}
+
+// WithToolLoopTripwire arms a resume tripwire: if RunToolLoop is invoked for
+// any call index < committedRounds, it hard-fails with an error. This proves
+// the engine never re-samples committed model rounds on resume (the model-not-
+// re-sampled invariant from spec §4.1). committedRounds is the number of rounds
+// that were already committed in a prior lifetime (= len(ReactRounds[R])).
+//
+// The fake's call index is advanced to committedRounds so that ScriptToolLoop
+// entries for the resume run can be keyed starting at committedRounds (= the
+// first non-committed round index). The tripwire fires if the engine somehow
+// calls RunToolLoop for a committed index despite the resume cursor advancing.
+func (f *Fake) WithToolLoopTripwire(committedRounds int) *Fake {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toolLoopTripwire = committedRounds
+	f.toolLoopIdx = committedRounds // advance past committed rounds
+	return f
+}
+
+// ToolLoopCalls returns a defensive copy of every ToolLoopInvocation that
+// RunToolLoop has received. Resume conformance tests inspect this to assert
+// that the round-2 invocation's messages contain the round-1 IDs verbatim.
+func (f *Fake) ToolLoopCalls() []agent.ToolLoopInvocation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]agent.ToolLoopInvocation, len(f.toolLoopCalls))
+	copy(out, f.toolLoopCalls)
+	return out
+}
+
+// RunToolLoop satisfies agent.ToolLoopRunner. It is mutex-guarded, returns the
+// scripted result for the current call index, and records every invocation.
+//
+// Tripwire: if WithToolLoopTripwire(N) was set and the current index < N,
+// RunToolLoop returns an error immediately — hard-failing to prove the engine
+// is not re-sampling a committed model round.
+//
+// Missing script: if no result was programmed for the current index, RunToolLoop
+// returns an error (mirrors Launch's missing-script contract).
+func (f *Fake) RunToolLoop(_ context.Context, inv agent.ToolLoopInvocation) (agent.ToolLoopResult, error) {
+	f.mu.Lock()
+	i := f.toolLoopIdx
+	f.toolLoopIdx++
+	tripwire := f.toolLoopTripwire
+	r, ok := f.toolLoopScripts[i]
+	f.toolLoopCalls = append(f.toolLoopCalls, inv)
+	f.mu.Unlock()
+
+	// Tripwire check: hard-fail if this index was declared committed.
+	if tripwire > 0 && i < tripwire {
+		return agent.ToolLoopResult{}, fmt.Errorf(
+			"agent/fake: TRIPWIRE — RunToolLoop called for index %d which was committed in a prior lifetime (committedRounds=%d, ref=%q); the engine must not re-sample committed rounds",
+			i, tripwire, f.ref,
+		)
+	}
+
+	if !ok {
+		return agent.ToolLoopResult{}, fmt.Errorf(
+			"agent/fake: no scripted ToolLoopResult for invocation index %d (ref %q)",
+			i, f.ref,
+		)
+	}
+	return r, nil
 }

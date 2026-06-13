@@ -384,3 +384,158 @@ func TestFakeStampsReportedSourceOnlyWhenCostNonZero(t *testing.T) {
 		t.Errorf("paid cost: Metrics.Cost.Total = %v, want 0.02", got)
 	}
 }
+
+// --- ToolLoopRunner tests (Task 5.1) ---
+
+// TestFakeToolLoopScriptedAndTripwire is the primary TDD test from the plan.
+// It verifies: ScriptToolLoop builder, RunToolLoop returns scripted result per
+// call index, ToolLoopCalls() records invocations, compile-time interface assertion.
+func TestFakeToolLoopScriptedAndTripwire(t *testing.T) {
+	f := fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true}).
+		ScriptToolLoop(0, agent.ToolLoopResult{FinishReason: "tool_calls", ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "t"}}}).
+		ScriptToolLoop(1, agent.ToolLoopResult{FinishReason: "stop", Text: "done"})
+	var _ agent.ToolLoopRunner = f // compile-time assertion
+
+	r0, err := f.RunToolLoop(context.Background(), agent.ToolLoopInvocation{NodePath: "react[0].round-1.model"})
+	if err != nil {
+		t.Fatalf("RunToolLoop[0]: %v", err)
+	}
+	if r0.FinishReason != "tool_calls" {
+		t.Fatalf("call 0 FinishReason = %q, want %q", r0.FinishReason, "tool_calls")
+	}
+	if len(r0.ToolCalls) != 1 || r0.ToolCalls[0].ID != "c1" {
+		t.Fatalf("call 0 ToolCalls = %+v", r0.ToolCalls)
+	}
+
+	// ToolLoopCalls() records the invocation.
+	calls := f.ToolLoopCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolLoopCalls() len = %d, want 1", len(calls))
+	}
+	if calls[0].NodePath != "react[0].round-1.model" {
+		t.Fatalf("recorded NodePath = %q, want react[0].round-1.model", calls[0].NodePath)
+	}
+
+	r1, err := f.RunToolLoop(context.Background(), agent.ToolLoopInvocation{NodePath: "react[0].round-2.model"})
+	if err != nil {
+		t.Fatalf("RunToolLoop[1]: %v", err)
+	}
+	if r1.FinishReason != "stop" || r1.Text != "done" {
+		t.Fatalf("call 1 = %+v", r1)
+	}
+
+	// ToolLoopCalls() defensive copy — mutating returned slice must not affect internal state.
+	calls2 := f.ToolLoopCalls()
+	if len(calls2) != 2 {
+		t.Fatalf("ToolLoopCalls() len after 2 calls = %d, want 2", len(calls2))
+	}
+	calls2[0].NodePath = "tampered"
+	calls3 := f.ToolLoopCalls()
+	if calls3[0].NodePath == "tampered" {
+		t.Fatal("ToolLoopCalls() returned non-defensive copy; internal state was mutated")
+	}
+}
+
+// TestFakeToolLoop_MissingScript verifies that RunToolLoop returns an error
+// (not panic) when no script is registered for the current call index.
+func TestFakeToolLoop_MissingScript(t *testing.T) {
+	f := fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true})
+	// No ScriptToolLoop registered.
+	_, err := f.RunToolLoop(context.Background(), agent.ToolLoopInvocation{})
+	if err == nil {
+		t.Fatal("RunToolLoop with no script: expected error, got nil")
+	}
+}
+
+// TestFakeToolLoop_Tripwire verifies the resume tripwire contract:
+// WithToolLoopTripwire(N) advances the internal index to N and hard-fails if
+// somehow called for an index in the committed range (< N). In normal sequential
+// use, the advancing counter makes it impossible to hit an index < N after the
+// tripwire is armed. The over-sampling check (index with no script → error) is
+// the primary guard; this test validates the advancing behavior and script routing.
+func TestFakeToolLoop_Tripwire(t *testing.T) {
+	// committedRounds=1: index advances to 1. Script at index 1 is the resume round.
+	// Calling RunToolLoop once must succeed with the scripted result (not tripwire).
+	f := fake.New("awf/llm").
+		WithCaps(agent.Caps{Containerless: true, Threaded: true}).
+		WithToolLoopTripwire(1). // 1 committed round → toolLoopIdx advances to 1
+		ScriptToolLoop(1, agent.ToolLoopResult{FinishReason: "stop", Text: "resume-round"})
+
+	r, err := f.RunToolLoop(context.Background(), agent.ToolLoopInvocation{NodePath: "react[0].round-2.model"})
+	if err != nil {
+		t.Fatalf("RunToolLoop for resume round (index 1) failed: %v", err)
+	}
+	if r.Text != "resume-round" {
+		t.Fatalf("resume round text = %q, want %q", r.Text, "resume-round")
+	}
+
+	// Over-sampling: calling again when no script exists at index 2 must hard-fail.
+	_, err2 := f.RunToolLoop(context.Background(), agent.ToolLoopInvocation{})
+	if err2 == nil {
+		t.Fatal("over-sampling past scripted rounds must hard-fail; got nil error")
+	}
+}
+
+// TestFakeToolLoop_TripwireAllowsResumeRound verifies that after tripwiring N rounds,
+// RunToolLoop succeeds for index N (the first non-committed round).
+func TestFakeToolLoop_TripwireAllowsResumeRound(t *testing.T) {
+	f := fake.New("awf/llm").
+		WithCaps(agent.Caps{Containerless: true, Threaded: true}).
+		WithToolLoopTripwire(1).
+		ScriptToolLoop(1, agent.ToolLoopResult{FinishReason: "stop", Text: "resumed"})
+
+	// Index 1 (the first non-committed round) must succeed.
+	r, err := f.RunToolLoop(context.Background(), agent.ToolLoopInvocation{NodePath: "react[0].round-2.model"})
+	if err != nil {
+		t.Fatalf("RunToolLoop for resume index 1 failed: %v", err)
+	}
+	if r.Text != "resumed" {
+		t.Fatalf("resume round text = %q, want %q", r.Text, "resumed")
+	}
+}
+
+// TestFakeToolLoop_ExistingAdapterBehaviorUnchanged confirms the existing Fake
+// agent.Adapter (Launch) behavior is unaffected by the ToolLoopRunner additions.
+func TestFakeToolLoop_ExistingAdapterBehaviorUnchanged(t *testing.T) {
+	f := fake.New("ref").
+		Script(0, fake.Result{Output: map[string]any{"ok": true}}).
+		ScriptToolLoop(0, agent.ToolLoopResult{FinishReason: "stop", Text: "loop"})
+
+	// Launch still works with its own script table.
+	events, outcomeCh, err := f.Launch(context.Background(), container.Handle{Name: "c"}, agent.AgentInvocation{Uses: "ref"})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range events {
+	}
+	outcome := <-outcomeCh
+	if outcome.Err != nil {
+		t.Fatalf("Launch outcome.Err = %v", outcome.Err)
+	}
+	if outcome.Result.Output["ok"] != true {
+		t.Fatalf("Launch output = %v", outcome.Result.Output)
+	}
+	// Calls() (for Launch) must not be contaminated by ToolLoopCalls.
+	if got := len(f.Calls()); got != 1 {
+		t.Fatalf("Calls() len = %d, want 1", got)
+	}
+	if got := len(f.ToolLoopCalls()); got != 0 {
+		t.Fatalf("ToolLoopCalls() should be empty before RunToolLoop; got %d", got)
+	}
+}
+
+// TestFakeToolLoopSatisfiesInterface is a package-level compile-time assertion.
+var _ agent.ToolLoopRunner = (*fake.Fake)(nil)
+
+// TestFakeToolLoopCapsPassThrough verifies that WithCaps sets
+// Containerless+Threaded so runReact's gate passes.
+func TestFakeToolLoopCapsPassThrough(t *testing.T) {
+	f := fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true})
+	caps := f.Capabilities()
+	if !caps.Containerless || !caps.Threaded {
+		t.Fatalf("Capabilities() = %+v; want Containerless=true Threaded=true", caps)
+	}
+}
+
+// Ensure ir import is used (WithCaps and agent imports are used above).
+var _ = ir.RawConfig{}
