@@ -50,6 +50,53 @@ func (a *Adapter) clientFor(insecure bool) *http.Client {
 	return &c
 }
 
+// newOpenAIClient constructs the openai-go client for this adapter + config.
+// option.WithMaxRetries(0) disables the SDK's hidden 429/5xx retry loop — AWF
+// owns retries at the engine level.
+func (a *Adapter) newOpenAIClient(cfg reqConfig) openai.Client {
+	return openai.NewClient(
+		option.WithBaseURL(cfg.BaseURL),
+		option.WithAPIKey(cfg.APIKey),
+		option.WithHTTPClient(a.clientFor(cfg.TLSInsecure)),
+		option.WithMaxRetries(0),
+	)
+}
+
+// buildBaseParams returns the ChatCompletionNewParams fields shared by
+// streamOpenAI and runOneToolCall: Model, StreamOptions (include_usage),
+// optional Temperature + MaxCompletionTokens gates, and the mode-guarded strict
+// ResponseFormat block. The caller sets params.Messages (and params.Tools for
+// tool-loop rounds) before use. Having a single source means a future param
+// added here is automatically shared by both paths.
+func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletionNewParams {
+	params := openai.ChatCompletionNewParams{
+		Model: cfg.Model,
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true), // final chunk carries usage
+		},
+	}
+	if cfg.HasTemperature {
+		params.Temperature = openai.Float(cfg.Temperature)
+	}
+	if cfg.HasMaxTokens {
+		// max_completion_tokens — NOT the deprecated max_tokens (reasoning models
+		// reject max_tokens). Works for non-reasoning models too on Chat Completions.
+		params.MaxCompletionTokens = openai.Int(int64(cfg.MaxTokens))
+	}
+	if cfg.StructuredOutput == soResponseFormat && schema != nil {
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
+				JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+					Name:   "output",
+					Schema: map[string]any(*schema),
+					Strict: openai.Bool(true),
+				},
+			},
+		}
+	}
+	return params
+}
+
 // stream issues a STREAMING chat completion, calling emit(delta, rawChunk) per
 // content delta, and returns the reassembled text, usage, wire model, finish_reason,
 // and a classified error (apiError for HTTP faults). Switches on StructuredOutput:
@@ -67,12 +114,7 @@ func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, sche
 // wire (request body + SSE response) is asserted by transport_test; the openai-go
 // Go symbols below are pinned against v3.39.0 (go doc, Task B5 Step 1).
 func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
-	client := openai.NewClient(
-		option.WithBaseURL(cfg.BaseURL),
-		option.WithAPIKey(cfg.APIKey),
-		option.WithHTTPClient(a.clientFor(cfg.TLSInsecure)),
-		option.WithMaxRetries(0), // AWF owns retries — disable openai-go's hidden 429/5xx loop
-	)
+	client := a.newOpenAIClient(cfg)
 
 	// SystemMessage ("system" role) is the right CROSS-BACKEND choice: Ollama/vLLM/
 	// llama.cpp expect "system", and OpenAI auto-maps system→developer for reasoning
@@ -90,32 +132,8 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 	}
 	messages = append(messages, openai.UserMessage(prompt))
 
-	params := openai.ChatCompletionNewParams{
-		Model:    cfg.Model,
-		Messages: messages,
-		StreamOptions: openai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: openai.Bool(true), // final chunk carries usage
-		},
-	}
-	if cfg.HasTemperature {
-		params.Temperature = openai.Float(cfg.Temperature)
-	}
-	if cfg.HasMaxTokens {
-		// max_completion_tokens — NOT the deprecated max_tokens (reasoning models reject
-		// max_tokens). Works for non-reasoning models too on Chat Completions.
-		params.MaxCompletionTokens = openai.Int(int64(cfg.MaxTokens))
-	}
-	if cfg.StructuredOutput == soResponseFormat && schema != nil {
-		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
-				JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
-					Name:   "output",
-					Schema: map[string]any(*schema),
-					Strict: openai.Bool(true),
-				},
-			},
-		}
-	}
+	params := buildBaseParams(cfg, schema)
+	params.Messages = messages
 
 	opts := []option.RequestOption{}
 	if cfg.IdempotencyKey != "" {
@@ -166,12 +184,7 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 // an output_schema it parses the final text into Output here (the adapter owns
 // extractJSONObject) so the engine validates Output without importing agent/awfllm.
 func (a *Adapter) runOneToolCall(ctx context.Context, cfg reqConfig, nodePath string, msgs []agent.ReactTurn, tools []agent.ToolDef, schema *ir.JSONSchema) (agent.ToolLoopResult, error) {
-	client := openai.NewClient(
-		option.WithBaseURL(cfg.BaseURL),
-		option.WithAPIKey(cfg.APIKey),
-		option.WithHTTPClient(a.clientFor(cfg.TLSInsecure)),
-		option.WithMaxRetries(0), // AWF owns retries
-	)
+	client := a.newOpenAIClient(cfg)
 
 	// Always-on portable floor: inject the schema directive into the system message
 	// (the assemblePrompt N2 idiom) so off-OpenAI endpoints that ignore response_format
@@ -181,44 +194,19 @@ func (a *Adapter) runOneToolCall(ctx context.Context, cfg reqConfig, nodePath st
 		sys = appendSchemaDirective(sys, schema)
 	}
 
-	params := openai.ChatCompletionNewParams{
-		Model:    cfg.Model,
-		Messages: buildOpenAIMessages(sys, msgs),
-		StreamOptions: openai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: openai.Bool(true),
-		},
-	}
-	if cfg.HasTemperature {
-		params.Temperature = openai.Float(cfg.Temperature)
-	}
-	if cfg.HasMaxTokens {
-		params.MaxCompletionTokens = openai.Int(int64(cfg.MaxTokens))
-	}
+	params := buildBaseParams(cfg, schema)
+	params.Messages = buildOpenAIMessages(sys, msgs)
+	// ToolChoice left unset → "auto" (the SDK default when Tools is non-empty).
+	// Non-strict by default: the §7 floor on tool input_schema is warn-only
+	// (AWF2002) so a tool with a non-strict-compatible schema passes awf validate
+	// but would 400 on the first react round if strict were set. Also, non-OpenAI
+	// endpoints (vLLM / llama.cpp) can 400 on additionalProperties:false/strict.
 	for _, td := range tools {
-		// Non-strict by default: the §7 floor on tool input_schema is warn-only
-		// (AWF2002) so a tool with a non-strict-compatible schema passes awf validate
-		// but would 400 on the first react round if strict were set. Also, non-OpenAI
-		// endpoints (vLLM / llama.cpp) can 400 on additionalProperties:false/strict.
 		params.Tools = append(params.Tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
 			Name:        td.Name,
 			Description: param.NewOpt(td.Description),
 			Parameters:  shared.FunctionParameters(td.InputSchema),
 		}))
-	}
-	// ToolChoice left unset → "auto" (the SDK default when Tools is non-empty).
-	// API-level steer: mode-guarded EXACTLY like the single-call path (streamOpenAI) —
-	// only soResponseFormat + a non-nil schema. Legal alongside Tools; inert on a
-	// tool_calls turn. Off-OpenAI endpoints ignore it; the directive above is the floor.
-	if cfg.StructuredOutput == soResponseFormat && schema != nil {
-		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
-				JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
-					Name:   "output",
-					Schema: map[string]any(*schema),
-					Strict: openai.Bool(true),
-				},
-			},
-		}
 	}
 
 	opts := []option.RequestOption{}
