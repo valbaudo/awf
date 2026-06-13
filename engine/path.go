@@ -24,6 +24,7 @@ const (
 	iterSep    = ".iter-"
 	attemptSep = ".attempt-"
 	itemSep    = ".item-"
+	roundSep   = ".round-"
 )
 
 // Exported segment prefixes for callers that need to recognize the
@@ -90,6 +91,22 @@ func ItemStepPath(mapPath string, item int, suffix string) string {
 		return p
 	}
 	return p + "." + suffix
+}
+
+// RoundPath appends a per-round suffix to a react node's runtime path:
+//
+//	RoundPath("react[0]", 2) → "react[0].round-2"   (round is 1-based)
+func RoundPath(reactPath string, round int) string {
+	return reactPath + roundSep + strconv.Itoa(round)
+}
+
+// ModelPath is the per-round synthetic model leaf: "<round>.model".
+func ModelPath(roundPath string) string { return roundPath + ".model" }
+
+// ToolPath is the per-round, per-call tool impl leaf: "<round>.tool-J"
+// (J = the tool_call's stable Index).
+func ToolPath(roundPath string, j int) string {
+	return roundPath + ".tool-" + strconv.Itoa(j)
 }
 
 // CallWorkflowRuntimePath appends the reserved child-workflow segment under a

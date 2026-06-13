@@ -85,6 +85,25 @@ func TestParentPath(t *testing.T) {
 	}
 }
 
+func TestRoundPathHelpers(t *testing.T) {
+	r := "react[0]"
+	rp := RoundPath(r, 2)
+	if rp != "react[0].round-2" {
+		t.Fatalf("RoundPath = %q, want react[0].round-2", rp)
+	}
+	if ModelPath(rp) != "react[0].round-2.model" {
+		t.Fatalf("ModelPath = %q", ModelPath(rp))
+	}
+	if ToolPath(rp, 1) != "react[0].round-2.tool-1" {
+		t.Fatalf("ToolPath = %q", ToolPath(rp, 1))
+	}
+	// ParentPath already handles the new segments (trims the last '.'-segment).
+	gotParent, ok := ParentPath(ModelPath(rp))
+	if !ok || gotParent != rp {
+		t.Fatalf("ParentPath(model) = (%q, %v), want (%q, true)", gotParent, ok, rp)
+	}
+}
+
 // Spec §4 round-trip: compose ir.PathFor (static prefix) with engine.IterPath (runtime suffix).
 // This pins the contract that the validator's static path is the prefix of the runtime path.
 func TestStaticPlusRuntime_Compose(t *testing.T) {
