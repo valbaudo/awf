@@ -87,11 +87,24 @@ func assemblePrompt(inv agent.AgentInvocation) string {
 	// response_format. Centralized HERE (goose precedent) so the transports don't each
 	// inject it (avoids the double-injection the per-transport approach caused).
 	if inv.OutputSchema != nil {
-		if sb, err := json.Marshal(map[string]any(*inv.OutputSchema)); err == nil {
-			prompt = prompt + schemaDirective + string(sb)
-		}
+		prompt = appendSchemaDirective(prompt, inv.OutputSchema)
 	}
 	return prompt
+}
+
+// appendSchemaDirective restates a required typed-output schema after the given
+// text — the always-on portable floor (the assemblePrompt N2 idiom, factored out so
+// the react: tool-loop path injects the same directive into its system message).
+// A nil schema (or a marshal failure) returns the text unchanged.
+func appendSchemaDirective(text string, schema *ir.JSONSchema) string {
+	if schema == nil {
+		return text
+	}
+	sb, err := json.Marshal(map[string]any(*schema))
+	if err != nil {
+		return text
+	}
+	return text + schemaDirective + string(sb)
 }
 
 // schemaDirective nudges the model to make its FINAL message a single conforming JSON

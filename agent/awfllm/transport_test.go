@@ -426,3 +426,209 @@ func TestStream_OpenAICompat_WireModelCaptured(t *testing.T) {
 		t.Errorf("wire model = %q, want %q", gotModel, "gpt-5.3-codex")
 	}
 }
+
+// toolCallSSE is a canned OpenAI SSE stream where the assistant emits ONE
+// streamed tool_call to "check" with arguments {"iban":"DE89"} (arguments
+// fragmented across two deltas, as OpenAI streams them) and finishes with
+// finish_reason "tool_calls" + usage (Task 3.4).
+const toolCallSSE = `data: {"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"check","arguments":"{\"iban\":"}}]}}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"DE89\"}"}}]}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":30,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":0}}}
+
+data: [DONE]
+
+`
+
+// finalAnswerSSE is a canned OpenAI SSE stream where the assistant emits a final
+// schema-conforming JSON object and finishes with finish_reason "stop" (Task 3.4).
+const finalAnswerSSE = `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"{\"answer\":"}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"42}"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":0}}}
+
+data: [DONE]
+
+`
+
+// TestRunOneToolCall_ParsesToolCall: a streamed tool_call response is parsed into
+// res.ToolCalls verbatim (ID + Name + Arguments) with the stable Index, and the
+// finish_reason is "tool_calls" (Task 3.4).
+func TestRunOneToolCall_ParsesToolCall(t *testing.T) {
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return sseResponse(toolCallSSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL: "https://x/v1", APIKey: "k", Model: "gpt-x", StructuredOutput: "response_format",
+	}
+	res, err := a.RunOneToolCallForTest(context.Background(), cfg, "react[0].round-1.model",
+		[]agent.ReactTurn{{Role: "user", Content: "validate DE89"}},
+		[]agent.ToolDef{{Name: "check", Description: "d", InputSchema: map[string]any{"type": "object"}}},
+		nil)
+	if err != nil {
+		t.Fatalf("runOneToolCall: %v", err)
+	}
+	if res.FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", res.FinishReason)
+	}
+	if len(res.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %d, want 1: %+v", len(res.ToolCalls), res.ToolCalls)
+	}
+	tc := res.ToolCalls[0]
+	if tc.Name != "check" {
+		t.Errorf("name = %q, want check", tc.Name)
+	}
+	if tc.Arguments != `{"iban":"DE89"}` {
+		t.Errorf("arguments = %q, want %q (verbatim)", tc.Arguments, `{"iban":"DE89"}`)
+	}
+	if tc.ID != "call_abc" {
+		t.Errorf("id = %q, want call_abc", tc.ID)
+	}
+	if tc.Index != 0 {
+		t.Errorf("index = %d, want 0", tc.Index)
+	}
+	// On a tool_calls round, Output stays nil even with a schema.
+	if res.Output != nil {
+		t.Errorf("Output = %v, want nil on a tool_calls round", res.Output)
+	}
+}
+
+// TestRunOneToolCall_ResponseFormatOnWire: with structured_output:response_format
+// and an output_schema, the request body carries response_format json_schema
+// (strict:true) ALONGSIDE the tools array, and the final-answer text is parsed
+// into res.Output (#14 — response_format-on-the-wire) (Task 3.4).
+func TestRunOneToolCall_ResponseFormatOnWire(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(finalAnswerSSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL: "https://x/v1", APIKey: "k", Model: "gpt-x", StructuredOutput: "response_format",
+	}
+	schema := &ir.JSONSchema{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "integer"}}}
+	res, err := a.RunOneToolCallForTest(context.Background(), cfg, "react[0].round-1.model",
+		[]agent.ReactTurn{{Role: "user", Content: "what is the answer"}},
+		[]agent.ToolDef{{Name: "check", Description: "d", InputSchema: map[string]any{"type": "object"}}},
+		schema)
+	if err != nil {
+		t.Fatalf("runOneToolCall: %v", err)
+	}
+	// #14: response_format on the wire, alongside tools.
+	if !strings.Contains(gotBody, `"json_schema"`) || !strings.Contains(gotBody, `"strict":true`) {
+		t.Errorf("body missing response_format json_schema/strict:true: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"tools"`) || !strings.Contains(gotBody, `"check"`) {
+		t.Errorf("body missing tools array: %s", gotBody)
+	}
+	// natural-stop + schema → parsed Output.
+	if res.FinishReason != "stop" {
+		t.Fatalf("finish_reason = %q, want stop", res.FinishReason)
+	}
+	if res.Output == nil || res.Output["answer"] == nil {
+		t.Fatalf("Output not parsed from final answer: %+v", res.Output)
+	}
+}
+
+// TestRunOneToolCall_AlwaysOnDirective: even without response_format mode, the
+// schema directive is injected into the system message (the portable floor) so the
+// request body carries the directive text (Task 3.4).
+func TestRunOneToolCall_AlwaysOnDirective(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(finalAnswerSSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL: "https://x/v1", APIKey: "k", Model: "gpt-x", StructuredOutput: "off",
+	}
+	schema := &ir.JSONSchema{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "integer"}}}
+	_, err := a.RunOneToolCallForTest(context.Background(), cfg, "react[0].round-1.model",
+		[]agent.ReactTurn{{Role: "user", Content: "q"}},
+		[]agent.ToolDef{{Name: "check", Description: "d", InputSchema: map[string]any{"type": "object"}}},
+		schema)
+	if err != nil {
+		t.Fatalf("runOneToolCall: %v", err)
+	}
+	// off mode → NO response_format on the wire ...
+	if strings.Contains(gotBody, `"response_format"`) || strings.Contains(gotBody, `"json_schema"`) {
+		t.Errorf("off mode must NOT send response_format: %s", gotBody)
+	}
+	// ... but the directive (always-on floor) must be in the system message.
+	if !strings.Contains(gotBody, "FINAL message must be ONLY a single JSON object") {
+		t.Errorf("schema directive (always-on floor) missing from system message: %s", gotBody)
+	}
+}
+
+// TestRunOneToolCall_MessageHistory: assistant turns with stored tool_calls and
+// tool-result turns are rendered onto the wire; an assistant turn with NO
+// tool_calls must NOT emit an empty tool_calls:[] (a 400) (Task 3.4).
+func TestRunOneToolCall_MessageHistory(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(finalAnswerSSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{BaseURL: "https://x/v1", APIKey: "k", Model: "gpt-x", StructuredOutput: "off"}
+	msgs := []agent.ReactTurn{
+		{Role: "user", Content: "u1"},
+		{Role: "assistant", ToolCalls: []agent.ToolCall{{Index: 0, ID: "call_1", Name: "check", Arguments: `{"x":1}`}}},
+		{Role: "tool", ToolCallID: "call_1", Content: "tool-result-here"},
+	}
+	_, err := a.RunOneToolCallForTest(context.Background(), cfg, "react[0].round-2.model", msgs,
+		[]agent.ToolDef{{Name: "check", Description: "d", InputSchema: map[string]any{"type": "object"}}}, nil)
+	if err != nil {
+		t.Fatalf("runOneToolCall: %v", err)
+	}
+	var parsed struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &parsed); err != nil {
+		t.Fatalf("unmarshal body: %v\n%s", err, gotBody)
+	}
+	// Find the assistant message with the tool_call.
+	var foundAsst, foundTool bool
+	for _, m := range parsed.Messages {
+		if m.Role == "assistant" && len(m.ToolCalls) == 1 {
+			foundAsst = true
+			if m.ToolCalls[0].ID != "call_1" || m.ToolCalls[0].Function.Name != "check" || m.ToolCalls[0].Function.Arguments != `{"x":1}` {
+				t.Errorf("assistant tool_call mismatch: %+v", m.ToolCalls[0])
+			}
+		}
+		if m.Role == "tool" {
+			foundTool = true
+			if m.ToolCallID != "call_1" {
+				t.Errorf("tool message tool_call_id = %q, want call_1", m.ToolCallID)
+			}
+		}
+	}
+	if !foundAsst {
+		t.Errorf("assistant-with-tool_calls message not rendered: %s", gotBody)
+	}
+	if !foundTool {
+		t.Errorf("tool-result message not rendered: %s", gotBody)
+	}
+	// No empty tool_calls:[] anywhere (would be a 400).
+	if strings.Contains(gotBody, `"tool_calls":[]`) {
+		t.Errorf("empty tool_calls:[] must be omitted: %s", gotBody)
+	}
+}

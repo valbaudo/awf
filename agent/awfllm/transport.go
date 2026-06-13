@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 // clientFor returns the HTTP client for a call. Normally the injected client.
@@ -151,6 +154,172 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 		return full.String(), usage, model, finish, classifyOpenAIErr(err)
 	}
 	return full.String(), usage, model, finish, nil
+}
+
+// runOneToolCall is the tool-aware single model call behind RunToolLoop (P3 A3).
+// It is a sibling of streamOpenAI: same OpenAI-compat transport, but it attaches the
+// react: step's tools, drives a ChatCompletionAccumulator, and reads the
+// AUTHORITATIVE acc.Choices[0].Message after the stream (more reliable than the
+// per-chunk JustFinishedToolCall, which is unreliable under parallel tool calls).
+// The engine (runReact) owns the message history (msgs); this method executes one
+// round and returns the assistant turn + verbatim tool_calls. On a natural stop with
+// an output_schema it parses the final text into Output here (the adapter owns
+// extractJSONObject) so the engine validates Output without importing agent/awfllm.
+func (a *Adapter) runOneToolCall(ctx context.Context, cfg reqConfig, nodePath string, msgs []agent.ReactTurn, tools []agent.ToolDef, schema *ir.JSONSchema) (agent.ToolLoopResult, error) {
+	client := openai.NewClient(
+		option.WithBaseURL(cfg.BaseURL),
+		option.WithAPIKey(cfg.APIKey),
+		option.WithHTTPClient(a.clientFor(cfg.TLSInsecure)),
+		option.WithMaxRetries(0), // AWF owns retries
+	)
+
+	// Always-on portable floor: inject the schema directive into the system message
+	// (the assemblePrompt N2 idiom) so off-OpenAI endpoints that ignore response_format
+	// are still steered toward a single conforming JSON object on a natural stop.
+	sys := cfg.SystemPrompt
+	if schema != nil {
+		sys = appendSchemaDirective(sys, schema)
+	}
+
+	params := openai.ChatCompletionNewParams{
+		Model:    cfg.Model,
+		Messages: buildOpenAIMessages(sys, msgs),
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		},
+	}
+	if cfg.HasTemperature {
+		params.Temperature = openai.Float(cfg.Temperature)
+	}
+	if cfg.HasMaxTokens {
+		params.MaxCompletionTokens = openai.Int(int64(cfg.MaxTokens))
+	}
+	for _, td := range tools {
+		params.Tools = append(params.Tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+			Name:        td.Name,
+			Description: param.NewOpt(td.Description),
+			Strict:      param.NewOpt(true),
+			Parameters:  shared.FunctionParameters(td.InputSchema),
+		}))
+	}
+	// ToolChoice left unset → "auto" (the SDK default when Tools is non-empty).
+	// API-level steer: mode-guarded EXACTLY like the single-call path (streamOpenAI) —
+	// only soResponseFormat + a non-nil schema. Legal alongside Tools; inert on a
+	// tool_calls turn. Off-OpenAI endpoints ignore it; the directive above is the floor.
+	if cfg.StructuredOutput == soResponseFormat && schema != nil {
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
+				JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+					Name:   "output",
+					Schema: map[string]any(*schema),
+					Strict: openai.Bool(true),
+				},
+			},
+		}
+	}
+
+	opts := []option.RequestOption{}
+	if cfg.IdempotencyKey != "" {
+		opts = append(opts, option.WithHeader("Idempotency-Key", cfg.IdempotencyKey))
+	}
+
+	streamResp := client.Chat.Completions.NewStreaming(ctx, params, opts...)
+	defer func() { _ = streamResp.Close() }()
+
+	var acc openai.ChatCompletionAccumulator
+	var usage usageRec
+	for streamResp.Next() {
+		chunk := streamResp.Current()
+		acc.AddChunk(chunk)
+		if chunk.Usage.PromptTokens != 0 || chunk.Usage.CompletionTokens != 0 {
+			usage.Input = int(chunk.Usage.PromptTokens)
+			usage.Output = int(chunk.Usage.CompletionTokens)
+			usage.CacheRead = int(chunk.Usage.PromptTokensDetails.CachedTokens)
+		}
+	}
+	if err := streamResp.Err(); err != nil {
+		return agent.ToolLoopResult{}, classifyOpenAIErr(err)
+	}
+	if len(acc.Choices) == 0 {
+		return agent.ToolLoopResult{}, fmt.Errorf("agent/awfllm: tool-loop response had no choices")
+	}
+
+	msg := acc.Choices[0].Message
+	ms := a.metricsFrom(usage, cfg.Model)
+	res := agent.ToolLoopResult{
+		Text:         msg.Content,
+		FinishReason: acc.Choices[0].FinishReason, // already a string in openai-go v3.39.0
+		Metrics:      &ms,
+	}
+	// Index is derived from position: the union (ChatCompletionMessageToolCallUnion)
+	// carries no Index field (v3.39.0); the streamed order IS the stable J.
+	for i, tc := range msg.ToolCalls {
+		// Read the promoted flat fields of the union (ChatCompletionMessageToolCallUnion):
+		// tc.Function is populated for the function variant by the accumulator. Index is
+		// derived from streamed position (the union carries no Index field in v3.39.0).
+		res.ToolCalls = append(res.ToolCalls, agent.ToolCall{
+			Index:     i,
+			ID:        tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: tc.Function.Arguments,
+		})
+	}
+
+	// Natural stop + schema → parse the final text into Output here (the adapter owns
+	// extractJSONObject); a parse miss is *agent.ErrUnparseableOutput (retryable). On a
+	// tool_calls turn Output stays nil (the model has not produced the final answer).
+	if res.FinishReason != "tool_calls" && schema != nil {
+		obj, perr := extractJSONObject(msg.Content)
+		if perr != nil {
+			return res, &agent.ErrUnparseableOutput{NodePath: nodePath}
+		}
+		res.Output = obj
+	}
+	return res, nil
+}
+
+// buildOpenAIMessages maps the engine-owned []agent.ReactTurn onto the openai-go
+// message param union: user→UserMessage, tool→ToolMessage(content, ToolCallID),
+// assistant→an assistant param carrying any stored tool_calls. An assistant turn
+// with NO tool_calls is a plain AssistantMessage — an empty tool_calls:[] on the
+// wire is a 400, so it is omitted entirely. systemPrompt (already carrying the
+// always-on schema directive, if any) becomes the leading system message.
+func buildOpenAIMessages(systemPrompt string, turns []agent.ReactTurn) []openai.ChatCompletionMessageParamUnion {
+	messages := []openai.ChatCompletionMessageParamUnion{}
+	if systemPrompt != "" {
+		messages = append(messages, openai.SystemMessage(systemPrompt))
+	}
+	for _, t := range turns {
+		switch t.Role {
+		case "user":
+			messages = append(messages, openai.UserMessage(t.Content))
+		case "tool":
+			messages = append(messages, openai.ToolMessage(t.Content, t.ToolCallID))
+		case "assistant":
+			if len(t.ToolCalls) == 0 {
+				// Plain assistant text turn — OMIT tool_calls (an empty [] is a 400).
+				messages = append(messages, openai.AssistantMessage(t.Content))
+				continue
+			}
+			asst := openai.ChatCompletionAssistantMessageParam{}
+			if t.Content != "" {
+				asst.Content = openai.ChatCompletionAssistantMessageParamContentUnion{OfString: param.NewOpt(t.Content)}
+			}
+			for _, tc := range t.ToolCalls {
+				asst.ToolCalls = append(asst.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
+					OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+						ID: tc.ID,
+						Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+							Name:      tc.Name,
+							Arguments: tc.Arguments,
+						},
+					},
+				})
+			}
+			messages = append(messages, openai.ChatCompletionMessageParamUnion{OfAssistant: &asst})
+		}
+	}
+	return messages
 }
 
 // classifyOpenAIErr maps an *openai.Error to our wire-shaped apiError so

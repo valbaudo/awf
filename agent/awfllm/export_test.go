@@ -44,3 +44,9 @@ func (a *Adapter) ClientForTest(insecure bool) *http.Client { return a.clientFor
 func (a *Adapter) ValidateConfigForToolLoopForTest(with ir.RawConfig) error {
 	return a.validateConfigForToolLoop(with)
 }
+
+// RunOneToolCallForTest exposes the unexported runOneToolCall for white-box wire
+// tests (the canned-stream harness).
+func (a *Adapter) RunOneToolCallForTest(ctx context.Context, cfg ReqConfigForTest, nodePath string, msgs []agent.ReactTurn, tools []agent.ToolDef, schema *ir.JSONSchema) (agent.ToolLoopResult, error) {
+	return a.runOneToolCall(ctx, reqConfig(cfg), nodePath, msgs, tools, schema)
+}

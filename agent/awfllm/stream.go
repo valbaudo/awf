@@ -70,18 +70,7 @@ func buildResult(full string, usage usageRec, model string, pricer pricing.Table
 		}
 		output = obj
 	}
-	tokens := agent.MetricTokens{Input: usage.Input, Output: usage.Output, CacheReadInput: usage.CacheRead}
-	ms := agent.MetricSet{Tokens: tokens, Turns: 1, Model: model}
-	if model != "" {
-		b := pricing.Breakdown{
-			Input:     usage.Input - usage.CacheRead, // prompt_tokens includes cached; normalize
-			Output:    usage.Output,
-			CacheRead: usage.CacheRead,
-		}
-		if c, ok := pricer.Derive(model, b); ok {
-			ms.Cost = agent.MetricCost{Source: agent.CostSourceDerived, Currency: c.Currency, Total: c.Total, Input: c.Input, Output: c.Output}
-		}
-	}
+	ms := metricsFrom(usage, model, pricer)
 	return agent.AgentResult{
 		Output:   output,
 		ExitCode: 0,
@@ -95,6 +84,34 @@ func buildResult(full string, usage usageRec, model string, pricer pricing.Table
 		// is the verbatim final message (prose, or the JSON object for a typed turn — D13).
 		Transcript: agent.ThreadTurn{User: stringOr(inv.With, keyPrompt, ""), Assistant: full},
 	}, nil
+}
+
+// metricsFrom builds a MetricSet from token usage + the wire model id, deriving a
+// USD cost from the injected pricer. Extracted verbatim from buildResult so the
+// tool-loop path (runOneToolCall) and the single-call path share one cost rule:
+// the model id is always stamped (even on a pricing miss); an unknown/empty model →
+// cost ABSENT (Source == ""), never $0; OpenAI's prompt_tokens includes cached, so
+// the Breakdown normalizes Input = usage.Input - usage.CacheRead.
+func metricsFrom(usage usageRec, model string, pricer pricing.Table) agent.MetricSet {
+	tokens := agent.MetricTokens{Input: usage.Input, Output: usage.Output, CacheReadInput: usage.CacheRead}
+	ms := agent.MetricSet{Tokens: tokens, Turns: 1, Model: model}
+	if model != "" {
+		b := pricing.Breakdown{
+			Input:     usage.Input - usage.CacheRead, // prompt_tokens includes cached; normalize
+			Output:    usage.Output,
+			CacheRead: usage.CacheRead,
+		}
+		if c, ok := pricer.Derive(model, b); ok {
+			ms.Cost = agent.MetricCost{Source: agent.CostSourceDerived, Currency: c.Currency, Total: c.Total, Input: c.Input, Output: c.Output}
+		}
+	}
+	return ms
+}
+
+// metricsFrom (method form) closes over the adapter's injected pricer — the
+// tool-loop path's accessor for the shared cost rule.
+func (a *Adapter) metricsFrom(usage usageRec, model string) agent.MetricSet {
+	return metricsFrom(usage, model, a.pricer)
 }
 
 // tokenSummary is the DisplayFinal text (used by launch.go — B7).
