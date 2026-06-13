@@ -35,3 +35,20 @@ func TestToolRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip lost data: %+v", out)
 	}
 }
+
+func TestWorkflowToolsAffectDigest(t *testing.T) {
+	base := &Workflow{ID: "wf", Version: 1, Graph: NodeList{}}
+	withTool := &Workflow{ID: "wf", Version: 1, Graph: NodeList{},
+		Tools: map[string]Tool{"t": {Description: "d", InputSchema: &JSONSchema{"type": "object"}, Impl: ToolImpl{Run: "true", Container: "c"}}}}
+	d1, err := base.ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatalf("digest base: %v", err)
+	}
+	d2, err := withTool.ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatalf("digest withTool: %v", err)
+	}
+	if d1 == d2 {
+		t.Fatal("tools: did not change the workflow digest — not pinned")
+	}
+}

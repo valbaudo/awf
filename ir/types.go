@@ -24,8 +24,11 @@ type Workflow struct {
 	OutputSchema    *JSONSchema              `json:"output_schema,omitempty"`
 	Outputs         map[string]TemplateValue `json:"outputs,omitempty"`
 	ArtifactExports ArtifactExports          `json:"output_files,omitempty"`
-	Graph           NodeList                 `json:"graph"`
-	Digest          string                   `json:"-"`
+	// Tools is the top-level tools: map (P3 A4) — tool name → definition. Offered
+	// to react: steps. Folds into the digest automatically (whole-workflow JCS).
+	Tools  map[string]Tool `json:"tools,omitempty"`
+	Graph  NodeList        `json:"graph"`
+	Digest string          `json:"-"`
 }
 
 type SkillCorpus struct {
