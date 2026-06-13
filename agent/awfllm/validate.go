@@ -21,12 +21,14 @@ const (
 	keyMaxTokens        = "max_tokens"
 	keyStructuredOutput = "structured_output"
 	keyTLSInsecure      = "tls_insecure"
+	keyProvider         = "provider"
+	keyMaxInlineBytes   = "max_inline_bytes"
 )
 
 var allowedKeys = map[string]struct{}{
 	keyModel: {}, keyPrompt: {}, keyBaseURL: {}, keyAPIKeyEnv: {},
 	keySystemPrompt: {}, keyTemperature: {}, keyMaxTokens: {}, keyStructuredOutput: {},
-	keyTLSInsecure: {},
+	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {},
 }
 
 // rejectedKeys never belong in `with:` — `api_key` would inline a secret into
@@ -38,6 +40,11 @@ var rejectedKeys = []string{"api_key", "session_id", "messages", "tools", "strea
 // fragile). response_format = OpenAI-compat strict; ollama_format = native
 // /api/chat format; off = prompt-only + tolerant parse.
 var structuredOutputValues = []string{soResponseFormat, soOllamaFormat, soOff}
+
+// providerValues — the transport selector enum. Gates ONLY the native Gemini path;
+// openai (the default) routes through the existing OpenAI/Ollama logic. Ollama is
+// deliberately NOT a provider value: it stays on structured_output: ollama_format.
+var providerValues = []string{providerOpenAI, providerGemini}
 
 // defaultAPIKeyEnv is the canonical default API-key env-var name for this adapter.
 // DefaultEnvAllowlist (errors.go) is built from this constant so the two values
@@ -65,9 +72,9 @@ func (a *Adapter) validateConfigForToolLoop(with ir.RawConfig) error {
 
 // validateConfigCommon holds the shared body — everything except the keyPrompt
 // require: rejectedKeys, allowedKeys, required(model), the per-key types/enum
-// (base_url/api_key_env/system_prompt/temperature/max_tokens/structured_output/
-// tls_insecure), and the api-key-env presence policy. ValidateConfig adds the
-// prompt require on top; validateConfigForToolLoop does not.
+// (base_url/api_key_env/system_prompt/temperature/max_tokens/max_inline_bytes/
+// provider/structured_output/tls_insecure), and the api-key-env presence policy.
+// ValidateConfig adds the prompt require on top; validateConfigForToolLoop does not.
 func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 	for _, k := range rejectedKeys {
 		if _, present := with[k]; present {
@@ -95,6 +102,23 @@ func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 	if v, ok := with[keyMaxTokens]; ok && !isInteger(v) {
 		return wrapInvalidConfig(fmt.Sprintf("must be an integer, got %v", v), keyMaxTokens)
 	}
+	if v, ok := with[keyMaxInlineBytes]; ok {
+		if !isInteger(v) {
+			return wrapInvalidConfig(fmt.Sprintf("must be an integer, got %v", v), keyMaxInlineBytes)
+		}
+		if n, _ := toInt(v); n <= 0 {
+			return wrapInvalidConfig(fmt.Sprintf("must be a positive integer, got %v", v), keyMaxInlineBytes)
+		}
+	}
+	if v, ok := with[keyProvider]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyProvider)
+		}
+		if !slices.Contains(providerValues, s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", providerValues, s), keyProvider)
+		}
+	}
 	if v, ok := with[keyStructuredOutput]; ok {
 		s, ok := v.(string)
 		if !ok {
@@ -109,8 +133,14 @@ func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyTLSInsecure)
 		}
 	}
-	// Policy: the API key env var (default OPENAI_API_KEY) must be present.
+	// Policy: the API key env var must be present. The default name tracks the
+	// provider (GEMINI_API_KEY for gemini, OPENAI_API_KEY otherwise) so a valid
+	// provider: gemini config relying on the default key env passes here too —
+	// keeping this presence check consistent with buildReqConfig's resolution.
 	keyName := defaultAPIKeyEnv
+	if p, ok := with[keyProvider].(string); ok && p == providerGemini {
+		keyName = defaultGeminiAPIKeyEnv
+	}
 	if v, ok := with[keyAPIKeyEnv].(string); ok && v != "" {
 		keyName = v
 	}

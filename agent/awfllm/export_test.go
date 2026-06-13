@@ -35,6 +35,11 @@ func (a *Adapter) StreamForTest(ctx context.Context, cfg ReqConfigForTest, promp
 // ReqConfigForTest mirrors reqConfig (unexported) for test construction.
 type ReqConfigForTest = reqConfig
 
+// BuildReqConfigForTest exposes buildReqConfig for white-box config tests.
+func (a *Adapter) BuildReqConfigForTest(inv agent.AgentInvocation) (ReqConfigForTest, error) {
+	return a.buildReqConfig(inv)
+}
+
 var AssemblePromptForTest = assemblePrompt
 
 // ClientForTest exposes clientFor for white-box tests (tls_insecure behavior).

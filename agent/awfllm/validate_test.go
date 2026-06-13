@@ -80,6 +80,49 @@ func TestValidate_TLSInsecureBool(t *testing.T) {
 	}
 }
 
+func TestValidate_ProviderEnum(t *testing.T) {
+	// Forward both keys so the enum acceptance (not key presence) is what we test.
+	a := llmAdapter(t, map[string]string{"OPENAI_API_KEY": "sk-test", "GEMINI_API_KEY": "k"})
+	for _, ok := range []string{"openai", "gemini"} {
+		if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": ok}); err != nil {
+			t.Errorf("provider=%q should pass: %v", ok, err)
+		}
+	}
+	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": "ollama"}); err == nil {
+		t.Error("provider=ollama must fail (ollama stays on structured_output, not a provider value)")
+	}
+	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": 1}); err == nil {
+		t.Error("non-string provider should fail")
+	}
+}
+
+func TestValidate_GeminiUsesGeminiKeyEnvByDefault(t *testing.T) {
+	// provider: gemini relying on the default key env passes only when GEMINI_API_KEY
+	// is forwarded (the presence check tracks the provider, matching buildReqConfig).
+	withGemini := ir.RawConfig{"model": "m", "prompt": "hi", "provider": "gemini"}
+	a := llmAdapter(t, map[string]string{"GEMINI_API_KEY": "k"})
+	if err := a.ValidateConfig(withGemini); err != nil {
+		t.Errorf("provider=gemini with GEMINI_API_KEY present should pass: %v", err)
+	}
+	// only OPENAI_API_KEY present → the gemini default (GEMINI_API_KEY) is absent → reject.
+	b := llmAdapter(t, okEnv())
+	if err := b.ValidateConfig(withGemini); err == nil {
+		t.Error("provider=gemini must require GEMINI_API_KEY (or an explicit api_key_env)")
+	}
+}
+
+func TestValidate_MaxInlineBytes(t *testing.T) {
+	a := llmAdapter(t, okEnv())
+	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "max_inline_bytes": 1024}); err != nil {
+		t.Errorf("positive integer max_inline_bytes should pass: %v", err)
+	}
+	for _, bad := range []any{0, -1, 10.5, "big"} {
+		if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "max_inline_bytes": bad}); err == nil {
+			t.Errorf("max_inline_bytes=%v (%T) must fail", bad, bad)
+		}
+	}
+}
+
 func TestValidate_MissingAPIKey(t *testing.T) {
 	a := llmAdapter(t, map[string]string{}) // no OPENAI_API_KEY forwarded
 	var inv *agent.ErrInvalidConfig
