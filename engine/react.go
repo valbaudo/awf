@@ -51,9 +51,22 @@ func runReactWithContext(ctx context.Context, r *ir.React, reactPath string, ict
 
 	startK := len(ictx.runstate.LookupReactRounds(reactPath)) + 1
 
+	// Template the initial user turn against the react node's engine scope (spec
+	// §3.2 "prompt — the initial user message, templated, scalars only"; mirrors
+	// agent_step.go's prompt-via-With substitution). The scope binds input.* +
+	// prior committed step.* from the RunState — identical on fresh run and resume,
+	// so a resumed run rebuilds the byte-identical initial message (determinism).
+	// A bad template ref is a permanent failure (the model can't fix the config),
+	// exactly like a code step's bad run: template.
+	prompt, err := template.Substitute(r.Prompt, ictx.scope(reactPath))
+	if err != nil {
+		return failStep(ictx.log, reactPath, OutcomePermanentFailure,
+			fmt.Errorf("engine.runReact: template prompt at %q: %w", reactPath, err))
+	}
+
 	// Rebuild the conversation from committed rounds 1..startK-1 (no re-sample, no
-	// re-dispatch) and prepend the initial user turn.
-	msgs, err := replayMessages(r, reactPath, ictx, startK)
+	// re-dispatch) and prepend the (templated) initial user turn.
+	msgs, err := replayMessages(prompt, reactPath, ictx, startK)
 	if err != nil {
 		return "", err
 	}
@@ -285,10 +298,13 @@ func roundResultFromLeaf(nr NodeResult) (modelResult, error) {
 
 // replayMessages rebuilds the []ReactTurn for rounds 1..startK-1 purely from
 // committed .model + .tool-J leaves (no model call, no tool dispatch) and
-// prepends the initial user turn (spec §4.3 replay). The tool-message ToolCallID
-// is read from the same stored ids so assistant.tool_calls[*].id == tool.id.
-func replayMessages(r *ir.React, reactPath string, ictx interpreterContext, startK int) ([]agent.ReactTurn, error) {
-	msgs := []agent.ReactTurn{{Role: "user", Content: r.Prompt}}
+// prepends the initial user turn (spec §4.3 replay). The prompt is the
+// already-templated initial user message (substituted once by the caller against
+// the deterministic node scope — identical on fresh run and resume). The
+// tool-message ToolCallID is read from the same stored ids so
+// assistant.tool_calls[*].id == tool.id.
+func replayMessages(prompt, reactPath string, ictx interpreterContext, startK int) ([]agent.ReactTurn, error) {
+	msgs := []agent.ReactTurn{{Role: "user", Content: prompt}}
 	for k := 1; k < startK; k++ {
 		roundPath := RoundPath(reactPath, k)
 		modelPath := ModelPath(roundPath)

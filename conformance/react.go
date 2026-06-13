@@ -20,15 +20,20 @@ import (
 // leaves head-room above the scripted two-round loop (round 1 = one tool call;
 // round 2 = natural stop with the typed answer).
 //
-// NOTE — react.prompt is a LITERAL here, not a {{ input.* }} template, by
-// necessity: the engine's runReact does NOT template r.Prompt against the run
-// scope (engine/react.go:291 uses r.Prompt verbatim), even though the spec
-// (§ line 209) and man page document `prompt: <template>` as templated. That is
-// a real engine bug surfaced by this bucket — REPORTED, not patched from a
-// conformance task (per the task's "don't patch engine code" rule). A literal
-// prompt sidesteps it so the loop/journaling/resume contract stays under test.
+// react.prompt is a {{ input.q }} TEMPLATE (spec §3.2 "prompt — the initial user
+// message, templated, scalars only"): the engine substitutes it against the
+// react node scope, so the model's initial user turn carries the resolved value
+// (reactPromptInput["q"]). Every sub-test binds reactPromptInput via h.input so
+// the prompt resolves on the run (and identically on resume — the determinism
+// invariant).
 var reactToolLoopWorkflow = fmt.Sprintf(`workflow: conformance-react-tool-loop
 version: 1
+input:
+  type: object
+  additionalProperties: false
+  required: [q]
+  properties:
+    q: { type: string }
 output_schema:
   type: object
   additionalProperties: false
@@ -54,7 +59,7 @@ graph:
   - react:
       id: answer
       with: { uses: awf/llm, model: m }
-      prompt: "validate the staged iban"
+      prompt: "validate {{ input.q }}"
       tools: [check]
       max_turns: 4
       output_schema:
@@ -66,6 +71,14 @@ graph:
 outputs:
   final: "{{ answer.answer }}"
 `, fakeImageDigest)
+
+// reactPromptInput is the run input bound by every react sub-test. The react
+// node's prompt `"validate {{ input.q }}"` resolves to reactPromptExpanded.
+var reactPromptInput = map[string]any{"q": "the staged iban"}
+
+// reactPromptExpanded is the substituted initial user turn the model must
+// receive — proof that react.prompt is templated (not passed verbatim).
+const reactPromptExpanded = "validate the staged iban"
 
 // reactToolEchoResult is the bytes the fake `cat {{ args_file }}` tool returns —
 // the verbatim staged arguments. ProgramExecAny matches the engine-synthesized
@@ -140,6 +153,7 @@ func testReactHappyPath(t *testing.T, factory BackendFactory) {
 		1: {FinishReason: "stop", Output: map[string]any{"answer": "validated"}, Text: `{"answer":"validated"}`},
 	})
 	h := newHarnessWithAgentRegistry(t, programReactTool(factory), reactToolLoopWorkflow, register)
+	h.input = reactPromptInput
 
 	oc, err := h.runWorkflow(t)
 	if err != nil || oc != engine.OutcomeOK {
@@ -176,12 +190,14 @@ func testReactHappyPath(t *testing.T, factory BackendFactory) {
 	if got := len(llm.ToolLoopCalls()); got != 2 {
 		t.Errorf("model called %d times, want 2 (one tool round + one natural-stop round)", got)
 	}
-	// The initial user turn carries the (literal) prompt.
+	// The initial user turn carries the TEMPLATED prompt: react.prompt
+	// "validate {{ input.q }}" substituted against the run scope → the model
+	// receives reactPromptExpanded (proof the prompt is templated, not verbatim).
 	calls := llm.ToolLoopCalls()
 	if len(calls) > 0 {
 		first := calls[0].Messages
-		if len(first) != 1 || first[0].Role != "user" || first[0].Content != "validate the staged iban" {
-			t.Errorf("initial messages = %+v, want one user turn %q", first, "validate the staged iban")
+		if len(first) != 1 || first[0].Role != "user" || first[0].Content != reactPromptExpanded {
+			t.Errorf("initial messages = %+v, want one user turn %q (templated prompt)", first, reactPromptExpanded)
 		}
 	}
 }
@@ -222,6 +238,7 @@ func testReactResumeRoundsReplay(t *testing.T, factory BackendFactory) {
 	var llm1 *fake.Fake
 	register1 := registerReactLLM(t, &llm1, nil, map[int]agent.ToolLoopResult{0: round1, 1: round2})
 	h := newHarnessWithAgentRegistry(t, programReactTool(factory), reactToolLoopWorkflow, register1)
+	h.input = reactPromptInput // first run binds input; resume restores it from run.started's InputRef
 
 	h.log.FailAppendAfterN(5) // crash at round-2's model commit (see ledger above)
 	oc1, err1 := h.runWorkflow(t)
@@ -282,8 +299,11 @@ func testReactResumeRoundsReplay(t *testing.T, factory BackendFactory) {
 	if len(msgs) < 3 {
 		t.Fatalf("round-2 replayed history len = %d, want >=3 (user + assistant + tool): %+v", len(msgs), msgs)
 	}
-	if msgs[0].Role != "user" {
-		t.Errorf("replayed msgs[0] = %+v, want user turn", msgs[0])
+	// Resume-determinism: the initial user turn is RE-TEMPLATED on resume (against
+	// input restored from run.started's InputRef) and must produce the byte-
+	// identical substituted string the fresh run produced.
+	if msgs[0].Role != "user" || msgs[0].Content != reactPromptExpanded {
+		t.Errorf("replayed msgs[0] = %+v, want user turn %q (prompt re-templated identically on resume)", msgs[0], reactPromptExpanded)
 	}
 	assistant := msgs[1]
 	if assistant.Role != "assistant" || len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "c1" {
@@ -332,6 +352,7 @@ func testReactResumeTornFrontier(t *testing.T, factory BackendFactory) {
 	var llm1 *fake.Fake
 	register1 := registerReactLLM(t, &llm1, nil, map[int]agent.ToolLoopResult{0: round1, 1: round2})
 	h := newHarnessWithAgentRegistry(t, programReactTool(factory), reactToolLoopWorkflow, register1)
+	h.input = reactPromptInput // first run binds input; resume restores it from run.started's InputRef
 
 	h.log.FailAppendAfterN(3) // crash at round-1's tool-0 commit (model already durable)
 	oc1, err1 := h.runWorkflow(t)
@@ -413,6 +434,7 @@ func testReactTwoSameToolInRound(t *testing.T, factory BackendFactory) {
 		1: {FinishReason: "stop", Output: map[string]any{"answer": "validated"}, Text: `{"answer":"validated"}`},
 	})
 	h := newHarnessWithAgentRegistry(t, programReactTool(factory), reactToolLoopWorkflow, register)
+	h.input = reactPromptInput
 
 	oc, err := h.runWorkflow(t)
 	if err != nil || oc != engine.OutcomeOK {
@@ -493,6 +515,7 @@ func testReactViaAgentsRole(t *testing.T, factory BackendFactory) {
 		}
 	}
 	h := newHarnessWithAgentRegistry(t, programReactTool(factory), reactToolLoopWorkflow, register)
+	h.input = reactPromptInput
 
 	oc, err := h.runWorkflow(t)
 	if err != nil || oc != engine.OutcomeOK {

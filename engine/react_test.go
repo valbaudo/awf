@@ -79,6 +79,7 @@ type reactTestHarness struct {
 	blobs  *state.InMemoryBlobs
 	rs     *RunState
 	ld     *LocalDispatcher
+	input  map[string]any // run input bound into the node scope ({{ input.* }}); nil → no input
 }
 
 func newReactTestHarness(t *testing.T, r *ir.React, wf *ir.Workflow, runner *scriptedToolLoop) *reactTestHarness {
@@ -118,6 +119,7 @@ func (h *reactTestHarness) ictx() interpreterContext {
 		log:        h.lg,
 		blobs:      h.blobs,
 		clk:        h.clk,
+		input:      h.input,
 	}
 }
 
@@ -829,5 +831,77 @@ func TestRunReactModelLeafCarriesMetrics(t *testing.T) {
 	}
 	if got.Cost.Total != 0.42 || got.Tokens.Input != 100 || got.Tokens.Output != 50 {
 		t.Fatalf("model-leaf Metrics = %+v, want cost 0.42 tokens 100/50", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// react.prompt templating (spec §3.2 "prompt — the initial user message,
+// templated, scalars only"). The initial user turn must be substituted against
+// the react node's engine scope, not passed verbatim — mirroring how a code
+// step / agent step templates. Determinism: the prompt binds input.* (fixed at
+// run-start) + prior committed step.*, so the same substituted string is rebuilt
+// on every entry (fresh + resume).
+// ---------------------------------------------------------------------------
+
+func TestRunReactTemplatesPrompt(t *testing.T) {
+	wf := reactWorkflow("true")
+	r := &ir.React{
+		ID:     "answer",
+		Prompt: "answer {{ input.q }}",
+		Tools:  []string{"check"},
+		With:   ir.RawConfig{"uses": "awf/llm", "model": "m"},
+	}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{Text: "ok", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+	h.input = map[string]any{"q": "X"}
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+
+	calls := h.runner.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("model called %d times, want 1", len(calls))
+	}
+	first := calls[0].Messages
+	if len(first) != 1 || first[0].Role != "user" {
+		t.Fatalf("initial messages = %+v, want one user turn", first)
+	}
+	if first[0].Content != "answer X" {
+		t.Fatalf("model received prompt %q, want %q (react.prompt must be templated)", first[0].Content, "answer X")
+	}
+}
+
+// TestRunReactPromptTemplateErrorIsPermanentFailure: a bad prompt template ref
+// (unresolved) is a permanent failure (the model can't fix the config), exactly
+// like a code step's bad run: template — NOT an internal halt, NOT a retry.
+func TestRunReactPromptTemplateErrorIsPermanentFailure(t *testing.T) {
+	wf := reactWorkflow("true")
+	r := &ir.React{
+		ID:     "answer",
+		Prompt: "answer {{ input.nope }}",
+		Tools:  []string{"check"},
+		With:   ir.RawConfig{"uses": "awf/llm", "model": "m"},
+	}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{Text: "ok", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+	h.input = map[string]any{"q": "X"} // no "nope" key → AWF4002
+
+	oc, err := h.run(t)
+	if oc != OutcomePermanentFailure || err == nil {
+		t.Fatalf("run: oc=%q err=%v, want permanent_failure + error (bad prompt template ref)", oc, err)
+	}
+	// The model was never called — the prompt failed before the first round.
+	if got := len(h.runner.Calls()); got != 0 {
+		t.Fatalf("model called %d times, want 0 (template error precedes any model call)", got)
+	}
+	// No terminal committed on a prompt template error.
+	if _, ok := h.rs.LookupCompleted("react[0]"); ok {
+		t.Fatal("terminal must NOT commit on a prompt template error")
 	}
 }
