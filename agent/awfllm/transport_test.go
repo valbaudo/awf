@@ -567,6 +567,50 @@ func TestRunOneToolCall_AlwaysOnDirective(t *testing.T) {
 	}
 }
 
+// TestRunOneToolCall_ToolNonStrict: tool FunctionDefinitionParam MUST NOT carry
+// strict:true on the wire. The §7 floor on tool input_schema is warn-only
+// (AWF2002) so a tool with a non-strict-compatible schema passes awf validate but
+// would 400 on the first react round if strict were set. Also, non-OpenAI
+// endpoints (vLLM / llama.cpp) 400 on additionalProperties:false/strict itself.
+// Response-format strict (mode-guarded by soResponseFormat) is NOT affected.
+func TestRunOneToolCall_ToolNonStrict(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(toolCallSSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL: "https://x/v1", APIKey: "k", Model: "gpt-x", StructuredOutput: "off",
+	}
+	_, err := a.RunOneToolCallForTest(context.Background(), cfg, "react[0].round-1.model",
+		[]agent.ReactTurn{{Role: "user", Content: "q"}},
+		// A tool with a non-strict-compatible schema (no additionalProperties:false, no required).
+		[]agent.ToolDef{{Name: "check", Description: "d", InputSchema: map[string]any{"type": "object"}}},
+		nil)
+	if err != nil {
+		t.Fatalf("runOneToolCall: %v", err)
+	}
+	// Parse the tools array from the wire body to locate the function definition.
+	var parsed struct {
+		Tools []struct {
+			Function struct {
+				Strict *bool `json:"strict"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &parsed); err != nil {
+		t.Fatalf("unmarshal body: %v\n%s", err, gotBody)
+	}
+	if len(parsed.Tools) == 0 {
+		t.Fatalf("tools array empty in wire body: %s", gotBody)
+	}
+	if fn := parsed.Tools[0].Function; fn.Strict != nil && *fn.Strict {
+		t.Errorf("tool function.strict = true on wire, want non-strict (nil/absent); body: %s", gotBody)
+	}
+}
+
 // TestRunOneToolCall_MessageHistory: assistant turns with stored tool_calls and
 // tool-result turns are rendered onto the wire; an assistant turn with NO
 // tool_calls must NOT emit an empty tool_calls:[] (a 400) (Task 3.4).

@@ -195,10 +195,13 @@ func (a *Adapter) runOneToolCall(ctx context.Context, cfg reqConfig, nodePath st
 		params.MaxCompletionTokens = openai.Int(int64(cfg.MaxTokens))
 	}
 	for _, td := range tools {
+		// Non-strict by default: the §7 floor on tool input_schema is warn-only
+		// (AWF2002) so a tool with a non-strict-compatible schema passes awf validate
+		// but would 400 on the first react round if strict were set. Also, non-OpenAI
+		// endpoints (vLLM / llama.cpp) can 400 on additionalProperties:false/strict.
 		params.Tools = append(params.Tools, openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
 			Name:        td.Name,
 			Description: param.NewOpt(td.Description),
-			Strict:      param.NewOpt(true),
 			Parameters:  shared.FunctionParameters(td.InputSchema),
 		}))
 	}
