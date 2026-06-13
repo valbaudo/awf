@@ -45,6 +45,8 @@ A workflow document has the following top-level shape:
       <role>: { uses: <adapter-ref>, model, system_prompt, with } # optional; reusable roles (see AGENTS)
     containers:
       <name>: { image: <oci-ref>, resources: { cpu, mem } }   # or compose (see CONTAINERS)
+    tools:                        # optional; named tool definitions offered to react: steps (see TOOLS)
+      <tool-name>: { description, input_schema, impl }
     graph: [ <node>, ... ]
     output_schema: <json-schema>  # optional; required for imported workflow outputs
     outputs: { <field>: <template> }      # optional; typed workflow exports
@@ -142,9 +144,39 @@ error, just like drift in the root workflow.
 **containers**
 :   Required. The infrastructure the workflow runs against (see **CONTAINERS**).
 
+**tools**
+:   Optional. A map of named tool definitions offered to `react:` steps (see
+    **TOOLS**). Each tool has a `description`, an `input_schema`, and an `impl`
+    that runs as a containerful step on the existing execution substrate.
+
 **graph**
 :   Required. An ordered list of nodes. Sequential composition is implicit:
     sibling nodes run in order.
+
+## tools
+
+`tools:` is a top-level map (a sibling of `graph:` and `outputs:`) from tool name to a tool
+definition. Tools are offered to a `react:` step's model; the model calls them by name.
+
+    tools:
+      <tool-name>:
+        description: <string>          # required — sent to the model
+        input_schema: <JSON Schema>    # required — the tool's parameters (the JSON-Schema floor applies)
+        impl:                          # required — how the tool runs
+          run: <command>               # run: only (no exec:); read structured args from {{ args_file }}
+          container: <name>            # a containers:-declared name (NOT an inline image)
+          timeout: <duration>          # optional
+          output_files: { ... }        # optional (captured, but NOT surfaced to the model in v1)
+          input_files: { ... }         # optional
+          retry: { ... }               # optional
+
+The model's call arguments reach `impl` two ways: the full arguments JSON is staged into the
+container and exposed as `{{ args_file }}`; top-level scalar fields are also bound as
+`{{ args.<field> }}` (best-effort — absent if non-scalar or unparseable). Read structured arguments
+from `{{ args_file }}`; never interpolate raw arguments into a shell command line.
+
+Each `impl` runs as an ordinary containerful step on the existing execution substrate. The
+container is a `containers:`-declared name, digest-pinned there like any step's image.
 
 # CONTAINERS
 
@@ -1041,6 +1073,44 @@ nested in a `map`), so two blocks using the same `as:` in different scopes do
 not collide at the Docker project layer. The native backend
 does not advertise runtime-Compose support; `awf run --backend native` rejects a
 workflow containing `compose:` before execution.
+
+## react
+
+`react:` is a control node that runs a model + tools loop on the `awf/llm` path. It is the only
+node that drives an engine-mediated tool loop; CLI agents (claude/codex/droid/goose) stay
+black-box and cannot use it.
+
+    - react:
+        id: <node-id>               # required — addresses the node's output ({{ <id>.* }} / awf outputs --step <id>)
+        with:                       # the awf/llm config, minus `prompt`
+          uses: awf/llm
+          model: <model>
+          base_url: <url>
+          system_prompt: <string>
+        prompt: <template>          # required — the initial user turn
+        tools: [<name>, ...]        # required, >=1 — subset of top-level tools: this step offers
+        max_turns: <int>            # optional, default 8 — one turn = one model call (+ its tools)
+        output_schema: <JSON Schema># optional — the typed final answer (enforced on natural stop only)
+
+Each turn: the model is called with `tools` attached; if it requests tools, each is dispatched as
+its `impl` step and the results are fed back; the loop repeats until the model stops or `max_turns`
+is reached.
+
+**Output contract.** The node's output always carries a reserved top-level `stop_reason` sibling
+(`"stop"` | `"max_turns"`). Reference it as `{{ <id>.stop_reason }}` and the answer fields as
+`{{ <id>.<field> }}`. On natural stop (`stop_reason: "stop"`) the answer is validated against
+`output_schema` if declared. On `max_turns` the loop stops without dispatching the final round's
+tools, `output_schema` is **not** enforced, and the output is `{ stop_reason: "max_turns", text: <last assistant text> }`. `output_schema` may not declare a property named `stop_reason`.
+
+**Tool failures the model sees** (not step failures): a tool's non-zero exit feeds its exit code +
+stdout back as the tool result; an unknown/hallucinated tool name feeds back an error. The
+model-facing tool result is capped (large output is truncated, the full output kept in the run's
+artifacts); non-UTF-8 output is referenced by size, not inlined.
+
+**Scope.** `react:` requires an `awf/llm` (containerless, threaded) adapter; v1 is OpenAI-compat
+only (a `structured_output: ollama_format` config is rejected). A top-level `react:` is referenceable
+via `{{ <id>.* }}`; a `react:` nested in `loop`/`gate`/`map` is readable via `awf outputs --step`
+only.
 
 # OUTCOMES, RETRY, AND REPAIR
 
