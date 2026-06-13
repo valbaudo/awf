@@ -164,4 +164,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("reduce", func(t *testing.T) { testReduce(t, factory) })
 	t.Run("subworkflow", func(t *testing.T) { testSubworkflow(t, factory) })
 	t.Run("prune", func(t *testing.T) { testPrune(t, factory) })
+	t.Run("react", func(t *testing.T) { testReact(t, factory) })
 }
