@@ -998,3 +998,21 @@ func mustJSON(v any) []byte {
 	}
 	return b
 }
+
+func TestReactRoundDataRoundTrip(t *testing.T) {
+	in := ReactRoundData{N: 3}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(b) != `{"n":3}` {
+		t.Fatalf("on-wire = %s, want {\"n\":3}", b)
+	}
+	var out ReactRoundData
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.N != 3 {
+		t.Fatalf("N = %d, want 3", out.N)
+	}
+}

@@ -431,6 +431,20 @@ type RunFinishedData struct {
 }
 
 const (
+	// P3 A3. Committed by the react executor (engine/react.go) at the END of each
+	// round — AFTER the round's .model leaf and every dispatched .tool-J leaf have
+	// committed. A pure {N} round cursor; finish_reason lives on the .model leaf.
+	// Durability: Append+Sync (gate-style), NOT loop.iter's fsync-riding append,
+	// because tool side-effects are not first-run-equivalent on resume (spec §4.1).
+	EventReactRound = "react.round"
+)
+
+// ReactRoundData is the payload of a react.round marker. N is 1-based.
+type ReactRoundData struct {
+	N int `json:"n"`
+}
+
+const (
 	// Phase 5 slice 5.2. agent.event: the interpreter writes one entry per
 	// agent.AgentEvent buffered in DispatchResult.AgentEvents, BEFORE the
 	// node.completed commit. OBSERVATIONAL — Fold ignores it (default arm).
