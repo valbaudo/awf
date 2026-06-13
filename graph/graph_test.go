@@ -9,7 +9,7 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
-// TestKindOfExhaustive pins the kind string for every one of ir.Node's 12 kinds. If a
+// TestKindOfExhaustive pins the kind string for every one of ir.Node's 13 kinds. If a
 // new kind is added to ir without a case here (and in kindOf), this is the first place
 // it should be noticed; kindOf itself panics on an unmapped kind.
 func TestKindOfExhaustive(t *testing.T) {
@@ -29,14 +29,30 @@ func TestKindOfExhaustive(t *testing.T) {
 		{&ir.Skip{}, "skip"},
 		{&ir.Map{}, "map"},
 		{&ir.Compose{}, "compose"},
+		{&ir.React{ID: "r"}, "react"}, // P3 A3 (keep in sync with ir/node_test.go wantKinds)
 	}
-	if len(cases) != 12 {
-		t.Fatalf("expected 12 node kinds, listed %d", len(cases))
+	if len(cases) != 13 {
+		t.Fatalf("expected 13 node kinds, listed %d", len(cases))
 	}
 	for _, c := range cases {
 		if got := kindOf(c.n); got != c.want {
 			t.Errorf("kindOf(%T) = %q, want %q", c.n, got, c.want)
 		}
+	}
+}
+
+// TestReactGraphArms is the regression that conformance can't reach: it forces the
+// graph package's react arms (kindOf, staticPath) directly. A top-level react node's
+// static path is react[i] (keyword[index], not its id) — the Map-class addressing.
+func TestReactGraphArms(t *testing.T) {
+	if got := kindOf(&ir.React{ID: "ans"}); got != "react" {
+		t.Errorf("kindOf(*ir.React) = %q, want %q", got, "react")
+	}
+	if got := staticPath("", &ir.React{ID: "ans"}, 0); got != "react[0]" {
+		t.Errorf("staticPath(top-level react @0) = %q, want %q", got, "react[0]")
+	}
+	if got := staticPath("loop[1].body", &ir.React{ID: "ans"}, 2); got != "loop[1].body.react[2]" {
+		t.Errorf("staticPath(nested react) = %q, want %q", got, "loop[1].body.react[2]")
 	}
 }
 

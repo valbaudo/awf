@@ -102,6 +102,12 @@ func walkRuntimeRefsNodes(wf *ir.Workflow, moduleID, runtimeParent string, nodes
 				seen[key] = ref
 			}
 		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip:
+		case *ir.React:
+			// No (uses,container) runtime ref to resolve/pin here: react is
+			// containerless (awf/llm), and its with.uses is resolved against the
+			// adapter registry by the react executor (engine/react.go, Phase 4) — it
+			// is NOT a per-container runtime image whose Version is pinned into
+			// RunStartedData.Runtimes. No NodeList body, so no recursion.
 		case *ir.If:
 			base := ir.PathFor(parent, "if", "", i)
 			walkRuntimeRefsNodes(wf, moduleID, runtimeParent, v.Then, base+".then", runtimeCreatedContainers, seen)

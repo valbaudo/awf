@@ -188,6 +188,14 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			walkStructural(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), wf, c, seen, scoped, mapImageTargetOwners)
 		case *Skip:
 			// skip has no fields that need structural validation.
+		case *React:
+			// react[i] is the runtime path; v.ID is the output-addressing handle
+			// ({{ <id>.* }}), sharing the addressable-id namespace with steps and
+			// map aggregates — so its charset/reserved-token/uniqueness rules are
+			// the same. No NodeList body to recurse. (tools/with/max_turns shape is
+			// validated by validateTools, AWF1052–AWF1058.)
+			path := PathFor(parent, "react", "", i)
+			checkAddressableID(v.ID, path, "react node", c, seen)
 		case *Map:
 			path := PathFor(parent, "map", "", i)
 			checkMapID(v, path, c, seen)

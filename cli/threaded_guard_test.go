@@ -134,6 +134,28 @@ func TestCheckThreaded_ContinuesInsideMapBody_Errors(t *testing.T) {
 	}
 }
 
+// TestCheckThreaded_ReactNode_OK is the P3 regression conformance can't reach:
+// conformance drives engine.Run directly, bypassing the cli run-start guards, so
+// only a cli-level test exercises the react arm of checkThreadedNodes. A 1-node
+// react: workflow (no continues: anywhere) must pass the threaded-adapter guard —
+// react declares no continues: and its awf/llm adapter is Threaded by construction,
+// so the guard has nothing to reject.
+func TestCheckThreaded_ReactNode_OK(t *testing.T) {
+	fk := fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true})
+	reg := regWith(t, fk)
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.React{
+			ID:     "answer",
+			With:   ir.RawConfig{"uses": "awf/llm", "model": "m"},
+			Prompt: "{{ input.q }}",
+			Tools:  []string{"check"},
+		},
+	}}
+	if err := checkThreadedAdapters(wf, reg); err != nil {
+		t.Fatalf("checkThreadedAdapters(react workflow) = %v, want nil", err)
+	}
+}
+
 // TestCheckThreaded_AdapterNotFound_PropagatesLookupMiss: a continues: step
 // whose uses: resolves to no adapter returns *agent.ErrAdapterNotFound (NOT a
 // silent pass) — resolveRuntimes would also catch this, but the guard runs the

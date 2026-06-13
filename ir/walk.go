@@ -70,6 +70,10 @@ func WalkNodes(list NodeList, parent string, visit func(n Node, path string)) {
 		case *Compose:
 			visit(v, PathFor(parent, "compose", "", i))
 			WalkNodes(v.Body, ChildPath(parent, "compose", i, "body"), visit)
+		case *React:
+			// Control-style node addressed by react[i]; no NodeList body, so no
+			// recursion (tools resolve to top-level tools: impls, not child nodes).
+			visit(v, PathFor(parent, "react", "", i))
 		default:
 			panic(fmt.Sprintf("ir.WalkNodes: unexpected node type %T", n))
 		}

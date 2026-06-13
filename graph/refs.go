@@ -81,6 +81,12 @@ func producerRefs(n ir.Node) []string {
 			add(id)
 		}
 		addSlots(string(v.Service))
+	case *ir.React:
+		// Mirror the agent arm: the awf/llm `with:` config carries {{ }} refs
+		// (opaque, string-leaf-only walk), and `prompt:` is the templated initial
+		// user turn. tools[] are static names, not step-producer refs.
+		addRawConfigStrings(v.With, addSlots)
+		addSlots(v.Prompt)
 	}
 	return ids
 }

@@ -32,6 +32,18 @@ func validateSchema(ld *LoadedDefinition, c *collector) {
 	if wf.OutputSchema != nil {
 		checkSchemaWellFormed(*wf.OutputSchema, "output_schema", c)
 	}
+	// P3 A4 (rev #25): a tool's input_schema is the model-facing parameter schema —
+	// the model's tool-call arguments must be cross-backend portable, so it is held
+	// to the same §7 strict-output floor (AWF2002) as an agent's output_schema, in
+	// addition to JSON-Schema well-formedness (AWF2001). Tools have NO output_schema
+	// (ir.ToolImpl carries none — intentional), so only input_schema is checked here.
+	for name, tool := range wf.Tools {
+		if tool.InputSchema != nil {
+			p := "tools." + name + ".input_schema"
+			checkSchemaWellFormed(*tool.InputSchema, p, c)
+			checkAgentFloor(*tool.InputSchema, p, c)
+		}
+	}
 	walkSchemas(wf.Graph, c)
 }
 
@@ -51,6 +63,15 @@ func walkSchemas(nodes NodeList, c *collector) {
 		case *SignalStep:
 			if v.OutputSchema != nil {
 				checkSchemaWellFormed(*v.OutputSchema, path+".output_schema", c)
+			}
+		case *React:
+			// react: runs on the awf/llm path; its output_schema is the typed final
+			// answer the model must emit on a natural stop — held to the same §7
+			// floor as an agent output_schema (P3 #25).
+			if v.OutputSchema != nil {
+				p := path + ".output_schema"
+				checkSchemaWellFormed(*v.OutputSchema, p, c)
+				checkAgentFloor(*v.OutputSchema, p, c)
 			}
 		}
 	})

@@ -81,6 +81,16 @@ func (w *liveResumePreflightWalker) walkNode(n ir.Node, idx int, parent string, 
 		return w.walkMap(v, ir.PathFor(parent, "map", "", idx), ictx)
 	case *ir.Compose:
 		return w.walkCompose(v, ir.PathFor(parent, "compose", "", idx), ictx)
+	case *ir.React:
+		// react runs on awf/llm (Containerless+Threaded), never a PersistentSession
+		// adapter, so it emits NO live-resume preflight request. But it is still an
+		// executable frontier: if uncommitted it is the next thing to run, so — like
+		// a CodeStep — it halts the sequential walk (the walk must not preflight
+		// nodes downstream of an unfinished react). Keyed on the react[N] node-
+		// completion path, mirroring the leaf-step arms above.
+		path := ir.PathFor(parent, "react", "", idx)
+		_, done := ictx.runstate.LookupCompleted(path)
+		return !done, nil
 	case *ir.Skip:
 		return true, nil
 	default:

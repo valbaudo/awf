@@ -83,8 +83,12 @@ func checkThreadedNodes(wf *ir.Workflow, moduleID string, nodes ir.NodeList, res
 					return &ErrPersistentSessionContinuesTarget{StepID: v.ID, TargetID: v.Continues, Ref: targetRef}
 				}
 			}
-		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip:
-			// no nested steps; cannot declare continues:
+		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip, *ir.React:
+			// no nested steps; cannot declare continues:. react has no continues:
+			// field and no NodeList body — its awf/llm adapter is Threaded by
+			// construction (gated by the run-start Containerless+Threaded assertion,
+			// Phase 4), so there is nothing for THIS guard (continues: → Threaded) to
+			// check on a react node.
 		case *ir.If:
 			if err := checkThreadedNodes(wf, moduleID, v.Then, resolver, stepsByID); err != nil {
 				return err
@@ -147,7 +151,9 @@ func collectAgentSteps(nodes ir.NodeList, out map[string]*ir.AgentStep) map[stri
 			if v.ID != "" {
 				out[v.ID] = v
 			}
-		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip:
+		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip, *ir.React:
+			// react is not an AgentStep — it cannot be a continues: target, so it is
+			// not collected into the continues-resolution index.
 		case *ir.If:
 			collectAgentSteps(v.Then, out)
 			collectAgentSteps(v.Else, out)

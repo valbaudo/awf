@@ -70,7 +70,10 @@ func checkPersistentSessionNodes(ld *ir.LoadedDefinition, wf *ir.Workflow, modul
 					}
 				}
 			}
-		case *ir.CodeStep, *ir.SignalStep, *ir.Skip:
+		case *ir.CodeStep, *ir.SignalStep, *ir.Skip, *ir.React:
+			// react runs on awf/llm (Containerless+Threaded, never PersistentSession)
+			// and has no NodeList body — nothing for the gate.evaluate persistent-
+			// session guard to check.
 		case *ir.If:
 			if err := checkPersistentSessionNodes(ld, wf, moduleID, v.Then, resolver, inGateEvaluate); err != nil {
 				return err
