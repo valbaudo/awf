@@ -157,8 +157,9 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		With:           intent.ResolvedInputs.With,
 		OutputSchema:   intent.ResolvedInputs.OutputSchema,
 		IdempotencyKey: intent.IdempotencyKey,
-		Feedback:       intent.ResolvedInputs.Feedback, // slice 5.3
-		Thread:         intent.ResolvedInputs.Thread,   // Task 4.5
+		Feedback:       intent.ResolvedInputs.Feedback,           // slice 5.3
+		Thread:         intent.ResolvedInputs.Thread,             // Task 4.5
+		InputFiles:     intent.ResolvedInputs.ContainerlessFiles, // resolved input_files for containerless steps; nil for container-backed (those use stageInputFiles)
 	}
 
 	// γ contract: Launch returns immediately with events + outcome channels
