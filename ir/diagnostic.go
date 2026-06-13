@@ -201,6 +201,14 @@ var catalog = map[string]string{
 	"AWF1049": "workflow artifact export invalid",
 	"AWF1050": "workflow input_files contract invalid",
 	"AWF1051": "call input_files binding invalid",
+	// P3 A3/A4 — tools: + react: validation (AWF1052–AWF1058).
+	"AWF1052": "react: tools list is empty (at least one tool name is required)",
+	"AWF1053": "react: tool name is not declared in the top-level tools: map",
+	"AWF1054": "react: max_turns must be a positive integer (0 means use the default of 8; negative values are rejected)",
+	"AWF1055": "react: output_schema may not declare a property named stop_reason (engine-reserved field)",
+	"AWF1056": "tool impl must name a containers:-declared container (container field is missing or undeclared)",
+	"AWF1057": "react: requires uses: awf/llm (the only Containerless+Threaded adapter; CLI adapters cannot drive a tool loop)",
+	"AWF1058": "react: structured_output: ollama_format is incompatible with the OpenAI tool-call protocol",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
 	"AWF_IMPORT_DECODE":         "imported workflow failed to decode",

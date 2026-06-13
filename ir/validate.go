@@ -60,6 +60,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 		validateContinues(modLD, c)
 		validateReduce(modLD, c)
 		validatePrune(modLD, c)
+		validateTools(modLD, c)
 		validateCalls(ld, mod, c)
 		validateRefsModule(ld, mod, c)
 		validateInputFilesModule(ld, mod, c)
