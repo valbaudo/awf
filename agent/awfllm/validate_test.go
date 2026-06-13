@@ -98,3 +98,26 @@ func TestValidate_CustomAPIKeyEnvHonored(t *testing.T) {
 		t.Errorf("api_key_env naming a present var should pass: %v", err)
 	}
 }
+
+// TestValidateConfigToolLoopExemptsPrompt: a react with: (no prompt) passes the
+// prompt-exempt variant, but the rejectedKeys guard (incl. "tools") still applies
+// and model is still required (Task 3.3).
+func TestValidateConfigToolLoopExemptsPrompt(t *testing.T) {
+	a := llmAdapter(t, okEnv())
+	// no prompt key — must pass the prompt-exempt variant:
+	if err := a.ValidateConfigForToolLoopForTest(ir.RawConfig{"model": "m"}); err != nil {
+		t.Fatalf("prompt-exempt validate rejected a valid react with:: %v", err)
+	}
+	// a "tools" with-key is still rejected:
+	if err := a.ValidateConfigForToolLoopForTest(ir.RawConfig{"model": "m", "tools": []any{}}); err == nil {
+		t.Fatal("tools with-key should still be rejected by the exempt variant")
+	}
+	// model is still required (a shared-common check, not the prompt one):
+	if err := a.ValidateConfigForToolLoopForTest(ir.RawConfig{}); err == nil {
+		t.Fatal("missing model should still fail the exempt variant")
+	}
+	// ValidateConfig (the agent: path) STILL requires prompt:
+	if err := a.ValidateConfig(ir.RawConfig{"model": "m"}); err == nil {
+		t.Fatal("ValidateConfig must still require prompt")
+	}
+}

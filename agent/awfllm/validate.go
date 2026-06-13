@@ -48,6 +48,27 @@ const defaultAPIKeyEnv = "OPENAI_API_KEY"
 // required(model,prompt) → per-key types+enum → api-key-present. Deterministic
 // (sorted keys); idempotent (run-start walk + defensive dispatch).
 func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
+	if err := a.validateConfigCommon(with); err != nil {
+		return err
+	}
+	return requireNonEmptyString(with, keyPrompt)
+}
+
+// validateConfigForToolLoop is ValidateConfig minus the prompt requirement: a
+// react: step supplies the initial user turn at the step level and the engine owns
+// the messages array, so `prompt` does not belong in a react with:. Everything else
+// — the rejectedKeys guard (incl. "tools"), the unknown-key check, required(model),
+// the per-key types/enum, and the api-key-present policy — still applies (Task 3.3).
+func (a *Adapter) validateConfigForToolLoop(with ir.RawConfig) error {
+	return a.validateConfigCommon(with)
+}
+
+// validateConfigCommon holds the shared body — everything except the keyPrompt
+// require: rejectedKeys, allowedKeys, required(model), the per-key types/enum
+// (base_url/api_key_env/system_prompt/temperature/max_tokens/structured_output/
+// tls_insecure), and the api-key-env presence policy. ValidateConfig adds the
+// prompt require on top; validateConfigForToolLoop does not.
+func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 	for _, k := range rejectedKeys {
 		if _, present := with[k]; present {
 			return wrapInvalidConfig("not supported (use api_key_env, and a single `prompt`)", k)
@@ -59,9 +80,6 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		}
 	}
 	if err := requireNonEmptyString(with, keyModel); err != nil {
-		return err
-	}
-	if err := requireNonEmptyString(with, keyPrompt); err != nil {
 		return err
 	}
 	for _, k := range []string{keyBaseURL, keyAPIKeyEnv, keySystemPrompt} {

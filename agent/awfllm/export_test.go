@@ -39,3 +39,8 @@ var AssemblePromptForTest = assemblePrompt
 
 // ClientForTest exposes clientFor for white-box tests (tls_insecure behavior).
 func (a *Adapter) ClientForTest(insecure bool) *http.Client { return a.clientFor(insecure) }
+
+// ValidateConfigForToolLoopForTest exposes the prompt-exempt validate variant.
+func (a *Adapter) ValidateConfigForToolLoopForTest(with ir.RawConfig) error {
+	return a.validateConfigForToolLoop(with)
+}
