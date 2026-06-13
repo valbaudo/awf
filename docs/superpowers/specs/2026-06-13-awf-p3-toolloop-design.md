@@ -2,8 +2,10 @@
 
 > Status: design — approved in brainstorming (2026-06-13), grounded in a code/prior-art
 > verification workflow against `origin/main @ 0b81246` (file:line anchors throughout), then
-> **hardened by a 5-lens adversarial self-critique workflow** (curated findings applied; the review
-> verified ~30 anchors and corrected the six listed in §11). This is the **own full cycle** the
+> **hardened by two adversarial workflows**: a 5-lens self-critique (verified ~30 anchors; six fixes
+> in §11.1) and a reality-check pass that fact-checked every proposed fix against the code + external
+> prior art (OpenAI/Anthropic docs, LangChain/openai-agents/Temporal) — which *reversed* one fix and
+> corrected three others (§11.2). This is the **own full cycle** the
 > correctable-gaps roadmap (`2026-06-12-awf-correctable-gaps-design.md` §4) scoped for P3.
 > Author: maintainer-side, continuing the primacasa.ai-audit remediation.
 > Scope: the design for `tools:` (A4) + `react:` (A3) on the `awf/llm` path. The man-page format
@@ -28,14 +30,28 @@ ordinal `N` in the payload, which `Fold` accumulates into per-path slices:
 - `loop.iter` → `RunState.LoopIters[path]` (`engine/fold.go:237-243`)
 
 `react.round` is the **fourth instance of this existing pattern**, not a new journaling
-primitive. Two existing handlers are its templates: **`engine/gate.go`** for the per-round marker
-(`startN := len(GateAttempts[gatePath]) + 1`, `gate.go:93`; marker appended+`Sync`ed after each
-*completed* unit, `gate.go:161-170`), and **`engine/reduce.go`** for the per-round synthetic
-**model leaf** — a committed `node.completed` with no backing IR node, explicitly guarded on
-resume by `if _, ok := rs.LookupCompleted(nodePath); ok { … }` (`reduce.go:150`) and committed via
-`Commit(log, blobs, nodePath, DispatchResult{Outcome: OutcomeOK, Outputs: out}, false)`
-(`reduce.go:193`). This de-risks P3 from "weeks of scary invariant work" to "additive — compose
-two already-solved mechanisms, plus a modest amount of new arg-staging/scope plumbing (§3.3)."
+primitive. Its two concrete templates:
+
+- **The marker is the `loop.iter` twin.** `loop.iter` carries a *pure* `{N}` cursor
+  (`LoopIterData{N int}`, `events.go:385-387`) — exactly what `react.round` needs — so the marker's
+  **shape** templates on `loop.iter`, **not** on `gate.attempt` (which carries non-derivable verdict
+  data). Its **durability**, however, is deliberately gate-style: `react.round` is `Sync`'d
+  (`gate.go:161-170`), unlike `loop.iter`'s fsync-riding append (`interpreter.go:465`), because a
+  react round's tool side-effects need a durable round-closed boundary (a lost iteration is
+  first-run-equivalent; a lost-then-recomputed round of real tool effects is not — §4.4). *(An
+  earlier draft templated the marker wholesale on `gate.go` and was tempted to delete it as
+  "derivable"; the reality-check showed it is the load-bearing `loop.iter` twin — keeping AWF's four
+  sibling handlers consistent and avoiding a novel leaf-walking resume mechanic the engine has zero
+  precedent for. §11.2/M1.)*
+- **The synthetic model leaf templates on `engine/reduce.go`** — a committed `node.completed` with
+  no backing IR node, explicitly guarded on resume by
+  `if _, ok := rs.LookupCompleted(nodePath); ok { … }` (`reduce.go:150`) and committed via
+  `Commit(log, blobs, nodePath, DispatchResult{Outcome: OutcomeOK, Outputs: out}, false)`
+  (`reduce.go:193`).
+
+This de-risks P3 from "weeks of scary invariant work" to "additive — compose two already-solved
+mechanisms (`loop.iter` cursor + `reduce` synthetic leaf), plus modest new arg-staging/scope
+plumbing (§3.3)."
 
 ---
 
@@ -58,10 +74,11 @@ path, rather than only *wrapping* a pre-built CLI agent. With **A1 (`agents:`) a
 
 ### 1.1 Locked decisions (from brainstorming)
 
-1. **Journaling = Fork B (two-level, gate-style).** Each round's model call commits its own
-   synthetic leaf `node.completed` (reduce-style, with an explicit resume guard); each tool impl
-   commits its own leaf `node.completed`; a thin `react.round` marker (raw `Log.Append`+`Sync`)
-   closes the round. The `react:` node commits one terminal `node.completed`. (§4)
+1. **Journaling = Fork B (two-level).** Each round's model call commits its own synthetic leaf
+   `node.completed` (reduce-style, with an explicit resume guard); each tool impl commits its own
+   leaf `node.completed`; a thin `react.round` marker (the `loop.iter`-shaped `{N}` cursor, but
+   deliberately `Sync`'d) closes the round. The `react:` node commits one terminal
+   `node.completed`. (§4)
 2. **Tool args reach the impl as a file + scalar convenience.** The full `arguments` JSON is
    stored **verbatim** (§4.5 invariant), staged into the impl's container via the `Backend.CopyTo`
    seam, and exposed as `{{ args_file }}`; top-level *scalar* fields are additionally bound as
@@ -93,8 +110,9 @@ path, rather than only *wrapping* a pre-built CLI agent. With **A1 (`agents:`) a
   `structured_output: ollama_format` (the Ollama-native path, which lacks tool wiring) is rejected
   with a clear error, not a silent tool drop. (Ollama-native tool calling is a flagged follow-up.)
 - **Mixed containerization is intended.** The model call is containerless (`awf/llm`); each tool
-  **impl is an ordinary containerful `run:`/`exec` step** with its own `image:`. This is the whole
-  point: the glass-box LLM call + black-box tool execution on the proven code-step substrate.
+  **impl is an ordinary containerful `run:`/`exec` step** that names a top-level `containers:`-
+  declared container (§3.1). This is the whole point: the glass-box LLM call + black-box tool
+  execution on the proven code-step substrate.
 
 ---
 
@@ -109,6 +127,9 @@ top-level node list is `graph:`, there is no `steps:` key): a map from tool name
 definition.
 
 ```yaml
+containers:                       # existing top-level block; images digest-pinned here
+  fin: { image: tools/fin:1.4@sha256:abc… }
+
 tools:
   check_iban:
     description: Validate an IBAN and return its issuing bank.
@@ -119,7 +140,7 @@ tools:
       required: [iban]
     impl:
       run: ./validate --args-file {{ args_file }}   # or: --iban {{ args.iban }}
-      image: tools/fin:1.4@sha256:abc…
+      container: fin                                # a containers:-declared name (NOT an inline image)
       timeout: 30s
 ```
 
@@ -128,17 +149,28 @@ tools:
   (subject to the §7 JSON-Schema floor, same as `output_schema`). Reused verbatim as the OpenAI
   `shared.FunctionDefinitionParam.Parameters` (`shared.FunctionParameters` = `map[string]any`,
   exactly the existing `ResponseFormat` cast at `transport.go:110`).
-- **`impl`** — the executable tool, a `run:`/`exec` step body carrying `image`/`container`,
-  `timeout`, `retry`, `output_files`, `input_files`. **Format note:** `impl` is a dedicated id-less
-  type (e.g. `ir.ToolImpl`), **not** a reused `ir.CodeStep` (whose `ID` field is `json:"id"`
-  *without* `omitempty`, `ir/node.go:21-22`, so it would serialize an empty `"id":""` into the JCS
-  digest). At **execution** time the engine synthesizes a `CodeStep` from the `ToolImpl` and
-  dispatches it through the existing substrate exactly as the reducer does (`reduce.go:216-294`:
-  synthesize `&ir.CodeStep{Run, Container, OutputSchema, OutputFiles}` → `Backend.CopyTo` inputs →
-  `Backend.Exec` → `Commit`). No new executor, container path, retry, or output-capture code.
+- **`impl`** — the executable tool, a `run:`/`exec` step body that **names a top-level
+  `containers:`-declared container via `container:`** (exactly like `ir.Reduce.Container`), plus
+  `timeout`, `retry`, `output_files`, `input_files`. **It does *not* take an inline `image:`** —
+  `ir.CodeStep` has only `Container string` (a declared-name ref), no `Image` field
+  (`ir/node.go:21-37`); an inline image would have no provisioned handle and fail at
+  `local_dispatcher.go:114-117`. **Format note:** `impl` is a dedicated id-less type (e.g.
+  `ir.ToolImpl`), **not** a reused `ir.CodeStep` (whose `ID` is `json:"id"` *without* `omitempty`,
+  so it would serialize an empty `"id":""` into the JCS digest). At **execution** time the engine
+  synthesizes a `CodeStep` from the `ToolImpl` and dispatches it through the existing substrate
+  exactly as the reducer does (`reduce.go:216-294`: synthesize
+  `&ir.CodeStep{Run, Container, OutputSchema, OutputFiles}` → `Backend.CopyTo` inputs →
+  `Backend.Exec` → `Commit`). No new executor, retry, or output-capture code.
+- **Container lifecycle — no new code.** Because the impl names a declared container, it reuses the
+  **workflow-level long-lived container handle** (`local_dispatcher.go:114`), shared across rounds
+  and calls and re-`Create`d for free on resume (`resume.go:314-323`). `runReact` adds **zero**
+  lifecycle code. This deliberately avoids per-call ephemeral `Create`/`Destroy` — which
+  `reduce.go:84-90` documents as the slice-5 "Exec: unknown handle" regression it was *fixed away
+  from*. (Map's per-item containers exist only for runtime-resolved per-element images, P6a; react
+  tool images are fixed and digest-pinned, i.e. the workflow-level pre-provisioning case.)
 - The whole `tools:` map folds into the workflow digest automatically (whole-workflow JCS,
-  `ir/digest.go:22-77`); every tool `impl`'s `image:` is digest-pinned exactly like any
-  containerful step.
+  `ir/digest.go:22-77`); each impl's declared container image is digest-pinned in the `containers:`
+  block exactly like any containerful step.
 
 ### 3.2 The `react:` step
 
@@ -201,18 +233,25 @@ When the model emits a `tool_call` for tool `T` with `arguments` (a JSON string)
    staging an engine-generated blob this way; `container/backend.go:119` is the seam). It is **not**
    routed through the declarative `input_files` resolver, which only accepts static named refs
    (`step.<id>.files.<name>`, `input.files.<name>`, `asset.<id>` — `engine/input_files.go:88`,
-   `AWF3007`) and cannot resolve a fresh runtime blob. The container path is exposed to the impl's
-   templates as `{{ args_file }}`. Structured (object/array) arguments are read by the impl from
+   `AWF3007`) and cannot resolve a fresh runtime blob. The container path is **per-call-unique**,
+   derived from the deterministic `R.round-K.tool-J` journaling path (mirror `reduce.go:250`'s
+   `branch-%d/`), so reusing one shared container across tool calls (§3.1) never overwrites a
+   sibling call's args; it is exposed to the impl's templates as `{{ args_file }}`. Structured
+   (object/array) arguments are read by the impl from
    this file — **never** interpolated into a command line, so AWF4004 (arrays in `{{ }}`,
    `template/eval.go:32`) and shell-injection are both sidestepped.
 2. **Binds** top-level *scalar* fields of `arguments` into the impl's template scope as
-   `{{ args.<field> }}` via a **new scope arm** — modeled on the override-constructor pattern
-   `NewScopeWithVerdict` (`engine/scope.go:66`), **not** reusing the map-specific
-   `resolveAsBinding` (`scope.go:296-368`, hard-wired to walk `map[N].item-K` paths). The binding
-   is a **best-effort** parse of the verbatim bytes: non-scalar fields and an unparseable
-   `arguments` simply leave `args.*` empty (use `args_file`). A scalar arg containing shell
-   metacharacters is safe only when the author uses `exec:`/quoting — documented; the file path is
-   the recommended pattern.
+   `{{ args.<field> }}` via a **thin wrapper scope** (a `toolImplScope` that resolves `args_file`
+   and `args.<field>` and **delegates everything else to a base `*Scope`**) — mirroring the existing
+   wrapper-scope precedents `engine/reduce_scope.go` (`reduceTemplateScope{base}`) and
+   `engine/prune.go:263-275` (`bestScope`), applied at the synthesized-CodeStep template site the
+   same way `reduce.go:270` wraps the reducer's `Run`. This is **not** an edit to the shared
+   `Scope.Resolve` switch (so `args.*` never leaks into general workflow scope) and **not** the
+   map-specific `resolveAsBinding` (`scope.go:296-368`, hard-wired to walk `map[N].item-K` paths).
+   The binding is a **best-effort** parse of the verbatim bytes: non-scalar fields and an
+   unparseable `arguments` simply leave `args.*` empty (use `args_file`). A scalar arg containing
+   shell metacharacters is safe only when the author uses `exec:`/quoting — documented; the file
+   path is the recommended pattern.
 
 Both are **deterministic on resume** *because* of the §4.5 verbatim invariant: the re-staged
 `args_file` reproduces the exact bytes the model emitted (read back from the committed model leaf),
@@ -247,13 +286,16 @@ For a `react:` step with runtime path `R` (= `react[N]`), round `K` (1-based) jo
 - **Each tool impl is a committed leaf** at `R.round-K.tool-J`, a synthesized code-step commit. It
   resume-skips via the existing `LookupCompleted` short-circuit inside `runCodeStepWithContext`
   (`engine/interpreter.go:246`; the handler spans `:245-341`, `Commit` at `:336`).
-- **The `react.round` marker is thin** and gate-class durable: `Log.Append`+`Log.Sync`
-  (`gate.go:161-170`), **not** loop's fsync-riding append (`interpreter.go:465` deliberately skips
-  `Sync`). It carries only `{N}` — a pure round cursor meaning "round K fully settled (model +
-  every dispatched tool committed)". `finish_reason` lives on the **`.model` leaf** (its authoritative
-  home — it is produced there and is needed at the *frontier* round to make the stop decision
-  *before* any marker exists; replayed rounds `1..startK-1` were all `tool_calls` by construction).
-  So nothing is duplicated and there is no drift path. Everything load-bearing is in the committed
+- **The `react.round` marker is the `loop.iter` twin** in *shape* — a pure `{N}` cursor
+  (`LoopIterData{N int}`, `events.go:385-387`) meaning "round K fully settled (model + every
+  dispatched tool committed)" — but **deliberately `Sync`'d** in *durability*, unlike `loop.iter`'s
+  fsync-riding append (`interpreter.go:465` skips `Sync`). The divergence is intentional: a lost
+  loop iteration is first-run-equivalent (re-derivable), but a lost-then-recomputed round of real
+  tool side-effects is not, so the round-closed boundary must be durable before the next model call
+  consumes it (§4.4). `finish_reason` lives on the **`.model` leaf** (its authoritative home — it is
+  produced there and is needed at the *frontier* round to make the stop decision *before* any marker
+  exists; replayed rounds `1..startK-1` were all `tool_calls` by construction). So nothing is
+  duplicated and there is no drift path. Everything load-bearing is in the committed
   `.model`/`.tool-J` leaves, read back by sub-path on resume.
 
 ### 4.2 Why this preserves *one-invocation = one-commit*
@@ -280,9 +322,9 @@ rather than error — hence the explicit guards.
    `path.go:23-27`) and helpers `RoundPath(R, k)` → `react[N].round-K`, `ModelPath(roundPath)` →
    `…model`, `ToolPath(roundPath, j)` → `…tool-J`. The separators are the single source of truth;
    nothing hand-formats paths.
-2. **`engine/events.go`** — add `EventReactRound` (a *commit-class* marker, sibling of
-   `EventGateAttempt`) + `ReactRoundData{N int}` (a pure round cursor; `finish_reason` lives on the
-   `.model` leaf, §4.1). Add a `ReactRoundData`
+2. **`engine/events.go`** — add `EventReactRound` (a *commit-class* marker shaped like
+   `EventLoopIter`) + `ReactRoundData{N int}` (a pure round cursor identical in shape to
+   `LoopIterData`; `finish_reason` lives on the `.model` leaf, §4.1). Add a `ReactRoundData`
    round-trip test in `engine/events_test.go` (alongside `TestGateAttemptDataRoundTrip` /
    `TestLoopIterDataRoundTrip`) — there is **no** engine-package tag-reflection test to inherit
    (`tags_test.go` is `package ir` only).
@@ -347,14 +389,34 @@ These are the *common* paths of a tool loop, not edge cases. v1 behavior:
   round-trips byte-identically, a nested `map[string]any` does **not**.) `args_file` receives these
   exact bytes; `{{ args.<field> }}` is a *discarded* best-effort parse for ergonomics.
 - **Tool impl non-zero exit** (the tool ran and failed, distinct from an infra/dispatch failure):
-  the exit code + stdout + stderr are captured and **fed back to the model as the `ToolMessage`
-  content**; the `.tool-J` leaf commits `OutcomeOK` with this result; the react step does **not**
-  fail. This is the conventional augmented-LLM behavior and what makes a gate-judged loop useful
-  (the model can recover; the gate judges the final answer; `max_turns` bounds runaway). *(This is
-  a deliberate divergence from a normal code step, whose non-zero exit is a step failure
+  the **exit code + stdout** are captured and **fed back to the model as the `ToolMessage` content**;
+  the `.tool-J` leaf commits `OutcomeOK` with this result; the react step does **not** fail. This is
+  the conventional augmented-LLM behavior and what makes a gate-judged loop useful (the model can
+  recover; the gate judges the final answer; `max_turns` bounds runaway). *(This is a deliberate
+  divergence from a normal code step, whose non-zero exit is a step failure
   `interpreter.go:328-334` — `runReact` wraps the impl dispatch to convert a tool's own non-zero
   exit into committed result data.)* A genuine **infra/dispatch failure** (backend can't exec the
   container), after the impl's own `retry:` policy, remains a hard react-step failure.
+  - **stderr is *not* fed back in v1.** The docker exec path does not accumulate stderr into the
+    `ExecResult` (`container/docker/exec.go:120` sets `accum:nil`; stderr exists only as live
+    chunks), so the spec must not promise a field the backend can't produce. v1 = exit code +
+    stdout; accumulating stderr (mirroring the stdout `streamingWriter`) is a scoped follow-up.
+- **The model-facing `ToolMessage` is byte-bounded; the leaf keeps the full output.** A tool may
+  emit megabytes (scan dumps, corpora, payloads). The content fed to the *next model call* is capped
+  at a fixed **16384 bytes** via a `boundDisplayField`-style truncation (`engine/agent_step.go:383`
+  — a real byte cap with a UTF-8 rune-boundary backup + `…[truncated N bytes]` marker; **not**
+  `agent.Elide`, which is line-oriented display), with the marker pointing to the full `.tool-J`
+  leaf / `output_files` artifact. The cap is **un-configurable in v1** (matching the fixed
+  `tool_choice`/`max_turns` discipline) and applies to **tool leaves only — never the §5 terminal
+  answer** (which is the model's own schema-validated message). *(Rationale: OpenAI tool-role content
+  is string/text-only — it cannot carry images/files — so a large/binary result has no choice but to
+  be summarized + referenced, not inlined.)*
+- **Non-UTF-8 tool output → descriptor, not bytes.** Before building the `ToolMessage`, a
+  `utf8.Valid()` gate decides: valid UTF-8 → inline (bounded as above); otherwise → the bytes are
+  captured to an `output_files` artifact and the model is fed a **descriptor** (size, content-type
+  guess, the artifact ref), never the raw bytes. This is mandatory, not optional: `json.Marshal`
+  silently maps invalid UTF-8 to U+FFFD, so inlining binary would feed the model corruption, not an
+  error.
 - **Unknown / hallucinated tool name** (a `tool_call` naming a tool not in `react.tools` — the
   model can emit this; `Strict` on `FunctionDefinitionParam` constrains argument *shape*, not tool
   *selection*): no impl is dispatched; an error `ToolMessage` ("unknown tool `<name>`") is fed back
@@ -380,20 +442,30 @@ reserved `stop_reason` field. Two cases:
   is `{ stop_reason: "max_turns", text: <last assistant text, possibly ""> }`, and `output_schema`
   is **not** enforced (the answer is explicitly truncated). Authors gate on `stop_reason` first.
 
-**Validate check:** an `output_schema` on a `react:` step may not declare a property named
-`stop_reason` (reserved; avoids a collision with the engine-injected field). The exact placement of
-`stop_reason` relative to the typed object (sibling vs reserved top-level key) is pinned in the
-implementation plan; the contract above (always-OK, always-has-stop_reason, schema-enforced-on-
-natural-stop-only) is fixed here.
+**Output shape (pinned).** `stop_reason` is a **reserved top-level sibling** of the typed answer —
+not nested inside it. References are `{{ <id>.<schema-field> }}` (e.g. `{{ answer_question.answer }}`)
+and `{{ <id>.stop_reason }}`. This matches how every comparable system separates the data channel
+from the status channel — Anthropic's `stop_reason` and OpenAI's `finish_reason` are top-level
+siblings of the message, and GitHub Actions splits `steps.<id>.outputs` from `steps.<id>.outcome`.
+On natural stop the answer fields are the validated `output_schema` object; on `max_turns` the only
+data field is `text` (the schema is not enforced). A **validate check** forbids an `output_schema`
+from declaring a property in the reserved set (`stop_reason`), defined as a single constant
+(mirroring `QuorumVerdictFields`, `ir/validate_refs.go:451`).
 
 The `Outcome` enum gains **no** `loop_exhausted` value — staying `OutcomeOK` keeps the terminal
 `node.completed` valid under the only-ok-commits fold rule (`fold.go:181-184`).
 
 ---
 
-## 6. The `awf/llm` tool integration (the "easy part" — ~a day, verified)
+## 6. The `awf/llm` tool integration
 
-`openai-go v3.39.0` (pinned, `go.mod`) has the complete tool API; the review verified every symbol.
+**Effort, scoped honestly.** Only the **transport request shape** below (attach tools + parse
+streamed `tool_calls`) is the "~a day, verified" part — `openai-go v3.39.0` (pinned, `go.mod`) has
+every symbol and the review confirmed each. The **message reconstruction** (the single
+`buildAssistantTurn`, the verbatim-args round-trip, 400-avoidance — §6 step 4 / M5) and the
+**adapter surface** (the new `agent.ToolLoopRunner` optional interface + `DerivedAdapter` forwarding
+— §6 "Message history shape" / C2) are *separately-sized* work, not part of that day.
+
 In `transport.go:streamOpenAI` (the OpenAI-compat build site; the Ollama path, `streamOllama`, is
 rejected for v1 per §2):
 
@@ -412,18 +484,44 @@ rejected for v1 per §2):
    delta loop (`transport.go:128-149` reads only `Delta.Content` today). Keep the existing
    `len(chunk.Choices) > 0` guard (`transport.go:134`) on the accumulator path; a trailing
    usage-only chunk (with `IncludeUsage`) has empty `Choices`.
-4. **Build the next turn:** append the assistant turn via `acc.Choices[0].Message.ToParam()`
-   (rebuilds the assistant param incl. `tool_calls`) then one `openai.ToolMessage(result, id)` per
-   result; re-issue `NewStreaming` with the grown messages.
+4. **Build the next turn from the *committed leaf*, on all paths.** After a fresh model call,
+   `acc.Choices[0].Message.ToParam()` is used **only** to populate the `.model` leaf's stored
+   `{index, id, name, arguments, text, finish_reason}`. The assistant message that goes into the
+   messages array is then built by a **single `buildAssistantTurn(leaf)`** function from those
+   *stored* fields — used identically on the fresh, replay, and model-leaf-guard paths, so there is
+   exactly one construction path (no fresh-vs-resume drift). Each `openai.ToolMessage(result, id)`
+   reads its `id` from the **same stored `{index → id}` map**, guaranteeing
+   `assistant.tool_calls[*].id == tool.tool_call_id` (OpenAI hard-400s on an orphaned
+   `tool_call_id`). On a **natural-stop** round (`finish_reason != "tool_calls"`) the assistant turn
+   carries **no** `tool_calls` field at all — an empty `tool_calls: []` is itself a 400. Re-issue
+   `NewStreaming` with the grown messages.
 
-**Message history shape.** The engine handler owns the loop and the messages array. Today the
-awf/llm message history is `ThreadTurn{User, Assistant string}` (`agent/types.go:79-86`), which
-cannot represent an assistant turn carrying `tool_calls` nor a tool-role message. P3 adds a
-**tool-aware turn shape** (a `ReactTurn`/message-union carried on a react-specific invocation
-surface), supplied by the engine to the adapter, gated by `Caps`. This is the one non-trivial
-integration point beyond the `transport.go` request shape; it stays inside the `awf/llm` + engine
-boundary (no change to `agent:`/`continues:`). `classifyOpenAIErr` (`transport.go:160`) already maps
-transport faults.
+**Message history shape — via an optional interface, NOT a change to the `agent.Adapter` seam.** The
+engine handler owns the loop and the messages array. Today the awf/llm message history is
+`ThreadTurn{User, Assistant string}` (`agent/types.go:79-86`), which cannot represent an assistant
+turn carrying `tool_calls` nor a tool-role message. P3 adds a **tool-aware turn shape** (a
+`ReactTurn`/message-union). It is delivered through a **new optional interface in package `agent`**:
+
+```go
+// package agent — NOT a change to the Adapter interface (that seam is shared by all 5 adapters)
+type ToolLoopRunner interface {
+    RunToolLoop(ctx, ToolLoopInvocation) (ToolLoopResult, error)  // one model call + tools attached
+}
+```
+
+- Implemented on `*awfllm.Adapter`; **`engine` must not import `agent/awfllm`** (layering), so
+  `runReact` obtains it by asserting the **interface** (`adapter.(agent.ToolLoopRunner)`), gated by
+  `Caps.Containerless && Caps.Threaded`.
+- **`DerivedAdapter` must forward it to `d.base`** — exactly the shipped `ResumePreflighter` /
+  `PreflightResume` pattern (`agent/derived.go:65-72`). Without this forwarding edit, a `react:`
+  whose `with.uses` names an `agents:` role gets a `*agent.DerivedAdapter` wrapper
+  (`cli/agent_registry.go:251-256`) and the interface assertion would fail by erasure — silently
+  rejecting a valid awf/llm-via-role config.
+
+This is idiomatic Go optional-capability dispatch (`http.Flusher`, `io.ReaderFrom`) with an in-repo
+precedent (`ResumePreflighter`); it leaves the cross-cutting `agent.Adapter` interface and the other
+four adapters **untouched** (no change to `agent:`/`continues:`). `classifyOpenAIErr`
+(`transport.go:160`) already maps transport faults.
 
 ### 6.1 Validation & gating (`ir/validate*.go`)
 
@@ -431,14 +529,27 @@ transport faults.
 - `react.with.uses` resolves to a `Containerless+Threaded` adapter (run-start gating mirrors
   `local_dispatcher_agent.go:76-81`); a config resolving to `structured_output: ollama_format` is
   rejected (no tool wiring on the Ollama path).
-- `max_turns ≥ 1`; each tool `input_schema` and the optional `output_schema` pass the §7 floor;
-  `output_schema` declares no reserved `stop_reason` property (§5).
+- `max_turns ≥ 1`; each tool `input_schema` and the optional `output_schema` pass the §7 floor.
+- **A new `walkRefs` arm for the `react:`/`tools:` nodes** (the existing passes only walk
+  `Workflow.Graph` — `tools:` is a new top-level field, so today *nothing* walks impl bodies and the
+  `checkRef` default arm silently passes unknown roots, `validate_refs.go:660-663`). Within a tool
+  `impl` subtree this arm **admits `args` and `args_file` as context-local roots** (and rejects them
+  elsewhere) — the `prune.stop_when` precedent, which deliberately does *not* static-type-check its
+  context-local `best.score` root (`validate_prune.go:13-14`), deferring to runtime evaluation. *(So
+  C1 is a small, well-precedented carve-out — not a fix for a pre-existing rejection, which doesn't
+  exist: §11.2/C1.)*
+- **Reserved react-output fields** (M4): a single constant (mirroring `QuorumVerdictFields`,
+  `validate_refs.go:451`) names the reserved set `{stop_reason}`. Validate **forbids** an
+  `output_schema` from declaring any of them, and **accepts** `{{ <id>.stop_reason }}` by adding a
+  synthetic-field arm at the non-aggregate step case (`validate_refs.go:617`, `kind == react`) —
+  otherwise it fails AWF3001 statically even though it resolves fine at runtime via `descendPath`.
 - **Producer registration** for `{{ <id>.* }}` / `awf outputs --step <id>` (the §3.2 addressability
   claim): an `indexProducers`/`validate_refs` arm for `react` keyed by its `id` → `react[N]` path,
-  carrying its `output_schema` (mirroring the Map producer at `ir/validate_refs.go:162-177`). The
-  same multiplicity constraint Map's product addressing carries (addressability of a `react:` nested
-  inside `loop`/`gate`/`map`) applies; if that proves fiddly, `{{ <id>.* }}` for a nested `react:`
-  is scoped out of v1 (the `--step` read still works).
+  carrying its `output_schema` (mirroring the Map producer at `ir/validate_refs.go:162-177`).
+  **Multiplicity (pinned, N3):** in v1 a **top-level** `react:` is fully referenceable via
+  `{{ <id>.* }}`; a `react:` **nested inside `loop`/`gate`/`map`** is readable via
+  `awf outputs --step <id>` **only** (not `{{ <id>.* }}`) — the same multiplicity boundary Map's
+  product addressing carries. This is a fixed v1 decision, not a maybe-cut.
 
 ---
 
@@ -449,18 +560,23 @@ transport faults.
   Deterministic — no network. (No change to the deterministic-replay invariant: the new event type
   is additive and fold-default-arm-safe.)
 - **Resume conformance:** kill after `R.round-2`'s marker → resume re-enters at round 3, and the
-  model/tools of rounds 1–2 are **not** re-dispatched (the fake adapter/backend counts calls), with
-  the messages array rebuilt identically from the committed leaves. **Plus** the torn-frontier case
-  (kill after `R.round-K.model` commits but before `tool-0`) → resume reads the same `tool_calls`
-  back (model **not** re-sampled) and runs only the uncommitted tools. **Plus** two-calls-to-the-
-  same-tool in one round → distinct `tool-0`/`tool-1` by `Index`.
+  model/tools of rounds 1–2 are **not** re-dispatched. The fake adapter is a **tripwire, not a
+  counter**: it **panics** if asked to re-sample a round whose `.model` leaf already committed
+  (call-counting is necessary but not sufficient). The messages array must be rebuilt **identically**
+  from the committed leaves — assert `assistant.tool_calls[*].id == tool.tool_call_id` byte-for-byte
+  (M5). **Plus** the torn-frontier case (kill after `R.round-K.model` commits but before `tool-0`) →
+  resume reads the same `tool_calls` back (model **not** re-sampled) and runs only the uncommitted
+  tools. **Plus** two-calls-to-the-same-tool in one round → distinct `tool-0`/`tool-1` by `Index`.
 - **Unit tests:** `EventReactRound` fold arm + `Lookup/RecordReactRounds`; the `startK` cursor + the
   `.model`-leaf guard; the verbatim-args invariant (a nested-object `arguments` round-trips byte-
   identically through commit→fold and re-stages identical `args_file` bytes); arg-binding
   (`{{ args.<field> }}` scalar; object via `{{ args_file }}` — no AWF4004, no injection);
   `RoundPath`/separator round-trip; `max_turns` → OK+`stop_reason` with dangling tools **not**
-  dispatched; tool non-zero exit fed back as `ToolMessage`; unknown-tool-name `ToolMessage`;
-  adapter-gating + Ollama-path rejection; the validate cross-refs + the producer registration.
+  dispatched; tool non-zero exit fed back as `ToolMessage` (stdout-only in v1); the model-facing
+  16384-byte cap (a >16 KB stdout is truncated with the marker, full output intact in the leaf) +
+  the `utf8.Valid()` descriptor route for binary output; `buildAssistantTurn` omits `tool_calls` on
+  a natural-stop round; unknown-tool-name `ToolMessage`; adapter-gating + Ollama-path rejection; the
+  validate cross-refs, the `stop_reason` accept/forbid arms, and the producer registration.
 - **Regression:** existing `gate`/`loop`/`map`/`reduce`/`continues:` and `workflow_exports` suites
   stay green (this change adds, never edits, their fold arms). `make lint test` is the bar.
 
@@ -497,23 +613,28 @@ documentation. It can land with or before the P3 work.
 1. **Man-page format revision** (`man/awf-workflow.5.md`): `tools:` block + `react:` step — the
    contract, first.
 2. **A4 — `tools:` block:** IR (`ir/node.go` 4-edit registry + `wantKinds` bump + an `ir.Tool` +
-   id-less `ir.ToolImpl` type + top-level `Workflow.Tools`), validate, digest (automatic), and the
-   arg-staging (`Backend.CopyTo`) + `args.*`/`args_file` scope plumbing (§3.3). Tool impls are
-   dispatchable via a synthesized `CodeStep` reusing the existing substrate (the `reduce.go`
-   precedent).
+   id-less `ir.ToolImpl` type that references a `containers:`-declared `container:` + top-level
+   `Workflow.Tools`), validate, digest (automatic), and the arg-staging (`Backend.CopyTo` to a
+   per-call path) + the `toolImplScope` wrapper for `args.*`/`args_file` (§3.3). Tool impls are
+   dispatchable via a synthesized `CodeStep` reusing the existing substrate + workflow-level
+   container handle (the `reduce.go` precedent).
 3. **A3 — `react:` step:** the new node kind + producer registration + `engine/react.go`
-   (`runReact`), the `transport.go` tool request/parse + the tool-aware message shape, journaling
-   (§4), failure handling (§4.5), and the terminal contract (§5).
+   (`runReact`); the `agent.ToolLoopRunner` optional interface (+ `DerivedAdapter` forwarding) and
+   its `*awfllm.Adapter` impl; the `transport.go` tool request/parse + the single
+   `buildAssistantTurn`; journaling (§4), failure/bounding handling (§4.5), and the terminal
+   contract (§5).
 4. **P2 doc note** (§8) — independent; land anytime in this cycle.
 
 Each lands behind the fake-backend conformance bucket; `make lint test` green throughout.
-The implementation **plan** (writing-plans) sequences these into ordered TDD steps and pins the
-remaining implementation-level choices (the exact `ReactTurn` message-union type; the precise
-placement of the `stop_reason` field in the terminal output).
+The implementation **plan** (writing-plans) sequences these into ordered TDD steps; the only
+implementation-level detail left open is the exact field layout of the `ReactTurn`/`ToolLoopInvocation`
+types (the `stop_reason` placement and the container/scope/journaling decisions are pinned above).
 
 ---
 
 ## 11. Adversarial-review corrections applied (audit trail)
+
+### 11.1 First pass — 5-lens self-critique
 
 The 5-lens review verified ~30 file:line anchors and flagged six substantive items, all folded in:
 
@@ -533,3 +654,39 @@ Anchor/precision fixes also applied: `graph:` not `steps:` (§3.1); Ollama gated
 only" (§6); the one-completion-per-path invariant is writer-discipline, not fold-enforced (§4.2);
 `tags_test.go` is IR-only → engine round-trip test instead (§4.3.2); `ToolChoice` shorthand
 corrected (§6.2); `wantKinds` 12→13 (§3.2); `impl` is an id-less type, not `ir.CodeStep` (§3.1).
+
+### 11.2 Second pass — reality-check (code + external prior art)
+
+A follow-up workflow fact-checked every first-pass fix against the code **and** external prior art
+(OpenAI/Anthropic API docs, LangChain/openai-agents, Temporal/event-sourcing). It *reversed* one fix
+and corrected three — all folded in above:
+
+1. **M1 — reversed.** "The `react.round` marker is redundant, delete it" was **wrong**: `loop.iter`
+   is *also* a pure-`{N}` cursor (`LoopIterData{N}`, `events.go:385-387`), so `react.round` is its
+   load-bearing twin, not a derivable aggregate. Temporal/event-sourcing keep boundary markers on
+   purpose, and the engine has zero leaf-walking-resume precedent. **Kept** the marker; re-templated
+   on `loop.iter` (shape) with a deliberate `Sync` (durability) (§0, §4.1).
+2. **C2 — mechanism corrected.** Asserting to the concrete `*awfllm.Adapter` fails under the
+   `DerivedAdapter` wrapper used for `agents:` roles (interface erasure, `cli/agent_registry.go:251`).
+   Replaced with the `agent.ToolLoopRunner` optional interface + `DerivedAdapter` forwarding (the
+   shipped `ResumePreflighter` pattern) (§6).
+3. **C1 — downgraded + re-mechanism'd.** The "static validator rejects `args.*`, kills every tool"
+   premise is **false** (the `checkRef` default arm passes unknown roots; `tools:` bodies aren't
+   walked at all — `validate_refs.go:660-663`). The real work is a permissive `walkRefs` arm
+   (`prune.stop_when` precedent) + a wrapper `toolImplScope` (not a `Scope.Resolve` edit) (§3.3,
+   §6.1).
+4. **M3 — replaced.** "Mirror map per-item containers" copies the slice-5 "Exec: unknown handle"
+   regression `reduce.go:84-90` was fixed away from. Replaced with a `containers:`-declared
+   container reused at the workflow level (zero lifecycle code) — which also fixed a latent IR gap
+   (inline `image:` has no `ir.CodeStep` field) (§2, §3.1).
+5. **M2 — corrected citations + scope.** `boundDisplayField` (`agent_step.go:383`), not
+   `agent.Elide`; fixed 16 KB (un-configurable); a mandatory `utf8.Valid()` descriptor route
+   (OpenAI tool content is text-only); cap applies to tool leaves only (§4.5).
+6. **M5 — corrected.** Build the assistant turn from the committed leaf on **all** paths (not
+   `ToParam()` on the fresh path); omit `tool_calls` on natural stop (empty `[]` is a 400) (§6).
+
+**New problems the reality-check surfaced** (none caught by the first pass), all folded in: **N1**
+stderr is uncapturable on the docker exec path (`exec.go:120` `accum:nil`) → v1 feeds stdout-only
+(§4.5); **N2** the inline-`image:` IR gap (closed by the M3 declared-container fix, §3.1); **N3** the
+nested-`react:` addressability boundary, now a pinned v1 decision (`--step`-only) rather than a
+maybe-cut (§6.1).
