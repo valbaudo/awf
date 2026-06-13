@@ -120,6 +120,12 @@ type modelResult struct {
 	Output       map[string]any
 	ToolCalls    []agent.ToolCall
 	FinishReason string
+	// Metrics is the per-round model call's cost/tokens (slice 6.1 parity with
+	// agent: steps). Persisted VERBATIM on the .model leaf's node.completed for
+	// obs; it is NOT part of modelLeafOutputs and so plays no role in resume
+	// (purely observational — read back from the leaf event, never folded into a
+	// modelResult on replay). nil when the adapter returns no metrics.
+	Metrics *agent.MetricSet
 }
 
 func toModelResult(res agent.ToolLoopResult) modelResult {
@@ -128,6 +134,7 @@ func toModelResult(res agent.ToolLoopResult) modelResult {
 		Output:       res.Output,
 		ToolCalls:    res.ToolCalls,
 		FinishReason: res.FinishReason,
+		Metrics:      res.Metrics,
 	}
 }
 
@@ -208,7 +215,10 @@ func buildAssistantTurn(mr modelResult) agent.ReactTurn {
 // invariant: a Go string round-trips byte-identically through Blobs/Fold.
 func commitModelLeaf(ictx interpreterContext, modelPath string, mr modelResult) error {
 	out := modelLeafOutputs(mr)
-	nr, err := Commit(ictx.log, ictx.blobs, modelPath, DispatchResult{Outcome: OutcomeOK, Outputs: out}, false)
+	// Metrics ride on the DispatchResult (persisted verbatim on node.completed,
+	// the same path agent: steps use) — NOT in `out`, so they never enter the
+	// modelLeafOutputs round-trip and can't perturb resume determinism.
+	nr, err := Commit(ictx.log, ictx.blobs, modelPath, DispatchResult{Outcome: OutcomeOK, Outputs: out, Metrics: mr.Metrics}, false)
 	if err != nil {
 		return fmt.Errorf("engine.runReact: commit model leaf at %q: %w", modelPath, err)
 	}
@@ -314,6 +324,11 @@ func toolMessageFromLeaf(toolCallID string, nr NodeResult) agent.ReactTurn {
 // dispatchRoundTools dispatches every tool_call in stored Index order. A
 // committed leaf is replayed; an unknown tool name feeds an error tool message
 // (no dispatch); otherwise the impl is synthesized + dispatched (dispatchOneTool).
+//
+// Per-call keying (ToolPath(roundPath, tc.Index) for the leaf path and
+// argsFilePath for the staged args file) assumes tool_call Index is unique
+// within a round — that uniqueness is the adapter's contract (the model emits
+// one tool_call per slot J → react[N].round-K.tool-J), not re-checked here.
 func dispatchRoundTools(ctx context.Context, r *ir.React, roundPath string, mr modelResult, msgs *[]agent.ReactTurn, ictx interpreterContext) error {
 	for _, tc := range mr.ToolCalls {
 		toolPath := ToolPath(roundPath, tc.Index)
@@ -387,7 +402,10 @@ func dispatchOneTool(ctx context.Context, tool ir.Tool, toolPath string, tc agen
 	if ferr != nil {
 		return "", fmt.Errorf("engine.runReact: template tool output_files at %q: %w", toolPath, ferr)
 	}
-	synth := &ir.CodeStep{Run: cmd, Container: tool.Impl.Container, OutputFiles: tool.Impl.OutputFiles}
+	// synth carries no OutputFiles: the dispatcher captures from
+	// ResolvedInputs.OutputFiles (the TEMPLATED paths built above), never
+	// cs.OutputFiles — a raw untemplated copy here would be silently unread.
+	synth := &ir.CodeStep{Run: cmd, Container: tool.Impl.Container}
 	resolved := ResolvedInputs{
 		Command:     cmd,
 		Env:         map[string]string{},

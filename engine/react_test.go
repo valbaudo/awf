@@ -132,6 +132,24 @@ func (h *reactTestHarness) programTool(run string, result container.ExecResult) 
 	h.fake.ProgramExec(run, result, nil)
 }
 
+// programToolWithFiles is programTool plus the files the programmed command
+// WRITES into the executing handle's fs when it runs — so the dispatcher's
+// post-Exec CaptureFiles (output_files capture, exit==0 only) finds them.
+func (h *reactTestHarness) programToolWithFiles(run string, result container.ExecResult, files map[string][]byte) {
+	h.fake.ProgramExecWithFiles(run, result, nil, files)
+}
+
+// reactWorkflowWithOutputFiles builds a one-tool workflow whose impl run: is
+// `toolRun` and whose impl declares a single output_files entry with a TEMPLATED
+// path (exercising toolImplScope inside an output_files path, spec §4.5).
+func reactWorkflowWithOutputFiles(toolRun, outputFilePath string) *ir.Workflow {
+	wf := reactWorkflow(toolRun)
+	tool := wf.Tools["check"]
+	tool.Impl.OutputFiles = ir.OutputFiles{{Name: "report", Path: outputFilePath}}
+	wf.Tools["check"] = tool
+	return wf
+}
+
 // reactWorkflow builds a one-tool workflow whose impl run: command is `run`.
 func reactWorkflow(toolRun string) *ir.Workflow {
 	return &ir.Workflow{
@@ -665,4 +683,151 @@ func TestRunReactResumesTornFrontierModelCommittedToolNot(t *testing.T) {
 	}
 	// Round 2's history carries the fresh tool result with the matching id.
 	assertToolMessage(t, h.runner.Calls()[0].Messages, "c1", "FRESH")
+}
+
+// ---------------------------------------------------------------------------
+// Task 4.5 — output_files capture: a tool impl declaring a TEMPLATED
+// output_files path resolves it via toolImplScope, the produced file lands on
+// the .tool-J leaf's Files map, and it is NOT surfaced to the model (the
+// "captured-but-not-surfaced" contract — the model sees only stdout). Plus the
+// missing-file sub-case (declared but not produced → exit-code present →
+// rewrite-to-OK-leaf branch, capture silently empty).
+// ---------------------------------------------------------------------------
+
+func TestRunReactCapturesTemplatedOutputFile(t *testing.T) {
+	// The impl run: is a fixed key (so the fake lookup is stable); the TEMPLATED
+	// bit lives in the output_files path: "/work/out-{{ args.x }}.json".
+	wf := reactWorkflowWithOutputFiles("produce", "/work/out-{{ args.x }}.json")
+	r := &ir.React{ID: "answer", Prompt: "go", Tools: []string{"check"},
+		With: ir.RawConfig{"uses": "awf/llm", "model": "m"}}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "check", Arguments: `{"x":"7"}`}}, FinishReason: "tool_calls"},
+		{Text: "done", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+	// args.x == "7" → the templated capture path resolves to /work/out-7.json.
+	// The fake writes that exact path when "produce" runs; the dispatcher captures
+	// it (exit 0, output_files non-empty). STDOUT is the only model-facing surface.
+	const capturedPath = "/work/out-7.json"
+	const capturedBytes = "SECRET-FILE-PAYLOAD"
+	h.programToolWithFiles("produce",
+		container.ExecResult{ExitCode: 0, Stdout: []byte("STDOUT-VISIBLE")},
+		map[string][]byte{capturedPath: []byte(capturedBytes)})
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+
+	// (a)+(b) The TEMPLATED path resolved (via toolImplScope) and the captured
+	// file landed on the .tool-0 leaf's Files map under the RESOLVED path.
+	tnr, ok := h.rs.LookupCompleted("react[0].round-1.tool-0")
+	if !ok {
+		t.Fatal("tool-0 leaf not committed")
+	}
+	ref, ok := tnr.Files[capturedPath]
+	if !ok {
+		t.Fatalf("captured file %q not on the tool leaf Files map: %v", capturedPath, tnr.Files)
+	}
+	got, err := h.blobs.Get(ref)
+	if err != nil {
+		t.Fatalf("blobs.Get(%q): %v", ref, err)
+	}
+	if string(got) != capturedBytes {
+		t.Fatalf("captured file content = %q, want %q", got, capturedBytes)
+	}
+
+	// (c) The captured file is NOT surfaced to the model: round 2's tool message
+	// for c1 carries stdout, never the file's bytes (§4.5 captured-but-not-surfaced).
+	call2 := h.runner.Calls()[1]
+	assertToolMessage(t, call2.Messages, "c1", "STDOUT-VISIBLE")
+	for _, m := range call2.Messages {
+		if m.Role == "tool" && m.ToolCallID == "c1" && strings.Contains(m.Content, capturedBytes) {
+			t.Fatalf("captured file bytes leaked into the model-facing tool message: %q", m.Content)
+		}
+	}
+}
+
+// Missing-file sub-case: a tool exits 0 but fails to produce its declared
+// output_file → the dispatcher's CaptureFiles errors → DispatchResult is
+// retryable_failure WITH an ExitCode set. dispatchOneTool takes the
+// `dr.ExitCode != nil` "rewrite to OK leaf + feed stdout back" branch (capture
+// silently empty), so the react step does NOT fail and the model sees stdout.
+func TestRunReactMissingOutputFileRewritesToOKLeaf(t *testing.T) {
+	wf := reactWorkflowWithOutputFiles("produce", "/work/out-{{ args.x }}.json")
+	r := &ir.React{ID: "answer", Prompt: "go", Tools: []string{"check"},
+		With: ir.RawConfig{"uses": "awf/llm", "model": "m"}}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "check", Arguments: `{"x":"7"}`}}, FinishReason: "tool_calls"},
+		{Text: "done", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+	// Exit 0 but NO files written → the declared /work/out-7.json is absent →
+	// CaptureFiles errors → retryable_failure + ExitCode set.
+	h.programTool("produce", container.ExecResult{ExitCode: 0, Stdout: []byte("STDOUT-ONLY")})
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v (a missing declared output_file must not fail the react step)", oc, err)
+	}
+	// The leaf committed OK (rewrite branch), exit_code 0, capture silently empty.
+	tnr, ok := h.rs.LookupCompleted("react[0].round-1.tool-0")
+	if !ok {
+		t.Fatal("tool-0 leaf not committed on the rewrite branch")
+	}
+	if jsonInt(tnr.Outputs["exit_code"]) != 0 {
+		t.Fatalf("tool leaf exit_code = %v, want 0", tnr.Outputs["exit_code"])
+	}
+	if len(tnr.Files) != 0 {
+		t.Fatalf("capture must be silently empty on the rewrite branch, got Files=%v", tnr.Files)
+	}
+	// The model still gets stdout fed back.
+	assertToolMessage(t, h.runner.Calls()[1].Messages, "c1", "STDOUT-ONLY")
+}
+
+// ---------------------------------------------------------------------------
+// Slice 6.1 parity — the adapter's per-round Metrics ride onto the .model leaf's
+// node.completed (verbatim; observational, not folded into resume).
+// ---------------------------------------------------------------------------
+
+func TestRunReactModelLeafCarriesMetrics(t *testing.T) {
+	wf := reactWorkflow("true")
+	r := &ir.React{ID: "answer", Prompt: "q", Tools: []string{"check"},
+		With: ir.RawConfig{"uses": "awf/llm", "model": "m"}}
+	ms := &agent.MetricSet{
+		Cost:   agent.MetricCost{Total: 0.42, Source: agent.CostSourceReported},
+		Tokens: agent.MetricTokens{Input: 100, Output: 50},
+		Turns:  1,
+	}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{Text: "hi", FinishReason: "stop", Metrics: ms},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+	// The .model leaf's node.completed event must carry the Metrics verbatim.
+	events, err := h.lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var got *agent.MetricSet
+	for _, e := range events {
+		if e.Type != EventNodeCompleted || e.Path != "react[0].round-1.model" {
+			continue
+		}
+		var d NodeCompletedData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatalf("unmarshal node.completed: %v", err)
+		}
+		got = d.Metrics
+	}
+	if got == nil {
+		t.Fatal("the .model leaf's node.completed carries no Metrics (react cost is invisible to obs)")
+	}
+	if got.Cost.Total != 0.42 || got.Tokens.Input != 100 || got.Tokens.Output != 50 {
+		t.Fatalf("model-leaf Metrics = %+v, want cost 0.42 tokens 100/50", got)
+	}
 }
