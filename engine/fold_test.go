@@ -1199,3 +1199,19 @@ func TestFoldMissingTranscriptBlobIsError(t *testing.T) {
 		t.Fatal("Fold should error on a node.completed referencing a missing transcript blob (spec §8 atomicity)")
 	}
 }
+
+func TestFold_ReactRoundsAppend(t *testing.T) {
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted, Data: marshalOrFatal(t, RunStartedData{RunID: "x", WorkflowDigest: "y"})},
+		{Seq: 2, TS: fixedTS, Type: EventReactRound, Path: "react[0]", Data: marshalOrFatal(t, ReactRoundData{N: 1})},
+		{Seq: 3, TS: fixedTS, Type: EventReactRound, Path: "react[0]", Data: marshalOrFatal(t, ReactRoundData{N: 2})},
+	}
+	rs, err := Fold(events, state.NewInMemoryBlobs())
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	rounds := rs.ReactRounds["react[0]"]
+	if len(rounds) != 2 || rounds[0].N != 1 || rounds[1].N != 2 {
+		t.Fatalf("ReactRounds = %+v, want [{1} {2}]", rounds)
+	}
+}

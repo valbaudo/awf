@@ -84,8 +84,9 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 	rs.Branches = make(map[string]string, len(events)/8)
 	rs.LoopIters = make(map[string]int, len(events)/8)
 	rs.GateAttempts = make(map[string][]AttemptResult, len(events)/16) // sparse — gates are uncommon
-	rs.MapItems = make(map[string][]MapItemRecord, len(events)/16)     // sparse — maps are uncommon
-	rs.Signals = make(map[string][]SignalEntry, len(events)/16)        // sparse — signals are uncommon
+	rs.ReactRounds = make(map[string][]ReactRoundRecord, len(events)/16)
+	rs.MapItems = make(map[string][]MapItemRecord, len(events)/16) // sparse — maps are uncommon
+	rs.Signals = make(map[string][]SignalEntry, len(events)/16)    // sparse — signals are uncommon
 	rs.CallStarted = make(map[string]CallStartedRecord, len(events)/16)
 	rs.SignalReceivedAt = make(map[string]SignalReceivedEntry, len(events)/16)
 	rs.SnapshotRefs = make(map[string]string) // slice 7.1 — snapshot:workspace containers only; sparse
@@ -266,6 +267,14 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				ar.Verdict = v
 			}
 			rs.GateAttempts[e.Path] = append(rs.GateAttempts[e.Path], ar)
+
+		case EventReactRound:
+			var d ReactRoundData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+					EventReactRound, e.Seq, e.Path, err)
+			}
+			rs.ReactRounds[e.Path] = append(rs.ReactRounds[e.Path], ReactRoundRecord(d))
 
 		case EventMapItem:
 			var d MapItemData
