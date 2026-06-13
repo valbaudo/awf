@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -345,4 +346,100 @@ func TestRunReactUnknownToolFedBack(t *testing.T) {
 	}
 	call2 := h.runner.Calls()[1]
 	assertToolMessage(t, call2.Messages, "c1", "unknown tool")
+}
+
+// ---------------------------------------------------------------------------
+// Task 4.4 — replay: a committed round-1 (model leaf w/ tool_call + tool-0 leaf
+// + marker) is rebuilt from the log on resume; round 1 is NOT re-sampled.
+// ---------------------------------------------------------------------------
+
+// seedCommittedRound1 commits a round-1 model leaf (one tool_call) + its tool-0
+// leaf + the react.round marker, then RE-FOLDS the log into h.rs so the resume
+// RunState is exactly what a real resume would rebuild (ints become float64,
+// arguments round-trip as a verbatim string). After this, runReact must resume
+// at round 2.
+func (h *reactTestHarness) seedCommittedRound1(t *testing.T, toolCallID, toolName, args, toolStdout string) {
+	t.Helper()
+	ictx := h.ictx()
+	// 0. A run.started event must lead the log (Fold requires it).
+	rsData, err := json.Marshal(RunStartedData{RunID: testRunID, WorkflowDigest: testDigest})
+	if err != nil {
+		t.Fatalf("marshal run.started: %v", err)
+	}
+	if err := h.lg.Append(state.Event{Type: EventRunStarted, Data: rsData}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	// 1. Commit the model leaf with a single tool_call.
+	mr := modelResult{
+		Text:         "",
+		FinishReason: "tool_calls",
+		ToolCalls:    []agent.ToolCall{{Index: 0, ID: toolCallID, Name: toolName, Arguments: args}},
+	}
+	if err := commitModelLeaf(ictx, "react[0].round-1.model", mr); err != nil {
+		t.Fatalf("seed model leaf: %v", err)
+	}
+	// 2. Commit the tool-0 leaf carrying the (already-bounded) model-facing content.
+	toolDR := DispatchResult{
+		Outcome:  OutcomeOK,
+		ExitCode: copyIntPtr(0),
+		Outputs:  map[string]any{"exit_code": 0, "stdout": toolStdout, "content": toolStdout},
+		Stdout:   []byte(toolStdout),
+	}
+	tnr, err := Commit(ictx.log, ictx.blobs, "react[0].round-1.tool-0", toolDR, false)
+	if err != nil {
+		t.Fatalf("seed tool leaf: %v", err)
+	}
+	ictx.runstate.RecordCompleted("react[0].round-1.tool-0", tnr)
+	// 3. Close round 1 (marker).
+	if err := closeRound(ictx, "react[0]", 1); err != nil {
+		t.Fatalf("seed close round: %v", err)
+	}
+	// 4. Re-fold the log into a fresh RunState — the true resume path.
+	events, err := h.lg.Fold()
+	if err != nil {
+		t.Fatalf("fold seeded log: %v", err)
+	}
+	folded, err := Fold(events, h.blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	h.rs = folded
+}
+
+func TestRunReactReplaysCommittedRound(t *testing.T) {
+	wf := reactWorkflow("./check {{ args_file }}")
+	r := &ir.React{ID: "answer", Prompt: "use the tool", Tools: []string{"check"},
+		With: ir.RawConfig{"uses": "awf/llm", "model": "m"}}
+	// Only ONE script entry — it must be consumed by ROUND 2 (round 1 replayed).
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{Text: "final", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+	h.seedCommittedRound1(t, "c1", "check", `{"x":1}`, "RES")
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+	// Round 1 was replayed, not re-sampled: exactly ONE model call (round 2).
+	if got := len(h.runner.Calls()); got != 1 {
+		t.Fatalf("model called %d times, want 1 (round 1 must be replayed, not re-sampled)", got)
+	}
+	// Round 1 must NOT have re-dispatched its tool (no second exec) — the leaf is
+	// the same one we seeded; assert via the single model call's rebuilt history.
+	msgs := h.runner.Calls()[0].Messages
+	// initial user turn + round-1 assistant(tool_calls) + round-1 tool(result)
+	if len(msgs) != 3 {
+		t.Fatalf("replayed history len = %d, want 3: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "use the tool" {
+		t.Fatalf("initial user turn = %+v", msgs[0])
+	}
+	assertAssistantToolCall(t, msgs, "c1", "check", `{"x":1}`)
+	assertToolMessage(t, msgs, "c1", "RES")
+	// Terminal committed.
+	nr, ok := h.rs.LookupCompleted("react[0]")
+	if !ok || nr.Outputs["text"] != "final" || nr.Outputs["stop_reason"] != "stop" {
+		t.Fatalf("terminal = %v (ok=%v)", nr.Outputs, ok)
+	}
 }
