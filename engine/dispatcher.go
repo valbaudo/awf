@@ -72,6 +72,13 @@ type ResolvedInputs struct {
 	// CAS blob and Blobs.Get's the bytes (the dispatcher never touches Blobs).
 	InputFiles []container.InputFile
 
+	// ContainerlessFiles are the resolved input_files for a CONTAINERLESS agent
+	// step — delivered to the adapter as inline message parts (each a label +
+	// content + sniffed MIME) instead of staged into a container. Populated by
+	// engine/agent_step.go's runAgentStep only when the step omits container:;
+	// nil for container-backed steps (which use InputFiles) and code steps.
+	ContainerlessFiles []agent.InputFile
+
 	// Snapshot is "workspace" iff the step's container is a snapshot:workspace
 	// container; the dispatcher captures a CoW diff after a successful exec.
 	Snapshot string

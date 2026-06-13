@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
@@ -59,14 +60,10 @@ func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow
 			return nil, fmt.Errorf("input_files[%s]: substituted destination %q must be an absolute, clean path (no '..' segment)", dst, resolvedDst)
 		}
 		rawRef := in[dst]
-		if name, ok := template.ParseWorkflowInputFileRef(rawRef); ok {
-			cas, err := scope.ResolveWorkflowInputFile(name)
+		if _, ok := template.ParseWorkflowInputFileRef(rawRef); ok {
+			_, b, err := resolveSingleRefBytes(rawRef, scope, wf, moduleID, blobs, assets)
 			if err != nil {
 				return nil, fmt.Errorf("input_files[%s]: %w", dst, err)
-			}
-			b, err := blobs.Get(cas)
-			if err != nil {
-				return nil, fmt.Errorf("input_files[%s]: %w (%v)", dst, errArtifactFetch, err)
 			}
 			expanded = append(expanded, resolvedInputFile{
 				file:   container.InputFile{Path: resolvedDst, Content: b},
@@ -145,6 +142,59 @@ func resolveSingleInputFileRef(rawRef string, scope *Scope, wf *ir.Workflow, mod
 		return "", nil, fmt.Errorf("%s: %w", rawRef, err)
 	}
 	return asset.Files[0].Ref, b, nil
+}
+
+// resolveSingleRefBytes resolves ONE input_files ref to (cas, bytes), covering all
+// three single-file kinds: input.files.<name> (workflow input file), step.<id>.files.<name>
+// (prior artifact), and a SINGLE-FILE asset.<id>. A DIRECTORY asset is rejected — a
+// label/path maps to exactly one input, not a tree. Shared by resolveInputFileEntries
+// (container path) and the containerless resolver so blob-fetch + ref grammar live in
+// ONE place (no duplicated logic).
+func resolveSingleRefBytes(rawRef string, scope *Scope, wf *ir.Workflow, moduleID string, blobs state.Blobs, assets map[string]RunStartedAsset) (string, []byte, error) {
+	if name, ok := template.ParseWorkflowInputFileRef(rawRef); ok { // input.files.<name>
+		cas, err := scope.ResolveWorkflowInputFile(name)
+		if err != nil {
+			return "", nil, err
+		}
+		b, err := blobs.Get(cas)
+		if err != nil {
+			return "", nil, fmt.Errorf("%w (%v)", errArtifactFetch, err)
+		}
+		return cas, b, nil
+	}
+	if id, ok := template.ParseAssetRef(rawRef); ok { // asset.<id>: reject directories
+		if a, ok := assets[QualifiedAssetKey(moduleID, id)]; ok && a.IsDir {
+			return "", nil, fmt.Errorf("%s: a directory asset cannot be a single input; reference one file", rawRef)
+		}
+	}
+	return resolveSingleInputFileRef(rawRef, scope, wf, moduleID, blobs, assets) // step.<id>.files.<name> + single-file asset
+}
+
+// resolveContainerlessInputFiles maps a containerless step's input_files
+// (LABEL -> single-file ref) to []agent.InputFile, sorted by label for
+// determinism. The key is a logical label, not an absolute container path.
+func resolveContainerlessInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, moduleID string, blobs state.Blobs, assets map[string]RunStartedAsset) ([]agent.InputFile, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	labels := make([]string, 0, len(in))
+	for l := range in {
+		labels = append(labels, l)
+	}
+	sort.Strings(labels)
+	out := make([]agent.InputFile, 0, len(in))
+	for _, label := range labels {
+		_, b, err := resolveSingleRefBytes(in[label], scope, wf, moduleID, blobs, assets)
+		if err != nil {
+			return nil, fmt.Errorf("input_files[%s]: %w", label, err)
+		}
+		mimeType, err := agent.DetectMIME(label, b)
+		if err != nil {
+			return nil, fmt.Errorf("input_files[%s]: %w", label, err)
+		}
+		out = append(out, agent.InputFile{Name: label, Content: b, MIME: mimeType})
+	}
+	return out, nil
 }
 
 func resolveAssetInputFiles(dst, rawRef, moduleID, id string, assets map[string]RunStartedAsset, blobs state.Blobs) ([]resolvedInputFile, error) {
