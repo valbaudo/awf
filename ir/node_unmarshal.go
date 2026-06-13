@@ -14,6 +14,7 @@ var controlKeys = map[string]func() Node{
 	"try": func() Node { return &Try{} }, "parallel": func() Node { return &Parallel{} },
 	"gate": func() Node { return &Gate{} }, "skip": func() Node { return &Skip{} },
 	"map": func() Node { return &Map{} }, "compose": func() Node { return &Compose{} },
+	"react": func() Node { return &React{} },
 }
 var stepKeys = map[string]func() Node{
 	"run": func() Node { return &CodeStep{} }, "uses": func() Node { return &AgentStep{} },
@@ -91,6 +92,9 @@ func unmarshalControl(key string, inner json.RawMessage, n Node) error {
 		return json.Unmarshal(inner, &v.Reason)
 	case *Map:
 		type a Map
+		return json.Unmarshal(inner, (*a)(v))
+	case *React:
+		type a React
 		return json.Unmarshal(inner, (*a)(v))
 	case *Compose:
 		type a Compose

@@ -1,6 +1,6 @@
 package ir
 
-// Node is one of the twelve node kinds (4 step + 8 control). Discriminated by key-presence at the
+// Node is one of the thirteen node kinds (4 step + 9 control). Discriminated by key-presence at the
 // wire level (the AWF standard's surface), so adding/removing a kind touches FOUR places in this
 // package — keep them in sync:
 //
@@ -141,6 +141,20 @@ type Compose struct {
 	Body    NodeList `json:"body"`
 }
 
+// React is the model+tools+loop node (P3 A3). A control-style wrapper of the Map
+// class: its runtime path is react[N] (keyword[index], NOT its id); the id is for
+// output addressing only ({{ <id>.* }} / awf outputs --step <id>) via producer
+// registration. tools is required and non-empty; with is the awf/llm config minus
+// prompt (the engine owns the messages array). See spec §3.2.
+type React struct {
+	ID           string      `json:"id,omitempty"`
+	With         RawConfig   `json:"with,omitempty"`
+	Prompt       string      `json:"prompt"`
+	Tools        []string    `json:"tools"`
+	MaxTurns     int         `json:"max_turns,omitempty"`
+	OutputSchema *JSONSchema `json:"output_schema,omitempty"`
+}
+
 func (*If) isNode()       {}
 func (*Loop) isNode()     {}
 func (*Try) isNode()      {}
@@ -149,6 +163,7 @@ func (*Gate) isNode()     {}
 func (*Skip) isNode()     {}
 func (*Map) isNode()      {}
 func (*Compose) isNode()  {}
+func (*React) isNode()    {}
 
 // NodeList is the type of every node-bearing field. A bare []Node cannot unmarshal (interface
 // elements), so all such fields use this named type whose UnmarshalJSON (in node_unmarshal.go)

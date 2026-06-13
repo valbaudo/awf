@@ -462,13 +462,29 @@ func TestComposeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReactNodeRoundTrip(t *testing.T) {
+	in := NodeList{&React{ID: "answer", Prompt: "{{ input.q }}", Tools: []string{"t"}, MaxTurns: 4}}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out NodeList
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	r, ok := out[0].(*React)
+	if !ok || r.ID != "answer" || len(r.Tools) != 1 || r.MaxTurns != 4 {
+		t.Fatalf("react round-trip lost data: %#v", out[0])
+	}
+}
+
 // TestNodeRegistryExhaustive guards the 3-touchpoint invariant called out in node.go: every
 // controlKeys entry must have a matching case in unmarshalControl, and the total number of kinds
 // (control + step) must equal the count of concrete Node types. A future contributor who adds a
 // control type to the factory but forgets the switch case lands in the "unknown control" branch,
 // which this test catches before it can ship.
 func TestNodeRegistryExhaustive(t *testing.T) {
-	const wantKinds = 12 // 4 step + 8 control; update when (the standard's set of) node kinds changes.
+	const wantKinds = 13 // 4 step + 9 control; update when (the standard's set of) node kinds changes.
 	if got := len(controlKeys) + len(stepKeys); got != wantKinds {
 		t.Fatalf("registries cover %d kinds, want %d", got, wantKinds)
 	}

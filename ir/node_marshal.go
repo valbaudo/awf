@@ -14,12 +14,13 @@ func wrap(key string, inner any) ([]byte, error) {
 	return json.Marshal(map[string]json.RawMessage{key: b})
 }
 
-// Five object-valued control nodes share the same wrap pattern.
-func (n *If) MarshalJSON() ([]byte, error)   { type a If; return wrap("if", (*a)(n)) }
-func (n *Loop) MarshalJSON() ([]byte, error) { type a Loop; return wrap("loop", (*a)(n)) }
-func (n *Try) MarshalJSON() ([]byte, error)  { type a Try; return wrap("try", (*a)(n)) }
-func (n *Gate) MarshalJSON() ([]byte, error) { type a Gate; return wrap("gate", (*a)(n)) }
-func (n *Map) MarshalJSON() ([]byte, error)  { type a Map; return wrap("map", (*a)(n)) }
+// Six object-valued control nodes share the same wrap pattern.
+func (n *If) MarshalJSON() ([]byte, error)    { type a If; return wrap("if", (*a)(n)) }
+func (n *Loop) MarshalJSON() ([]byte, error)  { type a Loop; return wrap("loop", (*a)(n)) }
+func (n *Try) MarshalJSON() ([]byte, error)   { type a Try; return wrap("try", (*a)(n)) }
+func (n *Gate) MarshalJSON() ([]byte, error)  { type a Gate; return wrap("gate", (*a)(n)) }
+func (n *Map) MarshalJSON() ([]byte, error)   { type a Map; return wrap("map", (*a)(n)) }
+func (n *React) MarshalJSON() ([]byte, error) { type a React; return wrap("react", (*a)(n)) }
 func (n *Compose) MarshalJSON() ([]byte, error) {
 	type a Compose
 	return wrap("compose", (*a)(n))
