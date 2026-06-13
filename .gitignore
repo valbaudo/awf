@@ -1,5 +1,19 @@
-.claude
+# --- Agent / local working files (never commit) ---
+# Coding-agent config, instructions, and scratch notes are local-only. `git add -A`/
+# `git add .` sweeps up anything not listed here, so these MUST be ignored, not just
+# left untracked — that's how they kept leaking into commits.
+.claude/
+.claude.json
+.codex/
+.cursor/
+.aider*
 CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+AGENTS.local.md
+GEMINI.md
+TODOS.md
+TODO.local.md
 docs/
 ROADMAP.md
 /bin/
