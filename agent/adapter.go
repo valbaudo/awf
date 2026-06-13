@@ -142,6 +142,14 @@ type ResumePreflighter interface {
 	PreflightResume(context.Context, LiveResumePreflightRequest) error
 }
 
+// ToolLoopRunner is implemented only by adapters that can run an engine-mediated
+// tool loop (Caps.Containerless && Caps.Threaded — in v1, only awf/llm). It is an
+// OPTIONAL interface (the ResumePreflighter pattern), NOT part of the Adapter seam,
+// so the other four adapters are untouched. runReact obtains it via a type assertion.
+type ToolLoopRunner interface {
+	RunToolLoop(ctx context.Context, inv ToolLoopInvocation) (ToolLoopResult, error)
+}
+
 // Resolver is the read-only subset of Registry. The engine's dispatcher
 // (slice 5.2) takes a Resolver, not a *Registry, so the dispatcher cannot
 // Register new adapters mid-run (CLAUDE.md "interpreter is the only writer
