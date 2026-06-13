@@ -187,11 +187,12 @@ func foldRunMetrics(events []state.Event) runMetrics {
 		if d.Metrics.Cost.Source != "" {
 			m.HasCost = true
 		}
-		if d.Metrics.Cost.Source == agent.CostSourceDerived {
+		switch d.Metrics.Cost.Source {
+		case agent.CostSourceDerived:
 			m.InUSD += d.Metrics.Cost.Input
 			m.OutUSD += d.Metrics.Cost.Output
 			m.HasSplit = true
-		} else if d.Metrics.Cost.Source == agent.CostSourceReported {
+		case agent.CostSourceReported:
 			m.ReportedUSD += d.Metrics.Cost.Total
 		}
 		m.InTok += d.Metrics.Tokens.Input
