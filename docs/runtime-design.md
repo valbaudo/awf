@@ -252,7 +252,10 @@ Control nodes:
 artifact refs and recorded run-start asset refs from folded state before
 dispatch. `asset.<id>` always stages the blob refs recorded in `run.started`;
 resume verifies the live definition digest first, then stages from the recorded
-snapshot, not from the current asset path.
+snapshot, not from the current asset path. For a containerless adapter the
+interpreter does not bind-mount anything; instead it loads the resolved bytes
+into `AgentInvocation.InputFiles` so the adapter can forward them as inline
+message parts.
 
 For an agent step with `skills:`, the interpreter performs skill routing before
 `RunWithRetry`. On a fresh step it renders `skills.query` with the normal step
@@ -389,7 +392,7 @@ type Adapter interface {
     Ref() string                                   // e.g. "anthropic/claude-code"
     Version(ctx) (string, error)                   // resolved at run start; pinned for replay (spec §8)
     ValidateConfig(with RawConfig) error           // adapter owns its with-schema
-    Launch(ctx, container.Handle, AgentInvocation) (AgentResult, <-chan AgentEvent, error)
+    Launch(ctx, container.Handle, AgentInvocation) (<-chan AgentEvent, <-chan AgentOutcome, error)
 }
 
 type AgentInvocation struct {
@@ -397,6 +400,7 @@ type AgentInvocation struct {
     OutputSchema *ir.JSONSchema   // nil ⇒ no typed output required
     IdempotencyKey string         // "" if none
     Feedback     map[string]any   // gate repair: prior verdict, injected into context (nil on attempt 1)
+    InputFiles   []InputFile      // resolved file bytes for containerless adapters; empty for container-backed steps
 }
 type AgentResult struct {
     Output  map[string]any        // validated against OutputSchema (or nil)
