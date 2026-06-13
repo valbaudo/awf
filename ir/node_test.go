@@ -473,7 +473,7 @@ func TestReactNodeRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	r, ok := out[0].(*React)
-	if !ok || r.ID != "answer" || len(r.Tools) != 1 || r.MaxTurns != 4 {
+	if !ok || r.ID != "answer" || r.Prompt != "{{ input.q }}" || len(r.Tools) != 1 || r.MaxTurns != 4 {
 		t.Fatalf("react round-trip lost data: %#v", out[0])
 	}
 }

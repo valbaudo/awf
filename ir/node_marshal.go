@@ -14,7 +14,7 @@ func wrap(key string, inner any) ([]byte, error) {
 	return json.Marshal(map[string]json.RawMessage{key: b})
 }
 
-// Six object-valued control nodes share the same wrap pattern.
+// Seven object-valued control nodes share the same wrap pattern.
 func (n *If) MarshalJSON() ([]byte, error)    { type a If; return wrap("if", (*a)(n)) }
 func (n *Loop) MarshalJSON() ([]byte, error)  { type a Loop; return wrap("loop", (*a)(n)) }
 func (n *Try) MarshalJSON() ([]byte, error)   { type a Try; return wrap("try", (*a)(n)) }

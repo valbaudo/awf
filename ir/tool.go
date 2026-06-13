@@ -5,7 +5,7 @@ package ir
 // model, which calls it by name.
 type Tool struct {
 	Description string      `json:"description"`
-	InputSchema *JSONSchema `json:"input_schema"`
+	InputSchema *JSONSchema `json:"input_schema,omitempty"`
 	Impl        ToolImpl    `json:"impl"`
 }
 
