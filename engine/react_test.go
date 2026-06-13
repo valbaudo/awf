@@ -443,3 +443,113 @@ func TestRunReactReplaysCommittedRound(t *testing.T) {
 		t.Fatalf("terminal = %v (ok=%v)", nr.Outputs, ok)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Task 4.5 — max_turns truncation: the model keeps requesting tools but the
+// budget is exhausted; the dangling round's tools are NOT dispatched; the
+// terminal is {stop_reason:"max_turns", text}; output_schema NOT enforced.
+// ---------------------------------------------------------------------------
+
+func TestRunReactMaxTurnsTruncates(t *testing.T) {
+	wf := reactWorkflow("./check {{ args_file }}")
+	r := &ir.React{
+		ID:       "answer",
+		Prompt:   "go",
+		Tools:    []string{"check"},
+		MaxTurns: 1,
+		With:     ir.RawConfig{"uses": "awf/llm", "model": "m"},
+		OutputSchema: &ir.JSONSchema{
+			"type":                 "object",
+			"properties":           map[string]any{"answer": map[string]any{"type": "string"}},
+			"required":             []any{"answer"},
+			"additionalProperties": false,
+		},
+	}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{Text: "partial", ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "check", Arguments: "{}"}}, FinishReason: "tool_calls"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+	if _, ok := h.rs.LookupCompleted("react[0].round-1.tool-0"); ok {
+		t.Fatal("max_turns must NOT dispatch the dangling round's tools")
+	}
+	nr, ok := h.rs.LookupCompleted("react[0]")
+	if !ok {
+		t.Fatal("terminal not committed")
+	}
+	if nr.Outputs["stop_reason"] != "max_turns" || nr.Outputs["text"] != "partial" {
+		t.Fatalf("terminal = %v", nr.Outputs)
+	}
+	if _, hasAnswer := nr.Outputs["answer"]; hasAnswer {
+		t.Fatal("output_schema must NOT be enforced on max_turns truncation")
+	}
+	// No react.round marker for a truncated frontier round (terminal R is the anchor).
+	if got := len(h.rs.LookupReactRounds("react[0]")); got != 0 {
+		t.Fatalf("rounds recorded = %d, want 0 (truncated round commits no marker)", got)
+	}
+}
+
+// Task 4.5 — natural stop with output_schema: the engine validates the
+// adapter-parsed Output (ValidateOutputMap); a parse miss surfaced by the
+// adapter as *ErrUnparseableOutput is OutcomeRetryableFailure (not a crash).
+func TestRunReactNaturalStopSchemaMissIsRetryable(t *testing.T) {
+	wf := reactWorkflow("true")
+	r := &ir.React{
+		ID:     "a",
+		Prompt: "q",
+		Tools:  []string{"check"},
+		With:   ir.RawConfig{"uses": "awf/llm", "model": "m"},
+		OutputSchema: &ir.JSONSchema{
+			"type":                 "object",
+			"properties":           map[string]any{"answer": map[string]any{"type": "string"}},
+			"required":             []any{"answer"},
+			"additionalProperties": false,
+		},
+	}
+	runner := &scriptedToolLoop{
+		results: []agent.ToolLoopResult{{Text: "not json", FinishReason: "stop"}},
+		errs:    []error{&agent.ErrUnparseableOutput{NodePath: "react[0].round-1.model"}},
+	}
+	h := newReactTestHarness(t, r, wf, runner)
+
+	oc, err := h.run(t)
+	if oc != OutcomeRetryableFailure || err == nil {
+		t.Fatalf("run: oc=%q err=%v, want retryable_failure + error", oc, err)
+	}
+	// No terminal committed on a parse miss.
+	if _, ok := h.rs.LookupCompleted("react[0]"); ok {
+		t.Fatal("terminal must NOT commit on an unparseable-output miss")
+	}
+}
+
+// Task 4.5 — natural stop with output_schema: the engine REJECTS a parsed
+// Output that violates the schema (ValidateOutputMap), as retryable_failure.
+func TestRunReactNaturalStopSchemaViolationIsRetryable(t *testing.T) {
+	wf := reactWorkflow("true")
+	r := &ir.React{
+		ID:     "a",
+		Prompt: "q",
+		Tools:  []string{"check"},
+		With:   ir.RawConfig{"uses": "awf/llm", "model": "m"},
+		OutputSchema: &ir.JSONSchema{
+			"type":                 "object",
+			"properties":           map[string]any{"answer": map[string]any{"type": "string"}},
+			"required":             []any{"answer"},
+			"additionalProperties": false,
+		},
+	}
+	// Parsed object is missing the required "answer" field.
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{Text: `{"other":1}`, FinishReason: "stop", Output: map[string]any{"other": float64(1)}},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+
+	oc, err := h.run(t)
+	if oc != OutcomeRetryableFailure || err == nil {
+		t.Fatalf("run: oc=%q err=%v, want retryable_failure + error", oc, err)
+	}
+}
