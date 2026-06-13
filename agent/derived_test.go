@@ -185,3 +185,34 @@ func TestDerivedAdapter_PreflightResumeMergesRoleWithAndPreservesRoleRef(t *test
 		t.Fatalf("run context = %+v, want original request context", base.preflightReq)
 	}
 }
+
+// stubToolLoopBase embeds recordingAdapter (satisfies agent.Adapter) and adds
+// RunToolLoop — making it a base that DerivedAdapter can forward tool-loop calls to.
+type stubToolLoopBase struct {
+	recordingAdapter
+	gotWith agent.ToolLoopInvocation
+}
+
+func (s *stubToolLoopBase) RunToolLoop(_ context.Context, inv agent.ToolLoopInvocation) (agent.ToolLoopResult, error) {
+	s.gotWith = inv
+	return agent.ToolLoopResult{FinishReason: "stop", Text: "ok"}, nil
+}
+
+func TestDerivedAdapterForwardsRunToolLoop(t *testing.T) {
+	base := &stubToolLoopBase{
+		recordingAdapter: recordingAdapter{ref: "awf/llm"},
+	}
+	d := agent.NewDerivedAdapter("role", base, ir.RawConfig{"model": "role-model"})
+
+	runner, ok := any(d).(agent.ToolLoopRunner)
+	if !ok {
+		t.Fatal("DerivedAdapter does not satisfy ToolLoopRunner")
+	}
+	res, err := runner.RunToolLoop(context.Background(), agent.ToolLoopInvocation{With: ir.RawConfig{"prompt": "x"}})
+	if err != nil || res.Text != "ok" {
+		t.Fatalf("forward failed: %v %v", res, err)
+	}
+	if base.gotWith.With["model"] != "role-model" {
+		t.Fatalf("role with: not merged: %v", base.gotWith.With)
+	}
+}

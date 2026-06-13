@@ -70,3 +70,12 @@ func (d *DerivedAdapter) PreflightResume(ctx context.Context, req LiveResumePref
 	req.With = d.merge(req.With)
 	return preflighter.PreflightResume(ctx, req)
 }
+
+func (d *DerivedAdapter) RunToolLoop(ctx context.Context, inv ToolLoopInvocation) (ToolLoopResult, error) {
+	runner, ok := d.base.(ToolLoopRunner)
+	if !ok {
+		return ToolLoopResult{}, fmt.Errorf("base adapter %q for role %q does not implement agent.ToolLoopRunner", d.base.Ref(), d.roleName)
+	}
+	inv.With = d.merge(inv.With)
+	return runner.RunToolLoop(ctx, inv)
+}
