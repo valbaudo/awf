@@ -213,6 +213,8 @@ func interpNode(
 		return runGateWithContext(ctx, v, ir.PathFor(parent, "gate", "", idx), ictx)
 	case *ir.Map:
 		return runMapWithContext(ctx, v, ir.PathFor(parent, "map", "", idx), ictx)
+	case *ir.React:
+		return runReactWithContext(ctx, v, ir.PathFor(parent, "react", "", idx), ictx)
 	case *ir.Compose:
 		return runComposeWithContext(ctx, v, ir.PathFor(parent, "compose", "", idx), ictx)
 	case *ir.Skip:
