@@ -788,6 +788,111 @@ func TestRunReactMissingOutputFileRewritesToOKLeaf(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// P3 review fix — tool-impl input_files staging. A react tool whose impl declares
+// input_files: stages the referenced asset bytes into the tool container BEFORE
+// exec, mirroring the already-wired output_files path. Verified end-to-end: stage
+// asset bytes to a path AND declare an output_files capture at that SAME path; the
+// programmed exec writes nothing there, so the only bytes CaptureFiles can read
+// back are the ones CopyTo (input_files staging) wrote → proving the InputFile
+// reached the container.
+// ---------------------------------------------------------------------------
+
+func TestRunReactStagesToolImplInputFileAsset(t *testing.T) {
+	const stagedPath = "/work/fixture.json"
+	const assetBytes = "STAGED-ASSET-PAYLOAD"
+
+	wf := reactWorkflow("consume")
+	// Declare the asset on the workflow + record it in the run-start manifest so
+	// resolveInputFiles can fetch its bytes.
+	wf.Assets = map[string]string{"fixture": "fixtures/fixture.json"}
+	tool := wf.Tools["check"]
+	tool.Impl.InputFiles = map[string]string{stagedPath: "asset.fixture"}
+	// Capture the SAME path the input file was staged to; the exec writes nothing
+	// there, so what we read back must be the staged input bytes.
+	tool.Impl.OutputFiles = ir.OutputFiles{{Name: "echo", Path: stagedPath}}
+	wf.Tools["check"] = tool
+
+	r := &ir.React{ID: "answer", Prompt: "go", Tools: []string{"check"},
+		With: ir.RawConfig{"uses": "awf/llm", "model": "m"}}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "check", Arguments: `{}`}}, FinishReason: "tool_calls"},
+		{Text: "done", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+
+	// Seed the asset content into Blobs + record the run-start manifest entry.
+	ref, err := h.blobs.Put([]byte(assetBytes))
+	if err != nil {
+		t.Fatalf("seed asset blob: %v", err)
+	}
+	h.rs.Assets = map[string]RunStartedAsset{
+		"fixture": testRunStartedAsset("fixtures/fixture.json", ref, []byte(assetBytes)),
+	}
+
+	// The programmed exec produces NO files — the only bytes at stagedPath come
+	// from input_files staging (CopyTo).
+	h.programTool("consume", container.ExecResult{ExitCode: 0, Stdout: []byte("ran")})
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+
+	tnr, ok := h.rs.LookupCompleted("react[0].round-1.tool-0")
+	if !ok {
+		t.Fatal("tool-0 leaf not committed")
+	}
+	cas, ok := tnr.Files[stagedPath]
+	if !ok {
+		t.Fatalf("captured file %q not on the tool leaf Files map: %v", stagedPath, tnr.Files)
+	}
+	got, err := h.blobs.Get(cas)
+	if err != nil {
+		t.Fatalf("blobs.Get(%q): %v", cas, err)
+	}
+	if string(got) != assetBytes {
+		t.Fatalf("staged-then-captured content = %q, want %q (the InputFile must have reached CopyTo)", got, assetBytes)
+	}
+}
+
+// A tool impl whose input_files dst would collide with the per-call verbatim args
+// file path is a hard react-step failure (the merged-collision guard). The args
+// file lives under /work/.awf/...; staging an input there is rejected.
+func TestRunReactToolImplInputFileCollidesWithArgsFile(t *testing.T) {
+	wf := reactWorkflow("consume")
+	wf.Assets = map[string]string{"fixture": "fixtures/fixture.json"}
+	tool := wf.Tools["check"]
+	// Stage the asset to the EXACT args-file path for this tool call → collision.
+	collidePath := argsFilePath("react[0].round-1.tool-0")
+	tool.Impl.InputFiles = map[string]string{collidePath: "asset.fixture"}
+	wf.Tools["check"] = tool
+
+	r := &ir.React{ID: "answer", Prompt: "go", Tools: []string{"check"},
+		With: ir.RawConfig{"uses": "awf/llm", "model": "m"}}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "check", Arguments: `{}`}}, FinishReason: "tool_calls"},
+		{Text: "done", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+	ref, err := h.blobs.Put([]byte("x"))
+	if err != nil {
+		t.Fatalf("seed asset blob: %v", err)
+	}
+	h.rs.Assets = map[string]RunStartedAsset{
+		"fixture": testRunStartedAsset("fixtures/fixture.json", ref, []byte("x")),
+	}
+	h.programTool("consume", container.ExecResult{ExitCode: 0, Stdout: []byte("ran")})
+
+	_, err = h.run(t)
+	if err == nil {
+		t.Fatal("expected a hard react-step failure on args-file path collision, got nil")
+	}
+	if !strings.Contains(err.Error(), "collide") {
+		t.Fatalf("error = %v, want a path-collision error", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Slice 6.1 parity — the adapter's per-round Metrics ride onto the .model leaf's
 // node.completed (verbatim; observational, not folded into resume).
 // ---------------------------------------------------------------------------

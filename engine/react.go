@@ -418,6 +418,32 @@ func dispatchOneTool(ctx context.Context, tool ir.Tool, toolPath string, tc agen
 	if ferr != nil {
 		return "", fmt.Errorf("engine.runReact: template tool output_files at %q: %w", toolPath, ferr)
 	}
+
+	// Stage the impl's declared input_files (the SP1 artifact channel) and MERGE
+	// them with the per-call verbatim-args file under the SAME path-collision
+	// guard a code/agent step uses (inputFilesFromResolvedEntries →
+	// rejectInputFilePathCollisions). resolveInputFileEntries is called against
+	// the node scope built the same way runCodeStepWithContext/runAgentStep build
+	// theirs (ictx.scope(toolPath)) so input.files.<name>/runtimeParent resolve
+	// correctly; the args file is wrapped as a resolvedInputFile so the collision
+	// check covers the args-path-vs-staged-input case too. A ref error (author
+	// bug) is a hard react-step failure (it would fail identically on retry, like
+	// a bad impl run: template); errArtifactFetch (corrupt committed blob) is an
+	// internal halt (resume re-fetches), matching the code/agent classification.
+	inputScope := ictx.scope(toolPath)
+	staged, ierr := resolveInputFileEntries(tool.Impl.InputFiles, inputScope, ictx.wf, ictx.moduleID, ictx.blobs, ictx.runstate.Assets)
+	if ierr != nil {
+		return "", fmt.Errorf("engine.runReact: stage tool input_files at %q: %w", toolPath, ierr)
+	}
+	entries := append(staged, resolvedInputFile{
+		file:   container.InputFile{Path: argsPath, Content: []byte(tc.Arguments)}, // verbatim
+		source: "args_file",
+	})
+	inputFiles, merr := inputFilesFromResolvedEntries(entries)
+	if merr != nil {
+		return "", fmt.Errorf("engine.runReact: merge tool input_files at %q: %w", toolPath, merr)
+	}
+
 	// synth carries no OutputFiles: the dispatcher captures from
 	// ResolvedInputs.OutputFiles (the TEMPLATED paths built above), never
 	// cs.OutputFiles — a raw untemplated copy here would be silently unread.
@@ -425,7 +451,7 @@ func dispatchOneTool(ctx context.Context, tool ir.Tool, toolPath string, tc agen
 	resolved := ResolvedInputs{
 		Command:     cmd,
 		Env:         map[string]string{},
-		InputFiles:  []container.InputFile{{Path: argsPath, Content: []byte(tc.Arguments)}}, // verbatim
+		InputFiles:  inputFiles, // staged impl input_files + the verbatim args file
 		OutputFiles: outputFiles,
 	}
 	if tool.Impl.Timeout != nil {

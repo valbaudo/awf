@@ -240,6 +240,21 @@ When the model emits a `tool_call` for tool `T` with `arguments` (a JSON string)
    (object/array) arguments are read by the impl from
    this file — **never** interpolated into a command line, so AWF4004 (arrays in `{{ }}`,
    `template/eval.go:32`) and shell-injection are both sidestepped.
+   - **The impl's *own* declared `input_files` (§3.1:154) ARE wired** — the SP1 artifact
+     channel, distinct from the runtime args blob above. They are staged through the **standard
+     declarative resolver** (`engine/input_files.go` `resolveInputFiles`/`resolveInputFileEntries`
+     → `Backend.CopyTo`), against the react node's scope (so `input.files.<name>` and a child
+     module's `runtimeParent` resolve exactly as they do for a code/agent step), and then **merged
+     with the per-call verbatim args file** under the SAME path-collision guard a code step uses
+     (`inputFilesFromResolvedEntries` → `rejectInputFilePathCollisions`): if a declared
+     `input_files` destination collides with — or is an ancestor of — the per-call `args_file`
+     path, the react step fails hard. Each ref is statically validated **per react node** at
+     load time (`ir/validate_input_files.go` `validateReactToolInputFiles`, `AWF3007`): because a
+     tool defined once in `tools:` may be offered by several react nodes at different graph
+     positions, a `step.<id>.files.<name>` producer must precede *each* react node that offers the
+     tool (the producer-order question is per-consuming-react-node), and the diagnostic is reported
+     at the react node path — where the tool is actually consumed — not at the position-less
+     `tools.<name>` definition.
 2. **Binds** top-level *scalar* fields of `arguments` into the impl's template scope as
    `{{ args.<field> }}` via a **thin wrapper scope** (a `toolImplScope` that resolves `args_file`
    and `args.<field>` and **delegates everything else to a base `*Scope`**) — mirroring the existing

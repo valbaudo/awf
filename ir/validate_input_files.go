@@ -35,6 +35,18 @@ func validateInputFilesModule(ld *LoadedDefinition, mod validationModule, c *col
 			validateNamedArtifactRef(c, nodePath, "compose.from", cn.From, producers, order, outFiles, maps)
 			return
 		}
+		// A react: node stages input_files via its OFFERED tool impls. A tool is
+		// defined once in wf.Tools but may be offered by several react nodes at
+		// different graph positions, so each tool impl's input_files refs are
+		// checked relative to THIS react node as the consumer (the producer-order
+		// question is per-react-node — the fully-correct wiring). The error is
+		// reported at the react node path (where the tool is actually consumed),
+		// not at tools.<name> (a step.<id> producer-order verdict has no meaning
+		// at a position-less tool definition). P3 review fix.
+		if rn, ok := n.(*React); ok {
+			validateReactToolInputFiles(c, nodePath, rn, wf, producers, order, outFiles, maps)
+			return
+		}
 		var inputs map[string]string
 		switch s := n.(type) {
 		case *CodeStep:
@@ -59,6 +71,47 @@ func validateInputFilesModule(ld *LoadedDefinition, mod validationModule, c *col
 		}
 		validateInputFileDestinationOverlap(c, nodePath, validDsts)
 	})
+}
+
+// validateReactToolInputFiles applies the SAME static input_files checks a
+// CodeStep/AgentStep gets (AWF3007: well-formed ref, named producer exists,
+// producer-order, asset/input declared, absolute+clean dst, destination overlap)
+// to every tool impl OFFERED by this react node. Refs are validated with the
+// react node as the consumer so a step.<id>.files.<name> producer-order verdict
+// is taken relative to THIS react node's graph position (a tool offered by two
+// react nodes is checked against each independently). The tool impl's container
+// requirement is already enforced by validateTools (AWF1056). P3 review fix.
+func validateReactToolInputFiles(
+	c *collector,
+	reactPath string,
+	rn *React,
+	wf *Workflow,
+	producers map[string]producer,
+	order map[string]int,
+	outFiles map[string]OutputFiles,
+	maps map[string]*Map,
+) {
+	for _, toolName := range rn.Tools {
+		tool, ok := wf.Tools[toolName]
+		if !ok {
+			continue // unknown tool name → AWF1053 (validateTools); nothing to stage
+		}
+		inputs := tool.Impl.InputFiles
+		if len(inputs) == 0 {
+			continue
+		}
+		validDsts := make([]string, 0, len(inputs))
+		for dst, raw := range inputs {
+			label := "tool " + toolName + " input_files[" + dst + "]"
+			if !path.IsAbs(dst) || dst != path.Clean(dst) {
+				c.errf(reactPath, "AWF3007", label+" destination must be an absolute, clean path (no '..' segment)")
+				continue
+			}
+			validDsts = append(validDsts, dst)
+			validateInputFileRef(c, reactPath, reactPath, label, raw, wf.InputFiles, wf.Assets, producers, order, outFiles, maps)
+		}
+		validateInputFileDestinationOverlap(c, reactPath, validDsts)
+	}
 }
 
 func outputFilesByStepIDForModule(ld *LoadedDefinition, moduleID string, wf *Workflow) map[string]OutputFiles {

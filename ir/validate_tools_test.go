@@ -106,3 +106,102 @@ func TestValidateReactRejectsOllamaFormat(t *testing.T) {
 	}
 	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1058", "react[0]")
 }
+
+// --- P3 review fix: tool-impl input_files validation ---
+// A tool impl's input_files refs get the SAME static checks a CodeStep's do
+// (AWF3007), validated relative to EACH react node that offers the tool.
+
+// stagingTool returns a tool whose impl stages one input_files ref.
+func stagingTool(dst, ref string) map[string]Tool {
+	return map[string]Tool{"check": {
+		Description: "d",
+		InputSchema: &JSONSchema{"type": "object"},
+		Impl:        ToolImpl{Run: "true", Container: "fin", InputFiles: map[string]string{dst: ref}},
+	}}
+}
+
+// An asset.<id> ref naming a declared workflow asset is accepted.
+func TestValidateToolImplInputFilesAssetRefAccepted(t *testing.T) {
+	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}},
+		Assets:     map[string]string{"fixture": "fixtures/f.json"},
+		Tools:      stagingTool("/work/f.json", "asset.fixture"),
+		Graph:      NodeList{r},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF3007")
+}
+
+// An undeclared asset ref → AWF3007 at the react node that offers the tool.
+func TestValidateToolImplInputFilesUnknownAssetReportsAWF3007(t *testing.T) {
+	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}},
+		Assets:     map[string]string{"fixture": "fixtures/f.json"},
+		Tools:      stagingTool("/work/f.json", "asset.missing"),
+		Graph:      NodeList{r},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3007", "react[0]")
+}
+
+// A malformed ref (not step.<id>.files.<name> / input.files.<name> / asset.<id>)
+// → AWF3007 at the react node.
+func TestValidateToolImplInputFilesMalformedRefReportsAWF3007(t *testing.T) {
+	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}},
+		Tools:      stagingTool("/work/f.json", "step.recon.report"), // missing .files.
+		Graph:      NodeList{r},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3007", "react[0]")
+}
+
+// A step.<id>.files.<name> ref to a producer that runs BEFORE the react node is
+// accepted (producer-order satisfied relative to the consuming react node).
+func TestValidateToolImplInputFilesStepRefBeforeReactAccepted(t *testing.T) {
+	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}, "c": {Image: "oci://y@sha256:def"}},
+		Tools:      stagingTool("/work/report.md", "step.recon.files.report"),
+		Graph: NodeList{
+			&CodeStep{ID: "recon", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{Name: "report", Path: "/out/report.md"}}},
+			r,
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF3007")
+}
+
+// A step.<id>.files.<name> ref to a producer that runs AFTER the react node is a
+// forward reference → AWF3007 at the react node (producer-order violated).
+func TestValidateToolImplInputFilesForwardStepRefReportsAWF3007(t *testing.T) {
+	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}, "c": {Image: "oci://y@sha256:def"}},
+		Tools:      stagingTool("/work/report.md", "step.recon.files.report"),
+		Graph: NodeList{
+			r, // react node BEFORE the producer
+			&CodeStep{ID: "recon", Container: "c", Run: "true",
+				OutputFiles: OutputFiles{{Name: "report", Path: "/out/report.md"}}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3007", "react[0]")
+}
+
+// A non-absolute destination path → AWF3007 at the react node.
+func TestValidateToolImplInputFilesBadDestReportsAWF3007(t *testing.T) {
+	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}},
+		Assets:     map[string]string{"fixture": "fixtures/f.json"},
+		Tools:      stagingTool("work/f.json", "asset.fixture"), // relative dst
+		Graph:      NodeList{r},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3007", "react[0]")
+}
