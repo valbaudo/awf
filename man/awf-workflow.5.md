@@ -153,31 +153,6 @@ error, just like drift in the root workflow.
 :   Required. An ordered list of nodes. Sequential composition is implicit:
     sibling nodes run in order.
 
-## tools
-
-`tools:` is a top-level map (a sibling of `graph:` and `outputs:`) from tool name to a tool
-definition. Tools are offered to a `react:` step's model; the model calls them by name.
-
-    tools:
-      <tool-name>:
-        description: <string>          # required — sent to the model
-        input_schema: <JSON Schema>    # required — the tool's parameters (the JSON-Schema floor applies)
-        impl:                          # required — how the tool runs
-          run: <command>               # run: only (no exec:); read structured args from {{ args_file }}
-          container: <name>            # a containers:-declared name (NOT an inline image)
-          timeout: <duration>          # optional
-          output_files: { ... }        # optional (captured, but NOT surfaced to the model in v1)
-          input_files: { ... }         # optional
-          retry: { ... }               # optional
-
-The model's call arguments reach `impl` two ways: the full arguments JSON is staged into the
-container and exposed as `{{ args_file }}`; top-level scalar fields are also bound as
-`{{ args.<field> }}` (best-effort — absent if non-scalar or unparseable). Read structured arguments
-from `{{ args_file }}`; never interpolate raw arguments into a shell command line.
-
-Each `impl` runs as an ordinary containerful step on the existing execution substrate. The
-container is a `containers:`-declared name, digest-pinned there like any step's image.
-
 # CONTAINERS
 
 A declared container is a long-lived instance, created on first use and shared by
@@ -284,6 +259,31 @@ Two consequences to keep in mind:
 - Loop and repair iterations accumulate state in the same container — usually
   what you want (the lab stays up), occasionally not (reset explicitly with a
   step).
+
+# TOOLS
+
+`tools:` is a top-level map (a sibling of `graph:` and `outputs:`) from tool name to a tool
+definition. Tools are offered to a `react:` step's model; the model calls them by name.
+
+    tools:
+      <tool-name>:
+        description: <string>          # required — sent to the model
+        input_schema: <JSON Schema>    # required — the tool's parameters (the JSON-Schema floor applies)
+        impl:                          # required — how the tool runs
+          run: <command>               # run: only (no exec:); read structured args from {{ args_file }}
+          container: <name>            # a containers:-declared name (NOT an inline image)
+          timeout: <duration>          # optional
+          output_files: { ... }        # optional (captured, but NOT surfaced to the model in v1)
+          input_files: { ... }         # optional
+          retry: { ... }               # optional
+
+The model's call arguments reach `impl` two ways: the full arguments JSON is staged into the
+container and exposed as `{{ args_file }}`; top-level scalar fields are also bound as
+`{{ args.<field> }}` (best-effort — absent if non-scalar or unparseable). Read structured arguments
+from `{{ args_file }}`; never interpolate raw arguments into a shell command line.
+
+Each `impl` runs as an ordinary containerful step on the existing execution substrate. The
+container is a `containers:`-declared name, digest-pinned there like any step's image.
 
 # AGENTS
 
