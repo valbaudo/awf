@@ -13,6 +13,8 @@
 package awfllm
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -87,5 +89,30 @@ func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true}
 }
 
-// compile-time interface assertion: Adapter satisfies the full agent.Adapter contract.
-var _ agent.Adapter = (*Adapter)(nil)
+// RunToolLoop executes ONE model call with tools attached (P3 A3 — the engine-
+// mediated tool loop). It validates the react with: (prompt-exempt), builds the
+// reqConfig via the shared buildReqConfig, rejects the Ollama-native path (no
+// tool-call support in v1), and delegates the call to runOneToolCall. The engine
+// (runReact) owns the message history and the round loop; this method is one round.
+func (a *Adapter) RunToolLoop(ctx context.Context, inv agent.ToolLoopInvocation) (agent.ToolLoopResult, error) {
+	if err := a.validateConfigForToolLoop(inv.With); err != nil {
+		return agent.ToolLoopResult{}, err
+	}
+	// buildReqConfig takes an AgentInvocation (config.go); it reads only With + a.env.
+	// Pass a throwaway invocation carrying our With (no prompt key — react owns turns).
+	cfg, err := a.buildReqConfig(agent.AgentInvocation{With: inv.With})
+	if err != nil {
+		return agent.ToolLoopResult{}, err
+	}
+	if cfg.StructuredOutput == soOllamaFormat {
+		return agent.ToolLoopResult{}, fmt.Errorf("agent/awfllm: react: not supported on the Ollama-native path (structured_output: ollama_format)")
+	}
+	return a.runOneToolCall(ctx, cfg, inv.NodePath, inv.Messages, inv.Tools, inv.OutputSchema)
+}
+
+// compile-time interface assertions: Adapter satisfies the full agent.Adapter
+// contract and the optional ToolLoopRunner (react:) contract.
+var (
+	_ agent.Adapter        = (*Adapter)(nil)
+	_ agent.ToolLoopRunner = (*Adapter)(nil)
+)
