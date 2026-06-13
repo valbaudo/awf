@@ -62,7 +62,7 @@ path, rather than only *wrapping* a pre-built CLI agent. With **A1 (`agents:`) a
 (`continues:`) already shipped (SP2/SP3)**, the remaining trio is **A4 + A3**:
 
 - **A4 — `tools:` block.** A top-level map; each tool = `{description, input_schema, impl}` where
-  `impl` is a parameterized `run:`/`exec` step. Digest-pinned. **Reuses the existing code-step
+  `impl` is a parameterized `run:` step. Digest-pinned. **Reuses the existing code-step
   *execution* substrate** (the `Backend.Exec` + `Commit` path, via a synthesized `CodeStep` exactly
   as `engine/reduce.go` does for the reducer) — **no parallel tool runtime**. (The *format* type
   for `impl` is a new id-less struct, and the arg-staging + scope binding are new plumbing — §3.3.
@@ -110,7 +110,7 @@ path, rather than only *wrapping* a pre-built CLI agent. With **A1 (`agents:`) a
   `structured_output: ollama_format` (the Ollama-native path, which lacks tool wiring) is rejected
   with a clear error, not a silent tool drop. (Ollama-native tool calling is a flagged follow-up.)
 - **Mixed containerization is intended.** The model call is containerless (`awf/llm`); each tool
-  **impl is an ordinary containerful `run:`/`exec` step** that names a top-level `containers:`-
+  **impl is an ordinary containerful `run:` step** that names a top-level `containers:`-
   declared container (§3.1). This is the whole point: the glass-box LLM call + black-box tool
   execution on the proven code-step substrate.
 
@@ -149,7 +149,7 @@ tools:
   (subject to the §7 JSON-Schema floor, same as `output_schema`). Reused verbatim as the OpenAI
   `shared.FunctionDefinitionParam.Parameters` (`shared.FunctionParameters` = `map[string]any`,
   exactly the existing `ResponseFormat` cast at `transport.go:110`).
-- **`impl`** — the executable tool, a `run:`/`exec` step body that **names a top-level
+- **`impl`** — the executable tool, a `run:` step body that **names a top-level
   `containers:`-declared container via `container:`** (exactly like `ir.Reduce.Container`), plus
   `timeout`, `retry`, `output_files`, `input_files`. **It does *not* take an inline `image:`** —
   `ir.CodeStep` has only `Container string` (a declared-name ref), no `Image` field
@@ -250,8 +250,8 @@ When the model emits a `tool_call` for tool `T` with `arguments` (a JSON string)
    map-specific `resolveAsBinding` (`scope.go:296-368`, hard-wired to walk `map[N].item-K` paths).
    The binding is a **best-effort** parse of the verbatim bytes: non-scalar fields and an
    unparseable `arguments` simply leave `args.*` empty (use `args_file`). A scalar arg containing
-   shell metacharacters is safe only when the author uses `exec:`/quoting — documented; the file
-   path is the recommended pattern.
+   shell metacharacters is safe only with careful quoting; the **recommended pattern is to read
+   structured args from `{{ args_file }}`** rather than interpolating scalars into the command line.
 
 Both are **deterministic on resume** *because* of the §4.5 verbatim invariant: the re-staged
 `args_file` reproduces the exact bytes the model emitted (read back from the committed model leaf),
@@ -374,8 +374,8 @@ already-committed leaves short-circuit (model via the §4.3 explicit guard; tool
 `LookupCompleted`), and only genuinely-uncommitted work re-runs. The model leaf is `Sync`'d before
 any tool side-effect (it goes through `Commit`), so a committed tool can always read its triggering
 `tool_calls` back. Re-billing and duplicate side-effects are bounded to genuinely-uncommitted
-leaves; tool impls inherit the existing `idempotency_key` mechanism (`interpreter.go:255`) for
-authors who need exactly-once external effects.
+leaves. **v1 ships no per-tool `idempotency_key`** (§9 non-goal); a side-effecting tool that could
+re-run across a torn-frontier resume must be made naturally idempotent by its author.
 
 ### 4.5 Tool-failure, malformed-call, and verbatim-args handling
 
@@ -405,18 +405,22 @@ These are the *common* paths of a tool loop, not edge cases. v1 behavior:
   emit megabytes (scan dumps, corpora, payloads). The content fed to the *next model call* is capped
   at a fixed **16384 bytes** via a `boundDisplayField`-style truncation (`engine/agent_step.go:383`
   — a real byte cap with a UTF-8 rune-boundary backup + `…[truncated N bytes]` marker; **not**
-  `agent.Elide`, which is line-oriented display), with the marker pointing to the full `.tool-J`
-  leaf / `output_files` artifact. The cap is **un-configurable in v1** (matching the fixed
+  `agent.Elide`, which is line-oriented display), with a `…[truncated N bytes]` marker; the full
+  output stays on the `.tool-J` leaf. The cap is **un-configurable in v1** (matching the fixed
   `tool_choice`/`max_turns` discipline) and applies to **tool leaves only — never the §5 terminal
-  answer** (which is the model's own schema-validated message). *(Rationale: OpenAI tool-role content
-  is string/text-only — it cannot carry images/files — so a large/binary result has no choice but to
-  be summarized + referenced, not inlined.)*
-- **Non-UTF-8 tool output → descriptor, not bytes.** Before building the `ToolMessage`, a
-  `utf8.Valid()` gate decides: valid UTF-8 → inline (bounded as above); otherwise → the bytes are
-  captured to an `output_files` artifact and the model is fed a **descriptor** (size, content-type
-  guess, the artifact ref), never the raw bytes. This is mandatory, not optional: `json.Marshal`
-  silently maps invalid UTF-8 to U+FFFD, so inlining binary would feed the model corruption, not an
-  error.
+  answer** (which is the model's own message). *(Rationale: OpenAI tool-role content is
+  string/text-only — it cannot carry images/files — so a large/binary result has no choice but to be
+  summarized, not inlined.)*
+- **Non-UTF-8 tool stdout → descriptor, not bytes.** Before building the `ToolMessage`, a
+  `utf8.Valid()` gate decides: valid UTF-8 → inline (bounded as above); otherwise → the model is fed
+  a short **descriptor** (byte size + exit code), never the raw bytes. This is mandatory, not
+  optional: `json.Marshal` silently maps invalid UTF-8 to U+FFFD, so inlining binary would feed the
+  model corruption, not an error. (The full bytes remain on the committed `.tool-J` leaf's stdout.)
+- **A tool impl's declared `output_files` are captured but NOT surfaced to the model in v1.** They
+  are committed to the `.tool-J` leaf's `Files` (via `Backend.CaptureFiles`, same as any code step)
+  and so are durable + resume-safe, but `container.ExecResult` carries no `Files`, and the model sees
+  **stdout only** — echo any model-relevant result to stdout. Feeding artifacts to the model is a
+  follow-up gated on the deferred streaming artifact read-back (correctable-gaps §2.10).
 - **Unknown / hallucinated tool name** (a `tool_call` naming a tool not in `react.tools` — the
   model can emit this; `Strict` on `FunctionDefinitionParam` constrains argument *shape*, not tool
   *selection*): no impl is dispatched; an error `ToolMessage` ("unknown tool `<name>`") is fed back
@@ -433,9 +437,13 @@ The react step commits `OutcomeOK` in **all** stop cases; its typed output alway
 reserved `stop_reason` field. Two cases:
 
 - **Natural stop** (`finish_reason != "tool_calls"`): `stop_reason: "stop"`. If `output_schema` is
-  declared, the final assistant turn must conform — validated by the existing typed-output
-  machinery (`local_dispatcher_agent.go:236-252`); non-conforming → the existing schema-failure
-  path (retry/fail). The output is the validated object plus `stop_reason`.
+  declared, the final assistant text is parsed to a `map[string]any` **by the adapter** (its own
+  `extractJSONObject`, `agent/awfllm/stream.go:111`) and returned as `ToolLoopResult.Output`; a parse
+  miss returns `*agent.ErrUnparseableOutput` (`stream.go:69`) → `OutcomeRetryableFailure`. The
+  **engine** then validates that map with `engine.ValidateOutputMap` (`engine/schema.go:23`) — so
+  engine never imports `agent/awfllm`. The committed output is the validated object plus
+  `stop_reason`. (How the model is *steered* toward the schema — `response_format` + an always-on
+  prompt directive — is §6; AWF's actual guarantee is this post-hoc parse+validate, not the wire hint.)
 - **`max_turns` stop** while the model still wants tools: the engine stops **immediately after
   committing the final `.model` leaf** and does **not** dispatch that round's dangling `tool_calls`
   (their results could never be consumed — avoids wasted side-effects/billing). The terminal output
@@ -478,6 +486,17 @@ rejected for v1 per §2):
    `Tools` is non-empty, matching the v1 auto-only decision. (If ever set explicitly, the field is
    `ChatCompletionToolChoiceOptionUnionParam{OfAuto: param.NewOpt("auto")}` — `OfAuto` is a
    `param.Opt[string]` *field*, not a constructor; needs the `…/packages/param` import.)
+2b. **Steer toward the output schema — two layers, the portable one always on.** When the react step
+   declares `output_schema`, attach `params.ResponseFormat` (json_schema, `Strict:true`) **guarded
+   exactly like the agent path** (`transport.go:105`: only when `cfg.StructuredOutput == soResponseFormat`
+   and the schema is non-nil) — `tools` and `response_format` are legal *together* in one OpenAI Chat
+   Completions request (verified against openai-go v3.39.0 + the OpenAI structured-outputs guide); on
+   a `tool_calls` turn the format is simply not applied (no assistant text), not an error. Because
+   off-OpenAI endpoints (vLLM/llama.cpp/Anthropic-compat) may ignore or reject json_schema-with-tools,
+   the **prompt directive** (the schema, injected into the system/initial message — `config.go:84-99`)
+   is the **always-on portable floor**. Neither is AWF's guarantee: the guarantee is the §5 post-hoc
+   parse + `ValidateOutputMap`. The `output_schema` must first pass the §7/AWF2002 strict-schema floor
+   (§6.1) so a `Strict:true` attach can't 400.
 3. **Parse streamed `tool_calls`:** drive an `openai.ChatCompletionAccumulator`
    (`acc.AddChunk(chunk)`; `acc.JustFinishedToolCall()` → `FinishedChatCompletionToolCall{Index, ID,
    embedded …Function{Name, Arguments string}}`) — the documented path, replacing the content-only
@@ -529,7 +548,12 @@ four adapters **untouched** (no change to `agent:`/`continues:`). `classifyOpenA
 - `react.with.uses` resolves to a `Containerless+Threaded` adapter (run-start gating mirrors
   `local_dispatcher_agent.go:76-81`); a config resolving to `structured_output: ollama_format` is
   rejected (no tool wiring on the Ollama path).
-- `max_turns ≥ 1`; each tool `input_schema` and the optional `output_schema` pass the §7 floor.
+- `max_turns ≥ 1`. **Schema floor (new `walkSchemas` arm — load-bearing for the §6 `response_format`
+  attach):** `walkSchemas` (`ir/validate_schema.go`) today has only `*CodeStep`/`*AgentStep`/`*SignalStep`
+  arms. Add a `*React` arm (and walk every `tools[*].input_schema`) so `react.output_schema` and each
+  tool `input_schema` pass the §7/AWF2002 strict-output floor — otherwise a `Strict:true`
+  `response_format` (or a strict tool `parameters`) can **400** on a schema lacking
+  `additionalProperties:false`/all-required. This must land *before* the §6 attach.
 - **A new `walkRefs` arm for the `react:`/`tools:` nodes** (the existing passes only walk
   `Workflow.Graph` — `tools:` is a new top-level field, so today *nothing* walks impl bodies and the
   `checkRef` default arm silently passes unknown roots, `validate_refs.go:660-663`). Within a tool
@@ -599,6 +623,16 @@ documentation. It can land with or before the P3 work.
   code-step substrate (a future `concurrency:` for within-round tool fan-out is a follow-up).
 - No Ollama-native tool calling (v1 = OpenAI-compat).
 - No engine-side validation of model `arguments` against `input_schema` (v1).
+- **No model-call retry (v1).** A tool impl gets the existing `retry:` policy via the dispatcher,
+  but the per-round model call is *not* retried — a transport-classified transient (429/5xx) fails
+  the react step. `max_turns` already bounds the loop; a model-call retry loop keyed on
+  `classifyOpenAIErr` (`transport.go:160`) is a scoped follow-up. *(`RunWithRetry` is `CodeStep`/
+  intent-shaped and only wraps `dispatcher.Run`; it does not and cannot transparently cover the
+  direct `RunToolLoop` call.)*
+- **No per-tool `idempotency_key` (v1).** Make tool impls naturally idempotent; a side-effecting tool
+  that re-runs across a torn-frontier resume has no engine-level exactly-once guard in v1 (§4.4). A
+  `react`-level model-call idempotency key is likewise a non-goal (the model POST is treated as
+  stateless).
 - No engine-mediated loop for CLI adapters (forever out of scope).
 - **Honest caveat carried from the audit:** even fully built, `react:` does **not** let an app
   reuse in-process tool functions (e.g. a TS `verify_iban` sharing the app's live DB) — `impl`
@@ -690,3 +724,31 @@ stderr is uncapturable on the docker exec path (`exec.go:120` `accum:nil`) → v
 (§4.5); **N2** the inline-`image:` IR gap (closed by the M3 declared-container fix, §3.1); **N3** the
 nested-`react:` addressability boundary, now a pinned v1 decision (`--step`-only) rather than a
 maybe-cut (§6.1).
+
+### 11.3 Third pass — implementation-plan fix-evaluation (flowed back to this spec)
+
+Writing the implementation plan, then fact-checking its fixes against the code + OpenAI docs,
+corrected several spec-level claims (the rest are plan-only):
+
+1. **Idempotency claim deleted (was §4.4).** §4.4 had promised tool impls "inherit the existing
+   `idempotency_key` mechanism" — but `ir.ToolImpl` carries no such field and the synthesized
+   code-step path doesn't set one. v1 ships **no per-tool idempotency_key**; §4.4 now states the
+   boundedness honestly and §9 lists it as a non-goal.
+2. **Model-call retry is a non-goal (§9).** The first draft implied retry came "free" via
+   `RunWithRetry`; verified false — `RunWithRetry` only wraps `dispatcher.Run`, and the model call is
+   a direct `RunToolLoop`. §9 now records no-model-call-retry-in-v1.
+3. **`output_files` are captured-but-not-surfaced (§4.5).** `container.ExecResult` carries no `Files`;
+   the model sees stdout only. The non-UTF-8 route feeds a size+exit descriptor, not an artifact ref.
+4. **`output_schema` enforcement is honest (§5, §6, §6.1).** AWF's guarantee is the post-hoc
+   adapter-parse (`extractJSONObject` → `ErrUnparseableOutput`) + `engine.ValidateOutputMap`; the
+   wire-level steer is `response_format` **mode-guarded** (`soResponseFormat`, verified legal to
+   combine with `tools`) plus an **always-on prompt directive** (the portable floor). A new
+   `walkSchemas` `*React` arm runs `react.output_schema` through the §7/AWF2002 floor *before* the
+   strict attach, so it can't 400.
+5. **`exec:` dropped (§3.1, §3.3).** `ir.CodeStep` is `run:`-only; tool impls are `run:` steps;
+   shell-safety guidance points to `{{ args_file }}`.
+
+The fix-evaluation also **rejected two of the plan's own first-draft fixes** (a `Dispatcher`-method
+seam → kept the optional-interface via `*LocalDispatcher`+`Resolver`; the "free retry" claim) and
+corrected the omitted `ir.Node` type-switch set (eight panic-defaults incl. `walkReduce`) — those are
+plan-only and tracked in the implementation plan, not here.
