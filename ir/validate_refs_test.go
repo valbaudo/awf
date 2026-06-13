@@ -751,3 +751,120 @@ func TestValidateWarnsOutputBindsIfNestedStep(t *testing.T) {
 		t.Fatalf("expected AWF3012 WARNING at outputs.summary; got %+v", diags)
 	}
 }
+
+// --- Task 1.6: react producer + args/stop_reason ref carve-outs ---
+
+// reactOutputSchema builds a 1-field object output_schema for a react node and a
+// matching workflow output_schema (so AWF1048 stays clean and the refs pass is
+// the only thing the test exercises).
+func reactOutputSchema(field string) *JSONSchema {
+	return &JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{field: map[string]any{"type": "string"}},
+	}
+}
+
+// TestValidateRefsArgsAllowedInToolImpl proves `{{ args.x }}` / `{{ args_file }}`
+// inside a tool impl's run: never trips AWF3001 — the refs pass walks only
+// Workflow.Graph (walkRefs + markTemplateValueRefsReferenced over CallStep inputs
+// and Outputs), never tools[*].impl bodies, so impl-local roots are deferred to
+// the runtime toolImplScope (the validate_prune.go:13-14 precedent for context-local
+// roots). Approach (a): don't walk impl bodies at all in v1.
+func TestValidateRefsArgsAllowedInToolImpl(t *testing.T) {
+	tools := map[string]Tool{"check": {
+		Description: "d",
+		InputSchema: &JSONSchema{"type": "object"},
+		Impl:        ToolImpl{Run: "./v --f {{ args_file }} --x {{ args.x }}", Container: "fin"},
+	}}
+	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
+	assertNoErrorCode(t, Validate(reactLD(r, tools)), "AWF3001")
+}
+
+// TestValidateRefsReactOutputAddressable proves a top-level react node's output is
+// referenceable by id: `{{ ans.answer }}` resolves against its output_schema and
+// `{{ ans.stop_reason }}` resolves against the synthetic reserved field — neither
+// trips AWF3001 (unresolved/undeclared) or AWF4002.
+func TestValidateRefsReactOutputAddressable(t *testing.T) {
+	r := &React{
+		ID: "ans", Prompt: "q", Tools: []string{"check"},
+		With:         RawConfig{"uses": "awf/llm", "model": "m"},
+		OutputSchema: reactOutputSchema("answer"),
+	}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}},
+		Tools:      okTools(),
+		Graph:      NodeList{r},
+		OutputSchema: &JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"final": map[string]any{"type": "string"},
+				"why":   map[string]any{"type": "string"},
+			},
+		},
+		Outputs: map[string]TemplateValue{
+			"final": json.RawMessage(`"{{ ans.answer }}"`),
+			"why":   json.RawMessage(`"{{ ans.stop_reason }}"`),
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF3001")
+	assertNoErrorCode(t, Validate(ld), "AWF4002")
+}
+
+// TestValidateRefsReactUnknownFieldErrors proves the producer's output_schema is
+// actually consulted: a field that is neither declared nor the synthetic
+// stop_reason trips AWF3001. The bad ref is placed in a downstream code step's run:
+// so the refs pass emits the raw AWF3001 (refs inside outputs: are re-coded to
+// AWF1048 by validateWorkflowExports — a separate, established convention).
+func TestValidateRefsReactUnknownFieldErrors(t *testing.T) {
+	r := &React{
+		ID: "ans", Prompt: "q", Tools: []string{"check"},
+		With:         RawConfig{"uses": "awf/llm", "model": "m"},
+		OutputSchema: reactOutputSchema("answer"),
+	}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}},
+		Tools:      okTools(),
+		Graph: NodeList{
+			r,
+			&CodeStep{ID: "use", Container: "fin", Run: "echo {{ ans.nope }}"},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3001", "use.run")
+}
+
+// TestValidateRefsNestedReactNotDirectlyAddressable proves the multiplicity
+// boundary: a react nested inside a loop is NOT registered for `{{ <id>.* }}`
+// direct addressing (it is --step-only, mirroring how Map's product addressing is
+// gated to the top-level single-map shape). Because the validator's checkRef
+// default arm defers unknown roots to the runtime evaluator scope (validate_refs.go
+// "Unknown root … defer to Phase 2's evaluator scope check"), an UNregistered root
+// produces no static error here — runtime resolution (Phase 4) handles --step.
+// Falsifiable contract: an INVALID field on a NESTED react is NOT statically
+// schema-checked (no AWF3001), proving the producer was not registered for direct
+// addressing; the top-level counterpart (TestValidateRefsReactUnknownFieldErrors)
+// DOES get AWF3001 on the same bad field — the two together pin the boundary.
+func TestValidateRefsNestedReactNotDirectlyAddressable(t *testing.T) {
+	r := &React{
+		ID: "ans", Prompt: "q", Tools: []string{"check"},
+		With:         RawConfig{"uses": "awf/llm", "model": "m"},
+		OutputSchema: reactOutputSchema("answer"),
+	}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}},
+		Tools:      okTools(),
+		Graph: NodeList{
+			&Loop{Body: NodeList{r}},
+			&CodeStep{ID: "use", Container: "fin", Run: "echo {{ ans.nope }}"},
+		},
+	})
+	// Nested react is not a direct-addressing producer → the bad field falls through
+	// checkRef's default arm (deferred to runtime), NOT statically rejected. The
+	// top-level counterpart (TestValidateRefsReactUnknownFieldErrors) DOES emit
+	// AWF3001 on the same bad field — together they pin the multiplicity boundary.
+	assertNoErrorCode(t, Validate(ld), "AWF3001")
+}

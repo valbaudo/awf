@@ -175,6 +175,22 @@ func indexModuleProducers(ld *LoadedDefinition, moduleID string, nodes NodeList,
 			}
 			_, schema, _ := MapCompactProducer(v)
 			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "map_compact", schema: schema}
+		case *React:
+			// React's output is addressable by id as `{{ <id>.* }}` (P3 §3.2/§6.1) — the
+			// react id is the ROOT segment, unlike step.<id>; the default arm of checkRef
+			// resolves a kind=="react" producer keyed by that root ident.
+			//
+			// Multiplicity (pinned, N3): a TOP-LEVEL react is fully referenceable via
+			// `{{ <id>.* }}`; a react nested inside loop/gate/map is `--step`-only (NOT
+			// direct-addressable), the same boundary Map's product addressing carries. A
+			// top-level react has the bare runtime path "react[N]" (no parent segment); a
+			// nested one is e.g. "loop[0].body.react[0]". Register ONLY at top level so a
+			// nested ref falls through checkRef's default arm (deferred to the runtime
+			// evaluator scope), exactly as today.
+			if v.ID == "" || strings.Contains(path, ".") {
+				return
+			}
+			producers[v.ID] = producer{path: path, ord: currentOrd, kind: "react", schema: v.OutputSchema}
 		}
 	})
 }
@@ -622,6 +638,14 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			referenced[id] = true
 			return
 		}
+		// react: the engine injects a reserved `stop_reason` sibling that the
+		// output_schema does NOT (and may not, AWF1055) declare. Accept it as a
+		// synthetic field so `{{ <id>.stop_reason }}` resolves statically even though
+		// it isn't in the schema — it resolves fine at runtime via descendPath (§5/§6.1).
+		if p.kind == "react" && reactReservedField(field) {
+			referenced[id] = true
+			return
+		}
 		// Field must be declared in producer's output_schema.
 		if !checkSchemaField(c, path, id, field, p.schema) {
 			return
@@ -658,9 +682,42 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			c.errf(path, "AWF5001", fmt.Sprintf("%s: %s", catalog["AWF5001"], renderRef(ref)))
 		}
 	default:
+		// A react: node's output is addressed by id as the ROOT segment —
+		// `{{ <id>.<field> }}` / `{{ <id>.stop_reason }}` (P3 §3.2/§6.1), NOT
+		// `step.<id>`. If root names a registered top-level react producer, validate
+		// the field against its output_schema plus the synthetic stop_reason sibling.
+		if p, ok := producers[root]; ok && p.kind == "react" {
+			if len(ref.Segments) < 2 || ref.Segments[1].IsIndex {
+				c.errf(path, "AWF3001", fmt.Sprintf("malformed react reference (need %s.<field>): %s", root, renderRef(ref)))
+				return
+			}
+			field := ref.Segments[1].Ident
+			if reactReservedField(field) {
+				referenced[root] = true
+				return
+			}
+			if !checkSchemaField(c, path, root, field, p.schema) {
+				return
+			}
+			referenced[root] = true
+			return
+		}
 		// Unknown root (e.g. an `<as>` binding from a map) — slice 1.4 doesn't track binding
 		// scopes; defer to Phase 2's evaluator scope check.
 	}
+}
+
+// reactReservedField reports whether field is an engine-injected react output
+// sibling (currently just stop_reason) — accepted in `{{ <react-id>.<field> }}`
+// refs even though output_schema does not (and may not, AWF1055) declare it.
+// reservedReactOutputFields (validate_tools.go) is the single source of truth.
+func reactReservedField(field string) bool {
+	for _, r := range reservedReactOutputFields {
+		if r == field {
+			return true
+		}
+	}
+	return false
 }
 
 // opaqueScopePrefix returns the static path of the INNERMOST gate or map body
