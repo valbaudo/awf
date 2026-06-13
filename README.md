@@ -216,7 +216,7 @@ spike.
 
 Execution backends:
 
-- `native`: host processes, fastest path, no isolation, not resumable yet
+- `native`: host processes, fastest path, no isolation; not resumable (`awf resume` hard-errors — use `--backend docker` for resumable runs)
 - `docker`: digest-pinned images and Compose projects, resumable
 - `fake`: in-memory backend for conformance tests
 

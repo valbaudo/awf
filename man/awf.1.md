@@ -151,6 +151,13 @@ _auto_ is not re-evaluated on resume. Runs made with the _native_ backend are
 not resumable; **resume** rejects them with the native-backend limitation and
 guidance to use **--backend docker** for resumable runs.
 
+**Native backend is not resumable.** `awf resume` of a run started with
+**--backend native** errors: there is no infra recipe to reconstruct host state.
+The exact error is: _runs with --backend native are not resumable (no infra
+recipe to reconstruct host state)_. Two escape hatches: use **--backend docker**
+for resumable runs, or re-drive a deterministic run from the start (delete the
+run directory and `awf run --backend native …` again).
+
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).
 
