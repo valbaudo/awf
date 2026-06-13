@@ -70,6 +70,14 @@ type AttemptResult struct {
 	Verdict        map[string]any
 }
 
+// ReactRoundRecord is one element of RunState.ReactRounds[reactPath]. Records
+// a committed react.round event — the round cursor the engine uses on resume to
+// compute startK := len(ReactRounds[R])+1 (the first uncommitted round). N is
+// 1-based; finish_reason is read from the .model leaf on the same path (spec §4.1).
+type ReactRoundRecord struct {
+	N int // 1-based round number; finish_reason is read from the .model leaf (spec §4.1)
+}
+
 // MapItemRecord is one element of RunState.MapItems[mapPath]. Records what
 // happened on a single map item — its bound over[N] value and whether body
 // completed ok (slice 3.4, design §E).
@@ -230,6 +238,16 @@ type RunState struct {
 	// the enclosing gate path on attempt n > 1 (slice 3.3 engine/scope.go).
 	GateAttempts map[string][]AttemptResult
 
+	// ReactRounds records committed rounds per react node (react[N] path →
+	// ordered slice, oldest first). startK := len(ReactRounds[R])+1 is the
+	// resume cursor for a react: step at path R. P3 A3 addition.
+	//
+	// The template evaluator does NOT read this; it is used exclusively by the
+	// react executor (engine/react.go, Phase 4) for resume continuation and by
+	// Fold for replay. READ-ONLY aliasing contract: LookupReactRounds returns
+	// the live backing array — callers MUST NOT mutate elements.
+	ReactRounds map[string][]ReactRoundRecord
+
 	// MapItems records the per-item status for every map that has committed
 	// at least one map.item event. Slice 3.4 addition; map path → ordered
 	// slice of MapItemRecord in arrival order (the order RecordMapItem was
@@ -308,8 +326,8 @@ type RunState struct {
 	threadTargetSet map[string]bool
 
 	// mu serializes access to Completed / Branches / LoopIters / GateAttempts
-	// / MapItems / Signals / CallStarted / SignalReceivedAt / SelectedSkills / Paused /
-	// Cancelled / CancelReason.
+	// / ReactRounds / MapItems / Signals / CallStarted / SignalReceivedAt /
+	// SelectedSkills / Paused / Cancelled / CancelReason.
 	// Phase 2 callers were single-threaded; Phase 3 slice 3.2
 	// (parallel) introduced concurrent branch goroutines, and slice 3.4 (map)
 	// adds concurrent item-body goroutines.
@@ -317,6 +335,7 @@ type RunState struct {
 	// Slice 3.2+ callers MUST use the accessor methods (LookupCompleted /
 	// RecordCompleted / LookupBranch / RecordBranch / LookupLoopIters /
 	// RecordLoopIter / LookupGateAttempts / RecordGateAttempt /
+	// LookupReactRounds / RecordReactRound /
 	// LookupMapItems / RecordMapItem / UpdateMapItemValue / AppendSignal /
 	// LookupSignals / LookupCallStarted / RecordCallStarted /
 	// LookupSignalReceivedAt / RecordSignalReceivedAt / SetPaused /
@@ -348,6 +367,7 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		Branches:         map[string]string{},
 		LoopIters:        map[string]int{},
 		GateAttempts:     map[string][]AttemptResult{},
+		ReactRounds:      map[string][]ReactRoundRecord{},
 		MapItems:         map[string][]MapItemRecord{},
 		Signals:          map[string][]SignalEntry{},
 		CallStarted:      map[string]CallStartedRecord{},
@@ -428,6 +448,30 @@ func (rs *RunState) RecordGateAttempt(gatePath string, ar AttemptResult) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.GateAttempts[gatePath] = append(rs.GateAttempts[gatePath], ar)
+}
+
+// LookupReactRounds returns the per-round slice recorded for reactPath, or
+// nil if no round has been recorded yet (the round-1 case for resume — the
+// caller computes startK := len(result)+1). Thread-safe.
+//
+// READ-ONLY: callers MUST NOT mutate elements of the returned slice — the
+// slice is the live internal backing array (same aliasing contract as
+// LookupGateAttempts / NodeResult.Outputs). The react executor (Phase 4)
+// consults this read-only; only RecordReactRound appends.
+func (rs *RunState) LookupReactRounds(r string) []ReactRoundRecord {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.ReactRounds[r]
+}
+
+// RecordReactRound appends rr to the slice at r. The react executor
+// (engine/react.go) calls this AFTER a successful Log.Append + Log.Sync of
+// the corresponding react.round event — in-memory state mirrors the durable
+// log, not the other way around. Thread-safe.
+func (rs *RunState) RecordReactRound(r string, rr ReactRoundRecord) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.ReactRounds[r] = append(rs.ReactRounds[r], rr)
 }
 
 // LookupMapItems returns a SHALLOW COPY of the per-item slice recorded for

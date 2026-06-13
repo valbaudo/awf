@@ -70,6 +70,7 @@ func childRunStateForRuntimeParent(parent *RunState, runtimeParent string, input
 	copyPrefixedBranches(child.Branches, parent.Branches, runtimeParent)
 	copyPrefixedLoopIters(child.LoopIters, parent.LoopIters, runtimeParent)
 	copyPrefixedGateAttempts(child.GateAttempts, parent.GateAttempts, runtimeParent)
+	copyPrefixedReactRounds(child.ReactRounds, parent.ReactRounds, runtimeParent)
 	copyPrefixedMapItems(child.MapItems, parent.MapItems, runtimeParent)
 	return child
 }

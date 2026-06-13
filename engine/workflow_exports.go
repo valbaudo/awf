@@ -99,6 +99,7 @@ func childRunStateForCall(parent *RunState, callPath string, input map[string]an
 	copyPrefixedBranches(child.Branches, parent.Branches, prefix)
 	copyPrefixedLoopIters(child.LoopIters, parent.LoopIters, prefix)
 	copyPrefixedGateAttempts(child.GateAttempts, parent.GateAttempts, prefix)
+	copyPrefixedReactRounds(child.ReactRounds, parent.ReactRounds, prefix)
 	copyPrefixedMapItems(child.MapItems, parent.MapItems, prefix)
 	return child
 }
@@ -141,6 +142,16 @@ func copyPrefixedMapItems(dst, src map[string][]MapItemRecord, prefix string) {
 	for path, value := range src {
 		if childPath, ok := stripChildPrefix(path, prefix); ok {
 			cp := make([]MapItemRecord, len(value))
+			copy(cp, value)
+			dst[childPath] = cp
+		}
+	}
+}
+
+func copyPrefixedReactRounds(dst, src map[string][]ReactRoundRecord, prefix string) {
+	for path, value := range src {
+		if childPath, ok := stripChildPrefix(path, prefix); ok {
+			cp := make([]ReactRoundRecord, len(value))
 			copy(cp, value)
 			dst[childPath] = cp
 		}

@@ -751,3 +751,54 @@ func TestRunStateThreadIndexesConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestReactRoundsAccessors(t *testing.T) {
+	rs := NewRunState("r", "d", nil)
+	if got := rs.LookupReactRounds("react[0]"); got != nil {
+		t.Fatalf("empty lookup = %v, want nil", got)
+	}
+	rs.RecordReactRound("react[0]", ReactRoundRecord{N: 1})
+	rs.RecordReactRound("react[0]", ReactRoundRecord{N: 2})
+	got := rs.LookupReactRounds("react[0]")
+	if len(got) != 2 || got[0].N != 1 || got[1].N != 2 {
+		t.Fatalf("rounds = %+v, want [{1} {2}]", got)
+	}
+}
+
+func TestChildRunStateCopiesReactRounds(t *testing.T) {
+	// childRunStateForRuntimeParent and childRunStateForCall must both copy
+	// ReactRounds into the child with the prefix stripped — otherwise a react:
+	// nested in a loop/gate/map (or called sub-workflow) loses its round cursor
+	// on resume and re-samples committed rounds (rev #13).
+	parent := NewRunState("r", "d", nil)
+	parent.RecordReactRound("loop[0].body.iter-1.react[0]", ReactRoundRecord{N: 1})
+	parent.RecordReactRound("loop[0].body.iter-1.react[0]", ReactRoundRecord{N: 2})
+	// Unrelated path that must NOT appear in the child.
+	parent.RecordReactRound("other-loop[0].react[0]", ReactRoundRecord{N: 1})
+
+	// childRunStateForRuntimeParent: runtimeParent = "loop[0].body.iter-1"
+	child1 := childRunStateForRuntimeParent(parent, "loop[0].body.iter-1", nil)
+	rounds1 := child1.LookupReactRounds("react[0]")
+	if len(rounds1) != 2 || rounds1[0].N != 1 || rounds1[1].N != 2 {
+		t.Errorf("childRunStateForRuntimeParent: ReactRounds = %+v, want [{1} {2}]", rounds1)
+	}
+	if child1.LookupReactRounds("other-loop[0].react[0]") != nil {
+		t.Errorf("childRunStateForRuntimeParent: unrelated path leaked into child")
+	}
+
+	// childRunStateForCall: callPath = "call[0]", prefix = ir.CallWorkflowParentPath("call[0]")
+	// Seed parent with a react nested in the call's child-workflow path.
+	callPrefix := ir.CallWorkflowParentPath("call[0]")
+	parent.RecordReactRound(callPrefix+".react[1]", ReactRoundRecord{N: 3})
+	child2 := childRunStateForCall(parent, "call[0]", nil)
+	rounds2 := child2.LookupReactRounds("react[1]")
+	if len(rounds2) != 1 || rounds2[0].N != 3 {
+		t.Errorf("childRunStateForCall: ReactRounds = %+v, want [{3}]", rounds2)
+	}
+
+	// Verify the copy is deep (mutating child does not affect parent).
+	child1.RecordReactRound("react[0]", ReactRoundRecord{N: 99})
+	if len(parent.LookupReactRounds("loop[0].body.iter-1.react[0]")) != 2 {
+		t.Errorf("parent ReactRounds was mutated by child append")
+	}
+}
