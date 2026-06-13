@@ -594,3 +594,75 @@ func TestBoundToolResult(t *testing.T) {
 		t.Fatalf("small ok output mangled: %q", ok)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Frontier resume (spec §4.2/§4.4): the .model leaf of the frontier round is
+// committed but its tool leaf is NOT, and no react.round marker was written
+// (torn frontier). On resume the loop re-enters that round, reads the model leaf
+// back (NO re-sample), re-dispatches only the uncommitted tool, then closes the
+// round and continues.
+// ---------------------------------------------------------------------------
+
+func TestRunReactResumesTornFrontierModelCommittedToolNot(t *testing.T) {
+	wf := reactWorkflow("./check {{ args_file }}")
+	r := &ir.React{ID: "answer", Prompt: "go", Tools: []string{"check"},
+		With: ir.RawConfig{"uses": "awf/llm", "model": "m"}}
+	// Round 1's model leaf is pre-committed (tool_calls). The runner must NOT be
+	// called for round 1 — only round 2's answer is scripted.
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{Text: "done", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+
+	// Seed: run.started + round-1 model leaf only (NO tool leaf, NO marker), then
+	// re-fold so the resume RunState has the committed model leaf but no round.
+	rsData, err := json.Marshal(RunStartedData{RunID: testRunID, WorkflowDigest: testDigest})
+	if err != nil {
+		t.Fatalf("marshal run.started: %v", err)
+	}
+	if err := h.lg.Append(state.Event{Type: EventRunStarted, Data: rsData}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	mr := modelResult{FinishReason: "tool_calls",
+		ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "check", Arguments: `{"x":1}`}}}
+	if err := commitModelLeaf(h.ictx(), "react[0].round-1.model", mr); err != nil {
+		t.Fatalf("seed model leaf: %v", err)
+	}
+	events, err := h.lg.Fold()
+	if err != nil {
+		t.Fatalf("fold: %v", err)
+	}
+	folded, err := Fold(events, h.blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	h.rs = folded
+	// The frontier round has no marker → startK is still 1.
+	if got := len(h.rs.LookupReactRounds("react[0]")); got != 0 {
+		t.Fatalf("seeded rounds = %d, want 0 (torn frontier, no marker)", got)
+	}
+
+	// Program the (only) uncommitted tool dispatch.
+	wantArgs := argsFilePath("react[0].round-1.tool-0")
+	h.programTool("./check "+wantArgs, container.ExecResult{ExitCode: 0, Stdout: []byte("FRESH")})
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+	// Round 1's model was NOT re-sampled — the only model call is round 2.
+	if got := len(h.runner.Calls()); got != 1 {
+		t.Fatalf("model called %d times, want 1 (frontier model leaf must replay)", got)
+	}
+	// The uncommitted tool got dispatched fresh and committed.
+	tnr, ok := h.rs.LookupCompleted("react[0].round-1.tool-0")
+	if !ok || tnr.Outputs["stdout"] != "FRESH" {
+		t.Fatalf("tool leaf = %v (ok=%v)", tnr.Outputs, ok)
+	}
+	// Round 1 now closed; terminal committed.
+	if got := len(h.rs.LookupReactRounds("react[0]")); got != 1 {
+		t.Fatalf("rounds after resume = %d, want 1", got)
+	}
+	// Round 2's history carries the fresh tool result with the matching id.
+	assertToolMessage(t, h.runner.Calls()[0].Messages, "c1", "FRESH")
+}
