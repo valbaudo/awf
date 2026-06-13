@@ -32,8 +32,20 @@
 | `ir/node_marshal.go` / `ir/node_unmarshal.go` | React (un)marshal registry edits | 1 |
 | `ir/node_test.go` | `wantKinds` 12→13 | 1 |
 | `ir/types.go` | `Workflow.Tools` field | 1 |
-| `ir/validate_tools.go` (new) | tools/react cross-refs, gating, reserved fields, producer | 1 |
-| `ir/validate_refs.go` | `args`/`args_file`/`stop_reason` walkRefs arms + react producer | 1 |
+| `ir/validate_tools.go` (new) | tools/react cross-refs, gating, reserved fields | 1 |
+| `ir/validate_refs.go` | `args`/`args_file`/`stop_reason` walkRefs arms + react producer (`indexModuleProducers`) | 1 |
+| `ir/validate_schema.go` | `*React` arm in `walkSchemas` (§7 strict-output floor) | 1 |
+| `ir/walk.go` | `*React` arm in `WalkNodes` (panics on unknown kind) | 1 |
+| `ir/validate_reduce.go` | `*React` no-op arm in `walkReduce` (panics on unknown kind) | 1 |
+| `ir/validate_structural.go` | `*React` arm in `walkStructural` (id validation) | 1 |
+| `ir/diagnostic.go` | register AWF1052–AWF1058 in the `catalog` | 1 |
+| `cli/threaded_guard.go` | `*React` arms in `checkThreadedNodes` + `collectAgentSteps` | 1 |
+| `cli/persistent_guard.go` | `*React` no-op arm in `checkPersistentSessionNodes` | 1 |
+| `engine/runtime_resolution.go` | `*React` arm in `walkRuntimeRefsNodes` | 1 |
+| `engine/live_resume_preflight.go` | `*React` arm in the preflight walk | 1 |
+| `graph/graph.go` | `*React` arms: `staticPath`, `kindOf`, `walk`/`walkNodes`/`stepPathIndex` | 1 |
+| `graph/refs.go` | `*React` producer/with-ref arm | 1 |
+| `graph/graph_test.go` | bump `TestKindOfExhaustive` 12→13 + React case | 1 |
 | `engine/path.go` | `roundSep` + `RoundPath`/`ModelPath`/`ToolPath` | 2 |
 | `engine/events.go` | `EventReactRound` + `ReactRoundData` | 2 |
 | `engine/runstate.go` | `ReactRounds` + `ReactRoundRecord` + accessors | 2 |
@@ -76,7 +88,7 @@ tools:
     description: <string>          # required — sent to the model
     input_schema: <JSON Schema>    # required — the tool's parameters (the §7 floor applies)
     impl:                          # required — how the tool runs
-      run: <command>               # or `exec: [argv...]`
+      run: <command>               # run: only (no exec:); read structured args from {{ args_file }}
       container: <name>            # a containers:-declared name (NOT an inline image)
       timeout: <duration>          # optional
       output_files: { ... }        # optional
@@ -231,15 +243,16 @@ type Tool struct {
 	Impl        ToolImpl    `json:"impl"`
 }
 
-// ToolImpl is the executable body of a tool — a run:/exec step that names a
+// ToolImpl is the executable body of a tool — a run: step that names a
 // containers:-declared container. It is a DEDICATED id-less type, NOT a reused
 // CodeStep: CodeStep.ID is `json:"id"` WITHOUT omitempty, so embedding a CodeStep
 // would serialize an empty "id":"" into the JCS workflow digest. At execution time
 // the engine synthesizes a real CodeStep from these fields (the reduce.go pattern).
-// All fields are omitempty so an absent field never enters the digest.
+// run:-ONLY — ir.CodeStep has no Exec field, so an exec: form cannot be synthesized
+// into a CodeStep (rev #20). All fields are omitempty so an absent field never enters
+// the digest.
 type ToolImpl struct {
 	Run          string            `json:"run,omitempty"`
-	Exec         []string          `json:"exec,omitempty"`
 	Container    string            `json:"container,omitempty"`
 	Timeout      *Duration         `json:"timeout,omitempty"`
 	OutputSchema *JSONSchema       `json:"output_schema,omitempty"`
@@ -249,7 +262,7 @@ type ToolImpl struct {
 }
 ```
 
-> Note: confirm `JSONSchema` is the map type used elsewhere (e.g. `map[string]any` alias) and that `OutputFiles`/`RetryPolicy`/`Duration` are the exact existing type names in `ir/`. If `exec:` support is not present on `CodeStep` today, drop the `Exec` field and document `run:`-only in Phase 0 (keep the plan and man-page consistent).
+> Note: confirm `JSONSchema`/`OutputFiles`/`RetryPolicy`/`Duration` are the exact existing type names in `ir/` (grep `ir/reduce.go` + `ir/node.go`). **No `Exec` field** — `ir.CodeStep` is `run:`-only, so a synthesized CodeStep can only carry `Run`; the Phase-0 man-page is `run:`-only to match. **No `IdempotencyKey` field** in v1 (rev #23 / spec §9 non-goal — tool impls must be naturally idempotent).
 
 - [ ] **Step 4: Run it — expect PASS.**
 
@@ -402,6 +415,55 @@ git add ir/node.go ir/node_marshal.go ir/node_unmarshal.go ir/node_test.go
 git commit -m "feat(ir): register react: node kind (4-edit registry, wantKinds 13) (P3 A3)"
 ```
 
+### Task 1.3b: Register `react:` in ALL `ir.Node` type-switches (the panic-default set)
+
+> **Why this is critical (rev #3/#24):** a new node kind touches far more than the 4 IR registry edits. The codebase has **eight `case *ir.Node` switches whose `default` PANICS or errors** on an unknown kind, plus several silent-skips. The moment Task 1.3 puts `react` in `controlKeys`, a real react workflow hits these. Worst: `ir/validate_reduce.go:58 walkReduce` walks the **top-level graph**, so *every* react workflow panics during `Validate` — and `Validate` is called by the validate pass that Task 1.4 itself relies on. The green bar will NOT catch most of these: conformance calls `engine.Run` directly (bypassing the `cli/run.go` guards), there is no exhaustiveness linter, and `graph_test.go`'s count is hardcoded. So these are explicit, must-have edits + targeted tests.
+
+**Files (each gets a `*ir.React` arm):** `ir/walk.go`, `ir/validate_reduce.go`, `ir/validate_structural.go`, `ir/validate_schema.go`, `cli/threaded_guard.go` (two switches), `cli/persistent_guard.go`, `engine/runtime_resolution.go`, `engine/live_resume_preflight.go`, `graph/graph.go` (staticPath, kindOf, walk/walkNodes/stepPathIndex), `graph/refs.go`, `graph/graph_test.go`.
+
+- [ ] **Step 1: Write the forcing-function test first** — bump `graph/graph_test.go TestKindOfExhaustive` 12→13 and add the React case; run it and watch it (and any react-graph test) fail/panic, proving the gap.
+
+```go
+// graph/graph_test.go — in TestKindOfExhaustive
+const wantKinds = 13 // was 12; +react (keep in sync with ir/node_test.go)
+// add to the cases table:
+{&ir.React{ID: "r"}, "react"},
+```
+
+- [ ] **Step 2: Add the arm to each switch** (verified behaviors — most are no-ops; the path/kind ones are real):
+
+| File:switch | React arm |
+|---|---|
+| `ir/walk.go` `WalkNodes` | `case *React: visit(v, PathFor(parent, "react", "", i))` — **no recursion** (react has no NodeList body) |
+| `ir/validate_reduce.go` `walkReduce` | add `*React` to the no-op `case *CodeStep, *AgentStep, …:` group (react contains no reduce) |
+| `ir/validate_structural.go` `walkStructural` | `case *React:` → `checkAddressableID(v.ID, path)` (validate the id like a step id) |
+| `ir/validate_schema.go` `walkSchemas` | `case *React:` → floor-check `v.OutputSchema`; also walk `wf.Tools[*].InputSchema` (rev #25) |
+| `cli/threaded_guard.go` `checkThreadedNodes` | `case *ir.React:` → resolve `v.With["uses"]` + gate exactly as an agent step (react IS threaded) |
+| `cli/threaded_guard.go` `collectAgentSteps` | `case *ir.React:` → no-op (not an agent step for thread-collection) |
+| `cli/persistent_guard.go` `checkPersistentSessionNodes` | `case *ir.React:` → no-op (react is not PersistentSession) |
+| `engine/runtime_resolution.go` `walkRuntimeRefsNodes` | `case *ir.React:` → no-op with a comment (react is containerless; `with.uses` is resolved via the adapter registry, not a runtime image ref) |
+| `engine/live_resume_preflight.go` walk | `case *ir.React:` → no-op (react has no live/persistent session to preflight) |
+| `graph/graph.go` `staticPath` | `case *ir.React: return PathFor(parent, "react", "", i)` |
+| `graph/graph.go` `kindOf` | `case *ir.React: return "react"` |
+| `graph/graph.go` `walk`/`walkNodes`/`stepPathIndex` | `case *ir.React:` → emit/index the node by id (a childless leaf; no body recursion) |
+| `graph/refs.go` | `case *ir.React:` → emit a producer ref for `v.ID` + `with`-refs (mirror the agent arm) |
+
+- [ ] **Step 3: Add two regression tests** that the conformance bucket can't catch:
+  - `graph/graph_test.go`: `kindOf(&ir.React{})=="react"` and `staticPath` of a top-level react is `react[0]` (forces the graph arms).
+  - `cli/threaded_guard_test.go`: a 1-node react workflow passes `checkThreadedAdaptersForWorkflow` (exercises the `cli` guard arm — conformance bypasses it).
+
+- [ ] **Step 4: Acceptance — grep for any remaining unguarded switch.** `grep -rn 'default:' $(grep -rln 'case \*ir\.' --include=*.go .)` and confirm every node-type switch handles `*ir.React`. Run `make build` + `go test -race ./ir/ ./graph/ ./cli/`.
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add ir/walk.go ir/validate_reduce.go ir/validate_structural.go ir/validate_schema.go \
+        cli/threaded_guard.go cli/persistent_guard.go engine/runtime_resolution.go \
+        engine/live_resume_preflight.go graph/graph.go graph/refs.go graph/graph_test.go \
+        cli/threaded_guard_test.go
+git commit -m "feat: register react: in all ir.Node type-switches + schema floor (P3 #3/#24/#25)"
+```
+
 ### Task 1.4: Validate `tools:` + `react:` cross-references and gating
 
 **Files:**
@@ -409,7 +471,7 @@ git commit -m "feat(ir): register react: node kind (4-edit registry, wantKinds 1
 - Modify: `ir/validate.go` (call the new pass)
 - Test: `ir/validate_tools_test.go`
 
-- [ ] **Step 1: Write the failing tests** (follow the `ir/validate_prune_test.go` pattern: `makeLD` + `assertErrorAt(diags, CODE, "react[0]")`; control path is `react[0]`, NOT the id). Pick unused AWF codes — check `ir/` for the next free numbers; this plan uses `AWF1050`–`AWF1054` as placeholders, **replace with the actual next-free codes**.
+- [ ] **Step 1: Write the failing tests** (follow the `ir/validate_prune_test.go` pattern: `makeLD` + `assertErrorAt(diags, CODE, "react[0]")`; control path is `react[0]`, NOT the id). **Codes are AWF1052–AWF1058** — verified next-free (AWF1050/AWF1051 are already taken by workflow/call `input_files`; nothing ≥1052 exists). The 1:1 map used here: tools-empty=**AWF1052**, tool-unknown=**AWF1053**, max_turns=**AWF1054**, reserved-stop_reason=**AWF1055**, impl-missing-container=**AWF1056** (Task 1.5 uses AWF1057/AWF1058).
 
 ```go
 package ir
@@ -432,39 +494,41 @@ func okTools() map[string]Tool {
 
 func TestValidateReactToolsEmpty(t *testing.T) {
 	r := &React{ID: "a", Prompt: "q", Tools: nil, With: RawConfig{"uses": "awf/llm", "model": "m"}}
-	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1050", "react[0]")
+	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1052", "react[0]")
 }
 
 func TestValidateReactToolUnknown(t *testing.T) {
 	r := &React{ID: "a", Prompt: "q", Tools: []string{"missing"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
-	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1051", "react[0]")
+	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1053", "react[0]")
 }
 
 func TestValidateReactMaxTurnsNonPositive(t *testing.T) {
 	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, MaxTurns: -1, With: RawConfig{"uses": "awf/llm", "model": "m"}}
-	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1052", "react[0]")
+	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1054", "react[0]")
 }
 
 func TestValidateReactOutputSchemaReservesStopReason(t *testing.T) {
 	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"},
 		With:         RawConfig{"uses": "awf/llm", "model": "m"},
 		OutputSchema: &JSONSchema{"type": "object", "properties": map[string]any{"stop_reason": map[string]any{"type": "string"}}}}
-	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1053", "react[0]")
+	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1055", "react[0]")
 }
 
 func TestValidateToolImplMissingContainer(t *testing.T) {
 	tools := map[string]Tool{"check": {Description: "d", InputSchema: &JSONSchema{"type": "object"}, Impl: ToolImpl{Run: "true"}}}
 	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"}, With: RawConfig{"uses": "awf/llm", "model": "m"}}
-	assertErrorAt(t, Validate(reactLD(r, tools)), "AWF1054", "tools.check")
+	assertErrorAt(t, Validate(reactLD(r, tools)), "AWF1056", "tools.check")
 }
 ```
+
+> **Before this task:** register AWF1052–AWF1058 in `ir/diagnostic.go`'s `catalog` map (the messages keyed by code — `c.errf(path, code, catalog[code])` reads them). Verify the next-free range with `grep -oE 'AWF1[0-9]{3}' ir/*.go | sort -u | tail`.
 
 - [ ] **Step 2: Run — expect FAIL** (no diagnostics emitted; `assertErrorAt` fails to find the codes).
 
 Run: `go test -race ./ir/ -run TestValidateReact`
 Expected: FAIL (expected diagnostic not found)
 
-- [ ] **Step 3: Implement `ir/validate_tools.go`.** A new pass that walks `wf.Tools` and every `react:` node. (Mirror the existing pass signature in `ir/validate.go` — likely `func validateTools(ld *LoadedDefinition) []Diagnostic`.)
+- [ ] **Step 3: Implement `ir/validate_tools.go`.** A new pass using the **`*collector` pattern** the other passes use (`validate_prune.go` is the template): signature `func validateTools(ld *LoadedDefinition, c *collector)`, emit via `c.errf(path, code, catalog[code])` with **literal** codes, and walk the graph with the **3-arg** `WalkNodes(list, parent, visit)`.
 
 ```go
 package ir
@@ -472,70 +536,61 @@ package ir
 import "fmt"
 
 // reservedReactOutputFields are engine-injected siblings of a react: node's typed
-// output; an output_schema may not declare them. One constant (the QuorumVerdictFields
-// pattern). Spec §5/§6.1.
+// output; an output_schema may not declare them. (The QuorumVerdictFields pattern.)
+// Spec §5/§6.1.
 var reservedReactOutputFields = []string{"stop_reason"}
 
-func validateTools(ld *LoadedDefinition) []Diagnostic {
+func validateTools(ld *LoadedDefinition, c *collector) {
 	wf := ld.Workflow
-	var diags []Diagnostic
 
 	// Tool definitions.
 	for name, tool := range wf.Tools {
 		path := "tools." + name
-		if tool.Impl.Container == "" {
-			diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1054", Path: path,
-				Message: fmt.Sprintf("tool %q impl must name a containers:-declared container", name)})
-		} else if _, ok := wf.Containers[tool.Impl.Container]; !ok {
-			diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1054", Path: path,
-				Message: fmt.Sprintf("tool %q impl container %q is not declared in containers:", name, tool.Impl.Container)})
+		switch {
+		case tool.Impl.Container == "":
+			c.errf(path, "AWF1056", catalog["AWF1056"], name)
+		default:
+			if _, ok := wf.Containers[tool.Impl.Container]; !ok {
+				c.errf(path, "AWF1056", catalog["AWF1056"], name)
+			}
 		}
-		// input_schema floor + output_schema floor reuse the existing schema validator
-		// (call the same helper gate/map output_schema validation uses).
+		// input_schema / output_schema floor is handled by the walkSchemas *React +
+		// tools arm (Task 1.4b / §7 floor), not here.
 	}
 
-	// react: nodes — walk the graph for *React.
-	WalkNodes(wf.Graph, func(n Node, path string) {
+	// react: nodes — 3-arg WalkNodes (list, parent, visit(node, path)).
+	WalkNodes(wf.Graph, "", func(n Node, path string) {
 		r, ok := n.(*React)
 		if !ok {
 			return
 		}
 		if len(r.Tools) == 0 {
-			diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1050", Path: path,
-				Message: "react: tools must be non-empty (a react with no tools is an agent: step)"})
+			c.errf(path, "AWF1052", catalog["AWF1052"])
 		}
 		for _, tn := range r.Tools {
 			if _, ok := wf.Tools[tn]; !ok {
-				diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1051", Path: path,
-					Message: fmt.Sprintf("react: tool %q is not declared in the top-level tools: map", tn)})
+				c.errf(path, "AWF1053", catalog["AWF1053"], tn)
 			}
 		}
-		if r.MaxTurns < 0 || (r.MaxTurns == 0 && false) { // 0 means "default 8"; reject negative only
-			diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1052", Path: path,
-				Message: "react: max_turns must be >= 1"})
-		}
-		if r.MaxTurns < 0 {
-			diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1052", Path: path,
-				Message: "react: max_turns must be >= 1"})
+		if r.MaxTurns < 0 { // 0 means "default 8"; reject only negative
+			c.errf(path, "AWF1054", catalog["AWF1054"])
 		}
 		if r.OutputSchema != nil {
 			if props, ok := (*r.OutputSchema)["properties"].(map[string]any); ok {
 				for _, reserved := range reservedReactOutputFields {
 					if _, clash := props[reserved]; clash {
-						diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1053", Path: path,
-							Message: fmt.Sprintf("react: output_schema may not declare reserved field %q", reserved)})
+						c.errf(path, "AWF1055", catalog["AWF1055"], reserved)
 					}
 				}
 			}
 		}
 	})
-	return diags
 }
 ```
 
-> Replace `WalkNodes`/`Diagnostic`/`Severity`/`Container` with the exact existing names (verify against `ir/walk.go`, `ir/diagnostic.go`, `ir/types.go`). Use the real next-free AWF codes. Clean up the redundant `MaxTurns` check left in for clarity — keep a single `if r.MaxTurns < 0` arm.
+> Confirm the real `collector`/`errf` API (`validate_prune.go:30` area — `errf(path, code, msg, args...)`), the 3-arg `WalkNodes(list, parent, visit)` (`ir/walk.go:32`), and the `catalog` map keys (`ir/diagnostic.go`). `Container`/`JSONSchema`/`RawConfig` are the real `ir/` type names. The `%q`-style format args in `catalog[code]` must match the arg count passed to `errf`. The **react producer registration** (for `{{ <id>.* }}`) is NOT here — it lives in `indexModuleProducers` (Task 1.6).
 
-- [ ] **Step 4: Wire the pass** into `ir/validate.go`'s pass list (where `validatePrune`/`validateRefs` etc. are appended).
+- [ ] **Step 4: Wire the pass** into the per-module pass loop in `ir/validate.go` (where `validatePrune(modLD, c)` etc. are called) as `validateTools(modLD, c)`.
 
 - [ ] **Step 5: Run — expect PASS.**
 
@@ -562,13 +617,13 @@ git commit -m "feat(ir): validate tools:/react: cross-refs + reserved fields (P3
 func TestValidateReactRejectsNonAwfllm(t *testing.T) {
 	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"},
 		With: RawConfig{"uses": "anthropic/claude-code", "model": "m"}}
-	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1055", "react[0]")
+	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1057", "react[0]")
 }
 
 func TestValidateReactRejectsOllamaFormat(t *testing.T) {
 	r := &React{ID: "a", Prompt: "q", Tools: []string{"check"},
 		With: RawConfig{"uses": "awf/llm", "model": "m", "structured_output": "ollama_format"}}
-	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1056", "react[0]")
+	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1058", "react[0]")
 }
 ```
 
@@ -577,18 +632,16 @@ func TestValidateReactRejectsOllamaFormat(t *testing.T) {
 Run: `go test -race ./ir/ -run 'TestValidateReactRejects'`
 Expected: FAIL
 
-- [ ] **Step 3: Extend the `*React` arm** in `validate_tools.go`:
+- [ ] **Step 3: Extend the `*React` arm** in `validate_tools.go` (collector pattern, AWF1057/AWF1058):
 
 ```go
 		// Adapter gate: react: requires awf/llm (containerless+threaded), OpenAI-compat path.
 		uses, _ := r.With["uses"].(string)
 		if uses != "awf/llm" { // the only Containerless+Threaded adapter in v1
-			diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1055", Path: path,
-				Message: fmt.Sprintf("react: requires a containerless, threaded adapter (awf/llm); got uses=%q", uses)})
+			c.errf(path, "AWF1057", catalog["AWF1057"], uses)
 		}
 		if so, _ := r.With["structured_output"].(string); so == "ollama_format" {
-			diags = append(diags, Diagnostic{Severity: Error, Code: "AWF1056", Path: path,
-				Message: "react: tools are not supported on the Ollama-native path (structured_output: ollama_format)"})
+			c.errf(path, "AWF1058", catalog["AWF1058"])
 		}
 ```
 
@@ -856,11 +909,29 @@ func (rs *RunState) RecordReactRound(r string, rr ReactRoundRecord) {
 Run: `go test -race ./engine/ -run TestReactRoundsAccessors`
 Expected: PASS
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 4b: Propagate `ReactRounds` into the child-runstate builders (rev #13 — nested resume).** Both `childRunStateForRuntimeParent` (`engine/interpreter_context.go:65-75`) and `childRunStateForCall` (`engine/workflow_exports.go:93-102`) deep-copy the prefixed `Completed`/`Branches`/`LoopIters`/`GateAttempts`/`MapItems` maps — they currently **omit `ReactRounds`**, so a `react:` nested in `loop`/`gate`/`map` (or in a called sub-workflow) loses its round cursor on resume and re-samples committed rounds. Add a `copyPrefixedReactRounds(child, parent, runtimeParent)` helper (mirror `copyPrefixedMapItems`, deep-copying each `[]ReactRoundRecord`) and call it in **both** builders.
+
+```go
+// engine/runstate.go (mirror copyPrefixedMapItems)
+func copyPrefixedReactRounds(child, parent *RunState, runtimeParent string) {
+	for path, rounds := range parent.ReactRounds {
+		if rel, ok := stripRuntimeParentPrefix(path, runtimeParent); ok { // same helper the other copies use
+			cp := make([]ReactRoundRecord, len(rounds))
+			copy(cp, rounds)
+			child.ReactRounds[rel] = cp
+		}
+	}
+}
+```
+
+Add a `TestChildRunStateCopiesReactRounds` (mirror the map-items copy test) and a conformance nested-react resume case (Task 5.3).
+
+- [ ] **Step 5: Run — expect PASS, commit.**
 
 ```bash
-git add engine/runstate.go engine/runstate_test.go
-git commit -m "feat(engine): RunState.ReactRounds + accessors (P3)"
+go test -race ./engine/ -run 'TestReactRounds|TestChildRunStateCopiesReactRounds'
+git add engine/runstate.go engine/interpreter_context.go engine/workflow_exports.go engine/runstate_test.go
+git commit -m "feat(engine): RunState.ReactRounds + accessors + child-runstate copy (P3)"
 ```
 
 ### Task 2.4: `EventReactRound` fold arm + pre-alloc
@@ -997,26 +1068,33 @@ type ToolDef struct {
 
 // ToolLoopInvocation is ONE model call with tools attached + the full prior message
 // history. The engine (runReact) owns the history; the adapter just executes the call.
+// NOTE: no Env field — the awf/llm key rides a.env at adapter construction (config.go),
+// never the invocation (rev #17).
 type ToolLoopInvocation struct {
 	NodePath     string         `json:"node_path"`
 	Uses         string         `json:"uses"`
-	With         RawConfigAlias `json:"with,omitempty"` // see note
+	With         ir.RawConfig   `json:"with,omitempty"`
 	Messages     []ReactTurn    `json:"messages"`
 	Tools        []ToolDef      `json:"tools"`
-	OutputSchema *JSONSchemaAlias `json:"output_schema,omitempty"`
-	Env          SecretEnv      `json:"-"`
+	OutputSchema *ir.JSONSchema `json:"output_schema,omitempty"` // steers response_format (§6); engine validates post-hoc
 }
 
-// ToolLoopResult is the model's response for one call.
+// ToolLoopResult is the model's response for one call. Output is the PARSED final
+// answer (rev #4): on a natural-stop round with an output_schema, RunToolLoop parses
+// the assistant text into Output via the adapter's own extractJSONObject and returns
+// *ErrUnparseableOutput on a miss — so the ENGINE validates Output with
+// engine.ValidateOutputMap WITHOUT importing agent/awfllm. Output is nil on tool_calls
+// rounds, on max_turns truncation, and when no output_schema is declared.
 type ToolLoopResult struct {
-	Text         string     `json:"text"`
-	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
-	FinishReason string     `json:"finish_reason"`
-	Metrics      *MetricSet `json:"metrics,omitempty"`
+	Text         string         `json:"text"`
+	Output       map[string]any `json:"output,omitempty"`
+	ToolCalls    []ToolCall     `json:"tool_calls,omitempty"`
+	FinishReason string         `json:"finish_reason"`
+	Metrics      *MetricSet     `json:"metrics,omitempty"`
 }
 ```
 
-> Replace `RawConfigAlias`/`JSONSchemaAlias` with the real types `agent` already uses for `With`/`OutputSchema` on `AgentInvocation` (`ir.RawConfig`, `*ir.JSONSchema`) — keep imports consistent with `agent/types.go`.
+> `ir.RawConfig` / `*ir.JSONSchema` are the real types `AgentInvocation` already uses — add the `ir` import to `agent/toolloop.go` (matching `agent/types.go`).
 
 - [ ] **Step 4: Add the interface** in `agent/adapter.go` next to `ResumePreflighter`:
 
@@ -1202,12 +1280,18 @@ Expected: FAIL
 - [ ] **Step 3: Implement `runOneToolCall`** in `transport.go` — a tool-aware variant of `streamOpenAI` that: builds `messages` from `[]agent.ReactTurn` (user/assistant-with-tool_calls/tool roles), attaches `params.Tools`, drives a `ChatCompletionAccumulator`, and reads the authoritative `acc.Choices[0].Message.ToolCalls` after the stream (more reliable than per-chunk `JustFinishedToolCall` under parallel calls). Guard `len(chunk.Choices) > 0`.
 
 ```go
-func (a *Adapter) runOneToolCall(ctx context.Context, cfg reqConfig, msgs []agent.ReactTurn, tools []agent.ToolDef) (agent.ToolLoopResult, error) {
+func (a *Adapter) runOneToolCall(ctx context.Context, cfg reqConfig, msgs []agent.ReactTurn, tools []agent.ToolDef, schema *ir.JSONSchema) (agent.ToolLoopResult, error) {
 	client := openai.NewClient(
 		option.WithBaseURL(cfg.BaseURL), option.WithAPIKey(cfg.APIKey),
 		option.WithHTTPClient(a.clientFor(cfg.TLSInsecure)), option.WithMaxRetries(0),
 	)
-	messages := buildOpenAIMessages(cfg.SystemPrompt, msgs) // user/assistant(+tool_calls)/tool
+	// Always-on portable floor: inject the schema directive into the system message
+	// (mirrors assemblePrompt, config.go:84-99) so off-OpenAI endpoints still get steered.
+	sys := cfg.SystemPrompt
+	if schema != nil {
+		sys = appendSchemaDirective(sys, schema) // the config.go:84-99 directive text
+	}
+	messages := buildOpenAIMessages(sys, msgs) // user/assistant(+tool_calls)/tool
 	params := openai.ChatCompletionNewParams{
 		Model:         cfg.Model,
 		Messages:      messages,
@@ -1222,6 +1306,19 @@ func (a *Adapter) runOneToolCall(ctx context.Context, cfg reqConfig, msgs []agen
 		}))
 	}
 	// ToolChoice left unset → "auto" (SDK default when Tools non-empty).
+	// API-level steer (rev #2/#22): mode-guarded EXACTLY like the agent path
+	// (transport.go:105) — only soResponseFormat + non-nil schema. Legal alongside
+	// Tools (verified, openai-go v3.39.0 + OpenAI structured-outputs guide); inert on
+	// a tool_calls turn. Off-OpenAI endpoints ignore it; the directive above is the floor.
+	if cfg.StructuredOutput == soResponseFormat && schema != nil {
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
+				JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+					Name: "output", Schema: map[string]any(*schema), Strict: openai.Bool(true),
+				},
+			},
+		}
+	}
 
 	stream := client.Chat.Completions.NewStreaming(ctx, params)
 	defer func() { _ = stream.Close() }()
@@ -1243,21 +1340,31 @@ func (a *Adapter) runOneToolCall(ctx context.Context, cfg reqConfig, msgs []agen
 		return agent.ToolLoopResult{}, fmt.Errorf("awfllm: tool-loop response had no choices")
 	}
 	msg := acc.Choices[0].Message
+	m := a.metricsFrom(usage, cfg.Model) // *Adapter method closing over a.pricer
 	res := agent.ToolLoopResult{
 		Text:         msg.Content,
 		FinishReason: string(acc.Choices[0].FinishReason),
-		Metrics:      metricsFrom(usage, cfg.Model), // reuse the existing usage→MetricSet helper
+		Metrics:      &m,
 	}
 	for _, tc := range msg.ToolCalls {
 		res.ToolCalls = append(res.ToolCalls, agent.ToolCall{
 			Index: int(tc.Index), ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments,
 		})
 	}
+	// Natural-stop + schema → parse the final text to Output here (adapter has its own
+	// extractJSONObject); engine validates it (rev #4). Parse miss → ErrUnparseableOutput.
+	if res.FinishReason != "tool_calls" && schema != nil {
+		obj, perr := extractJSONObject(msg.Content) // unexported, agent/awfllm/stream.go:111
+		if perr != nil {
+			return res, &agent.ErrUnparseableOutput{Raw: msg.Content, Err: perr} // stream.go:69 shape
+		}
+		res.Output = obj
+	}
 	return res, nil
 }
 ```
 
-> Verify the exact field names on `acc.Choices[0].Message.ToolCalls[i]` (`.ID`, `.Index`, `.Function.Name`, `.Function.Arguments`) against openai-go v3.39.0. Implement `buildOpenAIMessages` to map `ReactTurn` → `openai.ChatCompletionMessageParamUnion` (user → `UserMessage`, tool → `ToolMessage(content, ToolCallID)`, assistant-with-tool_calls → reconstruct via the stored `tool_calls`; **omit** `tool_calls` entirely when empty). Add the `…/v3/shared` and `…/v3/packages/param` imports.
+> Verify `acc.Choices[0].Message.ToolCalls[i]` field names (`.ID`, `.Index`, `.Function.Name`, `.Function.Arguments`) against openai-go v3.39.0; the `ResponseFormat` build mirrors `transport.go:103-115` exactly (same `map[string]any(*schema)` cast). Extract `func (a *Adapter) metricsFrom(u usageRec, model string) agent.MetricSet` **verbatim** from `stream.go:73-84` (keep the `model != ""` cost guard + the `Input - CacheRead` normalization) and refactor `buildResult` to call it — there is no existing `metricsFrom`. `appendSchemaDirective` is the directive text from `config.go:84-99` (extract or inline). `extractJSONObject` + `*agent.ErrUnparseableOutput` already exist (`stream.go:111`/`:69`). Implement `buildOpenAIMessages` (user→`UserMessage`, tool→`ToolMessage(content, ToolCallID)`, assistant→reconstruct from stored `tool_calls`, **omit** `tool_calls` when empty). Add the `…/v3/shared` + `…/v3/packages/param` imports.
 
 - [ ] **Step 4: Run — expect PASS, full awfllm suite, lint, commit.**
 
@@ -1296,7 +1403,7 @@ func TestAdapterRunToolLoopOneRound(t *testing.T) {
 Run: `go test -race ./agent/awfllm/ -run TestAdapterRunToolLoopOneRound`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `RunToolLoop`** — resolve `reqConfig` from `inv.With` via the prompt-exempt validate + the existing config parser, then call `runOneToolCall`. Add the compile-time assertion.
+- [ ] **Step 3: Implement `RunToolLoop`** — resolve `reqConfig` via the **real** `buildReqConfig` (which takes an `agent.AgentInvocation`, `config.go:42` — there is no `reqConfigFrom`), then call `runOneToolCall` with the schema. Add the compile-time assertion.
 
 ```go
 // var _ agent.ToolLoopRunner = (*Adapter)(nil)  // next to the existing var _ agent.Adapter
@@ -1305,18 +1412,20 @@ func (a *Adapter) RunToolLoop(ctx context.Context, inv agent.ToolLoopInvocation)
 	if err := a.validateConfigForToolLoop(inv.With); err != nil {
 		return agent.ToolLoopResult{}, err
 	}
-	cfg, err := a.reqConfigFrom(inv.With) // the existing with:→reqConfig parser
+	// buildReqConfig takes an AgentInvocation (config.go:42); it reads only With + the
+	// adapter's a.env. Pass a throwaway invocation carrying our With (no prompt key).
+	cfg, err := a.buildReqConfig(agent.AgentInvocation{With: inv.With})
 	if err != nil {
 		return agent.ToolLoopResult{}, err
 	}
 	if cfg.StructuredOutput == soOllamaFormat {
 		return agent.ToolLoopResult{}, fmt.Errorf("awfllm: react: not supported on the Ollama-native path")
 	}
-	return a.runOneToolCall(ctx, cfg, inv.Messages, inv.Tools)
+	return a.runOneToolCall(ctx, cfg, inv.Messages, inv.Tools, inv.OutputSchema)
 }
 ```
 
-> Use the real name of the `with:`→`reqConfig` constructor (find it in `agent/awfllm/config.go`).
+> `buildReqConfig` is the real `with:`→`reqConfig` parser (`config.go:42`, takes `agent.AgentInvocation`). If a `prompt`-bearing `AgentInvocation` is awkward, extract a small `buildReqConfigFromWith(with ir.RawConfig) (reqConfig, error)` and have both call sites use it. Passing `inv.OutputSchema` is what makes #7's `OutputSchema` field load-bearing.
 
 - [ ] **Step 4: Run — expect PASS, commit.**
 
@@ -1472,11 +1581,12 @@ Expected: FAIL
 ```go
 package engine
 
-func runReact(ctx context.Context, r *ir.React, reactPath string, wf *ir.Workflow,
-	runstate *RunState, resolver agent.Resolver, log state.Log, blobs state.Blobs, clk clock.Clock, tap io.Writer) (Outcome, error) {
-	return runReactWithContext(ctx, r, reactPath, interpreterContext{
-		wf: wf, runstate: runstate, resolver: resolver, log: log, blobs: blobs, clk: clk, tap: tap,
-	})
+// NOTE (rev #1): there is NO `resolver` on interpreterContext (it carries only
+// `dispatcher Dispatcher`). runReactWithContext takes the same `(node, path, ictx)`
+// shape as every other handler; the runner is extracted from the *LocalDispatcher
+// inside toolLoopRunnerFor (see below).
+func runReact(ctx context.Context, r *ir.React, reactPath string, ictx interpreterContext) (Outcome, error) {
+	return runReactWithContext(ctx, r, reactPath, ictx)
 }
 
 func runReactWithContext(ctx context.Context, r *ir.React, reactPath string, ictx interpreterContext) (Outcome, error) {
@@ -1484,10 +1594,11 @@ func runReactWithContext(ctx context.Context, r *ir.React, reactPath string, ict
 	if _, done := ictx.runstate.LookupCompleted(reactPath); done {
 		return OutcomeOK, nil
 	}
-	runner, err := toolLoopRunnerFor(r, ictx) // resolves adapter + asserts ToolLoopRunner + Caps gate
+	runner, err := toolLoopRunnerFor(r, ictx) // *LocalDispatcher.Resolver.Lookup + ToolLoopRunner assert + Caps gate
 	if err != nil {
 		return "", err
 	}
+	appendNodeStarted(ictx.log, reactPath, "react") // obs span-open parity with reduce (rev #19)
 	maxTurns := r.MaxTurns
 	if maxTurns == 0 {
 		maxTurns = 8
@@ -1540,7 +1651,32 @@ func runReactWithContext(ctx context.Context, r *ir.React, reactPath string, ict
 }
 ```
 
-> For Task 4.2 only, implement: `toolLoopRunnerFor` (resolve `r.With["uses"]`, `resolver.Lookup`, assert `agent.ToolLoopRunner`, check `Caps().Containerless && Caps().Threaded` — error otherwise), `buildToolLoopInvocation`, `commitModelLeaf` (Commit a synthetic leaf with `{text, finish_reason, tool_calls:[...]}`), `commitTerminal` (build `{...schema fields or text..., stop_reason}` and Commit at `reactPath`), `appendAssistantTurn`, `replayMessages` (returns the initial `[user: r.Prompt]` when `startK==1`; full replay added in 4.4), and stub `dispatchRoundTools`/`closeRound` (4.3). Add the `interpNode` arm:
+> For Task 4.2 only, implement: **`toolLoopRunnerFor`** — get the resolver via the
+> `*LocalDispatcher` (the `call_step.go:25-28`/`compose.go:44-46` precedent), NOT a phantom
+> `interpreterContext.resolver` field:
+> ```go
+> func toolLoopRunnerFor(r *ir.React, ictx interpreterContext) (agent.ToolLoopRunner, error) {
+> 	ld, ok := ictx.dispatcher.(*LocalDispatcher)
+> 	if !ok {
+> 		return nil, fmt.Errorf("engine.runReact: react: requires the local dispatcher")
+> 	}
+> 	uses, _ := r.With["uses"].(string)
+> 	adapter, ok := ld.Resolver.Lookup(uses)
+> 	if !ok {
+> 		return nil, fmt.Errorf("engine.runReact: no adapter %q", uses)
+> 	}
+> 	caps := adapter.Capabilities()
+> 	if !caps.Containerless || !caps.Threaded {
+> 		return nil, fmt.Errorf("engine.runReact: %q is not a containerless+threaded adapter", uses)
+> 	}
+> 	runner, ok := adapter.(agent.ToolLoopRunner) // INTERFACE assert (works through *DerivedAdapter, rev #1/C2)
+> 	if !ok {
+> 		return nil, fmt.Errorf("engine.runReact: adapter %q does not implement ToolLoopRunner", uses)
+> 	}
+> 	return runner, nil
+> }
+> ```
+> Also implement: `buildToolLoopInvocation` (carries `inv.OutputSchema = r.OutputSchema`), `commitModelLeaf` (Commit a synthetic leaf with `{text, finish_reason, tool_calls:[...]}`), `commitTerminal` (§5 / Task 4.5), `appendAssistantTurn` (Task 4.4), `replayMessages` (initial `[user: r.Prompt]` when `startK==1`; full replay in 4.4), and stub `dispatchRoundTools`/`closeRound` (4.3). Add the `interpNode` arm:
 
 ```go
 // in engine/interpreter.go interpNode switch:
@@ -1629,7 +1765,11 @@ func dispatchRoundTools(ctx context.Context, r *ir.React, roundPath string, mr T
 }
 ```
 
-> Implement `dispatchOneTool` by adapting `runCommandReduce` (`reduce.go:215-308`): stage `[]container.InputFile{{Path: argsFilePath(toolPath), Content: []byte(tc.Arguments)}}`; `cmd := template.Substitute(tool.Impl.Run, newToolImplScope(rs, wf, toolPath, argsFilePath(toolPath), parseArgsBestEffort(tc.Arguments)))`; build `NodeIntent`/`ResolvedInputs` with the synthesized `&ir.CodeStep{Run: cmd, Container: tool.Impl.Container, OutputSchema: tool.Impl.OutputSchema, OutputFiles: tool.Impl.OutputFiles, InputFiles: <staged>}`; `RunWithRetry` → on a tool's own non-zero exit, capture `{exit_code, stdout}` and `Commit` an OK leaf with that as the result (the divergence from a normal code step); `rs.RecordCompleted`. `boundToolResult` applies the 16384-byte `boundDisplayField`-style cap + the `utf8.Valid` descriptor route (Task 4.6); for now (4.3) inline a TODO calling a `boundToolResult` that returns stdout unbounded, replaced in 4.6.
+> Implement `dispatchOneTool` by adapting `runCommandReduce` (`reduce.go:215-308`) — **with two corrections (rev #11)** the verbatim reduce copy gets wrong:
+> - **Dispatch with `Attempts: 1`, NOT `retry.Default`** (`policy.go:67` = 3). A tool that fails deterministically must be fed back to the model after **one** attempt, not re-run 3× first. (A tool may still declare its own `retry:` for genuinely transient infra; honor `tool.Impl.Retry` if set, else `Attempts:1`.)
+> - **Branch on `dr.ExitCode != nil`, NOT on `runErr`.** A plain non-zero process exit returns `runErr == nil` with `dr.Outcome` a (retryable) failure and `dr.ExitCode`/`dr.Stdout` intact — a verbatim reduce copy would fall through to `Commit`, which *refuses* non-OK (`commit.go:48-50`). So: if `dr.ExitCode != nil` (process ran), rewrite to an OK leaf carrying `{exit_code, stdout}` and feed it back; if `dr.ExitCode == nil` (the backend couldn't exec — infra failure), that is a **hard react-step failure** (return the error).
+>
+> Body: stage `[]container.InputFile{{Path: argsFilePath(toolPath), Content: []byte(tc.Arguments)}}` (verbatim args, per-call path); `cmd := template.Substitute(tool.Impl.Run, newToolImplScope(rs, wf, toolPath, argsFilePath(toolPath), parseArgsBestEffort(tc.Arguments)))`; build `NodeIntent`/`ResolvedInputs` with `&ir.CodeStep{Run: cmd, Container: tool.Impl.Container, OutputSchema: tool.Impl.OutputSchema, OutputFiles: tool.Impl.OutputFiles, InputFiles: <staged>}`; dispatch via `RunWithRetry(ctx, ictx.dispatcher, intent, oneAttemptPolicy, ictx.clk, ictx.log)`; classify on `dr.ExitCode` as above; `Commit` the OK leaf; `rs.RecordCompleted`. The model-facing message uses `boundToolResult` (Task 4.6); the committed `.tool-J` leaf keeps the full stdout (+ any `output_files`, captured but not surfaced — §4.5).
 
 > **Implement `closeRound`** (the gate.go:161-170 marker pattern):
 
@@ -1763,21 +1903,21 @@ Expected: FAIL
 func commitTerminal(ictx interpreterContext, r *ir.React, reactPath string, mr ToolLoopRoundResult, stopReason string) (Outcome, error) {
 	out := map[string]any{}
 	if stopReason == "max_turns" {
-		out["text"] = mr.Text
-	} else {
-		if r.OutputSchema != nil {
-			obj, err := parseTypedOutput(mr.Text, r.OutputSchema) // existing layer-2 validation
-			if err != nil {
-				return failStep(ictx.log, reactPath, OutcomeRetryableFailure, err)
-			}
-			for k, v := range obj {
-				out[k] = v
-			}
-		} else {
-			out["text"] = mr.Text
+		out["text"] = mr.Text // schema NOT enforced on truncation (§5)
+	} else if r.OutputSchema != nil {
+		// rev #4: the adapter already PARSED the final text into mr.Output (returning
+		// *agent.ErrUnparseableOutput on a miss, surfaced as OutcomeRetryableFailure by
+		// the model-call step). The engine only VALIDATES the parsed map — no awfllm import.
+		if err := ValidateOutputMap(mr.Output, r.OutputSchema); err != nil { // engine/schema.go:23
+			return failStep(ictx.log, reactPath, OutcomeRetryableFailure, err)
 		}
+		for k, v := range mr.Output {
+			out[k] = v
+		}
+	} else {
+		out["text"] = mr.Text
 	}
-	out["stop_reason"] = stopReason
+	out["stop_reason"] = stopReason // reserved sibling (validate forbids a clashing schema field)
 	nr, err := Commit(ictx.log, ictx.blobs, reactPath, DispatchResult{Outcome: OutcomeOK, Outputs: out}, false)
 	if err != nil {
 		return "", fmt.Errorf("engine.runReact: commit terminal at %q: %w", reactPath, err)
@@ -1787,7 +1927,7 @@ func commitTerminal(ictx interpreterContext, r *ir.React, reactPath string, mr T
 }
 ```
 
-> Use the real name of the layer-2 typed-output parser (find how `agent` steps validate `output_schema` for `awf/llm`, `NativeSchema:false` — `local_dispatcher_agent.go:236-252`).
+> `ToolLoopRoundResult` is the engine-private mirror of `agent.ToolLoopResult` (carries `Text`, `Output map[string]any`, `ToolCalls`, `FinishReason`); `roundResultFromLeaf` reconstructs it from a committed `.model` leaf's `Outputs`. `engine.ValidateOutputMap(map, *ir.JSONSchema)` (`engine/schema.go:23`) is the real validator — there is **no** `parseTypedOutput` (parsing happens adapter-side, rev #4). The natural-stop parse-miss surfaces as the model-call step's `OutcomeRetryableFailure` (Task 4.2 commitModelLeaf must propagate a `RunToolLoop` `*ErrUnparseableOutput`).
 
 - [ ] **Step 4: Run — expect PASS, commit.**
 
@@ -1836,14 +1976,13 @@ const toolResultCap = 16384
 func boundToolResult(res container.ExecResult) string {
 	body := res.Stdout
 	if !utf8.Valid(body) {
-		return fmt.Sprintf("[non-text tool output: %d bytes, exit %d — see the run's artifacts]", len(body), res.ExitCode)
+		// rev #10: ExecResult has no Files; output_files are captured to the leaf but
+		// not surfaced to the model in v1. Feed a size+exit descriptor, not the bytes.
+		return fmt.Sprintf("[non-text tool output: %d bytes, exit %d]", len(body), res.ExitCode)
 	}
-	s := string(body)
-	if len(s) > toolResultCap {
-		// head+tail with a UTF-8 rune-boundary backup (boundDisplayField pattern)
-		head := safeTrunc(s, toolResultCap)
-		s = fmt.Sprintf("%s\n…[truncated %d bytes — full output in artifacts]", head, len(s)-len(head))
-	}
+	// rev #18: reuse the existing same-package boundDisplayField (engine/agent_step.go:383)
+	// — a real byte cap with UTF-8 rune-boundary backup + a "...[truncated N bytes]" marker.
+	s := boundDisplayField(string(body), toolResultCap)
 	if res.ExitCode != 0 {
 		s = fmt.Sprintf("[exit %d]\n%s", res.ExitCode, s)
 	}
@@ -1851,7 +1990,7 @@ func boundToolResult(res container.ExecResult) string {
 }
 ```
 
-> Implement `safeTrunc` to back up to a rune boundary (copy the `boundDisplayField` body at `engine/agent_step.go:383`). Wire `dispatchOneTool` (Task 4.3) to use `boundToolResult` on the captured `ExecResult` for the model-facing message, while the committed `.tool-J` leaf keeps the full output.
+> `boundDisplayField` already exists and is callable from package `engine` (`engine/agent_step.go:383`) — do **not** write a `safeTrunc` copy. Align the test's marker assertion to its real text (`...[truncated N bytes]`). Wire `dispatchOneTool` (Task 4.3) to use `boundToolResult` for the **model-facing** message only; the committed `.tool-J` leaf keeps the full stdout.
 
 - [ ] **Step 4: Run — expect PASS, full engine suite, lint+vet, commit.**
 
@@ -1861,23 +2000,24 @@ git add engine/react.go engine/react_test.go
 git commit -m "feat(engine): bound model-facing tool result + non-UTF-8 descriptor (P3)"
 ```
 
-### Task 4.7: Wire `runReact` into the run loop (dependencies: resolver, broker)
+### Task 4.7: Confirm the `interpNode` arm builds (no new context field needed)
+
+> **Rev #1 correction:** there is **no `resolver` field** to wire — `interpreterContext` carries only
+> `dispatcher Dispatcher`, and `runReact` extracts the runner from `ictx.dispatcher.(*LocalDispatcher)`
+> inside `toolLoopRunnerFor` (Task 4.2). So this task is just a build/consistency check, NOT a
+> context-plumbing change. (Earlier drafts wrongly said "reuse the resolver field"; deleted.)
 
 **Files:**
-- Modify: `engine/interpreter.go` / wherever `interpreterContext` is built (ensure `resolver` is available to `runReactWithContext`)
-- Test: an `engine` integration-style test or rely on the conformance bucket (Phase 5)
+- Confirm only: `engine/interpreter.go` (the `*ir.React` arm added in Task 4.2 compiles against the unchanged `interpreterContext`).
 
-- [ ] **Step 1: Confirm `interpreterContext` carries what `runReact` needs** — the agent `resolver` (it does for agent steps; reuse the same field). If `runReactWithContext` references a field not on `interpreterContext`, add it where the context is constructed (mirror how `runAgentStepWithContext` gets the resolver). Build and run the full engine suite.
+- [ ] **Step 1: Build + full engine suite.** The `interpNode` `*ir.React` arm calls
+  `runReactWithContext(ctx, v, ir.PathFor(parent, "react", "", idx), ictx)` — no extra args, no new
+  context field. Confirm it compiles and the suite is green.
 
 Run: `go build ./... && go test -race ./engine/`
 Expected: PASS
 
-- [ ] **Step 2: Commit** (if any wiring changed).
-
-```bash
-git add engine/interpreter.go
-git commit -m "chore(engine): wire resolver into runReact context (P3)"
-```
+- [ ] **Step 2:** No commit needed unless a stray build fix was required (then commit it).
 
 ---
 
@@ -1945,7 +2085,7 @@ const reactToolLoopWorkflow = `
 workflow: react-tool-loop
 version: 1
 containers:
-  fin: { image: "oci://busybox@sha256:..." }
+  fin: { image: "oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000" }
 tools:
   check:
     description: echo the iban
@@ -1984,18 +2124,22 @@ func testReact(t *testing.T, factory BackendFactory) {
 	if err != nil || oc != engine.OutcomeOK {
 		t.Fatalf("run: %v %v", oc, err)
 	}
-	// fold + assert the terminal output + the tool leaf
-	rs := mustFold(t, h)
-	if rs.Completed["react[0]"].Outputs["answer"] != "validated" {
-		t.Fatalf("terminal = %v", rs.Completed["react[0]"].Outputs)
+	// fold + assert the terminal output + the tool leaf (rev #16: there is no mustFold;
+	// use engine.Fold(mustFoldEvents(t,h), h.blobs) + LookupCompleted, like reduce.go:226).
+	rs, err := engine.Fold(mustFoldEvents(t, h), h.blobs)
+	if err != nil {
+		t.Fatalf("fold: %v", err)
 	}
-	if _, ok := rs.Completed["react[0].round-1.tool-0"]; !ok {
+	if nr, ok := rs.LookupCompleted("react[0]"); !ok || nr.Outputs["answer"] != "validated" {
+		t.Fatalf("terminal = %+v (ok=%v)", nr.Outputs, ok)
+	}
+	if _, ok := rs.LookupCompleted("react[0].round-1.tool-0"); !ok {
 		t.Fatal("tool-0 leaf missing")
 	}
 }
 ```
 
-> Adapt `mustFold`/`rs.Completed` access to the harness's actual fold helper (`mustFoldEvents` + `engine.Fold`). Match the fake-backend exec-programming convention exactly (cmd match semantics).
+> `mustFoldEvents(t, h)` returns `[]state.Event` (harness.go); `engine.Fold(events, blobs)` returns `(*RunState, error)` (fold.go:67). The canonical fixture digest above mirrors `conformance/fixtures.go:11 fakeImageDigest` (a 64-hex placeholder the fake backend accepts) — match its exact value/host when implementing. Match the fake-backend exec-programming convention (cmd match semantics) exactly.
 
 - [ ] **Step 2: Run — expect FAIL → implement until PASS.**
 
@@ -2106,10 +2250,12 @@ git commit -m "docs: document --backend native non-resumable boundary (P2)"
 
 ## Self-review (run before handing off)
 
-**Spec coverage:** A4 `tools:` (Tasks 1.1–1.2, 4.3) ✓ · `react:` node + 4-edit registry (1.3) ✓ · validation incl. gating/Ollama/reserved/producer/args-carveout (1.4–1.6) ✓ · journaling path/event/runstate/fold (2.1–2.4) ✓ · `ToolLoopRunner` + `DerivedAdapter` forwarding + transport + prompt-exempt validate (3.1–3.5) ✓ · `runReact` natural/tool/replay/max_turns/bound (4.2–4.6) ✓ · conformance happy/resume/role + green bar (5.x) ✓ · P2 doc (6.1) ✓. Spec §4.4 crash≠verdict is exercised by the torn-frontier resume sub-test (5.3).
+**Spec coverage:** A4 `tools:` (Tasks 1.1–1.2, 4.3) ✓ · `react:` node + 4-edit registry (1.3) ✓ · **all `ir.Node` type-switches + schema floor (1.3b)** ✓ · validation incl. gating/Ollama/reserved/producer/args-carveout (1.4–1.6) ✓ · journaling path/event/runstate/fold + child-runstate copy (2.1–2.4) ✓ · `ToolLoopRunner` + `DerivedAdapter` forwarding + transport (tools + response_format) + prompt-exempt validate (3.1–3.5) ✓ · `runReact` natural/tool/replay/max_turns/bound (4.2–4.6) ✓ · conformance happy/resume/role + green bar (5.x) ✓ · P2 doc (6.1) ✓. Spec §4.4 crash≠verdict is exercised by the torn-frontier resume sub-test (5.3).
 
-**Placeholder scan:** the code blocks are concrete; the `> Note:` callouts flag where an exact existing symbol name must be confirmed against the worktree before pasting (e.g. `JSONSchema`/`OutputFiles` type names, the layer-2 typed-output parser, `reqConfigFrom`). These are verification gates, not placeholders — resolve each by grep before writing the code in that step. **Replace the placeholder AWF codes (AWF1050–AWF1056) with the actual next-free codes** found in `ir/`.
+**Placeholder scan:** the code blocks are concrete; the `> Note:` callouts flag where an exact existing symbol name must be confirmed against the worktree before pasting (e.g. `JSONSchema`/`OutputFiles` type names; `buildReqConfig`, `extractJSONObject`, `ValidateOutputMap`, `boundDisplayField`, `metricsFrom` — all confirmed to exist or to be extracted from a cited line). These are verification gates, not placeholders. **Diagnostic codes are AWF1052–AWF1058** (verified next-free; register in the `ir/diagnostic.go` catalog).
 
-**Type consistency:** `ir.Tool`/`ir.ToolImpl` (1.1) used in 1.4/4.3; `ir.React` fields (1.3) used in 1.4/4.2; `EventReactRound`/`ReactRoundData` (2.2) used in 2.4/4.3; `ReactRounds`/`ReactRoundRecord`/`Lookup/RecordReactRounds` (2.3) used in 2.4/4.2; `RoundPath/ModelPath/ToolPath` (2.1) used in 4.x; `agent.ToolLoopRunner`/`ToolLoopInvocation`/`ToolLoopResult`/`ReactTurn`/`ToolCall`/`ToolDef` (3.1) used in 3.2/3.4/3.5/4.x/5.x — names are consistent across phases.
+**Type consistency:** `ir.Tool`/`ir.ToolImpl` (1.1, no `Exec`/`IdempotencyKey`) used in 1.4/4.3; `ir.React` fields (1.3) used in 1.3b/1.4/4.2; `EventReactRound`/`ReactRoundData` (2.2) used in 2.4/4.3; `ReactRounds`/`ReactRoundRecord`/`Lookup/RecordReactRounds`/`copyPrefixedReactRounds` (2.3) used in 2.4/4.2; `RoundPath/ModelPath/ToolPath` (2.1) used in 4.x; `agent.ToolLoopRunner`/`ToolLoopInvocation`(no `Env`)/`ToolLoopResult`(+`Output`)/`ReactTurn`/`ToolCall`/`ToolDef` (3.1) used in 3.2/3.4/3.5/4.x/5.x — names consistent across phases.
 
-**Known open items deferred to implementation (pinned, not vague):** the exact internal `ToolLoopRoundResult` helper struct shape in `engine/react.go` (a private mirror of `agent.ToolLoopResult`); the `safeTrunc`/`metricsFrom`/`reqConfigFrom` helper names (confirm against existing code). None affect the public format or the journaling contract.
+**Fix-evaluation revisions applied (rev #1–#25):** the seam is the `agent.ToolLoopRunner` optional interface via `*LocalDispatcher.Resolver` (no phantom `interpreterContext.resolver`, #1); model-call retry is a §9 non-goal (#6); the new **Task 1.3b** registers react in all 8 panic-default `ir.Node` switches + the schema floor (#3/#24/#25); the terminal parser is adapter-side `extractJSONObject`→`Output` + engine `ValidateOutputMap` (no fictional `parseTypedOutput`, #4); diagnostics AWF1052–1058 via the `collector`/`c.errf`/3-arg-`WalkNodes` pattern (#5/#12); real `buildReqConfig`+`metricsFrom` (#8); `response_format` mode-guarded + always-on directive (#2/#7/#22); non-zero-exit branches on `dr.ExitCode != nil` with `Attempts:1` (#11); `copyPrefixedReactRounds` in both child-runstate builders (#13); `engine.Fold(mustFoldEvents…)` (#16); `boundDisplayField` reused (#18); `appendNodeStarted` for obs parity (#19); `exec:` dropped (#20); `fakeImageDigest`-shaped fixture (#21). **#14/#15** (response_format-on-the-wire test + tool-failure tests) are carried as proposed.
+
+**Known open items (pinned, not vague):** the exact internal `ToolLoopRoundResult` helper struct in `engine/react.go` (a private mirror of `agent.ToolLoopResult` incl. `Output`); the precise `appendSchemaDirective` text (extract from `config.go:84-99`). None affect the public format or the journaling contract.
