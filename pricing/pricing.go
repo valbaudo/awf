@@ -73,15 +73,9 @@ func (t Table) Derive(model string, b Breakdown) (Cost, bool) {
 		}
 		in := perM(b.Input, r.InputPerM) + perM(b.CacheRead, r.CacheReadPerM) + perM(b.CacheWrite, r.CacheWritePerM)
 		outc := perM(b.Output, r.OutputPerM)
-		return Cost{Currency: orUSD(r.Currency), Input: in, Output: outc, Total: in + outc}, true
+		return Cost{Currency: r.Currency, Input: in, Output: outc, Total: in + outc}, true
 	}
 	return Cost{}, false
 }
 
 func perM(tokens int, ratePerM float64) float64 { return float64(tokens) / 1_000_000 * ratePerM }
-func orUSD(c string) string {
-	if c == "" {
-		return "USD"
-	}
-	return c
-}

@@ -48,3 +48,14 @@ func TestDeriveMissReturnsFalseNotZero(t *testing.T) {
 		t.Fatal("ARN must not match")
 	}
 }
+
+func TestDeriveEmptyCurrencyNotMaterialized(t *testing.T) {
+	tb := Table{"m": {Currency: "", InputPerM: 1, OutputPerM: 1}}
+	c, ok := tb.Derive("m", Breakdown{Input: 1, Output: 1})
+	if !ok {
+		t.Fatal("Derive: ok=false")
+	}
+	if c.Currency != "" {
+		t.Errorf("Currency = %q, want \"\" (empty == USD by contract, not materialized)", c.Currency)
+	}
+}
