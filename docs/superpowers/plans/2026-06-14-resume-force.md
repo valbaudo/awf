@@ -272,8 +272,11 @@ func resumeAdmission(runID string, events []state.Event, force bool) (admit bool
 			if err != nil {
 				return false, fmt.Sprintf("awf resume: run %q has a corrupt node.failed event: %v\n", runID, err), ""
 			}
+			// node.failed only ever carries retryable_failure / permanent_failure
+			// (failStep; see NodeFailedData doc). A gate's "rejected" rolls up via
+			// run.finished, never a node.failed event — so it is NOT checked here.
 			switch engine.Outcome(d.Outcome) {
-			case engine.OutcomePermanentFailure, engine.OutcomeRejected, engine.OutcomeRetryableFailure:
+			case engine.OutcomePermanentFailure, engine.OutcomeRetryableFailure:
 				return true, "", d.Outcome
 			default:
 				return false, fmt.Sprintf("awf resume: run %q terminated with an unrecognized failure %q; not resumable even with --force.\n", runID, d.Outcome), ""
