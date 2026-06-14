@@ -58,3 +58,15 @@ func TestMimeModalityRejectsUnsupported(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardable_Anthropic(t *testing.T) {
+	if m, ok := forwardable(providerAnthropic, "image/png"); !ok || m != modalityImage {
+		t.Errorf("anthropic image/png: m=%v ok=%v, want image,true", m, ok)
+	}
+	if m, ok := forwardable(providerAnthropic, "application/pdf"); !ok || m != modalityDocument {
+		t.Errorf("anthropic application/pdf: m=%v ok=%v, want document,true", m, ok)
+	}
+	if _, ok := forwardable(providerAnthropic, "text/plain"); ok {
+		t.Error("anthropic text/plain must be rejected")
+	}
+}
