@@ -42,6 +42,10 @@ func (a *Adapter) ensureGeminiCache(ctx context.Context, cfg reqConfig, files []
 		a.geminiCacheMu.Unlock()
 	}
 
+	// Single-flight: hold the write lock across the create so concurrent first-use of
+	// the SAME document creates exactly once. Tradeoff: this also serializes creates of
+	// DISTINCT documents in a fan-out; acceptable for v1 (switch to a per-key lock if
+	// that ever becomes hot — YAGNI now).
 	a.geminiCacheMu.Lock()
 	defer a.geminiCacheMu.Unlock()
 	if name, ok := a.geminiCacheMap[key]; ok { // another goroutine won the race

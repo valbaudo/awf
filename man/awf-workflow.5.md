@@ -1103,7 +1103,7 @@ and the native Gemini REST API). It requires no container. The relevant `with:` 
 steps and `react:` are:
 
     with:
-      provider: gemini | openai | openai_compat  # required; selects the call path
+      provider: openai | gemini | ollama          # optional (default openai); selects the call path
       model: <model-id>                           # required
       base_url: <url>                             # optional; override endpoint
       api_key_env: <env-var>                      # optional; name of the API-key env var
