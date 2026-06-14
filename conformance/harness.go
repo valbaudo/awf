@@ -134,15 +134,20 @@ func newSnapshotHarness(t *testing.T, workflowYAML string) *harness {
 
 func (h *harness) runWorkflow(t *testing.T) (engine.Outcome, error) {
 	t.Helper()
-	return h.runOrResume(t, false)
+	return h.runOrResume(t, false, "")
 }
 
 func (h *harness) resumeWorkflow(t *testing.T) (engine.Outcome, error) {
 	t.Helper()
-	return h.runOrResume(t, true)
+	return h.runOrResume(t, true, "")
 }
 
-func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, error) {
+func (h *harness) resumeWorkflowFrom(t *testing.T, target string) (engine.Outcome, error) {
+	t.Helper()
+	return h.runOrResume(t, true, target)
+}
+
+func (h *harness) runOrResume(t *testing.T, isResume bool, rerunFrom string) (engine.Outcome, error) {
 	t.Helper()
 
 	ld, err := loader.Load(h.wfPath)
@@ -260,8 +265,9 @@ func (h *harness) runOrResume(t *testing.T, isResume bool) (engine.Outcome, erro
 		// AgentEventTap: nil — conformance is silent; bucket tests assert log entries, not tap output
 	}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, engine.RunOptions{
-		Broker: h.broker,
-		Assets: recordedAssets,
+		Broker:    h.broker,
+		Assets:    recordedAssets,
+		RerunFrom: rerunFrom,
 	})
 	return outcome, runErr
 }
