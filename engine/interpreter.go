@@ -61,6 +61,12 @@ type RunOptions struct {
 	// gate a fresh attempt allotment on resume (engine/gate.go). Set by
 	// `awf resume --force`. No other node kind reads it.
 	ForceResume bool
+
+	// RerunFrom, when non-empty, is a committed node runtime path. At resume
+	// start the engine invalidates that node's subtree + everything after its
+	// top-level ancestor (engine/rerun.go), re-running them. Set by
+	// `awf resume --from`.
+	RerunFrom string
 }
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
@@ -130,6 +136,26 @@ func Run(
 	}
 	if err := preflightCallStartedRuntimes(ctx, ictx); err != nil {
 		return "", err
+	}
+
+	if opts.RerunFrom != "" {
+		paths, err := ComputeRerunInvalidation(def.Workflow, runstate, opts.RerunFrom)
+		if err != nil {
+			return "", fmt.Errorf("engine.Run: rerun --from: %w", err)
+		}
+		if len(paths) > 0 { // skip a no-op node.invalidated{[]} event when nothing is committed at/after the target
+			data, err := json.Marshal(NodeInvalidatedData{Paths: paths})
+			if err != nil {
+				return "", fmt.Errorf("engine.Run: marshal node.invalidated: %w", err)
+			}
+			if err := log.Append(state.Event{Type: EventNodeInvalidated, Data: data}); err != nil {
+				return "", fmt.Errorf("engine.Run: append node.invalidated: %w", err)
+			}
+			if err := log.Sync(); err != nil {
+				return "", fmt.Errorf("engine.Run: sync after node.invalidated: %w", err)
+			}
+			clearInvalidatedPaths(runstate, paths)
+		}
 	}
 
 	// Wrap ctx so the background poller can cancel it on pause/cancel
