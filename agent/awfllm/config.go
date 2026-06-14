@@ -20,9 +20,10 @@ const defaultBaseURL = "https://api.openai.com/v1"
 // (providerDefaults) is centralized so buildReqConfig (resolve) and
 // validateConfigCommon (presence-check) can never drift.
 const (
-	providerOpenAI = "openai" // default; OpenAI-compat /v1 chat completions
-	providerGemini = "gemini" // native Gemini :generateContent transport
-	providerOllama = "ollama" // native Ollama /api/chat transport
+	providerOpenAI    = "openai"    // default; OpenAI-compat /v1 chat completions
+	providerGemini    = "gemini"    // native Gemini :generateContent transport
+	providerOllama    = "ollama"    // native Ollama /api/chat transport
+	providerAnthropic = "anthropic" // native Anthropic Messages API transport
 
 	// defaultGeminiBaseURL is the native Gemini generateContent host (no /v1 suffix;
 	// the Gemini transport appends the versioned model path itself).

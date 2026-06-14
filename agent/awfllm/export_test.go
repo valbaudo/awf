@@ -63,6 +63,12 @@ func (a *Adapter) ValidateConfigForToolLoopForTest(with ir.RawConfig) error {
 	return a.validateConfigForToolLoop(with)
 }
 
+// MetricsFromForTest exercises the per-provider cache normalization. usageRec is
+// unexported, so the helper builds it from explicit counts.
+func MetricsFromForTest(in, out, cacheRead, cacheWrite int, model string, pricer pricing.Table, anthropicNorm bool) agent.MetricSet {
+	return metricsFrom(usageRec{Input: in, Output: out, CacheRead: cacheRead, CacheWrite: cacheWrite}, model, pricer, anthropicNorm)
+}
+
 // RunOneToolCallForTest exposes the unexported runOneToolCall for white-box wire
 // tests (the canned-stream harness).
 func (a *Adapter) RunOneToolCallForTest(ctx context.Context, cfg ReqConfigForTest, nodePath string, msgs []agent.ReactTurn, tools []agent.ToolDef, schema *ir.JSONSchema) (agent.ToolLoopResult, error) {
