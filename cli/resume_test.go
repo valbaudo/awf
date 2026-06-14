@@ -1221,6 +1221,64 @@ graph:
 	return stateDir, runID, wfPath
 }
 
+// TestCLIResumeForce_StillEnforcesDigestPin verifies that --force overrides ONLY
+// the terminal-outcome guard; the definition-digest pin is still a hard error.
+// Editing the workflow after the run ends and then calling `resume --force` must
+// refuse with "digest mismatch", not admit the run.
+func TestCLIResumeForce_StillEnforcesDigestPin(t *testing.T) {
+	t.Parallel()
+	stateDir, runID, wfPath := buildPermanentFailureRun(t)
+
+	// Mutate the on-disk workflow so its digest no longer matches the digest
+	// stored in run.started. We change the lab container's image digest from
+	// all-zeros to all-f's — both are syntactically valid pinned OCI refs
+	// (the validator only requires "@sha256:"), so the mutated file passes
+	// ir.Validate but hashes differently. The failure must come from the
+	// resume-side digest-mismatch check, not from a parse/validation error.
+	orig, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatalf("read wf: %v", err)
+	}
+	mutated := strings.Replace(
+		string(orig),
+		"sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		1,
+	)
+	if mutated == string(orig) {
+		t.Fatal("mutation no-op: the image digest was not found in the workflow file")
+	}
+	if err := os.WriteFile(wfPath, []byte(mutated), 0o600); err != nil {
+		t.Fatalf("write mutated wf: %v", err)
+	}
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, "--force", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage (digest pin must hold under --force); stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "digest mismatch") {
+		t.Fatalf("want 'digest mismatch' error; got %q", stderr.String())
+	}
+	// The pin check must fire BEFORE run.resumed is appended.
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	lg, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = lg.Close() }()
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == engine.EventRunResumed {
+			t.Errorf("digest-mismatch refusal under --force must NOT append run.resumed; events: %+v", events)
+		}
+	}
+}
+
 // TestCLIResumeForce_RefusedWithoutFlag confirms that a permanently-failed run
 // is refused (ExitUsage) without --force, and that the error message names the
 // --force flag so the user knows what to do.
