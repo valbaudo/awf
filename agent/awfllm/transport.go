@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -343,12 +344,13 @@ func classifyOpenAIErr(err error) error {
 //
 // Do NOT prepend the schema to the prompt here — schema restatement is
 // centralized in assemblePrompt (Task B7) for ALL modes. Send prompt as-is.
-func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, _ []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/api/chat"
 
 	type msg struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role    string   `json:"role"`
+		Content string   `json:"content"`
+		Images  []string `json:"images,omitempty"` // bare standard-base64, NOT data URIs (Ollama /api/chat format)
 	}
 	messages := []msg{}
 	if cfg.SystemPrompt != "" {
@@ -360,7 +362,20 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 		messages = append(messages, msg{Role: "user", Content: t.User})
 		messages = append(messages, msg{Role: "assistant", Content: t.Assistant})
 	}
-	messages = append(messages, msg{Role: "user", Content: prompt})
+	userMsg := msg{Role: "user", Content: prompt}
+	for _, f := range files {
+		if !strings.HasPrefix(f.MIME, "image/") {
+			return "", usageRec{}, "", "", &agent.ErrInvalidConfig{
+				Ref:    AdapterRef,
+				Key:    "input_files",
+				Reason: "ollama transport supports images only, not " + f.MIME + "; rasterize the PDF to images first",
+			}
+		}
+		// Bare standard-base64 — NOT a data URI. Ollama /api/chat images[] is
+		// the OPPOSITE of the OpenAI path (which uses data:...;base64, URIs).
+		userMsg.Images = append(userMsg.Images, base64.StdEncoding.EncodeToString(f.Content))
+	}
+	messages = append(messages, userMsg)
 
 	body := map[string]any{"model": cfg.Model, "messages": messages, "stream": true}
 	if schema != nil {
