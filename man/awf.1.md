@@ -147,7 +147,7 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     proves turn-boundary detection, permission handling, transcript
     correlation, prompt injection, and reconnect behavior.
 
-## awf resume _run-id_ _path_
+## awf resume [--force] _run-id_ _path_
 
 Re-enter an interrupted run. **awf** folds the run's journal, then verifies that
 the on-disk _path_ still hashes to the recorded definition digest *and* that
@@ -158,7 +158,9 @@ outputs reused, not recomputed); only the uncommitted frontier re-executes. The
 backend is read back from the journal, so no **--backend** flag is given and
 _auto_ is not re-evaluated on resume. Runs made with the _native_ backend are
 not resumable; **resume** rejects them with the native-backend limitation and
-guidance to use **--backend docker** for resumable runs.
+guidance to use **--backend docker** for resumable runs. Runs that ended
+terminally (`permanent_failure`, `rejected`, or `cancelled`) are also refused by
+default; pass **--force** to override that refusal.
 
 **Native backend is not resumable.** `awf resume` of a run started with
 **--backend native** errors: there is no infra recipe to reconstruct host state.
@@ -169,6 +171,17 @@ run directory and `awf run --backend native …` again).
 
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).
+
+**--force**
+:   Re-enter a run that ended terminally — `permanent_failure`, `rejected`, or
+    `cancelled`. Committed steps are still replayed from the journal; the
+    uncommitted frontier re-executes (a rejected gate re-runs from a fresh
+    attempt budget). Pinning is not relaxed: a changed definition digest or
+    resolved runtime version is still a hard error. Because the frontier
+    re-runs, its side effects can repeat (at-least-once); use **--force** only
+    after fixing the deterministic cause of the failure. (A transiently-failed
+    `retryable_failure` run is re-entered too — **--force** admits any non-`ok`
+    terminal run.)
 
 ## awf signal _run-id_ _name_
 
