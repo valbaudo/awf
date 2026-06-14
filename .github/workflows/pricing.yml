@@ -1,0 +1,63 @@
+name: Pricing refresh
+
+# Regenerates the embedded pricing/rates.json from the upstream pricing database
+# (models.dev, LiteLLM fallback) on a schedule and opens a review PR. This keeps
+# the curated table "updated to today" with no human having to remember to run
+# the generator — while preserving the invariant that the value AWF embeds is a
+# human-reviewed, deterministic, committed artifact (the build/runtime never
+# fetches anything; only this job does).
+#
+# NOTE on CI-on-the-bot-PR: the default GITHUB_TOKEN does NOT trigger the CI
+# workflow on a PR it opens. To run lint/test/build on the generated PR, create a
+# repo/Actions secret PRICING_PR_TOKEN (a fine-scoped PAT or GitHub App token with
+# contents:write + pull-requests:write) and the step below will use it; otherwise
+# it falls back to GITHUB_TOKEN (PR opens, but you must re-run CI manually). Also
+# enable Settings → Actions → "Allow GitHub Actions to create and approve pull
+# requests".
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday 06:00 UTC
+  workflow_dispatch: {} # manual "refresh now"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    name: Regenerate rates.json
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Regenerate pricing/rates.json
+        run: make pricing-regen
+
+      - name: Open a pull request if the table changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.PRICING_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          branch: automation/pricing-refresh
+          delete-branch: true
+          add-paths: pricing/rates.json
+          commit-message: "chore(pricing): refresh rates.json from models.dev"
+          title: "chore(pricing): refresh rates.json from upstream"
+          labels: automated-pricing
+          body: |
+            Automated regeneration of `pricing/rates.json` from
+            [models.dev](https://models.dev) (LiteLLM fallback), filtered to
+            `cmd/genrates/allowlist.txt`.
+
+            **Review before merging.** Upstream is community-maintained *estimate*
+            data (telemetry-only cost), not authoritative. Sanity-check any rate
+            change against each model's official provider pricing page. The
+            generator fails closed on a missing/zero/invalid rate, so a clean run
+            means every allowlisted model resolved.

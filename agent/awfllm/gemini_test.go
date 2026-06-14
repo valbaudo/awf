@@ -86,6 +86,12 @@ func TestCallGemini_PDFRequestAndUsage(t *testing.T) {
 	if !strings.Contains(gotBody, `"inlineData"`) {
 		t.Errorf("body missing inlineData: %s", gotBody)
 	}
+	// The stable document part must precede the varying prompt text in the
+	// contents array so the document is the cacheable common prefix (implicit
+	// caching). "extract" is the prompt text.
+	if di, pi := strings.Index(gotBody, `"inlineData"`), strings.Index(gotBody, "extract"); di < 0 || pi < 0 || di > pi {
+		t.Errorf("inlineData (doc) must come BEFORE the prompt text in contents: inlineData@%d prompt@%d\n%s", di, pi, gotBody)
+	}
 	if !strings.Contains(gotBody, `"mimeType":"application/pdf"`) {
 		t.Errorf("body missing mimeType application/pdf: %s", gotBody)
 	}
@@ -212,11 +218,14 @@ func TestCallGemini_ThreadRendered(t *testing.T) {
 // TestCallGemini_UnknownModelHasNoCost confirms a Gemini model absent from
 // pricing/rates.json yields NO derived cost (pricing.Derive ok=false → buildResult
 // leaves Metrics.Cost zero-valued: empty Source, zero Total). Cost is left
-// UNREPORTED for Gemini by this fall-through, no special-casing.
+// UNREPORTED for Gemini by this fall-through, no special-casing. Uses a
+// deliberately NON-EXISTENT model id so it keeps exercising the absent→no-cost
+// path even though the popular Gemini models are now in the embedded table.
 func TestCallGemini_UnknownModelHasNoCost(t *testing.T) {
+	const unpricedModel = "gemini-0.0-doesnotexist"
 	usage := awfllm.NewUsageForTest(1200, 15, 0)
 	res, err := awfllm.BuildResultForTest(
-		`{"name":"x"}`, usage, "gemini-3.5-flash", pricing.Default(),
+		`{"name":"x"}`, usage, unpricedModel, pricing.Default(),
 		agent.AgentInvocation{OutputSchema: &ir.JSONSchema{"type": "object"}},
 	)
 	if err != nil {
@@ -229,7 +238,7 @@ func TestCallGemini_UnknownModelHasNoCost(t *testing.T) {
 		t.Errorf("Cost.Total = %v, want 0 (unknown model → no derived cost)", res.Metrics.Cost.Total)
 	}
 	// Sanity: the wire model id is still stamped even on a pricing miss.
-	if res.Metrics.Model != "gemini-3.5-flash" {
-		t.Errorf("Metrics.Model = %q, want gemini-3.5-flash", res.Metrics.Model)
+	if res.Metrics.Model != unpricedModel {
+		t.Errorf("Metrics.Model = %q, want %q", res.Metrics.Model, unpricedModel)
 	}
 }

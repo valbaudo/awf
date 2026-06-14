@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: build test lint integ integ-live man ui ui-test e2e-ui pricing-staleness
+.PHONY: build test lint integ integ-live man ui ui-test e2e-ui pricing-staleness pricing-regen
 
 build:
 	go build -o bin/awf ./cmd/awf
@@ -36,6 +36,15 @@ man/%: man/%.md
 
 pricing-staleness:
 	go run ./cmd/pricing-staleness
+
+# pricing-regen regenerates the embedded pricing/rates.json from the models.dev
+# pricing database (LiteLLM fallback), filtered to cmd/genrates/allowlist.txt.
+# Stdlib-only build tool run via `go run` — NETWORK is touched ONLY here (regen
+# time); `go build`/`awf run` stay offline and consume the committed, reviewed
+# table. The scheduled .github/workflows/pricing.yml runs this and opens a PR.
+# Review the diff before merging — upstream is community-maintained estimate data.
+pricing-regen:
+	go run ./cmd/genrates
 
 test:
 	go test -race ./...

@@ -8,11 +8,16 @@ import (
 	"github.com/openai/openai-go/v3"
 )
 
-// buildOpenAIParts builds a Chat Completions user content array: the text prompt
-// followed by one part per file. PDFs use the `file` content part (file_data data
-// URI); images use `image_url` (data URI). Verified: OpenAI file-inputs guide.
+// buildOpenAIParts builds a Chat Completions user content array: one part per
+// file FIRST, then the text prompt LAST. The order is deliberate — the document
+// is the stable, large content and the prompt (which on a gate repair attempt
+// carries the varying prior verdict) is the suffix, so the document sits in the
+// request's common prefix and OpenAI's automatic prompt caching can reuse it
+// across a step's repair attempts (cached input is billed at the cache-read
+// rate). PDFs use the `file` content part (file_data data URI); images use
+// `image_url` (data URI). Verified: OpenAI file-inputs + prompt-caching guides.
 func buildOpenAIParts(prompt string, files []agent.InputFile) ([]openai.ChatCompletionContentPartUnionParam, error) {
-	parts := []openai.ChatCompletionContentPartUnionParam{openai.TextContentPart(prompt)}
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(files)+1)
 	for _, f := range files {
 		// Accept/reject goes through the shared capability table; the ENCODING below
 		// (data: URIs) stays OpenAI-specific.
@@ -33,5 +38,6 @@ func buildOpenAIParts(prompt string, files []agent.InputFile) ([]openai.ChatComp
 			}))
 		}
 	}
+	parts = append(parts, openai.TextContentPart(prompt))
 	return parts, nil
 }

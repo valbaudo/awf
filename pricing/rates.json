@@ -1,12 +1,57 @@
 {
+  "claude-haiku-4-5": {
+    "currency": "USD",
+    "input_per_m": 1,
+    "output_per_m": 5,
+    "cache_read_per_m": 0.1,
+    "cache_write_per_m": 1.25,
+    "updated_on": "2025-10-15",
+    "source": "https://models.dev"
+  },
+  "claude-opus-4-5": {
+    "currency": "USD",
+    "input_per_m": 5,
+    "output_per_m": 25,
+    "cache_read_per_m": 0.5,
+    "cache_write_per_m": 6.25,
+    "updated_on": "2025-11-24",
+    "source": "https://models.dev"
+  },
+  "claude-opus-4-6": {
+    "currency": "USD",
+    "input_per_m": 5,
+    "output_per_m": 25,
+    "cache_read_per_m": 0.5,
+    "cache_write_per_m": 6.25,
+    "updated_on": "2026-03-13",
+    "source": "https://models.dev"
+  },
+  "claude-opus-4-7": {
+    "currency": "USD",
+    "input_per_m": 5,
+    "output_per_m": 25,
+    "cache_read_per_m": 0.5,
+    "cache_write_per_m": 6.25,
+    "updated_on": "2026-04-16",
+    "source": "https://models.dev"
+  },
   "claude-opus-4-8": {
     "currency": "USD",
     "input_per_m": 5,
     "output_per_m": 25,
     "cache_read_per_m": 0.5,
     "cache_write_per_m": 6.25,
-    "updated_on": "2026-06-12",
-    "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+    "updated_on": "2026-05-28",
+    "source": "https://models.dev"
+  },
+  "claude-sonnet-4-5": {
+    "currency": "USD",
+    "input_per_m": 3,
+    "output_per_m": 15,
+    "cache_read_per_m": 0.3,
+    "cache_write_per_m": 3.75,
+    "updated_on": "2025-09-29",
+    "source": "https://models.dev"
   },
   "claude-sonnet-4-6": {
     "currency": "USD",
@@ -14,17 +59,206 @@
     "output_per_m": 15,
     "cache_read_per_m": 0.3,
     "cache_write_per_m": 3.75,
-    "updated_on": "2026-06-12",
-    "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+    "updated_on": "2026-03-13",
+    "source": "https://models.dev"
   },
-  "claude-haiku-4-5": {
+  "deepseek-chat": {
     "currency": "USD",
-    "input_per_m": 1,
-    "output_per_m": 5,
-    "cache_read_per_m": 0.1,
-    "cache_write_per_m": 1.25,
-    "updated_on": "2026-06-12",
-    "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+    "input_per_m": 0.14,
+    "output_per_m": 0.28,
+    "cache_read_per_m": 0.0028,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-02-28",
+    "source": "https://models.dev"
+  },
+  "deepseek-reasoner": {
+    "currency": "USD",
+    "input_per_m": 0.14,
+    "output_per_m": 0.28,
+    "cache_read_per_m": 0.0028,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-02-28",
+    "source": "https://models.dev"
+  },
+  "deepseek-v4-flash": {
+    "currency": "USD",
+    "input_per_m": 0.14,
+    "output_per_m": 0.28,
+    "cache_read_per_m": 0.0028,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-04-24",
+    "source": "https://models.dev"
+  },
+  "deepseek-v4-pro": {
+    "currency": "USD",
+    "input_per_m": 0.435,
+    "output_per_m": 0.87,
+    "cache_read_per_m": 0.003625,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-04-24",
+    "source": "https://models.dev"
+  },
+  "gemini-2.0-flash": {
+    "currency": "USD",
+    "input_per_m": 0.1,
+    "output_per_m": 0.4,
+    "cache_read_per_m": 0.025,
+    "cache_write_per_m": 0,
+    "updated_on": "2024-12-11",
+    "source": "https://models.dev"
+  },
+  "gemini-2.5-flash": {
+    "currency": "USD",
+    "input_per_m": 0.3,
+    "output_per_m": 2.5,
+    "cache_read_per_m": 0.03,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-06-05",
+    "source": "https://models.dev"
+  },
+  "gemini-2.5-flash-lite": {
+    "currency": "USD",
+    "input_per_m": 0.1,
+    "output_per_m": 0.4,
+    "cache_read_per_m": 0.01,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-06-17",
+    "source": "https://models.dev"
+  },
+  "gemini-2.5-pro": {
+    "currency": "USD",
+    "input_per_m": 1.25,
+    "output_per_m": 10,
+    "cache_read_per_m": 0.125,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-06-05",
+    "source": "https://models.dev"
+  },
+  "gemini-3-flash-preview": {
+    "currency": "USD",
+    "input_per_m": 0.5,
+    "output_per_m": 3,
+    "cache_read_per_m": 0.05,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-12-17",
+    "source": "https://models.dev"
+  },
+  "gemini-3-pro-preview": {
+    "currency": "USD",
+    "input_per_m": 2,
+    "output_per_m": 12,
+    "cache_read_per_m": 0.2,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-11-18",
+    "source": "https://models.dev"
+  },
+  "gemini-3.1-pro-preview": {
+    "currency": "USD",
+    "input_per_m": 2,
+    "output_per_m": 12,
+    "cache_read_per_m": 0.2,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-02-19",
+    "source": "https://models.dev"
+  },
+  "gemini-3.5-flash": {
+    "currency": "USD",
+    "input_per_m": 1.5,
+    "output_per_m": 9,
+    "cache_read_per_m": 0.15,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-05-19",
+    "source": "https://models.dev"
+  },
+  "gpt-5": {
+    "currency": "USD",
+    "input_per_m": 1.25,
+    "output_per_m": 10,
+    "cache_read_per_m": 0.125,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-08-07",
+    "source": "https://models.dev"
+  },
+  "gpt-5-codex": {
+    "currency": "USD",
+    "input_per_m": 1.25,
+    "output_per_m": 10,
+    "cache_read_per_m": 0.125,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-09-15",
+    "source": "https://models.dev"
+  },
+  "gpt-5-mini": {
+    "currency": "USD",
+    "input_per_m": 0.25,
+    "output_per_m": 2,
+    "cache_read_per_m": 0.025,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-08-07",
+    "source": "https://models.dev"
+  },
+  "gpt-5-nano": {
+    "currency": "USD",
+    "input_per_m": 0.05,
+    "output_per_m": 0.4,
+    "cache_read_per_m": 0.005,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-08-07",
+    "source": "https://models.dev"
+  },
+  "gpt-5-pro": {
+    "currency": "USD",
+    "input_per_m": 15,
+    "output_per_m": 120,
+    "cache_read_per_m": 0,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-10-06",
+    "source": "https://models.dev"
+  },
+  "gpt-5.1": {
+    "currency": "USD",
+    "input_per_m": 1.25,
+    "output_per_m": 10,
+    "cache_read_per_m": 0.125,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-11-13",
+    "source": "https://models.dev"
+  },
+  "gpt-5.1-codex": {
+    "currency": "USD",
+    "input_per_m": 1.25,
+    "output_per_m": 10,
+    "cache_read_per_m": 0.125,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-11-13",
+    "source": "https://models.dev"
+  },
+  "gpt-5.2": {
+    "currency": "USD",
+    "input_per_m": 1.75,
+    "output_per_m": 14,
+    "cache_read_per_m": 0.175,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-12-11",
+    "source": "https://models.dev"
+  },
+  "gpt-5.2-codex": {
+    "currency": "USD",
+    "input_per_m": 1.75,
+    "output_per_m": 14,
+    "cache_read_per_m": 0.175,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-12-11",
+    "source": "https://models.dev"
+  },
+  "gpt-5.2-pro": {
+    "currency": "USD",
+    "input_per_m": 21,
+    "output_per_m": 168,
+    "cache_read_per_m": 0,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-12-11",
+    "source": "https://models.dev"
   },
   "gpt-5.3-codex": {
     "currency": "USD",
@@ -32,7 +266,43 @@
     "output_per_m": 14,
     "cache_read_per_m": 0.175,
     "cache_write_per_m": 0,
-    "updated_on": "2026-06-12",
-    "source": "https://developers.openai.com/api/docs/pricing"
+    "updated_on": "2026-02-05",
+    "source": "https://models.dev"
+  },
+  "gpt-5.4": {
+    "currency": "USD",
+    "input_per_m": 2.5,
+    "output_per_m": 15,
+    "cache_read_per_m": 0.25,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-03-05",
+    "source": "https://models.dev"
+  },
+  "grok-4.3": {
+    "currency": "USD",
+    "input_per_m": 1.25,
+    "output_per_m": 2.5,
+    "cache_read_per_m": 0.2,
+    "cache_write_per_m": 0,
+    "updated_on": "2026-04-17",
+    "source": "https://models.dev"
+  },
+  "magistral-medium-latest": {
+    "currency": "USD",
+    "input_per_m": 2,
+    "output_per_m": 5,
+    "cache_read_per_m": 0,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-03-20",
+    "source": "https://models.dev"
+  },
+  "mistral-large-latest": {
+    "currency": "USD",
+    "input_per_m": 0.5,
+    "output_per_m": 1.5,
+    "cache_read_per_m": 0,
+    "cache_write_per_m": 0,
+    "updated_on": "2025-12-02",
+    "source": "https://models.dev"
   }
 }

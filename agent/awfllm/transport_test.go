@@ -115,6 +115,12 @@ func TestStream_OpenAI_PDFContentPart(t *testing.T) {
 	if !strings.Contains(gotBody, `"file_data":"data:application/pdf;base64,`) {
 		t.Errorf("body missing file_data data URI: %s", gotBody)
 	}
+	// The stable document (file content part) must precede the varying prompt
+	// text in the user content array so the document is the cacheable common
+	// prefix (OpenAI automatic prompt caching). "extract" is the prompt text.
+	if fi, pi := strings.Index(gotBody, `"type":"file"`), strings.Index(gotBody, "extract"); fi < 0 || pi < 0 || fi > pi {
+		t.Errorf("file content part (doc) must come BEFORE the prompt text: file@%d prompt@%d\n%s", fi, pi, gotBody)
+	}
 }
 
 func TestStream_OpenAICompat_400IsPermanent(t *testing.T) {

@@ -503,8 +503,14 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 			map[string]any{"role": "model", "parts": []map[string]any{{"text": t.Assistant}}},
 		)
 	}
-	// Current user turn: prompt text + one inlineData part per file.
-	parts := []map[string]any{{"text": prompt}}
+	// Current user turn: document parts FIRST, then the prompt text LAST. The order
+	// is deliberate — the document is the stable, large content and the prompt (which
+	// on a gate repair attempt carries the varying prior verdict) is the suffix, so
+	// the document sits in the request's common prefix and Gemini's implicit caching
+	// can reuse it across a step's repair attempts (cached tokens are billed at ~25%
+	// of the input rate). The systemInstruction precedes contents in that prefix, so
+	// keeping it byte-stable also helps. Verified: Gemini caching docs.
+	parts := make([]map[string]any, 0, len(files)+1)
 	for _, f := range files {
 		// Accept/reject via the shared capability table (previously MISSING here —
 		// callGemini forwarded any f.MIME blindly). Both image and document modalities
@@ -517,6 +523,7 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 			"data":     base64.StdEncoding.EncodeToString(f.Content), // bare base64, no data: prefix
 		}})
 	}
+	parts = append(parts, map[string]any{"text": prompt})
 	contents = append(contents, map[string]any{"role": "user", "parts": parts})
 	body := map[string]any{"contents": contents}
 	if cfg.SystemPrompt != "" {
