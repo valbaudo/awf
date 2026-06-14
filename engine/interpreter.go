@@ -60,6 +60,10 @@ type RunOptions struct {
 	// Resume is true on `awf resume` re-entry; the map reconciliation re-runs
 	// transiently-failed items only when set (spec §6.3). false on fresh `awf run`.
 	Resume bool
+	// ForceResume, when true, makes the gate executor grant an exhausted (rejected)
+	// gate a fresh attempt allotment on resume (engine/gate.go). Set by
+	// `awf resume --force`. No other node kind reads it.
+	ForceResume bool
 }
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
@@ -126,6 +130,7 @@ func Run(
 		broker:        opts.Broker,
 		liveFinalizer: opts.LiveFinalizer,
 		resume:        opts.Resume,
+		forceResume:   opts.ForceResume,
 	}
 	if err := preflightCallStartedRuntimes(ctx, ictx); err != nil {
 		return "", err

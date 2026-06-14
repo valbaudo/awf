@@ -100,18 +100,20 @@ func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletion
 
 // stream issues a STREAMING chat completion, calling emit(delta, rawChunk) per
 // content delta, and returns the reassembled text, usage, wire model, finish_reason,
-// and a classified error (apiError for HTTP faults). Switches on StructuredOutput:
-// ollama_format → the native /api/chat path (Task B6); else → OpenAI-compat.
-// thread contains the engine-assembled prior turns (continues: threading) to
-// prepend in the message array between the system message and the current prompt.
+// and a classified error (apiError for HTTP faults). Provider is the SOLE transport
+// selector: gemini → native :generateContent, ollama → native /api/chat, default →
+// OpenAI-compat. thread contains the engine-assembled prior turns (continues:
+// threading) to prepend in the message array between the system message and the
+// current prompt.
 func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
-	if cfg.Provider == providerGemini {
-		return a.callGemini(ctx, cfg, prompt, schema, files, emit)
-	}
-	if cfg.StructuredOutput == soOllamaFormat {
+	switch cfg.Provider {
+	case providerGemini:
+		return a.callGemini(ctx, cfg, prompt, schema, thread, files, emit)
+	case providerOllama:
 		return a.streamOllama(ctx, cfg, prompt, schema, thread, files, emit)
+	default:
+		return a.streamOpenAI(ctx, cfg, prompt, schema, thread, files, emit)
 	}
-	return a.streamOpenAI(ctx, cfg, prompt, schema, thread, files, emit)
 }
 
 // streamOpenAI uses openai-go (v3) against any OpenAI-compatible base_url. The
@@ -367,12 +369,11 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 	}
 	userMsg := msg{Role: "user", Content: prompt}
 	for _, f := range files {
-		if !strings.HasPrefix(f.MIME, "image/") {
-			return "", usageRec{}, "", "", &agent.ErrInvalidConfig{
-				Ref:    AdapterRef,
-				Key:    "input_files",
-				Reason: "ollama transport supports images only, not " + f.MIME + "; rasterize the PDF to images first",
-			}
+		// Accept/reject via the shared capability table; only modalityImage is
+		// forwardable here (Ollama has no document part). Keep the helpful
+		// "rasterize the PDF" hint for the rejected-document case.
+		if _, ok := forwardable(providerOllama, f.MIME); !ok {
+			return "", usageRec{}, "", "", unsupportedMIMEErr(f.MIME, "; rasterize the PDF to images first")
 		}
 		// Bare standard-base64 — NOT a data URI. Ollama /api/chat images[] is
 		// the OPPOSITE of the OpenAI path (which uses data:...;base64, URIs).
@@ -381,7 +382,10 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 	messages = append(messages, userMsg)
 
 	body := map[string]any{"model": cfg.Model, "messages": messages, "stream": true}
-	if schema != nil {
+	// structured_output:off → no native `format` field (prompt-restate only, via
+	// assemblePrompt's N2 floor); honored for ALL transports (Fix C). Both
+	// ollama_format and response_format mean "use the native format field" here.
+	if schema != nil && cfg.StructuredOutput != soOff {
 		body["format"] = map[string]any(*schema)
 	}
 	opts := map[string]any{}
@@ -486,17 +490,42 @@ func ollamaErrType(body []byte) string {
 // none is sent. Cost is left UNREPORTED automatically — pricing.Derive returns
 // ok=false for any model absent from rates.json, and metricsFrom skips cost on a
 // miss (no special-casing here).
-func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/v1beta/models/" + cfg.Model + ":generateContent"
 
-	parts := []map[string]any{{"text": prompt}}
+	// Prior turns (continues: threading) — Gemini's contents array is multi-turn.
+	// The assistant role on the wire is "model", NOT "assistant". Chronological,
+	// before the current user turn, so Threaded:true is honest for this transport too.
+	contents := make([]map[string]any, 0, len(thread)*2+1)
+	for _, t := range thread {
+		contents = append(contents,
+			map[string]any{"role": "user", "parts": []map[string]any{{"text": t.User}}},
+			map[string]any{"role": "model", "parts": []map[string]any{{"text": t.Assistant}}},
+		)
+	}
+	// Current user turn: document parts FIRST, then the prompt text LAST. The order
+	// is deliberate — the document is the stable, large content and the prompt (which
+	// on a gate repair attempt carries the varying prior verdict) is the suffix, so
+	// the document sits in the request's common prefix and Gemini's implicit caching
+	// can reuse it across a step's repair attempts (cached tokens are billed at ~25%
+	// of the input rate). The systemInstruction precedes contents in that prefix, so
+	// keeping it byte-stable also helps. Verified: Gemini caching docs.
+	parts := make([]map[string]any, 0, len(files)+1)
 	for _, f := range files {
+		// Accept/reject via the shared capability table (previously MISSING here —
+		// callGemini forwarded any f.MIME blindly). Both image and document modalities
+		// share the same inlineData encoding on Gemini, so no per-modality switch.
+		if _, ok := forwardable(providerGemini, f.MIME); !ok {
+			return "", usageRec{}, "", "", unsupportedMIMEErr(f.MIME, "")
+		}
 		parts = append(parts, map[string]any{"inlineData": map[string]any{
 			"mimeType": f.MIME,
 			"data":     base64.StdEncoding.EncodeToString(f.Content), // bare base64, no data: prefix
 		}})
 	}
-	body := map[string]any{"contents": []map[string]any{{"role": "user", "parts": parts}}}
+	parts = append(parts, map[string]any{"text": prompt})
+	contents = append(contents, map[string]any{"role": "user", "parts": parts})
+	body := map[string]any{"contents": contents}
 	if cfg.SystemPrompt != "" {
 		body["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": cfg.SystemPrompt}}}
 	}
@@ -507,7 +536,9 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 	if cfg.HasMaxTokens {
 		gc["maxOutputTokens"] = cfg.MaxTokens
 	}
-	if schema != nil {
+	// structured_output:off → no native structured output (prompt-restate only,
+	// via assemblePrompt's N2 floor); honored for ALL transports (Fix C).
+	if schema != nil && cfg.StructuredOutput != soOff {
 		gc["responseMimeType"] = "application/json"
 		gc["_responseJsonSchema"] = map[string]any(*schema)
 	}

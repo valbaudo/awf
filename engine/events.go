@@ -1,6 +1,12 @@
 package engine
 
-import "github.com/valbaudo/awf/agent"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/state"
+)
 
 // Phase 2.1 event-type names — the events the fold dispatches on. These are the
 // wire-format string values stored in state.Event.Type; renaming any of them would
@@ -529,6 +535,26 @@ type SelectedSkill struct {
 // agentEventDisplayFieldLimit bounds live display metadata copied into
 // agent.event JSON. Display fields are previews, not transcript storage.
 const agentEventDisplayFieldLimit = 1024
+
+// RunFinishedDataFromEvent unmarshals a run.finished event's payload. Thin
+// accessor used by the resume guard (cli/resume.go) to read the terminal rollup.
+func RunFinishedDataFromEvent(e state.Event) (RunFinishedData, error) {
+	var d RunFinishedData
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		return RunFinishedData{}, fmt.Errorf("engine: unmarshal run.finished: %w", err)
+	}
+	return d, nil
+}
+
+// NodeFailedDataFromEvent unmarshals a node.failed event's payload. Used by the
+// resume guard's crash-window branch (no run.finished present).
+func NodeFailedDataFromEvent(e state.Event) (NodeFailedData, error) {
+	var d NodeFailedData
+	if err := json.Unmarshal(e.Data, &d); err != nil {
+		return NodeFailedData{}, fmt.Errorf("engine: unmarshal node.failed: %w", err)
+	}
+	return d, nil
+}
 
 // NodeSkippedData is the observational marker emitted as a Skip unwinds
 // through a scope (Phase 3 design §B). Path is the path of the skipped scope

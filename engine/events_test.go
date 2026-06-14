@@ -999,6 +999,37 @@ func mustJSON(v any) []byte {
 	return b
 }
 
+func TestRunFinishedDataFromEvent(t *testing.T) {
+	e := state.Event{Type: EventRunFinished, Data: []byte(`{"outcome":"permanent_failure"}`)}
+	d, err := RunFinishedDataFromEvent(e)
+	if err != nil {
+		t.Fatalf("RunFinishedDataFromEvent: %v", err)
+	}
+	if d.Outcome != "permanent_failure" {
+		t.Fatalf("Outcome = %q, want permanent_failure", d.Outcome)
+	}
+	if _, err := RunFinishedDataFromEvent(state.Event{Type: EventRunFinished, Data: []byte(`{`)}); err == nil {
+		t.Fatal("expected error on corrupt run.finished payload")
+	}
+}
+
+func TestNodeFailedDataFromEvent(t *testing.T) {
+	// node.failed outcomes are only retryable_failure / permanent_failure (see
+	// NodeFailedData doc); a gate's "rejected" rolls up via run.finished, never
+	// a node.failed event.
+	e := state.Event{Type: EventNodeFailed, Data: []byte(`{"outcome":"permanent_failure","error":"x"}`)}
+	d, err := NodeFailedDataFromEvent(e)
+	if err != nil {
+		t.Fatalf("NodeFailedDataFromEvent: %v", err)
+	}
+	if d.Outcome != "permanent_failure" {
+		t.Fatalf("Outcome = %q, want permanent_failure", d.Outcome)
+	}
+	if _, err := NodeFailedDataFromEvent(state.Event{Type: EventNodeFailed, Data: []byte(`{`)}); err == nil {
+		t.Fatal("expected error on corrupt node.failed payload")
+	}
+}
+
 func TestReactRoundDataRoundTrip(t *testing.T) {
 	in := ReactRoundData{N: 3}
 	b, err := json.Marshal(in)

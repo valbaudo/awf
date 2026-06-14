@@ -14,13 +14,15 @@ import (
 // explicitly or their traffic will hit OpenAI, not the local server.
 const defaultBaseURL = "https://api.openai.com/v1"
 
-// provider selects the request transport. It gates ONLY the native Gemini path;
-// openai (the default) routes through the existing OpenAI/Ollama logic, where
-// Ollama selection stays on structured_output: ollama_format (not a provider
-// value) so there is a single Gemini-vs-OpenAI selector here.
+// provider is the SOLE transport selector: openai (default) → OpenAI-compat,
+// gemini → native generateContent, ollama → native /api/chat. Resolving the
+// effective provider (effectiveProvider) and its (base_url, api_key_env) defaults
+// (providerDefaults) is centralized so buildReqConfig (resolve) and
+// validateConfigCommon (presence-check) can never drift.
 const (
-	providerOpenAI = "openai" // default; routes through the existing OpenAI/Ollama logic
-	providerGemini = "gemini" // the only NEW transport this key gates
+	providerOpenAI = "openai" // default; OpenAI-compat /v1 chat completions
+	providerGemini = "gemini" // native Gemini :generateContent transport
+	providerOllama = "ollama" // native Ollama /api/chat transport
 
 	// defaultGeminiBaseURL is the native Gemini generateContent host (no /v1 suffix;
 	// the Gemini transport appends the versioned model path itself).
@@ -28,7 +30,40 @@ const (
 	// defaultGeminiAPIKeyEnv is the default env-var name resolved for provider: gemini
 	// when api_key_env is omitted.
 	defaultGeminiAPIKeyEnv = "GEMINI_API_KEY"
+	// defaultOllamaBaseURL is the default Ollama host. Ollama runs as a LOCAL server;
+	// users normally set base_url explicitly, but this gives provider:ollama a sane
+	// default so a bare config still points somewhere local rather than at OpenAI.
+	defaultOllamaBaseURL = "http://localhost:11434"
 )
+
+// providerDefaults returns the (base_url, api_key_env) defaults for a transport
+// provider. Single source so buildReqConfig (resolve) and validateConfigCommon
+// (presence-check) cannot drift.
+func providerDefaults(provider string) (baseURL, apiKeyEnv string) {
+	switch provider {
+	case providerGemini:
+		return defaultGeminiBaseURL, defaultGeminiAPIKeyEnv
+	case providerOllama:
+		return defaultOllamaBaseURL, defaultAPIKeyEnv // ollama is local; users normally set base_url explicitly
+	default: // openai
+		return defaultBaseURL, defaultAPIKeyEnv
+	}
+}
+
+// effectiveProvider resolves the transport from `with:`. An explicit `provider`
+// wins; otherwise a bare structured_output: ollama_format selects the ollama
+// transport (BACK-COMPAT — existing Ollama users have no provider key); otherwise
+// openai. This is the SINGLE selection rule, shared by buildReqConfig and
+// validateConfigCommon so there is no second axis to silently override the first.
+func effectiveProvider(with ir.RawConfig) string {
+	if p, ok := with[keyProvider].(string); ok && p != "" {
+		return p
+	}
+	if so, ok := with[keyStructuredOutput].(string); ok && so == soOllamaFormat {
+		return providerOllama
+	}
+	return providerOpenAI
+}
 
 // defaultMaxInlineBytes caps the TOTAL size of a step's inline (base64) input
 // files (summed across all of them; see launch.go's pre-flight). 32 MiB is
@@ -46,7 +81,7 @@ const (
 
 // reqConfig is the per-call request shape built in Launch from validated `with:`.
 type reqConfig struct {
-	Provider         string // openai (default) | gemini — selects the request transport
+	Provider         string // openai (default) | gemini | ollama — the SOLE request-transport selector
 	BaseURL          string
 	APIKey           string
 	Model            string
@@ -64,14 +99,11 @@ type reqConfig struct {
 // buildReqConfig translates validated `with:` + the resolved env into a reqConfig.
 func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 	with := inv.With
-	// provider gates the transport and shifts the base_url + api-key-env defaults.
-	// openai (the default) keeps the existing OpenAI/Ollama defaults; gemini points
-	// at the native generateContent host and resolves GEMINI_API_KEY by default.
-	provider := stringOr(with, keyProvider, providerOpenAI)
-	baseURLDefault, apiKeyEnvDefault := defaultBaseURL, defaultAPIKeyEnv
-	if provider == providerGemini {
-		baseURLDefault, apiKeyEnvDefault = defaultGeminiBaseURL, defaultGeminiAPIKeyEnv
-	}
+	// provider is the SOLE transport selector and shifts the base_url + api-key-env
+	// defaults. effectiveProvider + providerDefaults are the single source shared
+	// with validateConfigCommon so resolve and presence-check cannot drift.
+	provider := effectiveProvider(with)
+	baseURLDefault, apiKeyEnvDefault := providerDefaults(provider)
 	cfg := reqConfig{
 		Provider:         provider,
 		Model:            stringOr(with, keyModel, ""),
@@ -90,11 +122,15 @@ func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 	keyName := stringOr(with, keyAPIKeyEnv, apiKeyEnvDefault)
 	key, ok := a.env[keyName]
 	if !ok {
-		// Defensive (ValidateConfig already checked). Return the PERMANENT-classified
-		// type: *agent.ErrInvalidConfig → permanent.
-		return reqConfig{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyAPIKeyEnv, Reason: "named env var not present in the forwarded allowlist"}
+		// The Ollama transport is a LOCAL server: an absent key is fine — streamOllama
+		// omits the Authorization header on an empty key. For openai/gemini the key is
+		// required: return the PERMANENT-classified type (*agent.ErrInvalidConfig).
+		// (Defensive — ValidateConfig already enforced this with the same policy.)
+		if provider != providerOllama {
+			return reqConfig{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyAPIKeyEnv, Reason: "named env var not present in the forwarded allowlist"}
+		}
 	}
-	cfg.APIKey = key
+	cfg.APIKey = key // "" for an absent ollama key (no Authorization header)
 	// Do NOT default temperature: reasoning models (o1/o3/gpt-5) REJECT `temperature`
 	// with a 400 invalid_request_error → classified PERMANENT. Send it only when the
 	// author explicitly set it. (Recommend temperature:0 for local grammar paths in docs.)

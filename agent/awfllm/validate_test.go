@@ -82,17 +82,37 @@ func TestValidate_TLSInsecureBool(t *testing.T) {
 
 func TestValidate_ProviderEnum(t *testing.T) {
 	// Forward both keys so the enum acceptance (not key presence) is what we test.
+	// provider=ollama is now a first-class transport value (Fix B); the ollama
+	// transport is a local server so it needs NO key env.
 	a := llmAdapter(t, map[string]string{"OPENAI_API_KEY": "sk-test", "GEMINI_API_KEY": "k"})
-	for _, ok := range []string{"openai", "gemini"} {
+	for _, ok := range []string{"openai", "gemini", "ollama"} {
 		if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": ok}); err != nil {
 			t.Errorf("provider=%q should pass: %v", ok, err)
 		}
 	}
-	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": "ollama"}); err == nil {
-		t.Error("provider=ollama must fail (ollama stays on structured_output, not a provider value)")
+	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": "bogus"}); err == nil {
+		t.Error("provider=bogus must fail (not in the enum)")
 	}
 	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": 1}); err == nil {
 		t.Error("non-string provider should fail")
+	}
+}
+
+// TestValidate_CrossKeyGuard — Fix B: naming a NON-ollama transport via provider
+// (openai or gemini) while also asking for the Ollama transport via
+// structured_output:ollama_format is a contradiction → reject.
+func TestValidate_CrossKeyGuard(t *testing.T) {
+	a := llmAdapter(t, map[string]string{"OPENAI_API_KEY": "sk-test", "GEMINI_API_KEY": "k"})
+	for _, p := range []string{"openai", "gemini"} {
+		err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": p, "structured_output": "ollama_format"})
+		var bad *agent.ErrInvalidConfig
+		if !errors.As(err, &bad) {
+			t.Errorf("provider=%q + structured_output=ollama_format must be rejected as *ErrInvalidConfig, got %v", p, err)
+		}
+	}
+	// provider:ollama + structured_output:ollama_format is consistent — must pass.
+	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": "ollama", "structured_output": "ollama_format"}); err != nil {
+		t.Errorf("provider=ollama + structured_output=ollama_format should pass (consistent): %v", err)
 	}
 }
 
@@ -108,6 +128,20 @@ func TestValidate_GeminiUsesGeminiKeyEnvByDefault(t *testing.T) {
 	b := llmAdapter(t, okEnv())
 	if err := b.ValidateConfig(withGemini); err == nil {
 		t.Error("provider=gemini must require GEMINI_API_KEY (or an explicit api_key_env)")
+	}
+}
+
+// TestValidate_OllamaKeyOptional — Fix B: provider:ollama is a LOCAL server, so
+// ValidateConfig must NOT require any key env in the allowlist.
+func TestValidate_OllamaKeyOptional(t *testing.T) {
+	a := llmAdapter(t, map[string]string{}) // empty allowlist
+	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "provider": "ollama"}); err != nil {
+		t.Errorf("provider=ollama must pass with no key env (local server): %v", err)
+	}
+	// Back-compat: a bare structured_output:ollama_format (no provider) is also the
+	// ollama transport (effectiveProvider) → key likewise optional.
+	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "structured_output": "ollama_format"}); err != nil {
+		t.Errorf("structured_output=ollama_format must pass with no key env (ollama transport): %v", err)
 	}
 }
 

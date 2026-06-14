@@ -64,6 +64,7 @@ func runMapReduce(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	cc reduceCallContext,
 ) (Outcome, error) {
 	if _, ok := runstate.LookupCompleted(mapPath); ok {
 		return OutcomeOK, nil
@@ -103,7 +104,7 @@ func runMapReduce(
 			ld = ld.WithItemHandle(bare, rh)
 		}
 	}
-	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, moduleID, runstate, ld, log, blobs, clk, tap)
+	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, moduleID, runstate, ld, log, blobs, clk, tap, cc)
 }
 
 // runReduce executes a Map's reduce: clause AFTER fan-out, collapsing the N
@@ -145,6 +146,7 @@ func runReduce(
 	blobs state.Blobs,
 	clk clock.Clock,
 	tap io.Writer,
+	cc reduceCallContext,
 ) (Outcome, error) {
 	// Resume: a committed reduce replays.
 	if _, ok := rs.LookupCompleted(nodePath); ok {
@@ -154,7 +156,7 @@ func runReduce(
 	case r.IsQuorum():
 		return runQuorumReduce(r, nodePath, branches, cohort, log, blobs, rs)
 	case r.IsRun():
-		return runCommandReduce(ctx, r, nodePath, branches, wf, moduleID, rs, ld, log, blobs, clk, tap)
+		return runCommandReduce(ctx, r, nodePath, branches, wf, moduleID, rs, ld, log, blobs, clk, tap, cc)
 	default:
 		return "", fmt.Errorf("engine.runReduce: reduce at %q has neither quorum nor run (validator AWF1035)", nodePath)
 	}
@@ -217,6 +219,7 @@ func quorumThreshold(q *ir.Ratio, cohort int) int64 {
 func runCommandReduce(
 	ctx context.Context, r *ir.Reduce, nodePath string, branches []reduceBranch,
 	wf *ir.Workflow, moduleID string, rs *RunState, ld *LocalDispatcher, log state.Log, blobs state.Blobs, clk clock.Clock, tap io.Writer,
+	cc reduceCallContext,
 ) (Outcome, error) {
 	// 1. Canonical-JSON manifest of branch typed outputs (index-ordered).
 	manifest := make([]map[string]any, 0, len(branches))
@@ -267,7 +270,7 @@ func runCommandReduce(
 	// Template reducer run/output_files against the reducer scope. It behaves like
 	// the map-path scope for ordinary refs, and renders body-step aggregate refs as
 	// canonical JSON for the historical reducer-template contract.
-	reduceScope := newReduceTemplateScope(rs, wf, nodePath)
+	reduceScope := newReduceTemplateScopeForExec(rs, wf, nodePath, cc)
 	cmd, terr := template.Substitute(r.Run, reduceScope)
 	if terr != nil {
 		return failStep(log, nodePath, OutcomePermanentFailure, fmt.Errorf("engine.runReduce: template reduce run %q: %w", r.Run, terr))

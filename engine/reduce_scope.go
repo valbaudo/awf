@@ -16,8 +16,36 @@ type reduceTemplateScope struct {
 	mapPath string
 }
 
+// reduceCallContext carries the call sub-workflow frame (runtimeParent prefix +
+// typed call input/files) into the reduce executor so a reducer's run:/output_files
+// templates resolve against the SAME scope the rest of the called sub-workflow
+// uses. The zero value (empty runtimeParent, nil maps) is a top-level workflow —
+// the reduce scope then reduces to the historical NewScope(rs, wf, mapPath).
+type reduceCallContext struct {
+	runtimeParent string
+	input         map[string]any
+	inputFiles    map[string]string
+}
+
+// newReduceTemplateScope builds a reducer template scope for callers that already
+// hold mapPath and rs in the SAME prefix-frame (the static-map-path artifact
+// resolvers in artifact_scope.go / artifact_refs.go). For the reduce EXECUTOR —
+// where mapPath is a runtime path against the parent rs and the reducer lives in a
+// possibly-called sub-workflow — use newReduceTemplateScopeForExec, which honors
+// the call frame.
 func newReduceTemplateScope(rs *RunState, wf *ir.Workflow, mapPath string) *reduceTemplateScope {
-	return &reduceTemplateScope{base: NewScope(rs, wf, mapPath), mapPath: mapPath}
+	return newReduceTemplateScopeForExec(rs, wf, mapPath, reduceCallContext{})
+}
+
+// newReduceTemplateScopeForExec builds the reducer's template scope honoring an
+// optional call frame (cc). The base scope and the map path are BOTH taken in the
+// child (prefix-stripped) frame when cc.runtimeParent is set, so outer-sibling /
+// input refs AND body-step aggregate refs (which compare against ir.SingleMapBodyShape's
+// static map path) resolve correctly inside a called sub-workflow. With a zero cc
+// this is identical to the historical NewScope(rs, wf, mapPath) behavior.
+func newReduceTemplateScopeForExec(rs *RunState, wf *ir.Workflow, mapPath string, cc reduceCallContext) *reduceTemplateScope {
+	base := callContextScope(rs, wf, mapPath, cc.runtimeParent, cc.input, cc.inputFiles)
+	return &reduceTemplateScope{base: base, mapPath: stripRuntimeParent(mapPath, cc.runtimeParent)}
 }
 
 func (s *reduceTemplateScope) Resolve(ref *template.Ref) (any, error) {

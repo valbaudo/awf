@@ -16,6 +16,11 @@ API as an inline part, and returns a typed JSON object with two fields:
 The shape is enforced by `output_schema` — the step fails if the model returns
 something that does not match.
 
+> **Note:** model ids age. `workflow.yaml` pins `gemini-2.5-flash`; if that model
+> is retired the run will fail with a provider error. Substitute a current model
+> from your provider's model list (e.g. a newer Gemini flash) — the rest of the
+> workflow is unchanged.
+
 ## Run
 
 ### Gemini (default)

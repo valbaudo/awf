@@ -16,13 +16,18 @@ func TestBuildOpenAIParts_PDFAndImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parts) != 3 { // text + file + image
+	if len(parts) != 3 { // file + image + text (documents FIRST, prompt LAST — prefix caching)
 		t.Fatalf("parts=%d", len(parts))
 	}
-	if parts[1].OfFile == nil || parts[1].OfFile.File.FileData.Value != "data:application/pdf;base64,"+base64.StdEncoding.EncodeToString([]byte("%PDF-1.7")) {
-		t.Fatalf("pdf file part wrong: %+v", parts[1].OfFile)
+	// Document parts come FIRST so the stable document is the cacheable common
+	// prefix and the varying prompt is the suffix (see buildOpenAIParts).
+	if parts[0].OfFile == nil || parts[0].OfFile.File.FileData.Value != "data:application/pdf;base64,"+base64.StdEncoding.EncodeToString([]byte("%PDF-1.7")) {
+		t.Fatalf("pdf file part must be FIRST: %+v", parts[0].OfFile)
 	}
-	if parts[2].OfImageURL == nil {
-		t.Fatalf("image part missing")
+	if parts[1].OfImageURL == nil {
+		t.Fatalf("image part must be SECOND")
+	}
+	if parts[2].OfText == nil || parts[2].OfText.Text != "extract" {
+		t.Fatalf("prompt text part must be LAST: %+v", parts[2].OfText)
 	}
 }

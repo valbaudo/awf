@@ -41,10 +41,11 @@ var rejectedKeys = []string{"api_key", "session_id", "messages", "tools", "strea
 // /api/chat format; off = prompt-only + tolerant parse.
 var structuredOutputValues = []string{soResponseFormat, soOllamaFormat, soOff}
 
-// providerValues — the transport selector enum. Gates ONLY the native Gemini path;
-// openai (the default) routes through the existing OpenAI/Ollama logic. Ollama is
-// deliberately NOT a provider value: it stays on structured_output: ollama_format.
-var providerValues = []string{providerOpenAI, providerGemini}
+// providerValues — the transport selector enum. provider is the SOLE selector
+// (Fix B): openai (default) → OpenAI-compat, gemini → native generateContent,
+// ollama → native /api/chat. structured_output: ollama_format remains a back-compat
+// alias that selects the ollama transport when no provider is set (effectiveProvider).
+var providerValues = []string{providerOpenAI, providerGemini, providerOllama}
 
 // defaultAPIKeyEnv is the canonical default API-key env-var name for this adapter.
 // DefaultEnvAllowlist (errors.go) is built from this constant so the two values
@@ -133,18 +134,25 @@ func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyTLSInsecure)
 		}
 	}
-	// Policy: the API key env var must be present. The default name tracks the
-	// provider (GEMINI_API_KEY for gemini, OPENAI_API_KEY otherwise) so a valid
-	// provider: gemini config relying on the default key env passes here too —
-	// keeping this presence check consistent with buildReqConfig's resolution.
-	keyName := defaultAPIKeyEnv
-	if p, ok := with[keyProvider].(string); ok && p == providerGemini {
-		keyName = defaultGeminiAPIKeyEnv
+	// Cross-key guard (Fix B): naming a NON-ollama transport via provider while also
+	// requesting the Ollama transport via structured_output: ollama_format is a
+	// contradiction. provider is the sole selector, so the non-ollama provider would
+	// silently win — reject instead of surprising the author.
+	if p, ok := with[keyProvider].(string); ok && p != "" && p != providerOllama {
+		if so, ok := with[keyStructuredOutput].(string); ok && so == soOllamaFormat {
+			return wrapInvalidConfig(fmt.Sprintf("contradicts provider: %q — structured_output: ollama_format selects the Ollama transport, but provider names a different one (set provider: ollama, or use structured_output: response_format/off)", p), keyStructuredOutput)
+		}
 	}
+	// Policy: the API key env var must be present — EXCEPT the ollama transport,
+	// which is a local server (an absent key just means no Authorization header).
+	// effectiveProvider + providerDefaults are the single source shared with
+	// buildReqConfig so this presence check cannot drift from resolution.
+	provider := effectiveProvider(with)
+	_, keyName := providerDefaults(provider)
 	if v, ok := with[keyAPIKeyEnv].(string); ok && v != "" {
 		keyName = v
 	}
-	if _, present := a.env[keyName]; !present {
+	if _, present := a.env[keyName]; !present && provider != providerOllama {
 		return wrapInvalidConfig(fmt.Sprintf("env var %q not present in the forwarded allowlist (available: %v)", keyName, slices.Sorted(maps.Keys(a.env))), keyAPIKeyEnv)
 	}
 	return nil

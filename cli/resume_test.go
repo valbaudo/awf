@@ -148,8 +148,8 @@ func TestCLIResumeRefusesNodeFailedInLog(t *testing.T) {
 		t.Errorf("rc = %d, want non-zero (node.failed in log)", rc)
 	}
 	stderrStr := stderr.String()
-	if !strings.Contains(stderrStr, "terminated on a non-transient failure") {
-		t.Errorf("stderr missing 'terminated on a non-transient failure' (node.failed refusal): %q", stderrStr)
+	if !strings.Contains(stderrStr, "terminated on a failed step") || !strings.Contains(stderrStr, "Re-run with --force") {
+		t.Errorf("stderr missing the node.failed crash-window refusal (Re-run with --force): %q", stderrStr)
 	}
 	if strings.Contains(stderrStr, "already finished") {
 		t.Errorf("run.finished refusal fired instead of node.failed (precedence inversion): %q", stderrStr)
@@ -1293,7 +1293,7 @@ func TestCLIResumeAdmitsRetryableCrashWindow(t *testing.T) {
 	if !strings.Contains(got, "digest mismatch") {
 		t.Errorf("guard did not admit a retryable crash-window run: %q", got)
 	}
-	if strings.Contains(got, "non-transient") {
+	if strings.Contains(got, "Re-run with --force") {
 		t.Errorf("guard wrongly refused a retryable crash-window run: %q", got)
 	}
 }
@@ -1311,8 +1311,8 @@ func TestCLIResumeRefusesPermanentRunFinished(t *testing.T) {
 	if rc == cli.ExitOK {
 		t.Errorf("rc = %d, want non-zero (permanent failure)", rc)
 	}
-	if !strings.Contains(stderr.String(), "terminal permanent_failure") {
-		t.Errorf("stderr missing 'terminal permanent_failure': %q", stderr.String())
+	if !strings.Contains(stderr.String(), "Re-run with --force") {
+		t.Errorf("stderr missing 'Re-run with --force' (permanent refused without --force): %q", stderr.String())
 	}
 	assertNoRunResumed(t, stateDir, runID)
 }
@@ -1330,8 +1330,8 @@ func TestCLIResumeRefusesRejectedRunFinished(t *testing.T) {
 	if rc == cli.ExitOK {
 		t.Errorf("rc = %d, want non-zero (rejected)", rc)
 	}
-	if !strings.Contains(stderr.String(), "terminal rejected") {
-		t.Errorf("stderr missing 'terminal rejected': %q", stderr.String())
+	if !strings.Contains(stderr.String(), "Re-run with --force") {
+		t.Errorf("stderr missing 'Re-run with --force' (rejected refused without --force): %q", stderr.String())
 	}
 	assertNoRunResumed(t, stateDir, runID)
 }
@@ -1377,5 +1377,165 @@ func TestCLIResumeRetryableEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(e2.String(), "eligible for resume") {
 		t.Errorf("resume did not log the transient-admit notice: %q", e2.String())
+	}
+}
+
+// buildPermanentFailureRun produces a run on disk that ends with
+// run.finished{permanent_failure}. It uses a single-step workflow whose
+// command exits 78 (EX_CONFIG — the spec §6 default non-retryable sentinel).
+// Returns stateDir + runID + wfPath so callers resume against the SAME workflow
+// file (identical digest; no duplicated YAML in each test).
+func buildPermanentFailureRun(t *testing.T) (stateDir, runID, wfPath string) {
+	t.Helper()
+	tmp := t.TempDir()
+	wfPath = filepath.Join(tmp, "fail-wf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: force-test-fail
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: step1
+    container: lab
+    run: "./fail.sh"
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID = "test-force-perm-fail"
+	stateDir = t.TempDir()
+	fake := container.NewFake()
+	// Exit 78 → permanent_failure via the spec §6 default retry policy.
+	fake.ProgramExec("./fail.sh", container.ExecResult{ExitCode: 78}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{runID}}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, "--run-id", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitRunFailed {
+		t.Fatalf("setup: expected ExitRunFailed, got %d; stderr: %s", rc, stderr.String())
+	}
+	// Verify log has run.finished{permanent_failure} before returning.
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	lg, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("setup OpenLog: %v", err)
+	}
+	defer func() { _ = lg.Close() }()
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("setup Fold: %v", err)
+	}
+	var gotPermanent bool
+	for _, e := range events {
+		if e.Type == engine.EventRunFinished {
+			var d engine.RunFinishedData
+			if jsonErr := json.Unmarshal(e.Data, &d); jsonErr == nil && d.Outcome == "permanent_failure" {
+				gotPermanent = true
+			}
+		}
+	}
+	if !gotPermanent {
+		t.Fatalf("setup: log does not contain run.finished{permanent_failure}")
+	}
+	return stateDir, runID, wfPath
+}
+
+// TestCLIResumeForce_StillEnforcesDigestPin verifies that --force overrides ONLY
+// the terminal-outcome guard; the definition-digest pin is still a hard error.
+// Editing the workflow after the run ends and then calling `resume --force` must
+// refuse with "digest mismatch", not admit the run.
+func TestCLIResumeForce_StillEnforcesDigestPin(t *testing.T) {
+	t.Parallel()
+	stateDir, runID, wfPath := buildPermanentFailureRun(t)
+
+	// Mutate the on-disk workflow so its digest no longer matches the digest
+	// stored in run.started. We change the lab container's image digest from
+	// all-zeros to all-f's — both are syntactically valid pinned OCI refs
+	// (the validator only requires "@sha256:"), so the mutated file passes
+	// ir.Validate but hashes differently. The failure must come from the
+	// resume-side digest-mismatch check, not from a parse/validation error.
+	orig, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatalf("read wf: %v", err)
+	}
+	mutated := strings.Replace(
+		string(orig),
+		"sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		1,
+	)
+	if mutated == string(orig) {
+		t.Fatal("mutation no-op: the image digest was not found in the workflow file")
+	}
+	if err := os.WriteFile(wfPath, []byte(mutated), 0o600); err != nil {
+		t.Fatalf("write mutated wf: %v", err)
+	}
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, "--force", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage (digest pin must hold under --force); stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "digest mismatch") {
+		t.Fatalf("want 'digest mismatch' error; got %q", stderr.String())
+	}
+	// The pin check must fire BEFORE run.resumed is appended.
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	lg, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = lg.Close() }()
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == engine.EventRunResumed {
+			t.Errorf("digest-mismatch refusal under --force must NOT append run.resumed; events: %+v", events)
+		}
+	}
+}
+
+// TestCLIResumeForce_RefusedWithoutFlag confirms that a permanently-failed run
+// is refused (ExitUsage) without --force, and that the error message names the
+// --force flag so the user knows what to do.
+func TestCLIResumeForce_RefusedWithoutFlag(t *testing.T) {
+	t.Parallel()
+	stateDir, runID, wfPath := buildPermanentFailureRun(t)
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, runID, wfPath,
+	}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Errorf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--force") {
+		t.Errorf("stderr missing '--force' hint: %q", stderr.String())
+	}
+}
+
+// TestCLIResumeForce_AdmittedWithFlag confirms that --force admits a
+// permanently-failed run, emits the warning to stderr, and completes with
+// ExitOK when the underlying cause has been fixed (fake reprogrammed to exit 0).
+func TestCLIResumeForce_AdmittedWithFlag(t *testing.T) {
+	t.Parallel()
+	stateDir, runID, wfPath := buildPermanentFailureRun(t)
+
+	// Reprogram the fake: the operator "fixed the cause" so step1 now exits 0.
+	fakeOK := container.NewFake()
+	fakeOK.ProgramExec("./fail.sh", container.ExecResult{ExitCode: 0}, nil)
+	runner := &cli.Runner{Backend: fakeOK, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, "--force", runID, wfPath,
+	}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--force") {
+		t.Errorf("stderr missing '--force' warning: %q", stderr.String())
 	}
 }
