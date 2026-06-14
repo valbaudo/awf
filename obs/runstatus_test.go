@@ -48,6 +48,19 @@ func TestDeriveStatus(t *testing.T) {
 			ev(t, engine.EventNodeStarted, "s1", t0.Add(time.Second), engine.NodeStartedData{Kind: "agent"}),
 		), RunIncomplete},
 		{"empty-log", mk(), RunIncomplete},
+		{"resumable-run-finished", mk(
+			ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "r"}),
+			ev(t, engine.EventRunFinished, "", t0.Add(time.Second), engine.RunFinishedData{Outcome: "retryable_failure"}),
+		), RunResumable},
+		{"failed-permanent-run-finished", mk(
+			ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "r"}),
+			ev(t, engine.EventRunFinished, "", t0.Add(time.Second), engine.RunFinishedData{Outcome: "rejected"}),
+		), RunFailed},
+		{"resumable-terminal-node-failed", mk(
+			ev(t, engine.EventRunStarted, "", t0, engine.RunStartedData{RunID: "r"}),
+			ev(t, engine.EventNodeStarted, "s1", t0.Add(time.Second), engine.NodeStartedData{Kind: "code"}),
+			ev(t, engine.EventNodeFailed, "s1", t0.Add(2*time.Second), engine.NodeFailedData{Outcome: "retryable_failure", Error: "transient"}),
+		), RunResumable},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

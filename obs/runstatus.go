@@ -14,7 +14,8 @@ const (
 	RunRunning   RunStatus = "running"   // resolved by the CLI: incomplete + live lock holder
 	RunPaused    RunStatus = "paused"    // run.paused, not subsequently resumed
 	RunFinished  RunStatus = "finished"  // run.finished{ok}
-	RunFailed    RunStatus = "failed"    // run.finished{failed-outcome} OR terminal node.failed
+	RunFailed    RunStatus = "failed"    // run.finished{permanent/rejected} OR terminal node.failed{permanent}
+	RunResumable RunStatus = "resumable" // run.finished{retryable_failure} OR terminal node.failed{retryable_failure} — re-drivable via `awf resume`
 	RunCancelled RunStatus = "cancelled" // run.cancelled (terminal)
 	RunCrashed   RunStatus = "crashed"   // resolved by the CLI: incomplete + no live lock holder
 	// RunIncomplete = started, no terminal event. DeriveStatus stops here; the
@@ -33,8 +34,10 @@ const (
 //
 //	run.cancelled                         → cancelled
 //	run.finished{ok}                      → finished
-//	run.finished{retryable/permanent}     → failed
-//	last event is node.failed             → failed  (durably-recorded terminal failure)
+//	run.finished{retryable_failure}       → resumable
+//	run.finished{permanent/rejected}      → failed
+//	last event node.failed{retryable}     → resumable
+//	last event node.failed{permanent}     → failed
 //	latest run-control event is run.paused→ paused
 //	otherwise                             → incomplete  (CLI: running | crashed)
 func DeriveStatus(events []state.Event) RunStatus {
@@ -45,8 +48,13 @@ func DeriveStatus(events []state.Event) RunStatus {
 			return RunCancelled
 		case engine.EventRunFinished:
 			var d engine.RunFinishedData
-			if err := json.Unmarshal(e.Data, &d); err == nil && d.Outcome == string(engine.OutcomeOK) {
-				return RunFinished
+			if err := json.Unmarshal(e.Data, &d); err == nil {
+				switch engine.Outcome(d.Outcome) {
+				case engine.OutcomeOK:
+					return RunFinished
+				case engine.OutcomeRetryableFailure:
+					return RunResumable
+				}
 			}
 			return RunFailed
 		case engine.EventRunPaused:
@@ -66,6 +74,11 @@ func DeriveStatus(events []state.Event) RunStatus {
 	// node.started with no terminal node event → incomplete → running|crashed).
 	// Do NOT "simplify" this to crashed — that would discard a recorded verdict.
 	if n := len(events); n > 0 && events[n-1].Type == engine.EventNodeFailed {
+		var d engine.NodeFailedData
+		if err := json.Unmarshal(events[n-1].Data, &d); err == nil &&
+			engine.Outcome(d.Outcome) == engine.OutcomeRetryableFailure {
+			return RunResumable
+		}
 		return RunFailed
 	}
 	if paused {
