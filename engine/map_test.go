@@ -1507,3 +1507,37 @@ func TestMapItemRecordsRetryableOutcome(t *testing.T) {
 		t.Errorf("Outcome = %q, want %q", items[0].Outcome, OutcomeRetryableFailure)
 	}
 }
+
+func TestFoldMapItemLastWinsByN(t *testing.T) {
+	clk := &clock.Fake{T: testClockEpoch}
+	lg := state.NewInMemoryLog(clk)
+	blobs := state.NewInMemoryBlobs()
+	seedRunStartedWithInput(t, lg, blobs, runOverItems("a"))
+	for _, d := range []MapItemData{
+		{N: 0, Status: ItemFailed, Outcome: "retryable_failure"},
+		{N: 0, Status: ItemPassed},
+	} {
+		b, err := json.Marshal(d)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := lg.Append(state.Event{Type: EventMapItem, Path: testMapPath, Data: b}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold log: %v", err)
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := rs.LookupMapItems(testMapPath)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1 (last-wins by N)", len(got))
+	}
+	if got[0].Status != ItemPassed {
+		t.Errorf("Status = %q, want %q (last event wins)", got[0].Status, ItemPassed)
+	}
+}

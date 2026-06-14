@@ -285,7 +285,11 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			}
 			// ItemValue stays nil — Design Q3: the runtime re-evaluates `over` on
 			// re-entry and fills via UpdateMapItemValue before body re-exec.
-			rs.MapItems[e.Path] = append(rs.MapItems[e.Path], MapItemRecord{
+			// RecordMapItem upserts by N (last-wins): a re-run item's second
+			// map.item{N} event replaces the first, keeping exactly one record per
+			// N after fold (Task 2 / spec §6.2). Fold is single-threaded so the
+			// lock inside RecordMapItem is harmless.
+			rs.RecordMapItem(e.Path, MapItemRecord{
 				N:           d.N,
 				Status:      d.Status,
 				Outcome:     d.Outcome,

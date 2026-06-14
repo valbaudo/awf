@@ -516,14 +516,24 @@ func (rs *RunState) LookupMapItems(mapPath string) []MapItemRecord {
 	return cp
 }
 
-// RecordMapItem appends mr to the slice at mapPath. The map executor
-// (engine/map.go) calls this AFTER a successful Log.Append + Log.Sync of the
-// corresponding map.item event — in-memory state mirrors the durable log,
-// not the other way around. Thread-safe.
+// RecordMapItem upserts mr into the slice at mapPath, keyed by N. If an
+// existing record has the same N it is replaced in place (last-wins); otherwise
+// the record is appended. The upsert semantics are load-bearing for resume:
+// Task 2 (re-run of a retryable item) appends a second map.item{N} event to
+// the log; without upsert both fold and live state would hold two records for
+// the same item-N, causing double-counting in aggregateMapOutputs and breaking
+// value-binding in scope.go. Thread-safe.
 func (rs *RunState) RecordMapItem(mapPath string, mr MapItemRecord) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	rs.MapItems[mapPath] = append(rs.MapItems[mapPath], mr)
+	items := rs.MapItems[mapPath]
+	for i := range items {
+		if items[i].N == mr.N {
+			items[i] = mr // upsert: a re-run item replaces its prior record in place
+			return
+		}
+	}
+	rs.MapItems[mapPath] = append(items, mr)
 }
 
 // UpdateMapItemValue sets the ItemValue field of the existing MapItemRecord
