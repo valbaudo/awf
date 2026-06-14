@@ -534,9 +534,13 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 	contents = append(contents, map[string]any{"role": "user", "parts": parts})
 	body := map[string]any{"contents": contents}
 	if cacheName != "" {
-		// cachedContent is a TOP-LEVEL field (sibling of contents), NOT generationConfig.
-		// systemInstruction is baked into the cache and MUST NOT be re-sent here
-		// (Gemini 400s: "CachedContent can not be used with ... system_instruction").
+		// cachedContent is a TOP-LEVEL field (sibling of contents), NOT generationConfig;
+		// systemInstruction is baked into the cache and MUST NOT be re-sent here (400).
+		// NOTE: derived cost does NOT include CachedContent STORAGE (Gemini bills
+		// per-token-per-hour for the TTL regardless of reads; pricing.Breakdown has no
+		// per-hour dimension) — reported cost is optimistically low for explicit caching;
+		// cache-READ savings ARE reflected (cachedContentTokenCount → CacheRead → cache_read_per_m).
+		// Cost is also non-deterministic across runs (cache write vs read) — telemetry only.
 		body["cachedContent"] = cacheName
 	} else if cfg.SystemPrompt != "" {
 		body["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": cfg.SystemPrompt}}}

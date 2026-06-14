@@ -297,6 +297,33 @@ func TestCallGemini_NoCacheUnchanged(t *testing.T) {
 	}
 }
 
+func TestCallGemini_ExplicitCacheMetricsUnchanged(t *testing.T) {
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/cachedContents"):
+			return jsonResponse(`{"name":"cachedContents/abc"}`), nil
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/cachedContents/"):
+			return jsonResponse(`{"name":"cachedContents/abc"}`), nil
+		default:
+			return jsonResponse(`{"candidates":[{"content":{"parts":[{"text":"{\"x\":1}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":10,"cachedContentTokenCount":900}}`), nil
+		}
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		Provider: "gemini", BaseURL: "https://generativelanguage.googleapis.com",
+		Model: "gemini-2.5-pro", APIKey: "k",
+		GeminiCache: awfllm.GeminiCacheConfigForTest("explicit", "600s"),
+	}
+	files := []agent.InputFile{{Name: "d", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
+	_, usage, _, _, err := a.StreamWithFilesForTest(context.Background(), cfg, "extract", nil, nil, files, func(string, []byte) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Input != 1000 || usage.CacheRead != 900 {
+		t.Errorf("usage = %+v, want Input:1000 CacheRead:900 (promptTokenCount includes cached)", usage)
+	}
+}
+
 // TestCallGemini_UnknownModelHasNoCost confirms a Gemini model absent from
 // pricing/rates.json yields NO derived cost (pricing.Derive ok=false → buildResult
 // leaves Metrics.Cost zero-valued: empty Source, zero Total). Cost is left
