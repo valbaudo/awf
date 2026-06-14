@@ -1215,3 +1215,48 @@ func TestFold_ReactRoundsAppend(t *testing.T) {
 		t.Fatalf("ReactRounds = %+v, want [{1} {2}]", rounds)
 	}
 }
+
+func TestFoldNodeInvalidatedDeletes(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r", WorkflowDigest: "d"})},
+		{Seq: 2, TS: fixedTS, Path: "a", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok"})},
+		{Seq: 3, TS: fixedTS, Path: "b", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok"})},
+		{Seq: 4, TS: fixedTS, Type: EventNodeInvalidated,
+			Data: marshalOrFatal(t, NodeInvalidatedData{Paths: []string{"b"}})},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if _, ok := rs.Completed["a"]; !ok {
+		t.Fatal("a should remain committed")
+	}
+	if _, ok := rs.Completed["b"]; ok {
+		t.Fatal("b should have been deleted by node.invalidated")
+	}
+}
+
+func TestFoldNodeInvalidatedThenRecommitLastWins(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r", WorkflowDigest: "d"})},
+		{Seq: 2, TS: fixedTS, Path: "b", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok"})},
+		{Seq: 3, TS: fixedTS, Type: EventNodeInvalidated,
+			Data: marshalOrFatal(t, NodeInvalidatedData{Paths: []string{"b"}})},
+		{Seq: 4, TS: fixedTS, Path: "b", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok"})}, // re-committed after invalidation
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if _, ok := rs.Completed["b"]; !ok {
+		t.Fatal("re-committed b should be present (last event per path wins)")
+	}
+}

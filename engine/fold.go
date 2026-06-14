@@ -366,6 +366,13 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			// refusal check was bypassed by a test or future tool).
 			rs.Cancelled = true
 
+		case EventNodeInvalidated:
+			var d NodeInvalidatedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d: %w", EventNodeInvalidated, e.Seq, err)
+			}
+			clearInvalidatedPaths(rs, d.Paths)
+
 		default:
 			// Observational / future event types ignored by Fold (state effect, if
 			// any, comes from a sibling event):

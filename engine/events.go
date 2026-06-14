@@ -342,6 +342,18 @@ type RunResumedData struct {
 	Epoch uint32 `json:"epoch"`
 }
 
+// EventNodeInvalidated removes committed node paths from the folded RunState so
+// `awf resume --from` re-runs them. The first fold event that DELETES state;
+// sound because it is appended after the node.completed events it supersedes and
+// fold is a strict-sequence-order pass (last event per path wins).
+const EventNodeInvalidated = "node.invalidated"
+
+// NodeInvalidatedData is the payload of a node.invalidated event: the runtime
+// paths to drop from every path-keyed RunState index.
+type NodeInvalidatedData struct {
+	Paths []string `json:"paths"`
+}
+
 // NodeStartedData is the payload of a node.started event (Phase 6 slice 6.1).
 // Emitted by the interpreter when a STEP node enters dispatch (after the resume
 // short-circuit, so replayed nodes don't re-emit). Kind is "code" | "agent" |

@@ -113,3 +113,46 @@ func TestResolveRerunTarget(t *testing.T) {
 		t.Fatal("expected error for absent arg")
 	}
 }
+
+// clearInvalidatedPaths must clear a path from ALL nine path-keyed indices (a
+// missed one would leak a stale gate verdict / map item / etc. on re-run), and
+// must NOT touch the name/container-keyed maps (Signals, SnapshotRefs).
+func TestClearInvalidatedPaths_AllNineIndices(t *testing.T) {
+	rs := NewRunState("r", "d", nil)
+	rs.Completed["p"] = NodeResult{Outcome: OutcomeOK}
+	rs.Branches["p"] = "then"
+	rs.LoopIters["p"] = 1
+	rs.GateAttempts["p"] = nil
+	rs.ReactRounds["p"] = nil
+	rs.MapItems["p"] = nil
+	rs.CallStarted["p"] = CallStartedRecord{}
+	rs.SignalReceivedAt["p"] = SignalReceivedEntry{}
+	rs.SelectedSkills["p"] = SkillsSelectedData{}
+	rs.SnapshotRefs["c"] = "snap" // container-NAME-keyed; a path sweep must NOT clear it
+
+	clearInvalidatedPaths(rs, []string{"p"})
+
+	for name, present := range map[string]bool{
+		"Completed":        mapHas(rs.Completed, "p"),
+		"Branches":         mapHas(rs.Branches, "p"),
+		"LoopIters":        mapHas(rs.LoopIters, "p"),
+		"GateAttempts":     mapHas(rs.GateAttempts, "p"),
+		"ReactRounds":      mapHas(rs.ReactRounds, "p"),
+		"MapItems":         mapHas(rs.MapItems, "p"),
+		"CallStarted":      mapHas(rs.CallStarted, "p"),
+		"SignalReceivedAt": mapHas(rs.SignalReceivedAt, "p"),
+		"SelectedSkills":   mapHas(rs.SelectedSkills, "p"),
+	} {
+		if present {
+			t.Errorf("index %s still has %q after clearInvalidatedPaths", name, "p")
+		}
+	}
+	if !mapHas(rs.SnapshotRefs, "c") {
+		t.Error("SnapshotRefs is container-name-keyed and must survive a path-clear")
+	}
+}
+
+func mapHas[V any](m map[string]V, k string) bool {
+	_, ok := m[k]
+	return ok
+}
