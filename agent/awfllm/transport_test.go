@@ -1075,3 +1075,42 @@ func TestStreamOllama_ImagesAndPDFReject(t *testing.T) {
 		t.Fatal("expected PDF rejection on ollama transport")
 	}
 }
+
+// Task 9 regression locks: characterize behavior that Task 8 already produces.
+// These guard against future drift, not drive new code (expected green on write).
+
+// HTTP 529 is Anthropic's overloaded status. anthropicErrType returns
+// "anthropic_error" (not "invalid_request_error") → not permanent → retryable.
+func TestCallAnthropic_HTTP529IsRetryable(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 529,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`)),
+		}, nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "x", nil, nil, func(string, []byte) {})
+	if err == nil || awfllm.IsPermanentLLMErrorForTest(err) {
+		t.Fatalf("HTTP 529 overloaded must be retryable, got %v", err)
+	}
+}
+
+// callAnthropic ignores StructuredOutput (L1): Anthropic has no response_format
+// json_schema, so two configs differing only in StructuredOutput must produce a
+// byte-identical request body.
+func TestCallAnthropic_IgnoresStructuredOutput(t *testing.T) {
+	build := func(so string) string {
+		cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-sonnet-4-6", SystemPrompt: "sys", StructuredOutput: so}
+		body, err := awfllm.BuildAnthropicBodyForTest(cfg, "p", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(body)
+		return string(raw)
+	}
+	if build("off") != build("response_format") {
+		t.Error("callAnthropic request must not vary with StructuredOutput (Anthropic has no response_format)")
+	}
+}
