@@ -2,6 +2,7 @@ package awfllm
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
@@ -17,6 +18,13 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 	cfg, err := a.buildReqConfig(inv)
 	if err != nil {
 		return nil, nil, err // pre-launch failure: both channels nil
+	}
+	var total int
+	for _, f := range inv.InputFiles {
+		total += len(f.Content)
+	}
+	if cfg.MaxInlineBytes > 0 && total > cfg.MaxInlineBytes {
+		return nil, nil, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "input_files", Reason: fmt.Sprintf("inline file bytes %d exceed max_inline_bytes %d; use a smaller document or the provider File API (out of scope)", total, cfg.MaxInlineBytes)}
 	}
 	prompt := assemblePrompt(inv)
 

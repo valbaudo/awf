@@ -343,3 +343,25 @@ func TestLaunch_HappyMetrics(t *testing.T) {
 		t.Errorf("turns = %d, want 1", m.Turns)
 	}
 }
+
+func TestLaunch_RejectsOversizeInline(t *testing.T) {
+	// launchAdapter with no real transport — we expect a pre-launch rejection
+	// before any HTTP call is made.
+	a := launchAdapter(t, nil)
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: awfllm.AdapterRef,
+		With: ir.RawConfig{"model": "gpt-x", "prompt": "x", "base_url": "https://x/v1", "max_inline_bytes": 4},
+	}
+	inv.InputFiles = []agent.InputFile{{Name: "doc", MIME: "application/pdf", Content: make([]byte, 8)}}
+	_, _, err := a.Launch(context.Background(), container.Handle{}, inv)
+	if err == nil {
+		t.Fatal("expected oversize rejection, got nil error")
+	}
+	var bad *agent.ErrInvalidConfig
+	if !errorsAs(err, &bad) {
+		t.Fatalf("expected *agent.ErrInvalidConfig, got %T: %v", err, err)
+	}
+	if bad.Key != "input_files" {
+		t.Errorf("ErrInvalidConfig.Key = %q, want %q", bad.Key, "input_files")
+	}
+}
