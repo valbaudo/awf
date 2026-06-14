@@ -288,6 +288,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			rs.MapItems[e.Path] = append(rs.MapItems[e.Path], MapItemRecord{
 				N:           d.N,
 				Status:      d.Status,
+				Outcome:     d.Outcome,
 				ImageDigest: d.ImageDigest,
 				Reason:      d.Reason,
 				// ItemValue: nil (zero-value) — re-derived from `over` on re-entry.

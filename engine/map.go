@@ -459,7 +459,7 @@ func dispatchItem(
 				if pr != nil {
 					return ItemFailed, nil
 				}
-				return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable)
+				return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable, "")
 			}
 			// Any OTHER Create error is a deterministic definition error (an invalid
 			// per-element spec — bad resources, a host config the daemon rejects):
@@ -490,6 +490,7 @@ func dispatchItem(
 	bodyOC, bodyErr := interpNodes(ctx, n.Body, itemPath, itemCtx)
 
 	status := ItemPassed // default optimistic; revised below
+	itemOutcome := ""    // set only on a body failure (spec §6.1)
 	var su *SkipUnwind
 	if errors.As(bodyErr, &su) {
 		// Skip ends the item as ok (design §E step 5). Record node.skipped
@@ -502,22 +503,25 @@ func dispatchItem(
 		// map this includes a frontier cancel (ctx unwind of an in-flight loser);
 		// runMap's final pass overrides it with item_pruned for any pruned[i].
 		status = ItemFailed
+		if bodyOC != OutcomeOK {
+			itemOutcome = string(bodyOC) // retryable_failure | permanent_failure | rejected
+		}
 	}
 
 	// SP5: defer the map.item commit to runMap's final pass for a prune map.
 	if pr != nil {
 		return status, nil
 	}
-	return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "")
+	return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "", itemOutcome)
 }
 
 // commitMapItem appends the map.item commit (with the optional captured runtime
-// image digest and failure reason), fsyncs, mirrors the in-memory status, and
-// returns the item's terminal status. Extracted (P6a) so the normal end and the
-// per-item image-failure paths share one commit point and preserve commit-
-// atomicity (digest+reason are in the payload BEFORE Append+Sync).
-func commitMapItem(log state.Log, runstate *RunState, mapPath string, itemN int, status, imageDigest, reason string) (string, error) {
-	data, mErr := json.Marshal(MapItemData{N: itemN, Status: status, ImageDigest: imageDigest, Reason: reason})
+// image digest, failure reason, and body outcome), fsyncs, mirrors the in-memory
+// status, and returns the item's terminal status. Extracted (P6a) so the normal
+// end and the per-item image-failure paths share one commit point and preserve
+// commit-atomicity (digest+reason+outcome are in the payload BEFORE Append+Sync).
+func commitMapItem(log state.Log, runstate *RunState, mapPath string, itemN int, status, imageDigest, reason, outcome string) (string, error) {
+	data, mErr := json.Marshal(MapItemData{N: itemN, Status: status, ImageDigest: imageDigest, Reason: reason, Outcome: outcome})
 	if mErr != nil {
 		return "", fmt.Errorf("marshal map.item for item-%d: %w", itemN, mErr)
 	}

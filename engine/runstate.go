@@ -96,6 +96,14 @@ type MapItemRecord struct {
 	N         int
 	ItemValue any
 	Status    string
+	// Outcome mirrors MapItemData.Outcome (the item body's mechanical outcome on
+	// failure). Drives resume re-run selection; empty for passed/pruned/image.
+	// Read ONLY from the FOLDED record (engine.Fold's map.item arm). Like
+	// ImageDigest/Reason, the live mirror is intentionally NOT maintained
+	// post-commit (updateMapItemStatus sets only Status) — the sole reader, the
+	// resume reconciliation, runs on a freshly-Folded RunState, so the live value
+	// is never observed. A future live reader MUST add write-through here first.
+	Outcome string
 	// ImageDigest / Reason are folded from the map.item event (P6a) — the durable
 	// record of what this committed element booted and, on failure, why. Read-back,
 	// never re-derived (run state; ItemValue is re-derived from `over`).

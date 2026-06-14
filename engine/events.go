@@ -134,6 +134,12 @@ type MapItemData struct {
 	// map as permanent_failure. Audit/forensic field: no production reader today
 	// (consumers are the docker RepoDigests follow-up + a future obs projection).
 	Reason string `json:"reason,omitempty"`
+	// Outcome is the item body's rolled-up mechanical outcome when Status ==
+	// item_failed: "retryable_failure" | "permanent_failure" | "rejected".
+	// Empty for item_passed / item_pruned, for the image_unavailable path, and
+	// for pre-this-change logs. Resume re-run selection (see runMap reconciliation)
+	// re-runs ONLY a retryable item; permanent / rejected / absent replay-as-failed.
+	Outcome string `json:"outcome,omitempty"`
 }
 
 // MapFrontierData is the payload of a map.frontier event (SP5). Items is the

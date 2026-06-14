@@ -1482,3 +1482,28 @@ func TestRunInputFilesMapBodyConsumesTopLevelProducer(t *testing.T) {
 		t.Errorf("recon doc staged into %d item containers, want 3", stagedCount)
 	}
 }
+
+func TestMapItemRecordsRetryableOutcome(t *testing.T) {
+	rig := newMapRig(t, fail("echo a")) // exit 1 → retryable_failure
+	input := runOverItems("a")
+	seedRunStartedWithInput(t, rig.lg, rig.blobs, input)
+	minSuccess := ir.Ratio("1")
+	wf := staticOverWorkflow("x", echoStep("x", &ir.RetryPolicy{Attempts: 1}), 1, &minSuccess)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, input)
+
+	_, _ = runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+
+	// Fold the log (resume's path) — the folded record must carry the outcome.
+	rs2 := foldFromRig(t, rig)
+	items := rs2.LookupMapItems(testMapPath)
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if items[0].Status != ItemFailed {
+		t.Errorf("Status = %q, want %q", items[0].Status, ItemFailed)
+	}
+	if items[0].Outcome != string(OutcomeRetryableFailure) {
+		t.Errorf("Outcome = %q, want %q", items[0].Outcome, OutcomeRetryableFailure)
+	}
+}
