@@ -107,6 +107,8 @@ func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletion
 // current prompt.
 func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	switch cfg.Provider {
+	case providerAnthropic:
+		return a.callAnthropic(ctx, cfg, prompt, schema, thread, files, emit)
 	case providerGemini:
 		return a.callGemini(ctx, cfg, prompt, schema, thread, files, emit)
 	case providerOllama:

@@ -798,6 +798,18 @@ func callOllamaWith(t *testing.T, files []agent.InputFile) (string, error) {
 	return gotBody, err
 }
 
+func TestStream_AnthropicDispatched(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("stub must not make an HTTP call yet")
+		return nil, nil
+	})}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", nil, nil, func(string, []byte) {})
+	if err == nil || !strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("want stub error, got %v", err)
+	}
+}
+
 // TestStreamOllama_ImagesAndPDFReject — Task 8: images forwarded as BARE base64
 // in message.images[]; PDF rejected before any HTTP request.
 func TestStreamOllama_ImagesAndPDFReject(t *testing.T) {
