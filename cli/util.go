@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -25,6 +26,33 @@ func parseCSV(s string) []string {
 		return nil
 	}
 	return out
+}
+
+// parseInputFilesCSV parses the --input-files flag value: a comma-separated
+// list of `name=path` entries. Returns name → path. An empty input yields a nil
+// map (no files supplied — the caller's declared-vs-supplied check decides if
+// that is an error). Each entry must contain exactly one `=`; the name and path
+// must both be non-empty. A duplicate name is rejected (last-wins would silently
+// drop a supplied file). Mirrors parseCSV's comma-splitting + whitespace-trim.
+func parseInputFilesCSV(s string) (map[string]string, error) {
+	entries := parseCSV(s)
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(entries))
+	for _, e := range entries {
+		name, path, ok := strings.Cut(e, "=")
+		name = strings.TrimSpace(name)
+		path = strings.TrimSpace(path)
+		if !ok || name == "" || path == "" {
+			return nil, fmt.Errorf("malformed --input-files entry %q: want name=path", e)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("--input-files supplies %q more than once", name)
+		}
+		out[name] = path
+	}
+	return out, nil
 }
 
 // parseRunIDFirst parses a "<run-id> [flags]" command line where the run id is

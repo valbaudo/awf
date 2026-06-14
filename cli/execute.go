@@ -69,6 +69,7 @@ func (r *Runner) runAndFinish(
 	stdout, stderr io.Writer,
 	runID, opName, successSuffix string,
 	assets map[string]engine.RunStartedAsset,
+	inputFiles map[string]string,
 	broker *signal.Broker,
 	liveRoot live.Root,
 	skipTeardown *bool,
@@ -87,6 +88,7 @@ func (r *Runner) runAndFinish(
 		Tap:           stdout,
 		Broker:        broker,
 		Assets:        assets,
+		InputFiles:    inputFiles,
 		LiveFinalizer: liveDispatchFinalizer(liveRoot),
 	})
 

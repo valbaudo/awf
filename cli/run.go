@@ -24,13 +24,14 @@ import (
 
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
-	fprintln(w, "usage: awf run [--input <json>] [--run-id <id>] [--state-dir <dir>] [--backend <auto|native|docker|fake>] [--agent-env <CSV>] <path>")
+	fprintln(w, "usage: awf run [--input <json>] [--input-files <CSV>] [--run-id <id>] [--state-dir <dir>] [--backend <auto|native|docker|fake>] [--agent-env <CSV>] <path>")
 	fprintln(w, "")
-	fprintln(w, "  --input <json>     run-input as a JSON object (validated against workflow.input schema if declared)")
-	fprintln(w, "  --run-id <id>      override the minted run id (testing aid)")
-	fprintln(w, "  --state-dir <dir>  base directory for .awf/runs and .awf/blobs (default: ./.awf)")
-	fprintln(w, "  --backend <kind>   container backend: \"auto\", \"native\", \"docker\", or \"fake\" (default: auto)")
-	fprintln(w, "  --agent-env <CSV>  env-var allowlist forwarded into agent CLIs (default: "+strings.Join(defaultAgentEnv, ",")+")")
+	fprintln(w, "  --input <json>        run-input as a JSON object (validated against workflow.input schema if declared)")
+	fprintln(w, "  --input-files <CSV>   top-level workflow input files as name=path entries (one per declared input_files name)")
+	fprintln(w, "  --run-id <id>         override the minted run id (testing aid)")
+	fprintln(w, "  --state-dir <dir>     base directory for .awf/runs and .awf/blobs (default: ./.awf)")
+	fprintln(w, "  --backend <kind>      container backend: \"auto\", \"native\", \"docker\", or \"fake\" (default: auto)")
+	fprintln(w, "  --agent-env <CSV>     env-var allowlist forwarded into agent CLIs (default: "+strings.Join(defaultAgentEnv, ",")+")")
 }
 
 // cliRun implements `awf run`. See plan §G + slice 2.5 self-critique round 2
@@ -41,6 +42,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(io.Discard)
 	flags.Usage = func() {}
 	inputJSON := flags.String("input", "", "run-input JSON")
+	inputFilesCSV := flags.String("input-files", "", "top-level workflow input files as name=path CSV")
 	runID := flags.String("run-id", "", "override the run id")
 	stateDir := flags.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	backendKind := flags.String("backend", backendAuto, "container backend: auto, native, docker, or fake")
@@ -108,6 +110,24 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 			return ExitUsage
 		}
 		inputMap = m
+	}
+
+	// Step 3b: parse + validate --input-files BEFORE any state is created on
+	// disk (same orphan-log-avoidance rationale as --input). The bytes are
+	// content-addressed later (Step 8b), once blobs is open; here we only
+	// reject bad supply: malformed entries, undeclared names, unsupplied
+	// declared names, and missing/unreadable paths. The required contract
+	// mirrors the call-step input_files contract (ir.validateCallInputFiles):
+	// every DECLARED name must be supplied and every SUPPLIED name must be
+	// declared (a top-level run is the call-step's run-start equivalent).
+	inputFilePaths, err := parseInputFilesCSV(*inputFilesCSV)
+	if err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
+	if err := validateSuppliedInputFiles(inputFilePaths, ld.Workflow.InputFiles); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
 	}
 
 	// Step 4: wire signal handling.
@@ -243,6 +263,16 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		inputRef = ref
 	}
 
+	// Step 8b: content-address each supplied input file (name → CAS ref). The
+	// paths were already existence/readability-checked in Step 3b; a read error
+	// here is an unexpected race (file removed mid-run) and aborts before the
+	// log exists. Mirrors the typed-input Put above + the Assets channel.
+	inputFileRefs, err := storeInputFiles(blobs, inputFilePaths)
+	if err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
+
 	assetSnapshots, err := engine.StoreRunStartedAssetsForLoadedDefinition(blobs, ld)
 	if err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
@@ -300,6 +330,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		InputRef:        inputRef,
 		Backend:         concreteBackendKind,
 		Assets:          assetSnapshots,
+		InputFiles:      inputFileRefs,
 		LiveHome:        engineLiveHomePin(liveRoot.Pin),
 		Runtimes:        resolvedRuntimes, // Phase 5 slice 5.1
 	})
@@ -326,5 +357,5 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// r.BrokerOptions defaults to empty (100ms poll) in production; tests
 	// inject signal.WithPollInterval(time.Millisecond) for fast runs.
 	broker := awfsignal.NewBroker(awfsignal.ControlDir(*stateDir, id), r.BrokerOptions...)
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", assetSnapshots, broker, liveRoot, &skipTeardown)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", assetSnapshots, inputFileRefs, broker, liveRoot, &skipTeardown)
 }

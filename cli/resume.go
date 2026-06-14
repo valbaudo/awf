@@ -393,7 +393,12 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// Branches / LoopIters) skip already-committed nodes — same code path on
 	// first run and resume (CLAUDE.md invariant). backend (local) is passed
 	// in — runAndFinish does NOT read r.Backend.
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, broker, liveRoot, &skipTeardown)
+	// InputFiles is passed nil on resume: the durable run.started manifest is
+	// folded into rs.InputFiles (Task 15), and engine.Run only seeds from
+	// RunOptions.InputFiles when non-nil — so the folded value wins, exactly
+	// like the typed input and Assets channels. `awf resume` has no
+	// --input-files flag (per the same no-re-supply rule as --input).
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, nil, broker, liveRoot, &skipTeardown)
 }
 
 func preflightLiveResume(ctx context.Context, ld *ir.LoadedDefinition, rs *engine.RunState, resolver agent.Resolver) error {
