@@ -799,14 +799,20 @@ func callOllamaWith(t *testing.T, files []agent.InputFile) (string, error) {
 }
 
 func TestStream_AnthropicDispatched(t *testing.T) {
-	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		t.Fatal("stub must not make an HTTP call yet")
-		return nil, nil
-	})}))
+	// Verify that provider:anthropic routes to callAnthropic (makes an HTTP call).
+	var called bool
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return sseAnthropicResponse(anthropicSSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
 	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
 	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "hi", nil, nil, func(string, []byte) {})
-	if err == nil || !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("want stub error, got %v", err)
+	if err != nil {
+		t.Fatalf("callAnthropic: %v", err)
+	}
+	if !called {
+		t.Fatal("provider:anthropic must route to callAnthropic (make an HTTP call)")
 	}
 }
 
@@ -895,6 +901,163 @@ func TestBuildAnthropicBody_UnsupportedMIME(t *testing.T) {
 	files := []agent.InputFile{{Name: "x", MIME: "text/plain", Content: []byte("hi")}}
 	if _, err := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, files); err == nil {
 		t.Fatal("text/plain must be rejected by the forwardable table")
+	}
+}
+
+// sseAnthropicResponse returns a 200 text/event-stream response from raw SSE text.
+func sseAnthropicResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+// A canned Anthropic SSE stream: usage on message_start, three text deltas, a
+// thinking delta that must be skipped, then message_delta (output + stop) + stop.
+const anthropicSSE = `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":50,"cache_creation_input_tokens":20}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"ans"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"wer\":"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"42}"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":10}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestCallAnthropic_StreamsAndParses(t *testing.T) {
+	var gotBody, gotKey, gotVersion string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		gotKey = r.Header.Get("x-api-key")
+		gotVersion = r.Header.Get("anthropic-version")
+		return sseAnthropicResponse(anthropicSSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "sk-ant", Model: "claude-sonnet-4-6"}
+
+	var deltas []string
+	full, usage, model, finish, err := a.StreamForTest(context.Background(), cfg, "2+2 as json", nil, nil,
+		func(d string, _ []byte) { deltas = append(deltas, d) })
+	if err != nil {
+		t.Fatalf("callAnthropic: %v", err)
+	}
+	if full != `{"answer":42}` {
+		t.Errorf("full = %q, want %q", full, `{"answer":42}`)
+	}
+	if len(deltas) != 3 {
+		t.Errorf("emitted %d deltas, want 3 (thinking_delta skipped)", len(deltas))
+	}
+	if usage.Input != 100 || usage.CacheRead != 50 || usage.CacheWrite != 20 || usage.Output != 10 {
+		t.Errorf("usage = %+v, want {100 10 50 20} (NO subtract)", usage)
+	}
+	if finish != "end_turn" {
+		t.Errorf("finish = %q, want end_turn", finish)
+	}
+	if model != "claude-sonnet-4-6" {
+		t.Errorf("model = %q, want cfg.Model", model)
+	}
+	if !strings.Contains(gotBody, `"stream":true`) || gotKey != "sk-ant" || gotVersion == "" {
+		t.Errorf("request wire wrong: key=%q version=%q body=%s", gotKey, gotVersion, gotBody)
+	}
+}
+
+// C2: a max_tokens truncation must normalize to "length" so launch.go's existing
+// truncation path (full=="" || finish=="length") fires uniformly across providers.
+func TestCallAnthropic_MaxTokensNormalizedToLength(t *testing.T) {
+	const sse = "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":4}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) { return sseAnthropicResponse(sse), nil })
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
+	_, _, _, finish, err := a.StreamForTest(context.Background(), cfg, "x", nil, nil, func(string, []byte) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finish != "length" {
+		t.Errorf("finish = %q, want length (max_tokens must normalize to the shared truncation sentinel)", finish)
+	}
+}
+
+// M1: SSE permits a single event's JSON to span multiple data: lines (joined by \n).
+// A reframing gateway may do this; the parser must reassemble before unmarshaling.
+func TestCallAnthropic_MultiLineDataField(t *testing.T) {
+	const sse = "event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\n" +
+		"data: \"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) { return sseAnthropicResponse(sse), nil })
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
+	full, _, _, _, err := a.StreamForTest(context.Background(), cfg, "x", nil, nil, func(string, []byte) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full != "hi" {
+		t.Errorf("multi-line data field not reassembled: full = %q, want hi", full)
+	}
+}
+
+func TestCallAnthropic_HTTP400IsPermanent(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 400,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`)),
+		}, nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "x", nil, nil, func(string, []byte) {})
+	if err == nil || !awfllm.IsPermanentLLMErrorForTest(err) {
+		t.Fatalf("400 invalid_request_error must be permanent, got %v", err)
+	}
+}
+
+func TestCallAnthropic_HTTP429IsRetryable(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 429,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"rate_limit_error","message":"slow"}}`)),
+		}, nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "x", nil, nil, func(string, []byte) {})
+	if err == nil || awfllm.IsPermanentLLMErrorForTest(err) {
+		t.Fatalf("429 must be retryable, got %v", err)
+	}
+}
+
+func TestCallAnthropic_StreamErrorEvent(t *testing.T) {
+	const sse = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}\n\n"
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) { return sseAnthropicResponse(sse), nil })
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "x", nil, nil, func(string, []byte) {})
+	if err == nil || awfllm.IsPermanentLLMErrorForTest(err) {
+		t.Fatalf("overloaded_error stream event must be retryable, got %v", err)
 	}
 }
 
