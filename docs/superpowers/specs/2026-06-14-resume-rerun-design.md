@@ -1,239 +1,303 @@
-# Re-running a chosen committed step (`resume --rerun <step>`)
+# Re-running from a chosen committed step (`resume --from <step>`)
 
 Status: design — pending author review. Builds on the shipped `resume --force`
 (`cli/resume_admission.go`, `cli/resume.go`) and the resume durability model.
 
+> This revision supersedes the earlier `--rerun` draft after a code-grounded
+> self-critique + prior-art cross-reference (Temporal Reset, SFN Redrive, Argo,
+> Nextflow `-resume`, Bazel, dbt, Dagster, Airflow). Two findings reshaped it:
+> (1) **no mature system refuses a re-run on definition drift** — they either
+> hard-pin (SFN), version with a loud error (Temporal), content-hash and
+> auto-cascade (Nextflow/Bazel), or run loose; "refuse + warn" was a worst-of-all
+> invention and is dropped. (2) **top-level-only naming defeats the motivating
+> case** (the target step is a parallel branch), so naming is by runtime-path.
+
 ## 1. Problem
 
 `awf resume` (incl. `--force`) replays every committed step and re-runs only the
-**uncommitted frontier**. That is correct checkpointing — it skips re-paying
-expensive committed work after a failure — but it has a sharp limitation when
-**iteratively debugging a pipeline**: if a step committed `ok` but you later fix
-its logic (or its inputs), resume **replays the cached output** and your fix never
-runs. The only way to apply such a fix today is a full fresh run, re-paying the
-entire expensive prefix.
+uncommitted frontier — correct checkpointing, but it cannot apply a fix to a step
+that already committed `ok`. When iteratively debugging a pipeline, a step can
+commit `ok` yet be latently wrong (its output only fails downstream), and the fix
+lives in a digest-invisible input (a loose script, an external service, container
+content). Resume replays the cached-bad output; the fix needs a full fresh run,
+re-paying the entire expensive prefix.
 
-Motivating case (cve-feasibility shakeout): `merge_runtime_compose` committed
-`ok` but emitted a runtime compose with an unresolvable placeholder digest — a
-*latent* bug that only failed downstream. The fix lives in `merge-compose.py` (a
-digest-invisible loose script). `resume --force` re-enters the run but replays the
-cached bad compose, so the fix needs a fresh run that re-pays `prepare_lab` +
-`version_universe` (~$1.5, ~25 min) — for a one-line fix.
+Motivating case (cve-feasibility shakeout): `merge_runtime_compose` committed `ok`
+with a bad runtime compose (unresolvable placeholder digest); the fix is in
+`merge-compose.py`. `resume --force` replays the cached compose. A fresh run
+re-pays `prepare_lab` + `version_universe` (~$1.5, ~25 min) for a one-line fix.
 
-`resume --rerun <step>` lets an operator **re-run from a chosen committed step**:
+`resume --from <step>` lets an operator **re-run from a chosen committed step**:
 invalidate that step + everything after it, replay everything before it, and
 re-execute the invalidated set against the *current* definition/scripts — without
-re-paying the expensive upstream. It is a deliberate **dev-loop / recovery
-affordance**, not a production-durability primitive.
+re-paying the expensive upstream. It is a deliberate **operator-controlled
+dev-loop / recovery affordance**, in the same family as `--force`.
 
-### Prior art
+### Prior art (what established systems actually do)
 
-Reset-to-a-point recovery is a first-class, operator-initiated primitive in
-durable-execution systems: **Temporal "Reset"** (reset a workflow to a chosen
-event and re-run forward), **AWS Step Functions "Redrive from state"**, **Argo
-Workflows retry from a node**. `--rerun` is AWF's equivalent, scoped to the
-single-host checkpoint model.
+| System | Re-run-from-a-point? | Definition drift on re-run | Side effects |
+|---|---|---|---|
+| Temporal **Reset** | yes (to a chosen event) | runs current code; **loud nondeterminism error** unless versioned/patched | re-runs post-point; idempotency is the author's job |
+| SFN **Redrive** | yes (from failed state) | **hard pin** — must start new on a definition change | succeeded states not re-run; tasks must be idempotent |
+| Argo **resubmit --memoized** | yes (by node name) | run-loose; **documented silent-corruption bugs** | reuse prior outputs by name |
+| **Nextflow `-resume`** | content-hash cache | changed script → that task **+ all downstream** re-run; cannot reuse a stale cache | re-runs cascade |
+| **Bazel** | content-addressed actions | changed input/command → re-run **+ downstream cascade** | re-runs cascade |
+| dbt `state:modified` w/o `+`, Dagster `FROM_FAILURE`, Airflow `clear` | yes | **no content check** — known stale-upstream footguns | manual |
+
+Two lessons drive this design: **(a) nobody refuses** — the safe systems
+(Nextflow/Bazel) *auto-re-run* what changed rather than blocking; the conservative
+ones (SFN) hard-pin; refusing on detected drift is no one's design. **(b)** the
+unsafe quadrant (Dagster/Airflow/dbt-without-`+`/Argo-memoized) is exactly
+"re-run from a point without re-running changed upstream" — which `--from` avoids
+by re-running the *entire* tail from the chosen point, never a precise data-closure
+(see §4).
 
 ## 2. Goals / non-goals
 
 **Goals**
 
-1. `awf resume <run> <wf> --rerun <step>` re-enters the run, invalidates the named
-   top-level node **and every top-level node after it** (+ their committed
-   descendants), replays everything before it, and re-runs the invalidated set
-   against the current definition.
-2. `--rerun` implies admission — it re-enters a terminal run on its own (no
-   separate `--force` needed) and re-enters an interrupted run too.
-3. Invalidation is **journaled** (a durable, auditable `node.invalidated` event),
-   not an in-memory mutation.
-4. A soundness guard on the **replayed** set: the new workflow validates and every
-   replayed committed path still exists as a node in the new graph; a loud warning
-   covers semantic edits to replayed steps.
+1. `awf resume <run> <wf> --from <step>` re-enters the run, invalidates the named
+   committed node + everything that happens-after it, replays everything before,
+   and re-runs the invalidated set against the current definition.
+2. `<step>` is a **runtime-path prefix** naming any committed node, including a
+   node inside a `call:` sub-workflow or a `parallel:`/`map:` branch.
+3. `--from` is **permissive**: it admits any run state and **bypasses** the
+   definition-digest + runtime-drift pins. It does **not** refuse on drift, does
+   not compute per-node digests, and works on runs started before this feature.
+4. Invalidation is **journaled** (an engine-appended `node.invalidated` event)
+   and clears exactly the path-keyed RunState indices (§6).
+5. Before executing, the operator is shown the **re-run set** (the steps that will
+   re-execute) — informed, not blocked.
 
 **Non-goals (v1)**
 
-- Re-running a single step *inside* a map / gate / parallel / loop. v1 names a
-  **top-level** node; to re-run a nested step, name its top-level container.
-- Per-node hard pinning of the replayed set (warning only in v1 — see §6).
-- Rolling back external side effects (at-least-once, same as `resume`/`--force`).
-- Bypassing the soundness guard, or re-running with a workflow that no longer
-  contains the replayed nodes.
+- A precise typed-ref data-closure invalidation (`--from` is coarse-by-design:
+  everything after the point, §4).
+- Content-hash auto-staleness (the Nextflow/Bazel model — "figure out what
+  changed for me"); `--from` is operator-chosen. Noted as a possible future mode.
+- Rolling back external side effects (at-least-once, §5).
+- Selecting an "after" boundary *among concurrent siblings* (parallel branches /
+  map items have no order — see §4).
 
 ## 3. Contract (normative)
 
-> `awf resume <run> <wf> --rerun <step>`:
+> `awf resume <run> <wf> --from <step>`:
 >
-> - **Admits** the run regardless of terminal state (interrupted, or finished
->   `ok` / `permanent_failure` / `rejected` / `retryable_failure` / `cancelled`).
-> - **Bypasses** the whole-workflow definition-digest pin AND runtime-version
->   drift (a debug-mode re-run runs against the *current* definition + images).
-> - `<step>` MUST resolve to exactly one **top-level** node of `<wf>` (AWF refuses
->   an unknown or non-top-level id, listing valid top-level ids).
-> - **Invalidates** that node + every later top-level node (graph-index order) +
->   all their committed descendants; **replays** earlier top-level nodes.
-> - **Refuses** if the new `<wf>` fails validation, or if any *replayed* committed
->   path no longer maps to a node in `<wf>` (structural drift of the replayed set).
+> - **Admits** the run unconditionally — interrupted, or finished `ok` /
+>   `permanent_failure` / `rejected` / `retryable_failure` / `cancelled`. (Its own
+>   admission path; it bypasses the `resumeAdmission` outcome guard.)
+> - **Bypasses** the workflow-digest pin AND runtime-version drift. The re-run set
+>   executes against the *current* definition + resolved images; replayed nodes
+>   are not re-executed, so their definition/images are not consulted.
+> - `<step>` MUST be a runtime-path prefix matching **exactly one** committed node
+>   (AWF lists candidates on an ambiguous/absent prefix).
+> - **Invalidates** that node's committed subtree + every committed node that
+>   *happens-after* it (§4); **replays** the rest.
+> - **Prints the re-run set** (paths that will re-execute) + the replayed count
+>   before proceeding.
+> - Does **not** refuse on definition drift. The replayed steps reuse their
+>   recorded outputs; if the operator changed an *upstream* (replayed) step, the
+>   result may be incoherent — that is the operator's call to redo with an earlier
+>   `--from`, exactly as `--force` trusts the operator that the fix is correct.
 
-`--rerun` and bare `--force` are independent; passing both is accepted (`--force`
-is redundant — `--rerun` already admits). `--rerun` with no failed/terminal run
-(a fully-`ok` run) is valid: it re-runs the chosen tail of a successful run.
+`--from` is a deliberate, fenced exception to the CLAUDE.md invariant *"pinning is
+a hard error on drift"* — the same way `--force` is a fenced exception to terminal
+runs being sealed. §8 records the contract note this requires.
 
-## 4. Invalidation model — "X + everything after it"
+## 4. Invalidation model — "the node + everything after it"
 
-**Execution order = top-level graph index.** Naming top-level node X at index `i`:
+`--from N` invalidates `N`'s committed subtree plus every committed node that
+**happens-after** `N` in the run's execution order, and replays everything else.
+"Happens-after" respects sequential vs concurrent scopes:
 
-- **Invalidated set** = every committed runtime path whose **top-level segment**
-  is X or a node at index `> i`. (A runtime path's top-level segment is its first
-  `.`-delimited segment, e.g. `merge_runtime_compose`, `version_universe`,
-  `map[5]`; map it to its graph index via the loaded IR.)
-- **Replayed set** = every committed path whose top-level segment is at index
-  `< i`.
+- **Sequential scopes** (the root graph, a `call:` sub-workflow's graph, a loop
+  body) order siblings by declaration index. Within such a scope, the siblings of
+  `N`'s ancestor *after* it (higher index) + their subtrees are invalidated.
+- **Concurrent scopes** (`parallel:` branches, `map:` items) have **no order**
+  among siblings. `N`'s concurrent siblings are **replayed** (they do not depend on
+  `N`); "after" jumps to *after the whole concurrent container*.
 
-This is deliberately coarser than a typed-ref data-closure: it never replays a
-node that ran *after* an invalidated one, so it cannot miss implicit
-container-state / shared-file dependencies that the typed-ref graph
-(`ir/validate_refs.go`) does not see — at the cost of re-running some nodes a
-precise closure would skip. For nested concurrency (a step inside a top-level
-`parallel`/`map`), the **whole top-level container** is the invalidation unit, so
-there is no "after" ambiguity among concurrent siblings.
+Computed bottom-up over `N`'s path segments: for each ancestor scope from `N`
+outward, add the later-ordered siblings (sequential scopes only) + their subtrees;
+at a concurrent scope add nothing and ascend to the container. This is coarser
+than a typed-ref data-closure — it re-runs some independent later nodes — but it
+**never replays a node that ran after an invalidated one**, so it cannot miss the
+implicit container-state / shared-file dependencies the typed-ref graph
+(`ir/validate_refs.go`) doesn't see.
 
-**Why top-level only in v1:** "everything after X" is well-defined and total for
-top-level graph indices; inside a `map`/`gate`/`parallel`/`loop` it is not (no
-total order among concurrent items/branches), and clearing partial map/gate state
-mid-container is its own design. Naming the top-level container is unambiguous and
-covers the motivating case.
+**Motivating case, concretely.** `merge_runtime_compose` commits as
+`parallel[0].merge_runtime_compose` (a branch of a top-level `parallel`). Its
+concurrent siblings include the expensive `version_universe`. `--from
+parallel[0].merge_runtime_compose`:
+- invalidates `merge_runtime_compose`'s subtree + all root nodes after `parallel[0]`
+  (the runtime window — exploit → item5/6/8 → final_record, which never committed);
+- **replays** `version_universe`, the other parallel branches, and everything
+  before `parallel[0]` (`prepare_lab` etc.).
 
-## 5. Mechanism — journaled invalidation
+That re-runs the fixed compose + the runtime window while replaying the expensive
+upstream — exactly the intent. (Top-level-only naming, the prior draft, would have
+forced `--from parallel[0]`, re-running `version_universe` from scratch — which is
+why runtime-path naming is required, not deferred.)
 
-The CLI owns the computation (it holds the loaded graph + folded RunState); fold
-owns the durable application.
+**Boundary cases:**
+- A `--from` whose invalidation set would cut into a **committed prune-map
+  frontier** is widened to invalidate the **whole prune map** — partial frontier
+  invalidation silently breaks `keep: top(k)` (the frontier is one atomic global
+  decision; `engine/map.go:255-270`, `engine/events.go` `EventMapFrontier`), so it
+  is re-run clean, which is the map.frontier atomicity rule, not a refusal.
+- Naming a node inside a concurrent scope is fine (its subtree + after-the-container
+  is well-defined); only *ordering among* concurrent siblings is undefined, and we
+  never need it.
 
-1. **Resolve** `<step>` to a top-level node + index `i` (refuse if absent /
-   ambiguous / non-top-level).
-2. **Compute** the invalidated path set from the folded RunState: every key in
-   every **path-keyed** RunState index whose top-level segment is at index `≥ i`.
-   The implementation MUST enumerate these indices exhaustively — at least
-   `Completed`, `MapItems`, `GateAttempts`, `LoopIters`, `ReactRounds`,
-   `Branches`, `SnapshotRefs`, `CallStarted` — missing one leaves stale committed
-   state that would wrongly replay (the plan pins this with a RunState-field audit).
-3. **Append** one `node.invalidated{paths:[…]}` event (then `Sync`), BEFORE the
-   `run.resumed{epoch+1}` append. One atomic event = the whole disposition is
-   durable or absent (crash-safe, mirrors `map.frontier`'s atomicity).
-4. **Fold** gains a new arm: on `EventNodeInvalidated`, **delete** each listed path
-   from *every* path-keyed RunState index (same exhaustive set as step 2). Fold is
-   otherwise append-only; this is the first
-   event that removes folded state, and it is sound because the event is appended
-   *after* all the node.completed/map.item/etc. events it supersedes (so the
-   removal is the last word for those paths). Precedent in spirit:
-   `map.frontier` replaces per-item `map.item` records (`engine/fold.go`).
-5. **Resume** proceeds normally: `run.resumed{epoch+1}`, then `runAndFinish`. The
-   interpreter's `LookupCompleted` now misses the invalidated paths → re-dispatch.
+## 5. Side-effect blast radius (honest)
+
+`--from` re-runs steps that previously **succeeded**, not just a failed frontier —
+a materially larger blast radius than `resume`/`--force`. In this offensive tool
+the re-run tail can include exploit-firing or lab-mutating steps; re-running them
+re-fires those side effects against the target and duplicates external writes.
+There is no dedupe for arbitrary steps (only cleanup carries an
+`idempotency_key`, per CLAUDE.md §scope-discipline). Mitigation is disclosure, not
+prevention: AWF **prints the full re-run set before executing** (mirroring SFN
+showing what a redrive will run) so the operator scopes `--from` as tightly as
+possible. Replayed-step soundness is unchanged from today's resume: re-run steps
+draw inputs from committed upstream typed outputs / `output_files` / `input_files`
+/ assets (content-addressed blobs) + `snapshot:workspace` (restored);
+non-snapshotted container scratch from a replayed step is gone, exactly as under
+`resume`.
+
+## 6. Mechanism — engine-appended invalidation
+
+All node-scoped journal events are appended **inside `engine/`** today (the CLI
+appends only run-lifecycle events: `cli/run.go` run.started, `cli/resume.go`
+run.resumed, `cli/execute.go` run.finished). `--from` keeps that separation:
+
+1. **CLI** parses `--from <step>`, resolves it against the folded `Completed` keys
+   to one committed node path (refuse on absent/ambiguous, listing candidates), and
+   passes it as `RunOptions.RerunFrom`. The CLI bypasses the digest + runtime-drift
+   checks and the `resumeAdmission` outcome guard when `RerunFrom` is set.
+2. **Engine** (`engine.Run`, at resume start, after fold, before the graph walk):
+   computes the happens-after invalidation path set from `def.Workflow` + the
+   folded `RunState` (§4), **appends one atomic `node.invalidated{paths:[…]}`
+   event** (+ `Sync`), then deletes those paths from the in-memory RunState
+   indices, then walks the graph. The interpreter's existing `LookupCompleted`
+   guard (`engine/interpreter.go:265`) now misses the invalidated paths → it
+   re-dispatches them. No commit-once guard exists in `Commit`/`RecordCompleted`
+   (`engine/commit.go:47`, `engine/runstate.go:397`) — the at-most-once property
+   lives entirely in that `LookupCompleted` filter, so clearing the indices is both
+   necessary and sufficient; re-running re-commits cleanly (the prior
+   `node.completed` is superseded by last-event-wins fold, §7).
+
+**Clear exactly the nine path-keyed indices** (verified exhaustive against
+`engine/runstate.go`): `Completed`, `Branches`, `LoopIters`, `GateAttempts`,
+`ReactRounds`, `MapItems`, `CallStarted`, `SignalReceivedAt`, `SelectedSkills`.
+**Do NOT touch** the maps that only *look* path-shaped: `SnapshotRefs` (keyed by
+container **name**) and `Signals` (keyed by signal **name**) — a path-prefix sweep
+of those would be a bug. Clearing only `Completed` (the prior draft's implication)
+would leak stale gate verdicts, loop cursors, map-item statuses, call pins, and
+routed skills.
 
 New code: `engine.EventNodeInvalidated` + `NodeInvalidatedData{Paths []string}`
-(`engine/events.go`); the fold arm (`engine/fold.go`); the top-level resolver +
-invalidation-set computation (a new `cli/resume_rerun.go`); the `--rerun` flag +
-wiring (`cli/resume.go`). The interpreter and dispatcher are unchanged — they
-already re-run anything not in `Completed`.
+(`engine/events.go`); the happens-after computation + clear routine + the append
+(`engine/`); the fold delete-arm (`engine/fold.go`); `RunOptions.RerunFrom` +
+the `--from` flag/resolver/bypass wiring (`cli/`). The dispatcher and the node
+handlers are unchanged.
 
-## 6. Pin bypass + soundness guard
+## 7. Fold: the first delete-arm, specified precisely
 
-`--rerun` bypasses the definition-digest pin (`cli/resume.go` digest check) and
-the runtime-version drift check — a debug re-run runs against the current
-definition + images. This is sound for the **re-run set** (it executes fresh
-against current state) and irrelevant for the **replayed set** (replayed nodes do
-not re-execute, so their images/definitions are not consulted). The one real
-hazard is a replayed node whose committed output came from an *old* definition.
+`engine/fold.go` is today a **purely additive** left-fold — no arm deletes
+(verified: every arm appends or set-overwrites to a non-empty value). The earlier
+draft claimed `map.frontier` as a deletion precedent; that is **false** —
+`map.frontier` *appends* `MapItemRecord`s. `node.invalidated` is genuinely the
+first event that *removes* folded state. It is sound because:
 
-Guard (what v1 enforces):
+- Fold is a single **strict sequence-order** pass (`fold.go:96`, no sorting/goroutines),
+  so each event applies at its journal position.
+- Semantics: a path's presence is decided by the **last event touching it** —
+  `node.completed`/`map.item`/`gate.attempt`/… ⇒ present; `node.invalidated` ⇒
+  absent. A re-committed node (a second `node.completed` after the
+  `node.invalidated`) is present again by last-event-wins.
+- `node.invalidated` is **necessary** specifically for invalidated nodes that do
+  *not* re-commit before the run ends (a re-committed node would already
+  last-wins); without it, a later normal `resume` would re-fold their stale
+  `node.completed` and wrongly skip them.
 
-- The new `<wf>` must pass `ir.Validate` (no resuming into a broken definition).
-- Every **replayed** committed path must still resolve to a node in `<wf>`
-  (structural check — catches rename / remove / reorder / retype of an upstream
-  node). If not, refuse: *"step `<path>` is replayed but no longer exists in
-  `<wf>`; --rerun from an earlier step."*
+**Required conformance test (durability):** re-fold determinism — drive a run,
+`--from`, re-commit some / fail before others, then a from-scratch `Fold` of the
+final log MUST equal the live RunState (and a subsequent plain `resume` must see
+exactly the still-uncommitted set).
 
-Guard (what v1 warns, not enforces): a *semantic* edit to a replayed node's body.
-The run stores only the workflow digest, not per-node bodies, so AWF cannot detect
-this. `--rerun` prints, before executing:
+## 8. Pins, contract, and invariants
 
-> `awf resume --rerun: replaying N upstream step(s) under a changed definition. If
-> you edited any step BEFORE <step>, re-run from there instead — their replayed
-> outputs came from the old definition.`
+`--from` bypasses the digest pin (`cli/resume.go` digest check) and runtime-version
+drift. This **contradicts** the CLAUDE.md invariant *"pinning is a hard error on
+drift"* — a documented contract, so per the doc hierarchy it needs an explicit,
+separate revision, not a silent break. The revision is narrow and honest: the
+resumability contract (`man/awf.1.md` + the durability contract doc) records that
+`--from` is a deliberate, operator-fenced **debug-mode exception** to pinning,
+sibling to `--force`'s exception to terminal-run sealing — the operator owns
+correctness of what they replay, AWF discloses the re-run set, and a misuse is a
+recoverable redo (`--from` an earlier step), never durable corruption.
 
-**Future hardening (noted, not v1):** persist a `{static-path → node-digest}` map
-in `run.started` so the replayed-set check becomes a hard error instead of a
-warning. Out of scope here; v1 ships the warning.
-
-## 7. Container-state soundness = today's `resume` envelope
-
-`--rerun` adds **no new failure class** beyond normal resume. Re-run steps draw
-inputs from committed upstream **typed outputs / `output_files` / `input_files` /
-assets** (preserved as content-addressed blobs) and `snapshot:workspace`
-(restored from the latest committed snapshot). Non-snapshotted container *scratch*
-state from a replayed step is gone — but that is already true of `resume` (infra
-is rebuilt from its image/compose recipe, never restored except
-`snapshot:workspace`). `--rerun` simply re-runs more steps under the same rules; a
-workflow that resumes soundly today re-runs soundly under `--rerun`.
-
-## 8. Invariants preserved
-
-- **The interpreter is the only writer to `state`.** The CLI appends
-  `node.invalidated` exactly as it appends `run.resumed` (resume already writes
-  these CLI-side at resume start); the interpreter still owns all node commits.
-- **Append-only journal.** `node.invalidated` is appended, never a truncation; the
-  superseded `node.completed` events remain in the log for audit.
-- **Outcome taxonomy unchanged.** `--rerun` is a recovery *operation*, not a new
-  outcome class.
-- **Determinism / replay.** Replayed steps still reuse their committed artifacts;
-  only the explicitly-invalidated set re-executes.
-- **Pinning is still a hard error — at a chosen granularity.** v1 trades the
-  whole-workflow pin for a structural replayed-set check + warning; the future
-  per-node-digest hardening restores a hard drift error for the replayed set.
+Preserved invariants: the **engine** remains the only writer of node-scoped state
+(the CLI passes intent; the engine appends `node.invalidated`). The journal stays
+**append-only** (nothing truncated; superseded `node.completed`s remain for audit).
+The **outcome taxonomy** is unchanged (`--from` is a recovery operation). Replayed
+steps still reuse committed content-addressed artifacts; only the invalidated set
+re-executes.
 
 ## 9. Testing plan (fake backend — no Docker)
 
-**Resolver + invalidation set (unit, `cli/resume_rerun_test.go`):**
-- top-level id at index `i` → set = its path + all committed paths with top-level
-  index `≥ i`, incl. nested descendants (a committed `map[k].item-*` under a later
-  top-level node is included).
-- unknown id / nested-only id → refuse with the valid-top-level-ids list.
+**Resolver + happens-after set (unit, `cli/resume_rerun_test.go` / engine):**
+- prefix → exactly-one committed node; absent/ambiguous → refuse with candidate list.
+- happens-after for: a top-level step; a step inside a `call:`
+  (`c.workflow.x` → invalidate its sub-workflow tail + all root nodes after `c`);
+  a **parallel branch** (`parallel[0].x` → invalidate `x`'s subtree + after-`parallel[0]`,
+  REPLAY the concurrent siblings); a step inside a `loop` body.
+- prune-frontier widening: `--from` cutting into a committed frontier → whole map invalidated.
 
-**Fold drop (unit, `engine/fold_test.go`):**
-- `node.completed`(a,b,c) then `node.invalidated{[b,c]}` → Completed has only `a`.
-- invalidating a map path drops its `MapItems` + per-item `Completed` +
-  `GateAttempts`/`LoopIters` under it.
+**Fold delete-arm (unit, `engine/fold_test.go`):**
+- `completed(a,b,c)` then `node.invalidated{[b,c]}` → `Completed` has only `a`.
+- invalidating a map/gate/call path clears its `MapItems`/`GateAttempts`/`CallStarted`
+  + descendant `Completed`; `SnapshotRefs`/`Signals` (name-keyed) are untouched.
+- the nine-index clear is exhaustive (a test per index that would leak).
 
-**End-to-end (cli, fake backend):**
-- 3 top-level steps a→b→c, all committed `ok`; `--rerun b` with `b` reprogrammed →
-  `a` replays (its exec not called again), `b`+`c` re-run; run finishes `ok`.
-- `--rerun` admits a terminal `permanent_failure` run (no `--force` needed).
-- structural guard: remove a replayed node from `<wf>` → refuse with the message.
-- warning emitted whenever ≥1 node is replayed.
-- pin bypass: a changed workflow digest does NOT refuse under `--rerun` (contrast
-  with `resume` / `--force`, which do).
+**Conformance (durability, fake backend):**
+- re-fold determinism (§7) — the load-bearing test.
+- end-to-end: 3 top-level steps a→b→c committed `ok`; `--from b` (b reprogrammed)
+  → `a` replays (exec not re-called), `b`+`c` re-run, run finishes `ok`.
+- `--from` admits a terminal `permanent_failure` run with no `--force`.
+- pin bypass: a changed workflow digest does NOT refuse under `--from` (contrast
+  `resume`/`--force`, which do).
+- re-run-set disclosure is printed.
 
 ## 10. Docs
 
-- `man/awf.1.md` resume section: document `--rerun <step>` — what it
-  invalidates/replays, that it bypasses pinning (debug-mode) and implies
-  admission, the at-least-once + replayed-set caveats, and the top-level-only v1
-  scope.
+- `man/awf.1.md` resume section: `--from <step>` — runtime-path naming, what it
+  invalidates/replays (incl. the parallel-branch semantics), that it bypasses
+  pinning (debug-mode, the §8 contract note) and admits unconditionally, the
+  at-least-once + replayed-set caveats, and the re-run-set disclosure.
 
 ## 11. Resolved decisions
 
-1. **Pin envelope** → bypass the whole-workflow digest pin + runtime drift (debug
-   mode), with a structural guard + warning on the replayed set.
-2. **Invalidation model** → execution-order ("X + everything after it"), top-level
-   granularity, replay everything before.
-3. **Journaling** → one atomic `node.invalidated{paths}` event; fold deletes those
-   paths from all RunState indices.
-4. **Admission** → `--rerun` implies re-entry (terminal or interrupted); `--force`
-   not required.
-5. **Nested re-run / per-node digest hardening** → deferred (§2, §6).
+1. **No refusal, no per-node pin** → `--from` bypasses the digest + runtime pins;
+   the operator owns replay correctness (like `--force`); AWF discloses, doesn't
+   block. Works on pre-existing runs. (The "refuse on drift" and "per-node digest"
+   ideas were dropped — no mature system refuses; per-node hashing is the
+   *auto-staleness* model, a different, deferred feature.)
+2. **Naming** → runtime-path prefix to any committed node (incl. call interiors and
+   parallel/map branches), not top-level-only.
+3. **Invalidation** → happens-after (node subtree + after its enclosing sequential
+   boundary; concurrent siblings replayed); prune frontiers widened to whole-map.
+4. **Journaling** → engine appends one atomic `node.invalidated{paths}`; fold gains
+   a strict-seq-order last-event-wins delete-arm; clears the nine path-keyed indices.
+5. **Flag** → `--from` (matches Temporal "reset-to" / SFN "redrive-from"); admits
+   unconditionally.
+6. **Contract** → fenced debug-mode exception to line-50 pinning, recorded in the
+   resumability contract.
 
 ## 12. Out of scope
 
-- Re-running a nested step without naming its top-level container.
-- Per-node-digest hard pinning (warning only in v1).
+- Content-hash auto-staleness (Nextflow/Bazel "re-run what changed" mode).
+- Typed-ref precise-closure invalidation.
 - Side-effect rollback / compensation.
-- A typed-ref precise-closure invalidation mode.
+- Ordering among concurrent siblings (parallel branches / map items).
