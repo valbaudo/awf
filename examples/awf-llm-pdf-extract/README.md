@@ -20,11 +20,18 @@ something that does not match.
 
 ### Gemini (default)
 
+`GEMINI_API_KEY` is not in the default `--agent-env` allowlist, so it must be
+passed explicitly:
+
 ```sh
 export GEMINI_API_KEY=<your key>
-awf run examples/awf-llm-pdf-extract/workflow.yaml \
-  --input-files document=invoice.pdf
+awf run \
+  --agent-env GEMINI_API_KEY \
+  --input-files document=/path/to/invoice.pdf \
+  examples/awf-llm-pdf-extract/workflow.yaml
 ```
+
+`document` must match the `input_files:` key declared in `workflow.yaml`.
 
 ### OpenAI (vision-capable model)
 
@@ -38,12 +45,14 @@ with:
   prompt: "Extract the invoice total and vendor name from the attached document."
 ```
 
-Then run:
+`OPENAI_API_KEY` is in the default `--agent-env` allowlist, so no extra flag is
+needed:
 
 ```sh
 export OPENAI_API_KEY=<your key>
-awf run examples/awf-llm-pdf-extract/workflow.yaml \
-  --input-files document=invoice.pdf
+awf run \
+  --input-files document=/path/to/invoice.pdf \
+  examples/awf-llm-pdf-extract/workflow.yaml
 ```
 
 ### Ollama (local, images only)
