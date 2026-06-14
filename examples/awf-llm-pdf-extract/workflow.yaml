@@ -9,7 +9,7 @@ graph:
       document: input.files.document
     with:
       provider: gemini
-      model: gemini-2.5-flash
+      model: gemini-2.5-flash       # model ids age — swap in a current Gemini model if this one is retired
       api_key_env: GEMINI_API_KEY
       prompt: "Extract the invoice total and vendor name from the attached document."
     output_schema:
