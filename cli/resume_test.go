@@ -1162,6 +1162,101 @@ func assertNoRunResumed(t *testing.T, stateDir, runID string) {
 	}
 }
 
+// buildTwoStepOKRun produces a completed run on disk with two top-level code
+// steps (a → b) in a single container with an all-zeros pinned image. Returns
+// stateDir, runID, and wfPath so callers can resume against the SAME workflow
+// file (identical digest).
+func buildTwoStepOKRun(t *testing.T) (stateDir, runID, wfPath string) {
+	t.Helper()
+	tmp := t.TempDir()
+	wfPath = filepath.Join(tmp, "two-step-wf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: two-step-ok
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: a
+    container: lab
+    run: "./a.sh"
+  - id: b
+    container: lab
+    run: "./b.sh"
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID = "test-twostep-ok"
+	stateDir = t.TempDir()
+	fake := container.NewFake()
+	fake.ProgramExec("./a.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	fake.ProgramExec("./b.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{runID}}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, "--run-id", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("buildTwoStepOKRun: expected ExitOK, got %d; stderr: %s", rc, stderr.String())
+	}
+	return stateDir, runID, wfPath
+}
+
+func TestCLIResumeFrom_ReRunsFromStep(t *testing.T) {
+	t.Parallel()
+	stateDir, runID, wfPath := buildTwoStepOKRun(t) // a(./a.sh)->b(./b.sh), both committed ok
+	// Reprogram so re-running is observable: step a's command must execute again.
+	fake := container.NewFake()
+	fake.ProgramExec("./a.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	fake.ProgramExec("./b.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, "--from", "a", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	// a + b both re-ran (a re-runs because --from a; b because it is after a).
+	var ranA, ranB bool
+	for _, c := range fake.Calls {
+		if c.Run == "./a.sh" {
+			ranA = true
+		}
+		if c.Run == "./b.sh" {
+			ranB = true
+		}
+	}
+	if !ranA || !ranB {
+		t.Fatalf("expected a and b to re-run; ranA=%v ranB=%v", ranA, ranB)
+	}
+	if !strings.Contains(stderr.String(), "re-run") {
+		t.Fatalf("expected the re-run set disclosure on stderr; got %q", stderr.String())
+	}
+}
+
+func TestCLIResumeFrom_BypassesDigestPin(t *testing.T) {
+	t.Parallel()
+	stateDir, runID, wfPath := buildTwoStepOKRun(t)
+	// Mutate the wf so its digest differs but it still validates (change a container digest).
+	orig, err := os.ReadFile(wfPath)
+	if err != nil {
+		t.Fatalf("read wf: %v", err)
+	}
+	mutated := strings.Replace(string(orig), "sha256:0000000000000000000000000000000000000000000000000000000000000000", "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 1)
+	if mutated == string(orig) {
+		t.Fatal("mutation no-op; adjust the digest literal to match the fixture")
+	}
+	if err := os.WriteFile(wfPath, []byte(mutated), 0o600); err != nil {
+		t.Fatalf("write mutated wf: %v", err)
+	}
+	fake := container.NewFake()
+	fake.ProgramExec("./a.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	fake.ProgramExec("./b.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, "--from", "a", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK (--from bypasses the digest pin); stderr: %s", rc, stderr.String())
+	}
+}
+
 // buildPermanentFailureRun produces a run on disk that ends with
 // run.finished{permanent_failure}. It uses a single-step workflow whose
 // command exits 78 (EX_CONFIG — the spec §6 default non-retryable sentinel).

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/valbaudo/awf/agent"
@@ -46,7 +47,7 @@ func (e *ErrRuntimeDrift) Error() string {
 
 // printResumeUsage writes the resume-subcommand usage line.
 func printResumeUsage(w io.Writer) {
-	fprintln(w, "usage: awf resume <run-id> <path> [--state-dir <dir>] [--force]")
+	fprintln(w, "usage: awf resume <run-id> <path> [--state-dir <dir>] [--force] [--from <step>]")
 	fprintln(w, "")
 	fprintln(w, "  re-enter an interrupted run. The workflow file at <path> must hash to the")
 	fprintln(w, "  same digest as the run's original definition (spec §8 pinning); a mismatch is a hard")
@@ -56,6 +57,17 @@ func printResumeUsage(w io.Writer) {
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 	fprintln(w, "  --force            re-enter a terminally-failed run (permanent_failure/rejected/cancelled);")
 	fprintln(w, "                     replays committed work, re-runs the uncommitted frontier. Pins still enforced.")
+	fprintln(w, "  --from <step>      re-run from this committed node (prefix); invalidates it + everything after")
+	fprintln(w, "                     its top-level node. Bypasses pinning.")
+}
+
+// sampleRerunSet joins up to n sorted paths and appends " … (N total)" when
+// len(set) > n, so large invalidation sets are disclosed readably on stderr.
+func sampleRerunSet(set []string, n int) string {
+	if len(set) <= n {
+		return strings.Join(set, ", ")
+	}
+	return strings.Join(set[:n], ", ") + fmt.Sprintf(" … (%d total)", len(set))
 }
 
 // cliResume implements `awf resume <run-id> <path>`. The flow:
@@ -80,6 +92,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	force := fs0.Bool("force", false, "re-enter a terminally-failed run (permanent_failure/rejected/cancelled); pins are still enforced")
+	from := fs0.String("from", "", "re-run from this committed node (prefix); invalidates it + everything after its top-level node. Bypasses pinning.")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printResumeUsage(stdout)
@@ -150,13 +163,17 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// unconditional. COORDINATION: reconcile with the retryable scope-b guard at
 	// merge (one helper; admit retryable always ∪ {permanent,rejected,cancelled}
 	// under --force).
-	admit, refuseMsg, termLabel := resumeAdmission(runID, events, *force)
-	if !admit {
-		fprintf(stderr, "%s", refuseMsg)
-		return ExitUsage
-	}
-	if *force && termLabel != "" {
-		fprintf(stderr, "awf resume --force: re-entering a terminally-%s run %q; the uncommitted frontier (and its side effects) will re-run. Pins remain enforced.\n", termLabel, runID)
+	// --from admits unconditionally (bypasses the terminal guard entirely,
+	// including the ok-run refusal that --force still enforces).
+	if *from == "" {
+		admit, refuseMsg, termLabel := resumeAdmission(runID, events, *force)
+		if !admit {
+			fprintf(stderr, "%s", refuseMsg)
+			return ExitUsage
+		}
+		if *force && termLabel != "" {
+			fprintf(stderr, "awf resume --force: re-entering a terminally-%s run %q; the uncommitted frontier (and its side effects) will re-run. Pins remain enforced.\n", termLabel, runID)
+		}
 	}
 
 	// Step 4 (slice 4.5): wire signal handling EARLY so newBackend gets a
@@ -205,10 +222,33 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
+	// --from: resolve the target, compute the invalidation set, and disclose.
+	// The CLI computes the set here ONLY for disclosure; the engine recomputes
+	// + applies it. Both call the same pure ComputeRerunInvalidation over the
+	// same rs+ld.Workflow so they agree by construction; recompute is cheap.
+	rerunFrom := ""
+	if *from != "" {
+		target, err := engine.ResolveRerunTarget(ld.Workflow, rs, *from)
+		if err != nil {
+			fprintf(stderr, "awf resume: %v\n", err)
+			return ExitUsage
+		}
+		set, err := engine.ComputeRerunInvalidation(ld.Workflow, rs, target)
+		if err != nil {
+			fprintf(stderr, "awf resume: %v\n", err)
+			return ExitUsage
+		}
+		fprintf(stderr, "awf resume --from %s: re-running %d committed step(s) (and their side effects) against the current definition; pins bypassed.\n", target, len(set))
+		fprintf(stderr, "  re-run set: %s\n", sampleRerunSet(set, 10))
+		rerunFrom = target
+	}
+
 	// Step 7: refusal — digest mismatch (spec §8 hard error). The folded
 	// rs.WorkflowDigest came from the log's run.started event; a workflow file
 	// that hashes differently is a forbidden definition change.
-	if rs.WorkflowDigest != currentDigest {
+	// --from bypasses the digest pin: the user is explicitly re-running against
+	// the current definition.
+	if *from == "" && rs.WorkflowDigest != currentDigest {
 		fprintf(stderr, "awf resume: workflow digest mismatch — run %q was started with digest %q, file %q now hashes to %q. Spec §8 forbids resuming against a changed definition.\n",
 			runID, rs.WorkflowDigest, wfPath, currentDigest)
 		return ExitUsage
@@ -323,6 +363,8 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// workflow's `uses:` refs, re-resolve via the live registry + handles
 	// from Step 9, hard-error on any mismatch with the Runtimes recorded in
 	// run.started. Per spec §8: pinning is a hard error on drift.
+	// --from bypasses the runtime-drift pin (same rationale as the digest
+	// bypass: the user is intentionally re-running against the current state).
 	recordedRuntimes, err := readRuntimesFromLog(events)
 	if err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)
@@ -334,9 +376,11 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: resolve agent runtimes: %v\n", err)
 		return ExitUsage
 	}
-	if err := checkRuntimesDrift(recordedRuntimes, currentRuntimes); err != nil {
-		fprintf(stderr, "awf resume: %v\n", err)
-		return ExitUsage
+	if *from == "" {
+		if err := checkRuntimesDrift(recordedRuntimes, currentRuntimes); err != nil {
+			fprintf(stderr, "awf resume: %v\n", err)
+			return ExitUsage
+		}
 	}
 
 	// Part D: same Threaded guard as run-start (continues: against a
@@ -387,7 +431,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// RunOptions.InputFiles when non-nil — so the folded value wins, exactly
 	// like the typed input and Assets channels. `awf resume` has no
 	// --input-files flag (per the same no-re-supply rule as --input).
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, nil, broker, liveRoot, &skipTeardown, *force)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, nil, broker, liveRoot, &skipTeardown, *force, rerunFrom)
 }
 
 func preflightLiveResume(ctx context.Context, ld *ir.LoadedDefinition, rs *engine.RunState, resolver agent.Resolver) error {

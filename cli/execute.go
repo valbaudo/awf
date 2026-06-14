@@ -74,6 +74,7 @@ func (r *Runner) runAndFinish(
 	liveRoot live.Root,
 	skipTeardown *bool,
 	forceResume bool,
+	rerunFrom string,
 ) int {
 	tap := r.agentEventTap(stderr)
 	dispatcher := &engine.LocalDispatcher{
@@ -92,6 +93,7 @@ func (r *Runner) runAndFinish(
 		InputFiles:    inputFiles,
 		LiveFinalizer: liveDispatchFinalizer(liveRoot),
 		ForceResume:   forceResume,
+		RerunFrom:     rerunFrom,
 	})
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished
