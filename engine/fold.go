@@ -109,6 +109,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			rs.RunID = d.RunID
 			rs.WorkflowDigest = d.WorkflowDigest
 			rs.Assets = d.Assets
+			rs.InputFiles = cloneStringMap(d.InputFiles)
 			rs.Epoch = 1
 			if d.InputRef != "" {
 				raw, err := blobs.Get(d.InputRef)

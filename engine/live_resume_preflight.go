@@ -308,6 +308,7 @@ func cloneRunStateForPreflight(rs *RunState) *RunState {
 	cp := NewRunState(rs.RunID, rs.WorkflowDigest, rs.Input)
 	cp.Epoch = rs.Epoch
 	cp.Assets = rs.Assets
+	cp.InputFiles = rs.InputFiles
 	cp.Paused = rs.Paused
 	cp.Cancelled = rs.Cancelled
 	cp.CancelReason = rs.CancelReason
