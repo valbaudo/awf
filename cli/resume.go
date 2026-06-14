@@ -48,10 +48,12 @@ func (e *ErrRuntimeDrift) Error() string {
 func printResumeUsage(w io.Writer) {
 	fprintln(w, "usage: awf resume <run-id> <path> [--state-dir <dir>]")
 	fprintln(w, "")
-	fprintln(w, "  re-enter an interrupted run. The workflow file at <path> must hash to the")
-	fprintln(w, "  same digest as the run's original definition (spec §8 pinning); a mismatch is a hard")
-	fprintln(w, "  error. A run that already finished (run.finished in the log) or terminated on a")
-	fprintln(w, "  failed step (node.failed in the log) cannot be resumed.")
+	fprintln(w, "  re-enter an interrupted or transiently-failed run. The workflow file at <path>")
+	fprintln(w, "  must hash to the same digest as the run's original definition (spec §8 pinning);")
+	fprintln(w, "  a mismatch is a hard error.")
+	fprintln(w, "  A run is resumable iff its terminal outcome is retryable_failure; runs that")
+	fprintln(w, "  finished ok, failed permanently (permanent_failure), were rejected, or were")
+	fprintln(w, "  cancelled cannot be resumed.")
 	fprintln(w, "")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 }

@@ -1313,7 +1313,12 @@ content-addressed artifact, never a live container's process state.
     `output_files` are reused, not recomputed; and re-executes only the
     *uncommitted frontier* — the in-flight step on each active branch. A
     deterministic (code) replay is exact; an interrupted agent step may differ on
-    re-run, which is correct — its work was never committed.
+    re-run, which is correct — its work was never committed. A run is resumable
+    iff its terminal outcome is `retryable_failure` (the log holds
+    `run.finished{retryable_failure}`, or — in the brief window where a
+    `node.failed{retryable_failure}` has been recorded but `run.finished` has
+    not yet been written — only that `node.failed{retryable_failure}`).
+    `ok`, `permanent_failure`, `rejected`, and `cancelled` are not resumable.
 
 **Pinning**
 :   The workflow definition (by digest, including the resolved import graph,
@@ -1335,7 +1340,8 @@ content-addressed artifact, never a live container's process state.
 
 **Cancellation**
 :   Interrupts in-flight steps, runs enclosing `finally` blocks, tears down
-    containers/projects, and marks the run terminal (not resumable).
+    containers/projects, and marks the run terminal — not resumable (see Resume
+    for the full resumability rule).
 
 Step addressing, used for resume and traces, names step nodes by `id`, call
 children by `<call-id>.workflow.<child-path>`, and control nodes positionally,
@@ -1358,6 +1364,13 @@ through its own tools* (an `mcp://` call, a network `exec`) are at-least-once an
 outside the guarantee. For exactly-once there, model the side-effecting action as
 a code step (so the runtime mediates the key) or thread a key into the agent via
 `with:`.
+
+Resuming a `retryable_failure` run re-executes a frontier that already ran to its
+full retry budget; this is the same at-least-once exposure crash-resume accepts.
+`idempotency_key` is a hint the external system enforces (injected as
+`AWF_IDEMPOTENCY_KEY` / `Idempotency-Key`), never engine dedup; agent autonomous
+effects remain outside the guarantee. There is no resume-attempt cap — a flapping
+transient fault re-fails each manual resume; the operator is the only bound.
 
 # EXAMPLE
 

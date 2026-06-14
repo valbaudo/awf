@@ -149,7 +149,9 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 
 ## awf resume _run-id_ _path_
 
-Re-enter an interrupted run. **awf** folds the run's journal, then verifies that
+Re-enter an interrupted run, or a run that terminated transiently
+(`retryable_failure`), re-running the transiently-failed frontier. **awf** folds
+the run's journal, then verifies that
 the on-disk _path_ still hashes to the recorded definition digest *and* that
 every resolved agent-runtime version still matches — any drift is a hard error,
 never silently adapted. It recreates containers from their recipe and continues
@@ -217,9 +219,12 @@ afterward.
 ## awf ls
 
 List the runs under _state-dir_/`runs/`, one per line, each with a status derived
-by folding its journal: `running`, `paused`, `finished`, `failed`, `cancelled`,
-or `crashed` (started, no terminal event, and no live process holding the run's
-lock). This command only reads state; it executes nothing.
+by folding its journal: `running`, `paused`, `finished`, `failed`, `resumable`
+(failed transiently; re-drivable with `awf resume`), `cancelled`, or `crashed`
+(started, no terminal event, and no live process holding the run's lock). `failed`
+covers permanent failures and rejections; `resumable` distinguishes runs that
+ended with `retryable_failure` and can be continued. This command only reads
+state; it executes nothing.
 
 **--state-dir** _dir_
 :   Base directory holding `runs/` and `blobs/` (default `./.awf`).
