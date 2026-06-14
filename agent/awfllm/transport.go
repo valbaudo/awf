@@ -105,6 +105,9 @@ func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletion
 // thread contains the engine-assembled prior turns (continues: threading) to
 // prepend in the message array between the system message and the current prompt.
 func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+	if cfg.Provider == providerGemini {
+		return a.callGemini(ctx, cfg, prompt, schema, files, emit)
+	}
 	if cfg.StructuredOutput == soOllamaFormat {
 		return a.streamOllama(ctx, cfg, prompt, schema, thread, files, emit)
 	}
@@ -468,4 +471,116 @@ func ollamaErrType(body []byte) string {
 		return errTypeInvalidRequest
 	}
 	return "ollama_error"
+}
+
+// callGemini hits Google's NATIVE Gemini :generateContent (NOT the OpenAI-compat
+// path). v1 is NON-STREAMING: one POST, parse the single JSON response, emit the
+// full text once. inlineData carries BARE standard-base64 (no data: URI prefix)
+// under mimeType — the same wire as Ollama images[], the OPPOSITE of the OpenAI
+// content-part path's data: URIs.
+//
+// Structured output: an output_schema sets generationConfig.responseMimeType to
+// application/json AND _responseJsonSchema to the schema verbatim. AWF schemas use
+// the supported JSON-Schema subset; Gemini IGNORES unsupported keywords (does not
+// 400). Auth is the x-goog-api-key header; Gemini documents no Idempotency-Key, so
+// none is sent. Cost is left UNREPORTED automatically — pricing.Derive returns
+// ok=false for any model absent from rates.json, and metricsFrom skips cost on a
+// miss (no special-casing here).
+func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/v1beta/models/" + cfg.Model + ":generateContent"
+
+	parts := []map[string]any{{"text": prompt}}
+	for _, f := range files {
+		parts = append(parts, map[string]any{"inlineData": map[string]any{
+			"mimeType": f.MIME,
+			"data":     base64.StdEncoding.EncodeToString(f.Content), // bare base64, no data: prefix
+		}})
+	}
+	body := map[string]any{"contents": []map[string]any{{"role": "user", "parts": parts}}}
+	if cfg.SystemPrompt != "" {
+		body["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": cfg.SystemPrompt}}}
+	}
+	gc := map[string]any{}
+	if cfg.HasTemperature {
+		gc["temperature"] = cfg.Temperature
+	}
+	if cfg.HasMaxTokens {
+		gc["maxOutputTokens"] = cfg.MaxTokens
+	}
+	if schema != nil {
+		gc["responseMimeType"] = "application/json"
+		gc["_responseJsonSchema"] = map[string]any(*schema)
+	}
+	if len(gc) > 0 {
+		body["generationConfig"] = gc
+	}
+	reqBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
+	if err != nil {
+		return "", usageRec{}, "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", cfg.APIKey)
+	// No Idempotency-Key: Gemini's REST API documents none.
+
+	resp, err := a.clientFor(cfg.TLSInsecure).Do(req)
+	if err != nil {
+		return "", usageRec{}, "", "", err // transport → retryable
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", usageRec{}, "", "", &apiError{Status: resp.StatusCode, Type: geminiErrType(respBytes), Body: string(respBytes)}
+	}
+
+	var gr struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+		UsageMetadata struct {
+			PromptTokenCount        int `json:"promptTokenCount"`
+			CandidatesTokenCount    int `json:"candidatesTokenCount"`
+			CachedContentTokenCount int `json:"cachedContentTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.Unmarshal(respBytes, &gr); err != nil {
+		return "", usageRec{}, "", "", err
+	}
+	var full strings.Builder
+	var finish string
+	if len(gr.Candidates) > 0 {
+		for _, p := range gr.Candidates[0].Content.Parts {
+			full.WriteString(p.Text)
+		}
+		finish = gr.Candidates[0].FinishReason
+	}
+	usage := usageRec{
+		Input:     gr.UsageMetadata.PromptTokenCount,
+		Output:    gr.UsageMetadata.CandidatesTokenCount,
+		CacheRead: gr.UsageMetadata.CachedContentTokenCount,
+	}
+	text := full.String()
+	emit(text, respBytes) // single emit: non-streaming v1
+	return text, usage, cfg.Model, finish, nil
+}
+
+// geminiErrType maps a Gemini error body to a coarse type so a 400 INVALID_ARGUMENT
+// classifies permanent (like OpenAI's invalid_request_error); everything else stays
+// retryable.
+func geminiErrType(body []byte) string {
+	var probe struct {
+		Error struct {
+			Status string `json:"status"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &probe) == nil && probe.Error.Status == "INVALID_ARGUMENT" {
+		return errTypeInvalidRequest
+	}
+	return "gemini_error"
 }
