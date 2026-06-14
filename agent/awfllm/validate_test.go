@@ -165,6 +165,21 @@ func TestValidate_AnthropicMissingKeyRejected(t *testing.T) {
 	}
 }
 
+func TestValidate_AnthropicRejectsResponseFormat(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+	err := a.ValidateConfig(ir.RawConfig{
+		"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "x",
+		"structured_output": "response_format",
+	})
+	if err == nil {
+		t.Fatal("provider: anthropic + structured_output: response_format must be rejected")
+	}
+	var ic *agent.ErrInvalidConfig
+	if !errors.As(err, &ic) {
+		t.Fatalf("want *agent.ErrInvalidConfig (permanent), got %T", err)
+	}
+}
+
 func TestValidate_MaxInlineBytes(t *testing.T) {
 	a := llmAdapter(t, okEnv())
 	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "max_inline_bytes": 1024}); err != nil {

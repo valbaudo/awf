@@ -145,6 +145,13 @@ func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("contradicts provider: %q — structured_output: ollama_format selects the Ollama transport, but provider names a different one (set provider: ollama, or use structured_output: response_format/off)", p), keyStructuredOutput)
 		}
 	}
+	// Anthropic has no response_format json_schema — reject it so the author isn't
+	// silently given unconstrained output (off is the effective default here).
+	if p, ok := with[keyProvider].(string); ok && p == providerAnthropic {
+		if so, ok := with[keyStructuredOutput].(string); ok && so == soResponseFormat {
+			return wrapInvalidConfig("Anthropic has no response_format json_schema; use structured_output: off (or omit) and rely on the schema directive + layer-2 parse", keyStructuredOutput)
+		}
+	}
 	// Policy: the API key env var must be present — EXCEPT the ollama transport,
 	// which is a local server (an absent key just means no Authorization header).
 	// effectiveProvider + providerDefaults are the single source shared with
