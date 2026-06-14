@@ -74,3 +74,8 @@ func MetricsFromForTest(in, out, cacheRead, cacheWrite int, model string, pricer
 func (a *Adapter) RunOneToolCallForTest(ctx context.Context, cfg ReqConfigForTest, nodePath string, msgs []agent.ReactTurn, tools []agent.ToolDef, schema *ir.JSONSchema) (agent.ToolLoopResult, error) {
 	return a.runOneToolCall(ctx, reqConfig(cfg), nodePath, msgs, tools, schema)
 }
+
+// BuildAnthropicBodyForTest exposes the Anthropic request-body builder.
+func BuildAnthropicBodyForTest(cfg ReqConfigForTest, prompt string, thread []agent.ThreadTurn, files []agent.InputFile) (map[string]any, error) {
+	return buildAnthropicBody(reqConfig(cfg), prompt, thread, files)
+}

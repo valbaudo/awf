@@ -810,6 +810,94 @@ func TestStream_AnthropicDispatched(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicBody_DocBreakpointNotPrompt(t *testing.T) {
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-sonnet-4-6", SystemPrompt: "sys", CacheSystem: true, CacheDocuments: true}
+	files := []agent.InputFile{{Name: "d", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
+	thread := []agent.ThreadTurn{{User: "q1", Assistant: "a1"}}
+	body, err := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "extract", thread, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Use json.RawMessage for Content because thread turns carry a string while the
+	// current user turn carries an array — the anonymous struct must handle both.
+	var req struct {
+		System []struct {
+			CacheControl map[string]any `json:"cache_control"`
+		} `json:"system"`
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		MaxTokens int  `json:"max_tokens"`
+		Stream    bool `json:"stream"`
+	}
+	raw, _ := json.Marshal(body)
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("body shape: %v\n%s", err, raw)
+	}
+	if req.MaxTokens != 8192 || !req.Stream {
+		t.Errorf("max_tokens/stream wrong: %+v", req)
+	}
+	// cache_system → the system block carries cache_control.
+	if len(req.System) != 1 || req.System[0].CacheControl == nil {
+		t.Errorf("cache_system must mark the system block: %+v", req.System)
+	}
+	// Thread order: [user(q1), assistant(a1), current user] — current turn is last.
+	if len(req.Messages) != 3 || req.Messages[0].Role != "user" || req.Messages[1].Role != "assistant" || req.Messages[2].Role != "user" {
+		t.Fatalf("thread/message order wrong: %+v", req.Messages)
+	}
+	// Current user content = [document, text] (document FIRST for prefix caching).
+	var cur []struct {
+		Type         string         `json:"type"`
+		CacheControl map[string]any `json:"cache_control"`
+	}
+	if err := json.Unmarshal(req.Messages[2].Content, &cur); err != nil {
+		t.Fatalf("current user content not an array: %v\n%s", err, req.Messages[2].Content)
+	}
+	if len(cur) != 2 || cur[0].Type != "document" || cur[1].Type != "text" {
+		t.Fatalf("current content must be [document, text], got %+v", cur)
+	}
+	// C1 (load-bearing): cache_control on the DOCUMENT block (the static/varying boundary)…
+	if cur[0].CacheControl == nil {
+		t.Error("cache_documents must mark the document block")
+	}
+	// …and NOT on the varying prompt-text block — marking it would change the cached
+	// prefix on every repair attempt (verdict prepended), yielding zero cache reads.
+	if cur[1].CacheControl != nil {
+		t.Error("cache_documents must NOT mark the prompt-text block (it varies per repair)")
+	}
+}
+
+func TestBuildAnthropicBody_CacheDocumentsNoOpWithoutFiles(t *testing.T) {
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-haiku-4-5", CacheDocuments: true}
+	body, _ := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, nil)
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), "cache_control") {
+		t.Errorf("cache_documents with no input files must be a no-op (nothing static to cache): %s", raw)
+	}
+}
+
+func TestBuildAnthropicBody_ExplicitMaxTokensAndSystemString(t *testing.T) {
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-haiku-4-5", SystemPrompt: "sys", MaxTokens: 256, HasMaxTokens: true}
+	body, _ := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, nil)
+	s := func() string { b, _ := json.Marshal(body); return string(b) }()
+	if !strings.Contains(s, `"max_tokens":256`) {
+		t.Errorf("explicit max_tokens not honored: %s", s)
+	}
+	// no cache flags → system is a plain string, no cache_control anywhere.
+	if !strings.Contains(s, `"system":"sys"`) || strings.Contains(s, "cache_control") {
+		t.Errorf("system should be a plain string with no cache_control: %s", s)
+	}
+}
+
+func TestBuildAnthropicBody_UnsupportedMIME(t *testing.T) {
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-haiku-4-5"}
+	files := []agent.InputFile{{Name: "x", MIME: "text/plain", Content: []byte("hi")}}
+	if _, err := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, files); err == nil {
+		t.Fatal("text/plain must be rejected by the forwardable table")
+	}
+}
+
 // TestStreamOllama_ImagesAndPDFReject — Task 8: images forwarded as BARE base64
 // in message.images[]; PDF rejected before any HTTP request.
 func TestStreamOllama_ImagesAndPDFReject(t *testing.T) {
