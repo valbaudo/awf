@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/valbaudo/awf/agent"
@@ -28,6 +29,9 @@ type Adapter struct {
 	env        agent.SecretEnv // env-var allowlist (NAME → VALUE); the API key rides here
 	httpClient *http.Client    // injected for determinism + fake-transport tests
 	pricer     pricing.Table   // model→rates for derived USD cost; defaults to pricing.Default()
+
+	geminiCacheMu  sync.RWMutex      // guards geminiCacheMap (concurrent Launch in fan-out)
+	geminiCacheMap map[string]string // contentKey → server-assigned CachedContent name
 }
 
 // Option configures the Adapter (functional options).
@@ -77,6 +81,7 @@ func New(opts ...Option) (*Adapter, error) {
 	if a.pricer == nil {
 		a.pricer = pricing.Default()
 	}
+	a.geminiCacheMap = make(map[string]string)
 	return a, nil
 }
 

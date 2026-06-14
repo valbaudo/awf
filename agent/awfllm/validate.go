@@ -25,12 +25,13 @@ const (
 	keyMaxInlineBytes   = "max_inline_bytes"
 	keyCacheSystem      = "cache_system"
 	keyCacheDocuments   = "cache_documents"
+	keyGeminiCache      = "gemini_cache"
 )
 
 var allowedKeys = map[string]struct{}{
 	keyModel: {}, keyPrompt: {}, keyBaseURL: {}, keyAPIKeyEnv: {},
 	keySystemPrompt: {}, keyTemperature: {}, keyMaxTokens: {}, keyStructuredOutput: {},
-	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {}, keyCacheSystem: {}, keyCacheDocuments: {},
+	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {}, keyCacheSystem: {}, keyCacheDocuments: {}, keyGeminiCache: {},
 }
 
 // rejectedKeys never belong in `with:` — `api_key` would inline a secret into
@@ -134,6 +135,24 @@ func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 	if v, ok := with[keyTLSInsecure]; ok {
 		if _, ok := v.(bool); !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyTLSInsecure)
+		}
+	}
+	if v, ok := with[keyGeminiCache]; ok {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be a map, got %T", v), keyGeminiCache)
+		}
+		mode, _ := m["mode"].(string)
+		if mode != "" && mode != "off" && mode != "explicit" {
+			return wrapInvalidConfig(fmt.Sprintf(`mode must be "off" or "explicit", got %q`, mode), keyGeminiCache)
+		}
+		if tv, present := m["ttl"]; present {
+			if s, ok := tv.(string); !ok || s == "" {
+				return wrapInvalidConfig("ttl must be a non-empty string", keyGeminiCache)
+			}
+		}
+		if mode == "explicit" && effectiveProvider(with) != providerGemini {
+			return wrapInvalidConfig("gemini_cache: {mode: explicit} is only valid with provider: gemini", keyGeminiCache)
 		}
 	}
 	// Cross-key guard (Fix B): naming a NON-ollama transport via provider while also

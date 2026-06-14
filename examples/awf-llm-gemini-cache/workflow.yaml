@@ -1,0 +1,23 @@
+workflow: awf-llm-gemini-cache
+version: 1
+input_files:
+  document: {}
+graph:
+  - id: classify
+    uses: awf/llm
+    input_files:
+      document: input.files.document
+    with:
+      provider: gemini
+      model: gemini-2.5-flash       # model ids age — swap in a current Gemini model if retired
+      api_key_env: GEMINI_API_KEY
+      prompt: "Classify the attached document's sentiment as positive, neutral, or negative."
+      gemini_cache:
+        mode: explicit
+        ttl: "600s"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [sentiment]
+      properties:
+        sentiment: { type: string, enum: [positive, neutral, negative] }

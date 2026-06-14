@@ -79,3 +79,18 @@ func (a *Adapter) RunOneToolCallForTest(ctx context.Context, cfg ReqConfigForTes
 func BuildAnthropicBodyForTest(cfg ReqConfigForTest, prompt string, thread []agent.ThreadTurn, files []agent.InputFile) (map[string]any, error) {
 	return buildAnthropicBody(reqConfig(cfg), prompt, thread, files)
 }
+
+// GeminiCacheKeyForTest exposes the content-address key function.
+func GeminiCacheKeyForTest(model, systemPrompt string, files []agent.InputFile) string {
+	return geminiCacheKey(model, systemPrompt, files)
+}
+
+// EnsureGeminiCacheForTest exposes the cache-lifecycle helper.
+func EnsureGeminiCacheForTest(a *Adapter, ctx context.Context, cfg ReqConfigForTest, files []agent.InputFile) (string, error) {
+	return a.ensureGeminiCache(ctx, reqConfig(cfg), files)
+}
+
+// GeminiCacheConfigForTest builds an explicit-mode gemini cache config for tests.
+func GeminiCacheConfigForTest(mode, ttl string) *geminiCacheConfig {
+	return &geminiCacheConfig{Mode: mode, TTL: ttl}
+}

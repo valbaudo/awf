@@ -1096,6 +1096,54 @@ not collide at the Docker project layer. The native backend
 does not advertise runtime-Compose support; `awf run --backend native` rejects a
 workflow containing `compose:` before execution.
 
+## awf/llm
+
+`awf/llm` is the built-in containerless adapter for direct LLM calls (OpenAI-compatible endpoints
+and the native Gemini REST API). It requires no container. The relevant `with:` keys for agent
+steps and `react:` are:
+
+    with:
+      provider: openai | gemini | ollama | anthropic  # optional (default openai); selects the call path
+      model: <model-id>                           # required
+      base_url: <url>                             # optional; override endpoint
+      api_key_env: <env-var>                      # optional; name of the API-key env var
+      system_prompt: <string>                     # optional; a system / developer message
+      prompt: <template>                          # required for agent steps; omit in react:
+      gemini_cache:                               # optional; Gemini explicit CachedContent
+        mode: explicit                            # only non-trivial value; "off" or omitted = disabled
+        ttl: "600s"                               # optional; default 3600s — TTL for the cache object
+
+**gemini_cache**
+:   Optional. Requires `provider: gemini` and at least one `input_files` document on the step.
+    When `mode: explicit`, the adapter uploads the document(s) once per `awf run` as a
+    Gemini `CachedContent` object and references it by name on every `:generateContent` call,
+    omitting the inline document and `systemInstruction` (both are baked into the cache).
+    Native structured output (`output_schema`) and thread continuation (`continues:`) work unchanged.
+
+    **Reuse scope.** Cache names are in-process only: keyed by `model + system_prompt + document
+    bytes` (content-addressed), alive for one `awf run`, and never journaled or resumed. On resume,
+    the document is re-uploaded and a fresh cache object is created.
+
+    **system_prompt and cross-step sharing.** Because `system_prompt` is baked into the cache and
+    forms part of the key, a gate whose `generate` and `evaluate` steps set *different*
+    `system_prompt` values get *per-role* caches (the document is still cached once per role, so
+    read savings still apply). To share a single document cache across both roles — one upload for
+    the entire gate — leave `system_prompt` empty and embed role-specific instructions in the user
+    `prompt` instead.
+
+    **Cost.** Cache-read savings (`cachedContentTokenCount`) are reflected in AWF's derived cost.
+    Gemini also bills for cache **storage** (per-token-per-hour for the full TTL, regardless of
+    how many reads occur); AWF does not include that storage cost in its pricing breakdown — verify
+    totals on the Google Cloud console. Set `ttl` to approximately the gate's expected wall-clock
+    duration to avoid paying for unused cache lifetime.
+
+    **Minimum size.** The document must exceed the model's minimum cacheable token count (~2048 for
+    Gemini 2.5, ~4096 for 3.x). A smaller document causes `CachedContent` creation to fail with a
+    400 permanent error; retry will not help — use a larger document or disable explicit caching.
+
+    When `gemini_cache` is absent or `mode: off`, the document is sent inline on every call and
+    Gemini's free *implicit* prefix caching may apply (best-effort, document-first order assumed).
+
 ## react
 
 `react:` is a control node that runs a model + tools loop on the `awf/llm` path. It is the only
