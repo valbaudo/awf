@@ -1,0 +1,14 @@
+workflow: containerless-input-files-label
+version: 1
+input_files:
+  document: {}
+graph:
+  - id: ask
+    uses: awf/llm
+    with:
+      base_url: http://host.docker.internal:11434
+      model: llama3.1
+      api_key_env: OPENAI_API_KEY
+      prompt: "Summarize the attached document."
+    input_files:
+      doc: input.files.document

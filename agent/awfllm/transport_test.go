@@ -2,6 +2,7 @@ package awfllm_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -84,6 +85,35 @@ func TestStream_OpenAICompat_AccumulatesAndEmits(t *testing.T) {
 	// (reasoning models reject `temperature` and `max_tokens`).
 	if strings.Contains(gotBody, `"temperature"`) || strings.Contains(gotBody, `"max_tokens"`) || strings.Contains(gotBody, `"max_completion_tokens"`) {
 		t.Errorf("request body must OMIT temperature/token-cap when unset, got: %s", gotBody)
+	}
+}
+
+// TestStream_OpenAI_PDFContentPart — Task 7 wire test (OpenAI path). Drives a
+// request with one PDF InputFile through the OpenAI transport and asserts the
+// captured body carries the `file` content part with the base64 data URI.
+func TestStream_OpenAI_PDFContentPart(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(openAISSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test", Model: "gpt-x",
+		StructuredOutput: "off",
+	}
+	files := []agent.InputFile{{Name: "doc", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
+	_, _, _, _, err := a.StreamWithFilesForTest(context.Background(), cfg, "extract", nil, nil, files,
+		func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if !strings.Contains(gotBody, `"type":"file"`) {
+		t.Errorf("body missing file content part: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"file_data":"data:application/pdf;base64,`) {
+		t.Errorf("body missing file_data data URI: %s", gotBody)
 	}
 }
 
@@ -674,5 +704,72 @@ func TestRunOneToolCall_MessageHistory(t *testing.T) {
 	// No empty tool_calls:[] anywhere (would be a 400).
 	if strings.Contains(gotBody, `"tool_calls":[]`) {
 		t.Errorf("empty tool_calls:[] must be omitted: %s", gotBody)
+	}
+}
+
+// captureOllamaBody drives a StreamWithFilesForTest request through the Ollama
+// transport (StructuredOutput: "ollama_format") with the given files and returns
+// the captured request body.
+func captureOllamaBody(t *testing.T, files []agent.InputFile) string {
+	t.Helper()
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			Body:       io.NopCloser(strings.NewReader(ollamaNDJSON)),
+		}, nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL:          "http://localhost:11434",
+		Model:            "llava",
+		StructuredOutput: "ollama_format",
+	}
+	_, _, _, _, err := a.StreamWithFilesForTest(context.Background(), cfg, "describe", nil, nil, files, func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("StreamWithFilesForTest: %v", err)
+	}
+	return gotBody
+}
+
+// callOllamaWith drives StreamWithFilesForTest through the Ollama transport and
+// returns (body, error) — used to test early-return rejection paths.
+func callOllamaWith(t *testing.T, files []agent.InputFile) (string, error) {
+	t.Helper()
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			Body:       io.NopCloser(strings.NewReader(ollamaNDJSON)),
+		}, nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL:          "http://localhost:11434",
+		Model:            "llava",
+		StructuredOutput: "ollama_format",
+	}
+	_, _, _, _, err := a.StreamWithFilesForTest(context.Background(), cfg, "describe", nil, nil, files, func(string, []byte) {})
+	return gotBody, err
+}
+
+// TestStreamOllama_ImagesAndPDFReject — Task 8: images forwarded as BARE base64
+// in message.images[]; PDF rejected before any HTTP request.
+func TestStreamOllama_ImagesAndPDFReject(t *testing.T) {
+	// an image is forwarded as BARE base64 in message.images[]
+	body := captureOllamaBody(t, []agent.InputFile{{Name: "s", MIME: "image/png", Content: []byte{1, 2, 3}}})
+	if !strings.Contains(body, `"images":["`+base64.StdEncoding.EncodeToString([]byte{1, 2, 3})+`"]`) {
+		t.Fatalf("images[] missing/wrong: %s", body)
+	}
+	// a PDF is rejected BEFORE any request (Ollama is images-only)
+	_, err := callOllamaWith(t, []agent.InputFile{{Name: "d", MIME: "application/pdf", Content: []byte("%PDF")}})
+	if err == nil {
+		t.Fatal("expected PDF rejection on ollama transport")
 	}
 }

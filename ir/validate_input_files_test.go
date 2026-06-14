@@ -222,3 +222,49 @@ func TestInputFilesAgentConsumerUndeclaredReportsAWF3007(t *testing.T) {
 	})
 	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
 }
+
+// A CONTAINERLESS agent step (uses: awf/llm, no container:) keys input_files by a
+// logical LABEL, not an in-container absolute path. The label must match
+// stepIDPattern (the same name charset as workflow input_files names), so a bare
+// label like "doc" is accepted, not rejected as a non-absolute path.
+func TestInputFiles_ContainerlessLabelKeyAcceptedInCode(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		InputFiles: WorkflowInputFiles{"document": {}},
+		Graph: NodeList{
+			&AgentStep{ID: "ask", Uses: "awf/llm", With: RawConfig{"prompt": "go"},
+				InputFiles: map[string]string{"doc": "input.files.document"}},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF3007")
+}
+
+// A container-backed step still requires an absolute, clean input_files key — a
+// bare relative label like "doc" is rejected with AWF3007.
+func TestInputFiles_ContainerBackedStillRequiresAbsPathInCode(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		InputFiles: WorkflowInputFiles{"document": {}},
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&AgentStep{ID: "ask", Container: "c", With: RawConfig{"prompt": "go"},
+				InputFiles: map[string]string{"doc": "input.files.document"}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3007", "ask")
+}
+
+// A non-empty input_files on a containerless step is accompanied by an
+// AWF2003 WARNING: static validation can't check per-file format/provider
+// compatibility (that happens at run time when the bytes + provider are known).
+func TestInputFiles_ContainerlessEmitsRuntimeCompatWarning(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		InputFiles: WorkflowInputFiles{"document": {}},
+		Graph: NodeList{
+			&AgentStep{ID: "ask", Uses: "awf/llm", With: RawConfig{"prompt": "go"},
+				InputFiles: map[string]string{"doc": "input.files.document"}},
+		},
+	})
+	assertWarningAt(t, Validate(ld), "AWF2003", "ask")
+}

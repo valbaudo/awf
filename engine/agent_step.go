@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/retry"
 	"github.com/valbaudo/awf/skillroute"
@@ -151,39 +152,46 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		}
 	}
 
-	// input_files (SP1 artifact channel) requires a container. A containerless
-	// agent step (one whose runtime omits container:) has nowhere to stage into,
-	// so reject it here — BEFORE resolution — as a permanent_failure (the format
-	// contract per man/awf-workflow.5.md "input_files requires a container").
-	// The run-start guard in cli/runtimes.go ensures only Containerless adapters
-	// reach here with an empty container:.
-	if as.Container == "" && len(as.InputFiles) > 0 {
-		return failStep(log, path, OutcomePermanentFailure,
-			fmt.Errorf("engine.runAgentStep: input_files requires a container; agent step %q is containerless", as.ID))
+	// Containerless agent steps deliver input_files to the adapter as inline
+	// message parts (agent.InputFile) instead of staging into a container.
+	var containerlessFiles []agent.InputFile
+	if as.Container == "" {
+		containerlessFiles, err = resolveContainerlessInputFiles(as.InputFiles, scope, wf, ictx.moduleID, blobs, runstate.Assets)
+		if err != nil {
+			if errors.Is(err, errArtifactFetch) {
+				return "", fmt.Errorf("engine.runAgentStep: stage input_files at %q: %w", path, err)
+			}
+			return failStep(log, path, OutcomePermanentFailure, err)
+		}
 	}
 
-	// Resolve input_files to staged bytes (SP1). Same errArtifactFetch
-	// classification as runCodeStep: a ref error (parse/undeclared/not-committed)
-	// is an author bug → permanent_failure; a Blobs.Get failure of a committed,
-	// content-addressed artifact is corruption/IO → internal halt ("" outcome),
-	// so resume re-runs the uncommitted step and re-fetches.
-	inputFileEntries, err := resolveInputFileEntries(as.InputFiles, scope, wf, ictx.moduleID, blobs, runstate.Assets)
-	if err != nil {
-		if errors.Is(err, errArtifactFetch) {
-			return "", fmt.Errorf("engine.runAgentStep: stage input_files at %q: %w", path, err)
+	// Resolve input_files to staged bytes (SP1) for the CONTAINER path. Same
+	// errArtifactFetch classification as runCodeStep: a ref error
+	// (parse/undeclared/not-committed) is an author bug → permanent_failure; a
+	// Blobs.Get failure of a committed, content-addressed artifact is
+	// corruption/IO → internal halt ("" outcome), so resume re-runs the
+	// uncommitted step and re-fetches. A containerless step has nowhere to stage
+	// into, so it skips this block entirely (handled above as inline parts).
+	var inputFiles []container.InputFile
+	if as.Container != "" {
+		inputFileEntries, err := resolveInputFileEntries(as.InputFiles, scope, wf, ictx.moduleID, blobs, runstate.Assets)
+		if err != nil {
+			if errors.Is(err, errArtifactFetch) {
+				return "", fmt.Errorf("engine.runAgentStep: stage input_files at %q: %w", path, err)
+			}
+			return failStep(log, path, OutcomePermanentFailure, err)
 		}
-		return failStep(log, path, OutcomePermanentFailure, err)
-	}
-	if as.Skills != nil {
-		skillFiles, err := resolveSelectedSkillFiles(selectedSkills, skillCorpus, string(as.Skills.Into))
+		if as.Skills != nil {
+			skillFiles, err := resolveSelectedSkillFiles(selectedSkills, skillCorpus, string(as.Skills.Into))
+			if err != nil {
+				return failStep(log, path, OutcomePermanentFailure, err)
+			}
+			inputFileEntries = append(inputFileEntries, skillFiles...)
+		}
+		inputFiles, err = inputFilesFromResolvedEntries(inputFileEntries)
 		if err != nil {
 			return failStep(log, path, OutcomePermanentFailure, err)
 		}
-		inputFileEntries = append(inputFileEntries, skillFiles...)
-	}
-	inputFiles, err := inputFilesFromResolvedEntries(inputFileEntries)
-	if err != nil {
-		return failStep(log, path, OutcomePermanentFailure, err)
 	}
 
 	outputFiles, outputFileContracts, err := resolveOutputFiles(as.OutputFiles, scope, ictx.moduleID, runstate.Assets, blobs)
@@ -206,9 +214,10 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		OutputSchema:          as.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,
-		Feedback:              feedback,   // slice 5.3
-		Thread:                thread,     // Task 4.5
-		InputFiles:            inputFiles, // SP1 artifact channel
+		Feedback:              feedback,           // slice 5.3
+		Thread:                thread,             // Task 4.5
+		InputFiles:            inputFiles,         // SP1 artifact channel (container path)
+		ContainerlessFiles:    containerlessFiles, // inline message parts (containerless path)
 		OutputFileContracts:   outputFileContracts,
 	}
 	if as.Timeout != nil {

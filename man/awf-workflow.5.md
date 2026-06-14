@@ -391,7 +391,7 @@ format never hard-codes one harness's options.
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
       output_files: [<path>, ...]    # optional; or { <name>: <path|contract> } -> named
-      input_files: { <dst>: step.<id>.files.<name> }   # or asset.<id>; optional; requires a container
+      input_files: { <label>: step.<id>.files.<name> }  # or asset.<id>; optional; label is an in-container path (container) or a logical name forwarded inline (containerless)
       skills:
         from: <corpus-id>
         query: <template>
@@ -446,6 +446,22 @@ constrained/structured-output mode or schema-aligned parsing of the final messag
 value within the retry budget the step is a `retryable_failure`. References bind
 only to typed fields, so `**verdict: pass**` versus `verdict: pass` can never
 silently break a gate.
+
+**input_files**
+:   Optional. Stages prior artifacts for the step. The key semantics depend on
+    the runtime mode:
+
+    - **Container runtime** — the key is an **absolute in-container path**; the
+      artifact bytes are staged (written into the container) at that path before
+      the agent launches.
+    - **Containerless model runtime** (e.g. `awf/llm`) — the key is a
+      **logical label**; the artifact bytes are forwarded to the model as
+      **inline message parts** (images and PDFs, per the adapter's and
+      endpoint's support). The MIME type is sniffed from content, not inferred
+      from the file name. Rasterize PDFs to images first only when targeting an
+      image-only endpoint (e.g. Ollama).
+
+    Both forms accept `step.<id>.files.<name>` or `asset.<id>` as the source.
 
 **skills**
 :   Optional. Routes a runtime query against a declared top-level skill corpus

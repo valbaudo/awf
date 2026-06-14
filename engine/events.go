@@ -275,8 +275,14 @@ type RunStartedData struct {
 	InputRef        string                     `json:"input_ref,omitempty"`        // empty if Workflow.Input is nil
 	Backend         string                     `json:"backend,omitempty"`          // slice 4.5; "" → BackendDocker on resume
 	Assets          map[string]RunStartedAsset `json:"assets,omitempty"`
-	LiveHome        *LiveHomePin               `json:"live_home,omitempty"`
-	Runtimes        []ResolvedRuntime          `json:"runtimes,omitempty"`
+	// InputFiles records the supplied top-level workflow input-file manifest:
+	// input-file name → CAS blob ref of the bytes supplied at run start. Folded
+	// back into RunState.InputFiles on resume (mirrors Assets) so input.files.<name>
+	// resolves identically on first run and resume. Empty in logs from before
+	// top-level input files were a supply channel (omitempty).
+	InputFiles map[string]string `json:"input_files,omitempty"`
+	LiveHome   *LiveHomePin      `json:"live_home,omitempty"`
+	Runtimes   []ResolvedRuntime `json:"runtimes,omitempty"`
 }
 
 type LiveHomePin struct {

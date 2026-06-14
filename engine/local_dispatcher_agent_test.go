@@ -191,6 +191,61 @@ func TestRunAgent_Thread_ThreadedAdapter_OK(t *testing.T) {
 	}
 }
 
+// TestRunAgent_Containerless_PassesInputFiles verifies that runAgent threads
+// the resolved containerless input_files (ResolvedInputs.ContainerlessFiles)
+// into the AgentInvocation it hands the adapter. Task 2 populated
+// ContainerlessFiles for containerless steps; Task 3 wires it into the
+// AgentInvocation so a containerless awf/llm step's files actually reach Launch.
+//
+// The fake adapter records every AgentInvocation via Calls(); we dispatch
+// through the public Run and assert the recorded invocation carries the file.
+func TestRunAgent_Containerless_PassesInputFiles(t *testing.T) {
+	ctx := context.Background()
+
+	fk := agentfake.New("awf/llm").WithCaps(agent.Caps{Containerless: true}).
+		Script(0, agentfake.Result{Output: map[string]any{"answer": "42"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	d := &engine.LocalDispatcher{
+		Resolver: &reg,
+		Handles:  map[string]container.Handle{},
+	}
+	intent := engine.NodeIntent{
+		Path: "graph[0]",
+		Node: &ir.AgentStep{ID: "ask", Uses: "awf/llm", Container: ""},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:               "awf/llm",
+			With:               ir.RawConfig{"model": "m", "prompt": "hi"},
+			ContainerlessFiles: []agent.InputFile{{Name: "doc", MIME: "application/pdf", Content: []byte("%PDF")}},
+		},
+	}
+
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Launch calls = %d, want 1", len(calls))
+	}
+	got := calls[0].InputFiles
+	if len(got) != 1 || got[0].Name != "doc" {
+		t.Fatalf("adapter did not receive InputFiles: %+v", got)
+	}
+	if got[0].MIME != "application/pdf" || string(got[0].Content) != "%PDF" {
+		t.Fatalf("InputFile content/MIME not threaded verbatim: %+v", got[0])
+	}
+}
+
 func TestEngineRejectsPersistentEvaluateBeforeLaunch(t *testing.T) {
 	ctx := context.Background()
 

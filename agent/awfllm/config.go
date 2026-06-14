@@ -14,6 +14,27 @@ import (
 // explicitly or their traffic will hit OpenAI, not the local server.
 const defaultBaseURL = "https://api.openai.com/v1"
 
+// provider selects the request transport. It gates ONLY the native Gemini path;
+// openai (the default) routes through the existing OpenAI/Ollama logic, where
+// Ollama selection stays on structured_output: ollama_format (not a provider
+// value) so there is a single Gemini-vs-OpenAI selector here.
+const (
+	providerOpenAI = "openai" // default; routes through the existing OpenAI/Ollama logic
+	providerGemini = "gemini" // the only NEW transport this key gates
+
+	// defaultGeminiBaseURL is the native Gemini generateContent host (no /v1 suffix;
+	// the Gemini transport appends the versioned model path itself).
+	defaultGeminiBaseURL = "https://generativelanguage.googleapis.com"
+	// defaultGeminiAPIKeyEnv is the default env-var name resolved for provider: gemini
+	// when api_key_env is omitted.
+	defaultGeminiAPIKeyEnv = "GEMINI_API_KEY"
+)
+
+// defaultMaxInlineBytes caps the TOTAL size of a step's inline (base64) input
+// files (summed across all of them; see launch.go's pre-flight). 32 MiB is
+// comfortably above provider inline limits while bounding memory blow-up.
+const defaultMaxInlineBytes = 32 << 20 // 32 MiB
+
 // structured_output mode constants — the accepted values for the
 // structured_output with-key. Defined once here so validate.go and transport.go
 // share a single source of truth instead of comparing against raw string literals.
@@ -25,6 +46,7 @@ const (
 
 // reqConfig is the per-call request shape built in Launch from validated `with:`.
 type reqConfig struct {
+	Provider         string // openai (default) | gemini — selects the request transport
 	BaseURL          string
 	APIKey           string
 	Model            string
@@ -36,20 +58,36 @@ type reqConfig struct {
 	StructuredOutput string // response_format | ollama_format | off
 	IdempotencyKey   string
 	TLSInsecure      bool // opt-in: skip TLS verification (self-signed/internal endpoints — offensive use)
+	MaxInlineBytes   int  // cap on a single inline input file's byte size
 }
 
 // buildReqConfig translates validated `with:` + the resolved env into a reqConfig.
 func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 	with := inv.With
+	// provider gates the transport and shifts the base_url + api-key-env defaults.
+	// openai (the default) keeps the existing OpenAI/Ollama defaults; gemini points
+	// at the native generateContent host and resolves GEMINI_API_KEY by default.
+	provider := stringOr(with, keyProvider, providerOpenAI)
+	baseURLDefault, apiKeyEnvDefault := defaultBaseURL, defaultAPIKeyEnv
+	if provider == providerGemini {
+		baseURLDefault, apiKeyEnvDefault = defaultGeminiBaseURL, defaultGeminiAPIKeyEnv
+	}
 	cfg := reqConfig{
+		Provider:         provider,
 		Model:            stringOr(with, keyModel, ""),
-		BaseURL:          stringOr(with, keyBaseURL, defaultBaseURL),
+		BaseURL:          stringOr(with, keyBaseURL, baseURLDefault),
 		SystemPrompt:     stringOr(with, keySystemPrompt, ""),
 		StructuredOutput: stringOr(with, keyStructuredOutput, soResponseFormat),
 		IdempotencyKey:   inv.IdempotencyKey,
 		TLSInsecure:      boolOr(with, keyTLSInsecure, false),
+		MaxInlineBytes:   defaultMaxInlineBytes,
 	}
-	keyName := stringOr(with, keyAPIKeyEnv, defaultAPIKeyEnv)
+	if v, ok := with[keyMaxInlineBytes]; ok {
+		if n, okN := toInt(v); okN {
+			cfg.MaxInlineBytes = n
+		}
+	}
+	keyName := stringOr(with, keyAPIKeyEnv, apiKeyEnvDefault)
 	key, ok := a.env[keyName]
 	if !ok {
 		// Defensive (ValidateConfig already checked). Return the PERMANENT-classified

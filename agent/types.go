@@ -128,6 +128,10 @@ type AgentInvocation struct {
 	IdempotencyKey string         `json:"idempotency_key,omitempty"` // resolved-template; passed to harness env per spec §10
 	Feedback       ir.RawConfig   `json:"feedback,omitempty"`        // prior gate verdict on repair attempts > 1 (nil on attempt 1)
 	Thread         []ThreadTurn   `json:"thread,omitempty"`          // engine-assembled prior turns (separate channel from Feedback); generator-only
+	// InputFiles carries resolved file bytes to a CONTAINERLESS adapter (the
+	// containerless analog of container.InputFile staging). Empty for
+	// container-backed steps. json:"-": bytes never reach the state log.
+	InputFiles []InputFile `json:"-"`
 }
 
 // AgentResult is the synchronous return of Adapter.Launch. Output is the

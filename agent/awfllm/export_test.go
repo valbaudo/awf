@@ -29,11 +29,22 @@ func NewAPIErrorForTest(status int, typ, body string) *apiError {
 }
 
 func (a *Adapter) StreamForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(string, []byte)) (string, usageRec, string, string, error) {
-	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, emit)
+	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, nil, emit)
+}
+
+// StreamWithFilesForTest threads input files through stream for the OpenAI
+// content-part wire test (Task 7).
+func (a *Adapter) StreamWithFilesForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(string, []byte)) (string, usageRec, string, string, error) {
+	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, files, emit)
 }
 
 // ReqConfigForTest mirrors reqConfig (unexported) for test construction.
 type ReqConfigForTest = reqConfig
+
+// BuildReqConfigForTest exposes buildReqConfig for white-box config tests.
+func (a *Adapter) BuildReqConfigForTest(inv agent.AgentInvocation) (ReqConfigForTest, error) {
+	return a.buildReqConfig(inv)
+}
 
 var AssemblePromptForTest = assemblePrompt
 

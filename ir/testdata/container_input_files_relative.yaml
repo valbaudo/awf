@@ -1,0 +1,18 @@
+workflow: container-input-files-relative
+version: 1
+input_files:
+  document: {}
+containers:
+  c:
+    image: "oci://busybox@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+graph:
+  - id: ask
+    container: c
+    uses: awf/llm
+    with:
+      base_url: http://host.docker.internal:11434
+      model: llama3.1
+      api_key_env: OPENAI_API_KEY
+      prompt: "Summarize the attached document."
+    input_files:
+      doc: input.files.document

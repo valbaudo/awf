@@ -46,6 +46,13 @@ type RunOptions struct {
 	// resolving asset.<id> input_files; nil preserves pre-assets behavior.
 	Assets map[string]RunStartedAsset
 
+	// InputFiles is the supplied top-level workflow input-file manifest:
+	// input-file name → CAS blob ref of the bytes supplied at run start. Seeds
+	// runstate.InputFiles so a step referencing input.files.<name> resolves to
+	// the supplied bytes; nil preserves pre-input-files behavior. Only set on
+	// first run — on resume it is nil and runstate.InputFiles is fold-restored.
+	InputFiles map[string]string
+
 	// LiveFinalizer, if non-nil, is called after a successful live agent step's
 	// node.completed event has been appended and synced.
 	LiveFinalizer func(context.Context, LiveDispatchRecord) error
@@ -98,11 +105,15 @@ func Run(
 	if opts.Assets != nil {
 		runstate.Assets = opts.Assets
 	}
+	if opts.InputFiles != nil {
+		runstate.InputFiles = opts.InputFiles
+	}
 	ictx := interpreterContext{
 		def:           def,
 		moduleID:      "",
 		wf:            def.Workflow,
 		runstate:      runstate,
+		inputFiles:    runstate.InputFiles,
 		dispatcher:    dispatcher,
 		log:           log,
 		blobs:         blobs,

@@ -1,0 +1,21 @@
+workflow: awf-llm-pdf-extract
+version: 1
+input_files:
+  document: {}
+graph:
+  - id: extract
+    uses: awf/llm
+    input_files:
+      document: input.files.document
+    with:
+      provider: gemini
+      model: gemini-2.5-flash
+      api_key_env: GEMINI_API_KEY
+      prompt: "Extract the invoice total and vendor name from the attached document."
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [total, vendor]
+      properties:
+        total:  { type: number }
+        vendor: { type: string }

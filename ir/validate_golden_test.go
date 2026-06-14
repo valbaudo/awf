@@ -102,3 +102,35 @@ func TestValidFixturePassesClean(t *testing.T) {
 		}
 	}
 }
+
+// A containerless awf/llm step keys input_files by a logical LABEL ("doc"); a bare
+// label must NOT be rejected as a non-absolute container path (AWF3007).
+func TestInputFiles_ContainerlessLabelKeyAccepted(t *testing.T) {
+	ld, err := loader.Load("testdata/containerless_input_files_label.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ir.Validate(ld) {
+		if d.Code == "AWF3007" && d.Severity == ir.Error {
+			t.Fatalf("label key wrongly rejected: %v", d)
+		}
+	}
+}
+
+// A container-backed step still requires an absolute, clean input_files key — a
+// bare relative label like "doc" must produce AWF3007.
+func TestInputFiles_ContainerBackedStillRequiresAbsPath(t *testing.T) {
+	ld, err := loader.Load("testdata/container_input_files_relative.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range ir.Validate(ld) {
+		if d.Code == "AWF3007" && d.Severity == ir.Error {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("container-backed relative key should be rejected with AWF3007")
+	}
+}

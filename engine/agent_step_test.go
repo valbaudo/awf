@@ -1213,13 +1213,14 @@ graph:
 	}
 }
 
-// TestRunAgentStep_ContainerlessInputFilesRejected pins the SP1 containerless
-// guard (Task 7b): an agent step whose runtime omits container: (Container == "")
-// declaring input_files is rejected at runtime as a permanent_failure, exactly
-// as the man page promises ("input_files requires a container ... rejected on a
-// containerless agent step"). The guard fires in the interpreter BEFORE
-// resolution, so no producer needs to have committed.
-func TestRunAgentStep_ContainerlessInputFilesRejected(t *testing.T) {
+// TestRunAgentStep_ContainerlessInputFilesResolve pins the feat/awf-llm-file-input
+// Task 2 behavior: an agent step whose runtime omits container: (Container == "")
+// declaring input_files is NO LONGER blanket-rejected with "input_files requires a
+// container". Instead the interpreter resolves the refs to bytes for inline delivery.
+// This case references an UNDECLARED producer (step.recon.files.report with no `recon`
+// step in the graph), so resolution fails as a permanent_failure on the ref itself —
+// proving the old container guard no longer short-circuits and the new resolver runs.
+func TestRunAgentStep_ContainerlessInputFilesResolve(t *testing.T) {
 	var reg agent.Registry
 	// A containerless adapter — the only kind permitted to carry an empty
 	// container: at run start (cli/runtimes.go). The fake's Containerless cap
@@ -1255,14 +1256,18 @@ func TestRunAgentStep_ContainerlessInputFilesRejected(t *testing.T) {
 
 	oc, err := engine.Run(context.Background(), def, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
 	if oc != engine.OutcomePermanentFailure {
-		t.Fatalf("Outcome = %q, want %q (containerless input_files must be rejected)", oc, engine.OutcomePermanentFailure)
+		t.Fatalf("Outcome = %q, want %q (unresolvable input_files ref must permanent-fail)", oc, engine.OutcomePermanentFailure)
 	}
-	if err == nil || !strings.Contains(err.Error(), "input_files requires a container") {
-		t.Errorf("err = %v, want one mentioning 'input_files requires a container'", err)
+	// The new resolver rejects the ref itself, NOT with the old container guard.
+	if err == nil {
+		t.Fatalf("err = nil, want a permanent_failure on the unresolvable input_files ref")
 	}
-	// The adapter must never be launched — the guard short-circuits before dispatch.
+	if strings.Contains(err.Error(), "input_files requires a container") {
+		t.Errorf("err = %v, must NOT mention the removed 'input_files requires a container' guard", err)
+	}
+	// The adapter must never be launched — resolution fails before dispatch.
 	if len(fk.Calls()) != 0 {
-		t.Errorf("fake.Calls len = %d, want 0 (guard must fire before Launch)", len(fk.Calls()))
+		t.Errorf("fake.Calls len = %d, want 0 (resolution must fail before Launch)", len(fk.Calls()))
 	}
 }
 

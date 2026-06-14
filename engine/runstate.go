@@ -215,6 +215,12 @@ type RunState struct {
 	// run.started without dereferencing refs; engine.Run may also seed it from
 	// RunOptions for first-run execution before any resume fold exists.
 	Assets map[string]RunStartedAsset
+	// InputFiles is the supplied top-level workflow input-file manifest:
+	// input-file name → CAS blob ref. Fold restores it from run.started
+	// (mirrors Assets); engine.Run seeds it from RunOptions on first run. The
+	// root scope (interpreter_context.go) reads it so input.files.<name>
+	// resolves to the supplied bytes both on first run and on resume.
+	InputFiles map[string]string
 	// Epoch is the *runtime* resume-invocation counter — set to 1 on run.started, then
 	// overwritten by each run.resumed event's payload (see Fold). This is NOT the same
 	// counter as state.Event.Epoch (which is auto-stamped by state.Log on each Append

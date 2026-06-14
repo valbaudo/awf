@@ -48,26 +48,50 @@ func validateInputFilesModule(ld *LoadedDefinition, mod validationModule, c *col
 			return
 		}
 		var inputs map[string]string
+		// A containerless agent step (uses: awf/llm, no container:) keys input_files
+		// by a logical LABEL, not an in-container path: there is no filesystem to
+		// stage into, so the destination is a name the adapter attaches to a
+		// provider content part. Code steps always have a container; only an
+		// AgentStep with an empty Container is containerless.
+		containerless := false
 		switch s := n.(type) {
 		case *CodeStep:
 			inputs = s.InputFiles
 		case *AgentStep:
 			inputs = s.InputFiles
+			containerless = s.Container == ""
 		default:
 			return
 		}
 		validDsts := make([]string, 0, len(inputs))
 		for dst, raw := range inputs {
-			// dst is a container path: must be absolute + clean (no ".." segment).
-			// A format contract for the new field — NOT the security boundary
-			// (moby's go-archive contains traversal); use the `path` package
-			// (always "/"-separated for container paths), not path/filepath.
-			if !path.IsAbs(dst) || dst != path.Clean(dst) {
+			if containerless {
+				// Label, not a path: must match stepIDPattern (same name charset as
+				// workflow input_files names — validate_output_files.go).
+				if !stepIDPattern.MatchString(dst) {
+					c.errf(nodePath, "AWF3007", "containerless input_files label "+dst+" must match "+stepIDPattern.String())
+					continue
+				}
+			} else if !path.IsAbs(dst) || dst != path.Clean(dst) {
+				// dst is a container path: must be absolute + clean (no ".." segment).
+				// A format contract for the new field — NOT the security boundary
+				// (moby's go-archive contains traversal); use the `path` package
+				// (always "/"-separated for container paths), not path/filepath.
 				c.errf(nodePath, "AWF3007", "input_files destination "+dst+" must be an absolute, clean path (no '..' segment)")
 				continue
 			}
 			validDsts = append(validDsts, dst)
 			validateInputFileRef(c, nodePath, nodePath, "input_files["+dst+"]", raw, wf.InputFiles, wf.Assets, producers, order, outFiles, maps)
+		}
+		// A containerless step can't have overlapping container paths (labels are
+		// flat names; key-uniqueness is already guaranteed by the YAML map). Per-file
+		// format/provider compatibility is only knowable at run time when the bytes
+		// and resolved provider are in hand — warn that static validation can't.
+		if containerless {
+			if len(inputs) > 0 {
+				c.warnf(nodePath, "AWF2003", catalog["AWF2003"])
+			}
+			return
 		}
 		validateInputFileDestinationOverlap(c, nodePath, validDsts)
 	})
