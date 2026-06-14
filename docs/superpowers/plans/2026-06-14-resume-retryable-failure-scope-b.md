@@ -76,8 +76,14 @@ In `engine/runstate.go`, `MapItemRecord` — add after `Status`:
 ```go
 	// Outcome mirrors MapItemData.Outcome (the item body's mechanical outcome on
 	// failure). Drives resume re-run selection; empty for passed/pruned/image.
+	// Read ONLY from the FOLDED record (engine.Fold's map.item arm). Like
+	// ImageDigest/Reason, the live mirror is intentionally NOT maintained
+	// post-commit (updateMapItemStatus sets only Status) — the sole reader, the
+	// resume reconciliation, runs on a freshly-Folded RunState, so the live value
+	// is never observed. A future live reader MUST add write-through here first.
 	Outcome string
 ```
+> Note (decision per the spec §6 derived-state convention): do **not** add write-through to `updateMapItemStatus`. Keeping `Outcome` folded-read-back matches the established posture of its sibling additive fields `ImageDigest`/`Reason` (already folded-read, never live-maintained); adding write-through for `Outcome` alone would make it inconsistent with them, and write-through for all three is unrelated scope (rule 3). The "live value never observed" invariant is the guard (the reconciliation reads only the post-`Fold` snapshot).
 
 - [ ] **Step 5: Capture `bodyOC` in `dispatchItem` and pass it to `commitMapItem`**
 
@@ -243,14 +249,16 @@ func (rs *RunState) RecordMapItem(mapPath string, mr MapItemRecord) {
 }
 ```
 
-- [ ] **Step 4: Route both fold arms through `RecordMapItem`**
+- [ ] **Step 4: Route the `EventMapItem` fold arm through `RecordMapItem`**
 
-In `engine/fold.go`, replace the inline `rs.MapItems[e.Path] = append(...)` in BOTH the `EventMapItem` arm and the `EventMapFrontier` loop with `rs.RecordMapItem(e.Path, MapItemRecord{...})` (same field sets as today, plus `Outcome: d.Outcome` on the `map.item` arm from Task 1). Fold is single-threaded; `RecordMapItem`'s lock is harmless. This makes fold last-wins-by-N identical to the live upsert.
+In `engine/fold.go`, replace the inline `rs.MapItems[e.Path] = append(...)` in the **`EventMapItem` arm only** with `rs.RecordMapItem(e.Path, MapItemRecord{N: d.N, Status: d.Status, Outcome: d.Outcome, ImageDigest: d.ImageDigest, Reason: d.Reason})`. Fold is single-threaded; `RecordMapItem`'s lock is harmless. This makes the fold last-wins-by-N identical to the live upsert.
+
+**Leave the `EventMapFrontier` loop's blind append unchanged.** A prune map commits its whole disposition in ONE atomic `map.frontier` event with distinct Ns (`map.go:271-289`, `MapFrontierData`), so per-N dedup there is vacuous, and prune items are excluded from re-run (Task 3 / §6.4). Re-pointing the load-bearing "frontier is NEVER re-derived" arm (`fold.go:296-314`) would be rule-3 creep into the prune path for a no-op. (This corrects the spec §6.2 "both arms" wording — the spec edit below scopes it to the `map.item` arm.)
 
 - [ ] **Step 5: Run to verify pass**
 
 Run: `go test ./engine/ -run 'TestRecordMapItemUpsertByN|TestFoldMapItemLastWinsByN' -v`
-Expected: PASS. Then `go test ./engine/ -run 'TestRunStateMapItems|TestLookupMapItems|TestRunStateUpdateMapItemValue'` to confirm existing record round-trip/order tests still pass (upsert preserves position for existing N and append order for new N).
+Expected: PASS. Then `go test ./engine/ -run 'TestRunStateMapItemsRoundTrip|TestLookupMapItemsReturnsSliceCopy|TestRunStateUpdateMapItemValue'` to confirm the existing record round-trip / slice-copy / by-N tests still pass (upsert preserves position for an existing N and append order for a new N).
 
 - [ ] **Step 6: Commit**
 
@@ -268,7 +276,7 @@ Thread a `Resume` flag from the resume CLI into the map reconciliation, and re-r
 **Files:**
 - Modify: `engine/interpreter.go` (`RunOptions`, `engine.Run` ictx)
 - Modify: `engine/interpreter_context.go` (`resume` field)
-- Modify: `engine/map.go` (`committedItem`, `shouldRerunItem`, reconciliation, predicate)
+- Modify: `engine/map.go` (`shouldRerunItem`, reconciliation, predicate)
 - Modify: `cli/execute.go` (`runAndFinish` param + `RunOptions`)
 - Modify: `cli/run.go:360` (pass `false`), `cli/resume.go:401` (pass `true`)
 - Test: `engine/map_test.go`
@@ -277,30 +285,31 @@ Thread a `Resume` flag from the resume CLI into the map reconciliation, and re-r
 
 In `engine/map_test.go`:
 ```go
-// Pure predicate: who re-runs on resume.
+// Pure predicate: who re-runs on resume. Keyed on the existing MapItemRecord
+// (no parallel projection type — rule 2).
 func TestShouldRerunItem(t *testing.T) {
-	plain := &ir.Map{}                 // n.Prune == nil
+	plain := &ir.Map{}                   // n.Prune == nil
 	prune := &ir.Map{Prune: &ir.Prune{}} // any non-nil Prune
 	cases := []struct {
 		name   string
 		n      *ir.Map
 		resume bool
-		ci     committedItem
+		mr     MapItemRecord
 		want   bool
 	}{
-		{"retryable-on-resume", plain, true, committedItem{status: ItemFailed, outcome: "retryable_failure"}, true},
-		{"permanent-stays", plain, true, committedItem{status: ItemFailed, outcome: "permanent_failure"}, false},
-		{"rejected-stays", plain, true, committedItem{status: ItemFailed, outcome: "rejected"}, false},
-		{"absent-outcome-stays", plain, true, committedItem{status: ItemFailed, outcome: ""}, false},
-		{"image-unavailable-stays", plain, true, committedItem{status: ItemFailed, outcome: "", reason: ReasonImageUnavailable}, false},
-		{"passed-stays", plain, true, committedItem{status: ItemPassed}, false},
-		{"pruned-stays", plain, true, committedItem{status: ItemPruned}, false},
-		{"prune-map-never", prune, true, committedItem{status: ItemFailed, outcome: "retryable_failure"}, false},
-		{"not-resume-never", plain, false, committedItem{status: ItemFailed, outcome: "retryable_failure"}, false},
+		{"retryable-on-resume", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, true},
+		{"permanent-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "permanent_failure"}, false},
+		{"rejected-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "rejected"}, false},
+		{"absent-outcome-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: ""}, false},
+		{"image-unavailable-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "", Reason: ReasonImageUnavailable}, false},
+		{"passed-stays", plain, true, MapItemRecord{Status: ItemPassed}, false},
+		{"pruned-stays", plain, true, MapItemRecord{Status: ItemPruned}, false},
+		{"prune-map-never", prune, true, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, false},
+		{"not-resume-never", plain, false, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := shouldRerunItem(c.n, c.resume, c.ci); got != c.want {
+			if got := shouldRerunItem(c.n, c.resume, c.mr); got != c.want {
 				t.Errorf("shouldRerunItem = %v, want %v", got, c.want)
 			}
 		})
@@ -352,7 +361,7 @@ func TestRunMapResumeRetryableItemReRuns(t *testing.T) {
 - [ ] **Step 2: Run to verify failure**
 
 Run: `go test ./engine/ -run 'TestShouldRerunItem|TestRunMapResumeRetryableItemReRuns' -v`
-Expected: FAIL — `undefined: committedItem` / `shouldRerunItem` / `interpreterContext.resume`.
+Expected: FAIL — `undefined: shouldRerunItem` / `interpreterContext.resume` (and `MapItemRecord.Outcome` if Task 1 not yet applied).
 
 - [ ] **Step 3: Add the `resume` field to `interpreterContext` and `RunOptions`**
 
@@ -371,39 +380,31 @@ Expected: FAIL — `undefined: committedItem` / `shouldRerunItem` / `interpreter
 		resume:        opts.Resume,
 ```
 
-- [ ] **Step 4: Add `committedItem` + `shouldRerunItem` and wire the reconciliation**
+- [ ] **Step 4: Add `shouldRerunItem` and wire the reconciliation**
 
-`engine/map.go` — add near `tallyResults`:
+`engine/map.go` — add near `tallyResults` (no new projection type — read `MapItemRecord` directly, rule 2):
 ```go
-// committedItem is the folded disposition the resume reconciliation needs to
-// decide replay-vs-rerun for a map item.
-type committedItem struct {
-	status  string
-	outcome string
-	reason  string
-}
-
 // shouldRerunItem reports whether a committed map item must re-run on resume
 // (spec §6.3). Only on resume, only for a NON-prune map (a prune disposition is
 // an atomic frontier decision — never re-run one participating item, §6.4), only
 // a retryable body failure; image_unavailable is digest-pinned and treated as
 // non-rerunnable. Passed/pruned/permanent/rejected/absent all replay-as-committed.
-func shouldRerunItem(n *ir.Map, resume bool, ci committedItem) bool {
+func shouldRerunItem(n *ir.Map, resume bool, mr MapItemRecord) bool {
 	if !resume || n.Prune != nil {
 		return false
 	}
-	if ci.status != ItemFailed || ci.reason == ReasonImageUnavailable {
+	if mr.Status != ItemFailed || mr.Reason == ReasonImageUnavailable {
 		return false
 	}
-	return Outcome(ci.outcome) == OutcomeRetryableFailure
+	return Outcome(mr.Outcome) == OutcomeRetryableFailure
 }
 ```
-In `runMapWithContext`, change the `committed` map type + build (lines ~98-109):
+In `runMapWithContext`, change ONLY the `committed` map's value type from `string` to `MapItemRecord` and the build loop (`map.go:98-109`):
 ```go
-	committed := map[int]committedItem{}
+	committed := map[int]MapItemRecord{}
 	maxCommittedN := -1
 	for _, mr := range ictx.runstate.LookupMapItems(mapPath) {
-		committed[mr.N] = committedItem{status: mr.Status, outcome: mr.Outcome, reason: mr.Reason}
+		committed[mr.N] = mr
 		if mr.N > maxCommittedN {
 			maxCommittedN = mr.N
 		}
@@ -412,11 +413,13 @@ In `runMapWithContext`, change the `committed` map type + build (lines ~98-109):
 		}
 	}
 ```
-And the skip-and-replay short-circuit (lines ~154-162):
+> Update the stale trailing comment on the `committed :=` line (was `// N → Status…`) to `// N → MapItemRecord (folded disposition) for items already in MapItems`. **Leave `map.go:110-114 byte-identical`** — the `maxCommittedN`/H8 `if maxCommittedN >= len(overArr)` non-deterministic-`over` guard reads only `maxCommittedN`/`len(overArr)`, so the value-type change does not touch it; dropping it would silently remove the determinism fail-loud (CLAUDE.md "pinning is a hard error on drift").
+
+And the skip-and-replay short-circuit (`map.go:154-162`):
 ```go
-		if ci, ok := committed[i]; ok {
-			if !shouldRerunItem(n, ictx.resume, ci) {
-				statuses[i] = ci.status
+		if mr, ok := committed[i]; ok {
+			if !shouldRerunItem(n, ictx.resume, mr) {
+				statuses[i] = mr.Status
 				continue
 			}
 			// retryable item on resume: fall through to re-dispatch. Task 2's
@@ -462,23 +465,33 @@ git commit -m "feat: re-run transiently-failed map items on resume (Resume flag 
 
 **Files:**
 - Modify: `conformance/harness.go` (set `RunOptions.Resume = isResume` in `runOrResume`)
-- Test: `engine/reduce_test.go` (reduce recovery), `conformance/*_test.go` (map recovery)
+- Test: `engine/map_test.go` (reduce recovery — the map→reduce fixture lives here, not in reduce_test.go), `conformance/*_test.go` (map recovery)
 - Modify: `engine/events.go` (two stale "two-value Status tally" comments)
 
 - [ ] **Step 1: Wire the resume flag into the conformance harness**
 
 In `conformance/harness.go`, `runOrResume(t, isResume)` constructs `engine.RunOptions` for its `engine.Run` call — add `Resume: isResume,` to that literal so a conformance `resumeWorkflow` exercises Scope B at the engine level. (Run `grep -n "engine.RunOptions" conformance/harness.go` to find the literal.)
 
-- [ ] **Step 2: Reduce recovery test (engine)**
+- [ ] **Step 2: Reduce recovery test — add `TestRunMapReduceResumeQuorumRecovers` to `engine/map_test.go`**
 
-Add a test that a quorum reduce recovers on resume. **Construct the reduce map by mimicking the existing `engine/reduce_test.go` fixtures** (they show `ir.Map{Reduce: ...}` / `ir.Reduce{Over, Quorum}` shapes — this plan does not restate that IR verbatim to avoid drift; follow that file). The behavior to assert (spec §6.5):
+(NOT `reduce_test.go` — that file calls `runReduce` directly with hand-built `[]reduceBranch` and has no map-with-reduce fixture, so it can't exercise the resume path. The real map→reduce pattern is in `engine/map_test.go` ~947-1016.) Build the reduce map like that pattern:
+```go
+q := ir.Ratio("3") // unanimous over 3 items
+wf := staticOverWorkflow("x", <vote body emitting {"ok": true}, e.g. the okSchema step at map_test.go ~929>, 3, nil)
+mapNode := wf.Graph[0].(*ir.Map)
+mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"} // runQuorumReduce counts b.Outputs["ok"].(bool), reduce.go:178-199
 ```
-round-1: quorum=N over N items, one item transiently fails → agree < N →
-         runMap returns OutcomeRetryableFailure, reducer NOT committed.
-resume (runMapResumeTrue): the failed item now passes → reducer re-runs over the
-         full post-recovery passed set → agree == N → OutcomeOK.
+**CRITICAL — round-1 is a TRANSIENT ItemFailure, NOT a false vote.** A `{ok:false}` exit-0 vote is `ItemPassed`, so `shouldRerunItem` (needs `item_failed` + retryable) would never re-run it. Program the failing item to exit 1:
 ```
-Name it `TestRunMapReduceResumeQuorumRecovers`. Assert `oc2 == OutcomeOK` and that no committed reduce output from round-1 was blended (there is none — the reducer never committed on the retryable path; that is the safe-by-construction invariant).
+round-1: rig1 → items a,c emit {"ok":true} (ExitCode 0); item b ExitCode 1 (transient
+         ItemFailure). agree=2 < need=3 → runMap returns OutcomeRetryableFailure;
+         assert NO LookupCompleted(testMapPath) (reducer uncommitted — the
+         safe-by-construction invariant: a committed reduce ⟺ map-ok ⟺ not this path).
+resume:  rig2 := bareRig(t, rig1, <all three emit {"ok":true}>); rs2 := foldFromRig(t, rig2);
+         oc2 := runMapResumeTrue(ctx, mapNode, testMapPath, wf, rs2, rig2);
+         assert oc2 == OutcomeOK AND the committed reduce nr.Outputs["agree"] == 3
+         (reducer recomputed over the FULL recovered set, never blending a stale aggregate).
+```
 
 - [ ] **Step 3: Map recovery conformance test**
 
@@ -496,7 +509,7 @@ Expected: PASS — the whole suite green (golangci-lint clean: the new `resume` 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add conformance/ engine/reduce_test.go engine/events.go
+git add conformance/ engine/map_test.go engine/events.go
 git commit -m "test: reduce + map resume recovery; fix stale map-status comments"
 ```
 
@@ -505,6 +518,6 @@ git commit -m "test: reduce + map resume recovery; fix stale map-status comments
 ## Self-Review
 
 - **Spec coverage:** §6.1 outcome field → Task 1; §6.2 single-record → Task 2; §6.3 resume-flag + predicate + image_unavailable → Task 3; §6.4 prune exclusion → Task 3 (`shouldRerunItem` `n.Prune != nil`) + `TestShouldRerunItem` `prune-map-never`; §6.5 reduce safe-by-construction → Task 4 Steps 1-2. No gaps.
-- **Type consistency:** `committedItem{status,outcome,reason}` defined in Task 3 Step 4, used in `TestShouldRerunItem` (Task 3 Step 1) and the reconciliation. `shouldRerunItem(n *ir.Map, resume bool, ci committedItem) bool` signature matches its test. `MapItemRecord.Outcome` (Task 1) read by Task 3's `committed` build. `commitMapItem(..., reason, outcome string)` (Task 1 Step 6) — both call sites in `dispatchItem` updated (Task 1 Step 5). `RunOptions.Resume`/`interpreterContext.resume`/`runAndFinish(... resume bool ...)` consistent across Task 3.
-- **Uncertainty flagged (CLAUDE.md rule 4):** Task 4 Steps 1-3 (`conformance/harness.go` `RunOptions` literal location, the reduce IR shape, and the conformance map fixture) are specified by behavior + a pointer to the existing pattern files rather than verbatim, because those bodies were not captured during planning. The implementer must read `engine/reduce_test.go`, `conformance/harness.go`, and `conformance/fixtures.go` for the exact constructors. The engine reconciliation tasks (1-3) are fully verbatim.
+- **Type consistency:** no parallel projection type — `shouldRerunItem(n *ir.Map, resume bool, mr MapItemRecord) bool` reads the existing `MapItemRecord` directly (rule 2), and its signature matches `TestShouldRerunItem` (Task 3 Step 1) and the `committed map[int]MapItemRecord` reconciliation. `MapItemRecord.Outcome` (Task 1) is read from the folded record by Task 3's `committed` build. `commitMapItem(..., reason, outcome string)` (Task 1 Step 6) — both call sites in `dispatchItem` updated (Task 1 Step 5). `RunOptions.Resume`/`interpreterContext.resume`/`runAndFinish(... resume bool ...)` consistent across Task 3.
+- **Uncertainty flagged (CLAUDE.md rule 4):** the reduce map→reduce constructor is now located (`engine/map_test.go` ~947-1016, `mapNode.Reduce = &ir.Reduce{Quorum,Over}` + the `okSchema` vote-body helper ~929) and Task 4 Step 2 uses it with the corrected transient-failure scenario. Two items remain pattern-pointers because their bodies were not captured verbatim: the `conformance/harness.go` `RunOptions` literal location (Step 1) and the conformance map fixture (Step 3) — the implementer reads `conformance/harness.go` and `conformance/fixtures.go` for the exact constructors. The engine reconciliation tasks (1-3) are fully verbatim.
 - **Placeholders:** none (Task 4 pattern-pointers are explicit directives to existing files, not "TODO").

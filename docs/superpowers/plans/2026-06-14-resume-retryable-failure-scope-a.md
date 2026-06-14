@@ -311,10 +311,13 @@ func TestCLIResumeRefusesRejectedRunFinished(t *testing.T) {
 	assertNoRunResumed(t, stateDir, runID)
 }
 
-// END-TO-END: a real run fails transiently (echo_step exits 1, exhausts retries
-// → run.finished{retryable_failure}); resume admits it through the real guard and
-// re-runs the uncommitted frontier to completion. The committed first step is
-// replayed, not re-executed. This is the strongest Scope-A proof — no map needed.
+// END-TO-END: a real run fails transiently (echo_step exits 1); resume admits it
+// through the real guard and re-runs the uncommitted frontier to completion.
+// Uses seq-retry1.yaml (echo_step retry.attempts:1) so the failed attempt does
+// NOT pay real retry backoff (~3s under the default 3 attempts; runAndFinish
+// hardcodes clock.System{}, so a fake clock can't be injected at the CLI boundary
+// — same approach as the existing try.yaml / TestCLIRunOnTryFixture pattern).
+// (Committed-step replay is pinned separately by TestCLIResumeHappyPathSkipsCommittedSteps.)
 func TestCLIResumeRetryableEndToEnd(t *testing.T) {
 	stateDir := t.TempDir()
 	runID := "test-resume-retryable-e2e"
@@ -326,7 +329,7 @@ func TestCLIResumeRetryableEndToEnd(t *testing.T) {
 	runner1 := &cli.Runner{Backend: fake1, IDGen: &clock.Fake{IDs: []string{runID}}}
 	var o1, e1 bytes.Buffer
 	rc1 := runner1.Run([]string{
-		"run", "--state-dir", stateDir, "--run-id", runID, "testdata/phase2/seq.yaml",
+		"run", "--state-dir", stateDir, "--run-id", runID, "testdata/phase2/seq-retry1.yaml",
 	}, &o1, &e1)
 	if rc1 == cli.ExitOK {
 		t.Fatalf("run 1 should have failed transiently; rc=%d stderr=%s", rc1, e1.String())
@@ -342,17 +345,24 @@ func TestCLIResumeRetryableEndToEnd(t *testing.T) {
 	runner2 := &cli.Runner{Backend: fake2, IDGen: &clock.Fake{}}
 	var o2, e2 bytes.Buffer
 	rc2 := runner2.Run([]string{
-		"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml",
+		"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq-retry1.yaml",
 	}, &o2, &e2)
 	if rc2 != cli.ExitOK {
 		t.Fatalf("resume rc=%d, want ExitOK; stderr=%s", rc2, e2.String())
 	}
-	if !strings.Contains(e2.String(), "previously failed transiently") {
+	if !strings.Contains(e2.String(), "eligible for resume") {
 		t.Errorf("resume did not log the transient-admit notice: %q", e2.String())
 	}
 }
 ```
 (The committed-first-step-is-replayed-not-re-run guarantee is already pinned by `TestCLIResumeHappyPathSkipsCommittedSteps`; this test focuses on the new admit-and-complete path. If you want a re-dispatch assertion here, check `fake2`'s recorded exec calls using whatever accessor `container.Fake` exposes — confirm its shape in `container/fake.go` first.)
+
+**Create the e2e fixture `cli/testdata/phase2/seq-retry1.yaml`** — a verbatim copy of `seq.yaml` with one addition: under the `echo_step` node (after its `output_schema` block, keep that block intact so resume's `{"message":"step2"}` still validates), add
+```yaml
+    retry:
+      attempts: 1
+```
+With `attempts: 1` the engine dispatches `echo_step` exactly once (`RunWithRetry` loop runs once; `BackoffFor(1)==0` → no sleep), and a single nonzero exit is still `retryable_failure` (exit 1 ∉ `non_retryable_exit_codes`), so run-1 rolls up `run.finished{retryable_failure}` with zero backoff. This mirrors `cli/testdata/phase3/try.yaml` + `TestCLIRunOnTryFixture`. Both run-1 and resume must point at this same file so the resume digest check matches.
 
 - [ ] **Step 3: Update the crash-window permanent test's expected message**
 
@@ -363,6 +373,8 @@ In `cli/resume_test.go`, `TestCLIResumeRefusesNodeFailedInLog` (currently assert
 	}
 ```
 (Leave the `!strings.Contains(stderrStr, "already finished")` precedence check unchanged — it still holds.)
+
+Also amend that test's top comment to pin the crash-window asymmetry it now documents: a NESTED tolerated-permanent `node.failed` (e.g. `map[0].item-2`) with no `run.finished` is *also* refused here — even though the same shape *with* `run.finished` rolls up `retryable_failure` and is admitted. With no `run.finished` there is no trusted rollup, so the crash window conservatively refuses rather than re-derive it (spec §4 / §5.1). This is the only guard branch involved, so no separate test is needed — this existing test pins it.
 
 - [ ] **Step 4: Run the new tests to verify they fail**
 
@@ -393,7 +405,11 @@ In `cli/resume.go`, replace the three loops at lines 145-171 with:
 		}
 	}
 	// run.cancelled stays a blanket terminal refusal, BEFORE the node.failed
-	// fallback: cancel-during-step writes both events; show "cancelled".
+	// fallback. A cancelled run has run.cancelled and NO run.finished (execute.go
+	// short-circuits on ErrCancelled before writing run.finished). But a tolerated
+	// node.failed (a caught try/catch do, or a map-item body node.failed{permanent})
+	// CAN co-exist with run.cancelled when cancel lands during a later step — so
+	// check run.cancelled first to show "cancelled", not a nested-failure message.
 	for _, e := range events {
 		if e.Type == engine.EventRunCancelled {
 			fprintf(stderr, "awf resume: run %q was cancelled (run.cancelled in log). Cannot resume a cancelled run; start a new run id.\n", runID)
@@ -403,8 +419,10 @@ In `cli/resume.go`, replace the three loops at lines 145-171 with:
 	if finished != nil {
 		switch engine.Outcome(finished.Outcome) {
 		case engine.OutcomeRetryableFailure:
-			fprintf(stderr, "awf resume: run %q previously failed transiently (retryable_failure); re-attempting the uncommitted frontier\n", runID)
-			// ADMIT — fall through to backend wiring. Do NOT scan node.failed.
+			fprintf(stderr, "awf resume: run %q eligible for resume (retryable_failure); attempting the uncommitted frontier\n", runID)
+			// ADMIT — fall through to backend wiring. Do NOT scan node.failed. (This
+			// notice is printed in the guard, BEFORE the digest/runtime-drift/preflight
+			// checks that may still refuse — hence "eligible", not "re-attempting".)
 		case engine.OutcomeOK:
 			fprintf(stderr, "awf resume: run %q already finished (ok). Nothing to resume.\n", runID)
 			return ExitUsage
@@ -563,9 +581,15 @@ Append to that section:
 `awf resume` first sentence: change "Re-enter an interrupted run" → "Re-enter an interrupted run, or a run that terminated transiently (`retryable_failure`), re-running the transiently-failed frontier."
 `awf ls` status vocabulary list (line ~219): add `resumable` — "`resumable` (failed transiently; re-drivable with `awf resume`)" and keep `failed` for permanent/rejected.
 
-- [ ] **Step 4: README + stale comment**
+- [ ] **Step 4: `printResumeUsage`, README + stale comment**
 
-Update the README "how AWF is different" resume row if it asserts failed-runs-aren't-resumable. Grep `cli/resume.go` for "Phase 3's try/catch" — the rewritten guard (Task 2) removed it; confirm none remain: `grep -n "Phase 3" cli/resume.go` → no output.
+First, fix the in-code resume usage text (`cli/resume.go:51-54`, `printResumeUsage`) — it currently states a run that "terminated on a failed step (node.failed in the log) cannot be resumed", which contradicts the new behavior. Replace those `fprintln` lines with (mirrors the spec §4 four-class rule):
+```go
+	fprintln(w, "  A run is resumable iff its terminal outcome is retryable_failure; runs that")
+	fprintln(w, "  finished ok, failed permanently (permanent_failure), were rejected, or were")
+	fprintln(w, "  cancelled cannot be resumed.")
+```
+Then update the README "how AWF is different" resume row if it asserts failed-runs-aren't-resumable. Confirm both stale strings are gone: `grep -n "Phase 3" cli/resume.go` → no output (the rewritten guard removed the "Phase 3's try/catch" comment), and `grep -n "terminated on a" cli/resume.go` → only the new guard's "non-transient failure" message, not the old usage clause.
 
 - [ ] **Step 5: Verify and commit**
 
@@ -581,5 +605,5 @@ git commit -m "docs: document retryable_failure resumability contract + ls statu
 ## Self-Review
 
 - **Spec coverage:** §4 contract → Task 4 Step 1; §5.1 guard → Task 2; §5 accessors → Task 1; §6.6 ls status → Task 3; §9 idempotency → Task 4 Step 2; §11 docs → Task 4. Scope A's "node-kind-agnostic frontier" (§5.2) needs no code (engine already re-runs the uncommitted frontier once admitted) — covered by the existing `TestCLIResumeHappyPathSkipsCommittedSteps` plus the new admit tests; a composite-node conformance test is in the Scope B plan (it shares the resume harness work). No gaps.
-- **Type consistency:** `RunFinishedDataFromEvent`/`NodeFailedDataFromEvent` (Task 1) are used verbatim in Task 2 and Task 3. `engine.Outcome(...)` comparison, `OutcomeRetryableFailure`/`OutcomePermanentFailure`/`OutcomeRejected`/`OutcomeOK` spellings match `engine/runstate.go`. `RunResumable` const (Task 3) used consistently. Error substrings asserted in tests match the guard's `fprintf` strings exactly (`"terminal permanent_failure"`, `"terminal rejected"`, `"terminated on a non-transient failure"`, `"previously failed transiently"`).
+- **Type consistency:** `RunFinishedDataFromEvent`/`NodeFailedDataFromEvent` (Task 1) are used verbatim in Task 2 and Task 3. `engine.Outcome(...)` comparison, `OutcomeRetryableFailure`/`OutcomePermanentFailure`/`OutcomeRejected`/`OutcomeOK` spellings match `engine/runstate.go`. `RunResumable` const (Task 3) used consistently. Error substrings asserted in tests match the guard's `fprintf` strings exactly (`"terminal permanent_failure"`, `"terminal rejected"`, `"terminated on a non-transient failure"`, `"eligible for resume"`).
 - **Placeholders:** none.

@@ -165,6 +165,13 @@ tests all trace to. It covers the crash window §5 relies on:
 > (the `failStep`→`run.finished` crash window) its only terminal marker is
 > `node.failed{retryable_failure}` with no `run.finished`.
 > `ok`, `permanent_failure`, `rejected`, and `cancelled` are **not** resumable.
+>
+> **Crash-window asymmetry (deliberate):** with no `run.finished` there is no rollup to
+> trust, so a log whose only terminal marker is a *permanent* (or empty) `node.failed`
+> is refused — even a tolerated nested permanent `node.failed` (a map item) whose run
+> *would* have rolled up `retryable_failure`. The identical shape *with* `run.finished`
+> is admitted. This conservative refuse matches the pre-change behavior (no regression);
+> the operator's recourse is a fresh run id.
 
 This is the AWF spelling of Step Functions' redrive-eligibility predicate (eligible iff
 status ≠ `SUCCEEDED`, refined here to a whitelist because AWF distinguishes transient
@@ -221,7 +228,7 @@ for _, e := range events {
 if finished != nil {
     switch engine.Outcome(finished.Outcome) {
     case engine.OutcomeRetryableFailure:
-        fprintf(stderr, "awf resume: run %q previously failed transiently (retryable_failure); re-attempting the uncommitted frontier\n", runID)
+        fprintf(stderr, "awf resume: run %q eligible for resume (retryable_failure); attempting the uncommitted frontier\n", runID)
         // ADMIT. Do NOT scan node.failed.
     case engine.OutcomeOK:
         fprintf(stderr, "awf resume: run %q already finished (ok). Nothing to resume.\n", runID); return ExitUsage
@@ -245,7 +252,11 @@ Key points vs the earlier draft: (i) the `node.failed` scan runs **only** in the
 `finished == nil` branch — the standalone unconditional loop is deleted, fixing the
 false-refusal of compound retryable runs; (ii) the crash-window default is
 **admit-only-retryable / refuse-everything-else-including-empty**, not refuse-only-
-permanent; (iii) `run.cancelled` stays ahead to preserve message precedence.
+permanent; (iii) `run.cancelled` stays ahead of the `node.failed` fallback. A cancelled
+run has `run.cancelled` and *no* `run.finished` (the CLI short-circuits on `ErrCancelled`
+before writing `run.finished`); but a tolerated `node.failed` can co-exist with
+`run.cancelled` when cancel lands during a later step, so checking cancelled first shows
+"cancelled" rather than a nested-failure message.
 
 **New code:** `engine.RunFinishedDataFromEvent` / `engine.NodeFailedDataFromEvent` —
 trivial `json.Unmarshal` wrappers over `RunFinishedData` (`events.go:435`) /
@@ -361,12 +372,15 @@ times** — enforced in BOTH the fold (durable replay) and the live insert:
    folded record), and makes `updateMapItemStatus` / `UpdateMapItemValue` first-match
    scans trivially correct. (Chosen over "drop the folded record before re-run", which
    needs extra control flow and doesn't fix value-binding.)
-2. **Fold last-wins by N** on both arms (`fold.go:288`, `:308`): replace the
+2. **Fold last-wins by N** on the **`map.item` arm only** (`fold.go:288`): replace the
    `MapItemRecord` for an existing N rather than appending, **highest-seq wins** (Fold
-   walks in seq order). Still required because Fold rebuilds `MapItems` from the durable
-   log before `runMap` ever calls `RecordMapItem`, and a re-run appended a second
-   `map.item{N}`. This also keeps the `H8` non-deterministic-`over` guard
-   (`map.go:111`) and the tally robust to re-commits.
+   walks in seq order). Required because Fold rebuilds `MapItems` from the durable log
+   before `runMap` ever calls `RecordMapItem`, and a re-run appended a second
+   `map.item{N}`. The `map.frontier` arm (`fold.go:308`) stays a blind append: a prune
+   map commits one atomic `map.frontier` per path with distinct Ns, so per-N dedup there
+   is vacuous (and prune items are excluded from re-run, §6.4) — re-pointing that
+   load-bearing "frontier is never re-derived" arm would be rule-3 creep. This also keeps
+   the `H8` non-deterministic-`over` guard (`map.go:111`) and the tally robust to re-commits.
 
 External precedent: MapReduce keeps only the winning attempt per logical task; Step
 Functions' `ResultWriter` re-aggregates after redrive rather than patching — the dedup
