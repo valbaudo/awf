@@ -78,3 +78,8 @@ func GeminiCacheKeyForTest(model, systemPrompt string, files []agent.InputFile) 
 func EnsureGeminiCacheForTest(a *Adapter, ctx context.Context, cfg ReqConfigForTest, files []agent.InputFile) (string, error) {
 	return a.ensureGeminiCache(ctx, reqConfig(cfg), files)
 }
+
+// GeminiCacheConfigForTest builds an explicit-mode gemini cache config for tests.
+func GeminiCacheConfigForTest(mode, ttl string) *geminiCacheConfig {
+	return &geminiCacheConfig{Mode: mode, TTL: ttl}
+}

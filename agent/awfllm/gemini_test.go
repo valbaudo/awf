@@ -215,6 +215,88 @@ func TestCallGemini_ThreadRendered(t *testing.T) {
 	}
 }
 
+func TestCallGemini_ExplicitCacheWire(t *testing.T) {
+	var genBody string
+	var posts int
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/cachedContents"):
+			posts++
+			return jsonResponse(`{"name":"cachedContents/abc"}`), nil
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/cachedContents/"):
+			return jsonResponse(`{"name":"cachedContents/abc"}`), nil
+		default: // :generateContent
+			b, _ := io.ReadAll(r.Body)
+			genBody = string(b)
+			return jsonResponse(`{"candidates":[{"content":{"parts":[{"text":"{\"x\":1}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":3,"cachedContentTokenCount":55}}`), nil
+		}
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		Provider: "gemini", BaseURL: "https://generativelanguage.googleapis.com",
+		Model: "gemini-2.5-pro", APIKey: "k", SystemPrompt: "sys",
+		GeminiCache: awfllm.GeminiCacheConfigForTest("explicit", "600s"),
+	}
+	files := []agent.InputFile{{Name: "d", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
+	_, usage, _, _, err := a.StreamWithFilesForTest(context.Background(), cfg, "extract", &ir.JSONSchema{"type": "object"}, nil, files, func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("callGemini: %v", err)
+	}
+	if posts != 1 {
+		t.Errorf("expected one cachedContents create, got %d", posts)
+	}
+	// Decode the generateContent body to assert the wire precisely.
+	var req map[string]any
+	if err := json.Unmarshal([]byte(genBody), &req); err != nil {
+		t.Fatalf("genBody not JSON: %v\n%s", err, genBody)
+	}
+	if req["cachedContent"] != "cachedContents/abc" {
+		t.Errorf("cachedContent must be a TOP-LEVEL field = the cache name, got %v\n%s", req["cachedContent"], genBody)
+	}
+	if _, hasSys := req["systemInstruction"]; hasSys {
+		t.Errorf("cached call must NOT send systemInstruction (it is baked into the cache; 400 otherwise): %s", genBody)
+	}
+	if strings.Contains(genBody, `"inlineData"`) {
+		t.Errorf("cached call must NOT re-send the document inlineData: %s", genBody)
+	}
+	if !strings.Contains(genBody, "extract") {
+		t.Errorf("cached call must still carry the prompt text: %s", genBody)
+	}
+	// Native structured output is kept (verified to work with a cache).
+	if !strings.Contains(genBody, "responseMimeType") {
+		t.Errorf("cached call should keep native structured output when output_schema is set: %s", genBody)
+	}
+	if usage.CacheRead != 55 {
+		t.Errorf("cachedContentTokenCount must flow to usage.CacheRead, got %d", usage.CacheRead)
+	}
+}
+
+func TestCallGemini_NoCacheUnchanged(t *testing.T) {
+	var posts int
+	var genBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/cachedContents") {
+			posts++
+		}
+		b, _ := io.ReadAll(r.Body)
+		genBody = string(b)
+		return jsonResponse(`{"candidates":[{"content":{"parts":[{"text":"{\"x\":1}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"cachedContentTokenCount":0}}`), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "gemini", BaseURL: "https://generativelanguage.googleapis.com", Model: "gemini-2.5-pro", APIKey: "k", SystemPrompt: "sys"}
+	files := []agent.InputFile{{Name: "d", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
+	_, _, _, _, err := a.StreamWithFilesForTest(context.Background(), cfg, "extract", nil, nil, files, func(string, []byte) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posts != 0 {
+		t.Errorf("no caching → no cachedContents call, got %d", posts)
+	}
+	if !strings.Contains(genBody, `"inlineData"`) || !strings.Contains(genBody, `"systemInstruction"`) {
+		t.Errorf("no caching → document sent inline + systemInstruction present: %s", genBody)
+	}
+}
+
 // TestCallGemini_UnknownModelHasNoCost confirms a Gemini model absent from
 // pricing/rates.json yields NO derived cost (pricing.Derive ok=false → buildResult
 // leaves Metrics.Cost zero-valued: empty Source, zero Total). Cost is left
