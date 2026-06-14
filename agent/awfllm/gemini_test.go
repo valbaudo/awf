@@ -103,6 +103,40 @@ func TestCallGemini_PDFRequestAndUsage(t *testing.T) {
 	}
 }
 
+// TestCallGemini_StructuredOutputOff — Fix C: structured_output:off must mean
+// "no native structured output" for the Gemini transport too. With off, even when
+// an output_schema is present, the request body must OMIT responseMimeType and
+// _responseJsonSchema (prompt-restate only, via assemblePrompt's N2 floor).
+func TestCallGemini_StructuredOutputOff(t *testing.T) {
+	const resp = `{"candidates":[{"content":{"parts":[{"text":"{\"name\":\"x\"}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"cachedContentTokenCount":0}}`
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return jsonResponse(resp), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		Provider:         "gemini",
+		BaseURL:          "https://generativelanguage.googleapis.com",
+		Model:            "gemini-3.5-flash",
+		APIKey:           "k",
+		StructuredOutput: "off",
+	}
+	_, _, _, _, err := a.StreamWithFilesForTest(
+		context.Background(), cfg, "extract", &ir.JSONSchema{"type": "object"}, nil, nil,
+		func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("callGemini: %v", err)
+	}
+	if strings.Contains(gotBody, "responseMimeType") {
+		t.Errorf("structured_output:off must OMIT responseMimeType: %s", gotBody)
+	}
+	if strings.Contains(gotBody, "_responseJsonSchema") {
+		t.Errorf("structured_output:off must OMIT _responseJsonSchema: %s", gotBody)
+	}
+}
+
 // TestCallGemini_UnknownModelHasNoCost confirms a Gemini model absent from
 // pricing/rates.json yields NO derived cost (pricing.Derive ok=false → buildResult
 // leaves Metrics.Cost zero-valued: empty Source, zero Total). Cost is left

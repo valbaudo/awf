@@ -104,8 +104,8 @@ func (a *Adapter) RunToolLoop(ctx context.Context, inv agent.ToolLoopInvocation)
 	if err != nil {
 		return agent.ToolLoopResult{}, err
 	}
-	if cfg.StructuredOutput == soOllamaFormat {
-		return agent.ToolLoopResult{}, fmt.Errorf("agent/awfllm: react: not supported on the Ollama-native path (structured_output: ollama_format)")
+	if cfg.Provider == providerOllama {
+		return agent.ToolLoopResult{}, fmt.Errorf("agent/awfllm: react: not supported on the Ollama-native transport (provider: ollama / structured_output: ollama_format)")
 	}
 	return a.runOneToolCall(ctx, cfg, inv.NodePath, inv.Messages, inv.Tools, inv.OutputSchema)
 }

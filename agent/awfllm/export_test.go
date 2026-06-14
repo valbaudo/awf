@@ -48,6 +48,13 @@ func (a *Adapter) BuildReqConfigForTest(inv agent.AgentInvocation) (ReqConfigFor
 
 var AssemblePromptForTest = assemblePrompt
 
+// EffectiveProviderForTest + ProviderDefaultsForTest expose the single-source
+// transport-selection helpers for the drift/consistency white-box test.
+var (
+	EffectiveProviderForTest = effectiveProvider
+	ProviderDefaultsForTest  = providerDefaults
+)
+
 // ClientForTest exposes clientFor for white-box tests (tls_insecure behavior).
 func (a *Adapter) ClientForTest(insecure bool) *http.Client { return a.clientFor(insecure) }
 

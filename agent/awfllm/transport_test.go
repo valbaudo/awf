@@ -261,7 +261,8 @@ func TestStream_OllamaNative_AccumulatesAndFormat(t *testing.T) {
 	})
 	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
 	cfg := awfllm.ReqConfigForTest{
-		BaseURL: "http://host.docker.internal:11434", APIKey: "ollama", Model: "llama3",
+		Provider: "ollama",
+		BaseURL:  "http://host.docker.internal:11434", APIKey: "ollama", Model: "llama3",
 		StructuredOutput: "ollama_format",
 	}
 	var deltas []string
@@ -289,6 +290,35 @@ func TestStream_OllamaNative_AccumulatesAndFormat(t *testing.T) {
 	// restatement is centralized in assemblePrompt (N2) and verified by
 	// TestAssemblePrompt_* — NOT here: StreamForTest receives the prompt verbatim,
 	// so this transport-level test must not assert prompt content.
+}
+
+// TestStream_ProviderOllama_RoutesToOllamaWire — Fix B: provider is the SOLE
+// transport selector. provider:ollama hits the native /api/chat wire EVEN WHEN
+// structured_output is response_format (NOT ollama_format) — proving the route is
+// driven by cfg.Provider, not by structured_output.
+func TestStream_ProviderOllama_RoutesToOllamaWire(t *testing.T) {
+	var gotURL string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"application/x-ndjson"}},
+			Body:       io.NopCloser(strings.NewReader(ollamaNDJSON)),
+		}, nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		Provider: "ollama",
+		BaseURL:  "http://localhost:11434", Model: "llama3",
+		StructuredOutput: "response_format", // NOT ollama_format — provider alone must route
+	}
+	_, _, _, _, err := a.StreamForTest(context.Background(), cfg, "2+2?", &ir.JSONSchema{"type": "object"}, nil, func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if !strings.HasSuffix(gotURL, "/api/chat") {
+		t.Errorf("URL = %q, want .../api/chat (provider:ollama → native wire)", gotURL)
+	}
 }
 
 // TestStream_T7_OpenAI_ThreadRendered — T7 wire test (OpenAI path).
@@ -388,6 +418,7 @@ func TestStream_T7_Ollama_ThreadRendered(t *testing.T) {
 
 	thread := []agent.ThreadTurn{{User: "u1", Assistant: "a1"}}
 	cfg := awfllm.ReqConfigForTest{
+		Provider:         "ollama",
 		BaseURL:          "http://localhost:11434",
 		Model:            "llama3",
 		SystemPrompt:     "SYS",
@@ -724,6 +755,7 @@ func captureOllamaBody(t *testing.T, files []agent.InputFile) string {
 	})
 	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
 	cfg := awfllm.ReqConfigForTest{
+		Provider:         "ollama",
 		BaseURL:          "http://localhost:11434",
 		Model:            "llava",
 		StructuredOutput: "ollama_format",
@@ -751,6 +783,7 @@ func callOllamaWith(t *testing.T, files []agent.InputFile) (string, error) {
 	})
 	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
 	cfg := awfllm.ReqConfigForTest{
+		Provider:         "ollama",
 		BaseURL:          "http://localhost:11434",
 		Model:            "llava",
 		StructuredOutput: "ollama_format",

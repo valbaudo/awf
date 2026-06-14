@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/awfllm"
 	"github.com/valbaudo/awf/ir"
 )
 
@@ -54,6 +55,65 @@ func TestBuildReqConfig_OpenAIDefaults(t *testing.T) {
 	}
 	if cfg.MaxInlineBytes != 32<<20 {
 		t.Fatalf("MaxInlineBytes=%d, want %d (32 MiB default)", cfg.MaxInlineBytes, 32<<20)
+	}
+}
+
+// TestBuildReqConfig_OllamaKeyOptional — Fix B: the ollama transport is a LOCAL
+// server, so its API key env is optional. With provider:ollama and NO key env in
+// the allowlist, buildReqConfig succeeds and leaves cfg.APIKey == "" (streamOllama
+// omits the Authorization header on an empty key). Base URL defaults to localhost.
+func TestBuildReqConfig_OllamaKeyOptional(t *testing.T) {
+	a := llmAdapter(t, map[string]string{}) // no key env at all
+	cfg, err := a.BuildReqConfigForTest(agent.AgentInvocation{
+		With: ir.RawConfig{"provider": "ollama", "model": "llama3"},
+	})
+	if err != nil {
+		t.Fatalf("buildReqConfig (ollama, no key) must succeed: %v", err)
+	}
+	if cfg.Provider != "ollama" {
+		t.Fatalf("provider=%q, want ollama", cfg.Provider)
+	}
+	if cfg.APIKey != "" {
+		t.Fatalf("apiKey=%q, want empty (ollama key optional)", cfg.APIKey)
+	}
+	if cfg.BaseURL != "http://localhost:11434" {
+		t.Fatalf("default ollama base_url=%q, want http://localhost:11434", cfg.BaseURL)
+	}
+}
+
+// TestEffectiveProviderAndDefaults_NoDrift — Fix A/B: the single-source helpers.
+// effectiveProvider returns ollama for a bare structured_output:ollama_format (the
+// back-compat path with no provider key); and providerDefaults returns the gemini
+// key env that buildReqConfig actually resolves (no drift between validate + build).
+func TestEffectiveProviderAndDefaults_NoDrift(t *testing.T) {
+	// effectiveProvider: bare ollama_format → ollama (back-compat).
+	if got := awfllm.EffectiveProviderForTest(ir.RawConfig{"structured_output": "ollama_format"}); got != "ollama" {
+		t.Errorf("effectiveProvider(ollama_format) = %q, want ollama", got)
+	}
+	// effectiveProvider: explicit provider wins.
+	if got := awfllm.EffectiveProviderForTest(ir.RawConfig{"provider": "gemini"}); got != "gemini" {
+		t.Errorf("effectiveProvider(provider:gemini) = %q, want gemini", got)
+	}
+	// effectiveProvider: nothing set → openai default.
+	if got := awfllm.EffectiveProviderForTest(ir.RawConfig{"model": "m"}); got != "openai" {
+		t.Errorf("effectiveProvider(bare) = %q, want openai", got)
+	}
+	// providerDefaults(gemini) names GEMINI_API_KEY — the same env buildReqConfig resolves.
+	_, geminiKeyEnv := awfllm.ProviderDefaultsForTest("gemini")
+	if geminiKeyEnv != "GEMINI_API_KEY" {
+		t.Fatalf("providerDefaults(gemini) key env = %q, want GEMINI_API_KEY", geminiKeyEnv)
+	}
+	a := llmAdapter(t, map[string]string{geminiKeyEnv: "k"})
+	with := ir.RawConfig{"provider": "gemini", "model": "m", "prompt": "hi"}
+	if err := a.ValidateConfig(with); err != nil {
+		t.Fatalf("ValidateConfig(provider:gemini) with %s present should pass: %v", geminiKeyEnv, err)
+	}
+	cfg, err := a.BuildReqConfigForTest(agent.AgentInvocation{With: with})
+	if err != nil {
+		t.Fatalf("buildReqConfig(provider:gemini): %v", err)
+	}
+	if cfg.APIKey != "k" {
+		t.Fatalf("buildReqConfig resolved apiKey=%q, want k (from %s) — drift between validate+build", cfg.APIKey, geminiKeyEnv)
 	}
 }
 

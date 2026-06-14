@@ -100,18 +100,20 @@ func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletion
 
 // stream issues a STREAMING chat completion, calling emit(delta, rawChunk) per
 // content delta, and returns the reassembled text, usage, wire model, finish_reason,
-// and a classified error (apiError for HTTP faults). Switches on StructuredOutput:
-// ollama_format → the native /api/chat path (Task B6); else → OpenAI-compat.
-// thread contains the engine-assembled prior turns (continues: threading) to
-// prepend in the message array between the system message and the current prompt.
+// and a classified error (apiError for HTTP faults). Provider is the SOLE transport
+// selector: gemini → native :generateContent, ollama → native /api/chat, default →
+// OpenAI-compat. thread contains the engine-assembled prior turns (continues:
+// threading) to prepend in the message array between the system message and the
+// current prompt.
 func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
-	if cfg.Provider == providerGemini {
+	switch cfg.Provider {
+	case providerGemini:
 		return a.callGemini(ctx, cfg, prompt, schema, files, emit)
-	}
-	if cfg.StructuredOutput == soOllamaFormat {
+	case providerOllama:
 		return a.streamOllama(ctx, cfg, prompt, schema, thread, files, emit)
+	default:
+		return a.streamOpenAI(ctx, cfg, prompt, schema, thread, files, emit)
 	}
-	return a.streamOpenAI(ctx, cfg, prompt, schema, thread, files, emit)
 }
 
 // streamOpenAI uses openai-go (v3) against any OpenAI-compatible base_url. The
@@ -381,7 +383,10 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 	messages = append(messages, userMsg)
 
 	body := map[string]any{"model": cfg.Model, "messages": messages, "stream": true}
-	if schema != nil {
+	// structured_output:off → no native `format` field (prompt-restate only, via
+	// assemblePrompt's N2 floor); honored for ALL transports (Fix C). Both
+	// ollama_format and response_format mean "use the native format field" here.
+	if schema != nil && cfg.StructuredOutput != soOff {
 		body["format"] = map[string]any(*schema)
 	}
 	opts := map[string]any{}
@@ -507,7 +512,9 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 	if cfg.HasMaxTokens {
 		gc["maxOutputTokens"] = cfg.MaxTokens
 	}
-	if schema != nil {
+	// structured_output:off → no native structured output (prompt-restate only,
+	// via assemblePrompt's N2 floor); honored for ALL transports (Fix C).
+	if schema != nil && cfg.StructuredOutput != soOff {
 		gc["responseMimeType"] = "application/json"
 		gc["_responseJsonSchema"] = map[string]any(*schema)
 	}
