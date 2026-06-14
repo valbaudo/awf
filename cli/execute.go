@@ -73,6 +73,7 @@ func (r *Runner) runAndFinish(
 	broker *signal.Broker,
 	liveRoot live.Root,
 	skipTeardown *bool,
+	forceResume bool,
 ) int {
 	tap := r.agentEventTap(stderr)
 	dispatcher := &engine.LocalDispatcher{
@@ -90,6 +91,7 @@ func (r *Runner) runAndFinish(
 		Assets:        assets,
 		InputFiles:    inputFiles,
 		LiveFinalizer: liveDispatchFinalizer(liveRoot),
+		ForceResume:   forceResume,
 	})
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished

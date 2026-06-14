@@ -46,7 +46,7 @@ func (e *ErrRuntimeDrift) Error() string {
 
 // printResumeUsage writes the resume-subcommand usage line.
 func printResumeUsage(w io.Writer) {
-	fprintln(w, "usage: awf resume <run-id> <path> [--state-dir <dir>]")
+	fprintln(w, "usage: awf resume <run-id> <path> [--state-dir <dir>] [--force]")
 	fprintln(w, "")
 	fprintln(w, "  re-enter an interrupted run. The workflow file at <path> must hash to the")
 	fprintln(w, "  same digest as the run's original definition (spec §8 pinning); a mismatch is a hard")
@@ -54,6 +54,8 @@ func printResumeUsage(w io.Writer) {
 	fprintln(w, "  failed step (node.failed in the log) cannot be resumed.")
 	fprintln(w, "")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
+	fprintln(w, "  --force            re-enter a terminally-failed run (permanent_failure/rejected/cancelled);")
+	fprintln(w, "                     replays committed work, re-runs the uncommitted frontier. Pins still enforced.")
 }
 
 // cliResume implements `awf resume <run-id> <path>`. The flow:
@@ -77,6 +79,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
+	force := fs0.Bool("force", false, "re-enter a terminally-failed run (permanent_failure/rejected/cancelled); pins are still enforced")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printResumeUsage(stdout)
@@ -142,32 +145,18 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 3: terminal-event refusals (precedence: run.finished →
-	// run.cancelled → node.failed; each error message names the event).
-	for _, e := range events {
-		if e.Type == engine.EventRunFinished {
-			fprintf(stderr, "awf resume: run %q already finished (run.finished event in log). Cannot resume a completed run.\n", runID)
-			return ExitUsage
-		}
+	// Step 3: terminal-outcome guard. resumeAdmission relaxes ONLY the terminal
+	// guard under --force; the pin checks below (digest, runtime drift) are
+	// unconditional. COORDINATION: reconcile with the retryable scope-b guard at
+	// merge (one helper; admit retryable always ∪ {permanent,rejected,cancelled}
+	// under --force).
+	admit, refuseMsg, termLabel := resumeAdmission(runID, events, *force)
+	if !admit {
+		fprintf(stderr, "%s", refuseMsg)
+		return ExitUsage
 	}
-	// Slice 3.5: refusal — run.cancelled already in log (terminal).
-	// Checked BEFORE node.failed: cancel-during-step writes both events; the
-	// user wants to see "cancelled," not "failed step."
-	for _, e := range events {
-		if e.Type == engine.EventRunCancelled {
-			fprintf(stderr, "awf resume: run %q was cancelled (run.cancelled in log). Cannot resume a cancelled run; start a new run id.\n", runID)
-			return ExitUsage
-		}
-	}
-	// Refusal — node.failed already in the log (terminal-by-propagation).
-	// Phase 2 has no try/catch (Phase 3 lights it up); a failed step halts the
-	// run, and resuming would try to re-execute the failed step, which is not
-	// the Phase-2 retry semantic. Refuse explicitly.
-	for _, e := range events {
-		if e.Type == engine.EventNodeFailed {
-			fprintf(stderr, "awf resume: run %q terminated on a failed step (node.failed at path %q in log). Phase 2 does not resume past a failed step; Phase 3's try/catch will revisit this.\n", runID, e.Path)
-			return ExitUsage
-		}
+	if *force && termLabel != "" {
+		fprintf(stderr, "awf resume --force: re-entering a terminally-%s run %q; the uncommitted frontier (and its side effects) will re-run. Pins remain enforced.\n", termLabel, runID)
 	}
 
 	// Step 4 (slice 4.5): wire signal handling EARLY so newBackend gets a
@@ -398,7 +387,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// RunOptions.InputFiles when non-nil — so the folded value wins, exactly
 	// like the typed input and Assets channels. `awf resume` has no
 	// --input-files flag (per the same no-re-supply rule as --input).
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, nil, broker, liveRoot, &skipTeardown)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, nil, broker, liveRoot, &skipTeardown, *force)
 }
 
 func preflightLiveResume(ctx context.Context, ld *ir.LoadedDefinition, rs *engine.RunState, resolver agent.Resolver) error {

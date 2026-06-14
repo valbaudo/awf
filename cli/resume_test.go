@@ -1161,3 +1161,105 @@ func assertNoRunResumed(t *testing.T, stateDir, runID string) {
 		}
 	}
 }
+
+// buildPermanentFailureRun produces a run on disk that ends with
+// run.finished{permanent_failure}. It uses a single-step workflow whose
+// command exits 78 (EX_CONFIG — the spec §6 default non-retryable sentinel).
+// Returns stateDir + runID + wfPath so callers resume against the SAME workflow
+// file (identical digest; no duplicated YAML in each test).
+func buildPermanentFailureRun(t *testing.T) (stateDir, runID, wfPath string) {
+	t.Helper()
+	tmp := t.TempDir()
+	wfPath = filepath.Join(tmp, "fail-wf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: force-test-fail
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: step1
+    container: lab
+    run: "./fail.sh"
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID = "test-force-perm-fail"
+	stateDir = t.TempDir()
+	fake := container.NewFake()
+	// Exit 78 → permanent_failure via the spec §6 default retry policy.
+	fake.ProgramExec("./fail.sh", container.ExecResult{ExitCode: 78}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{IDs: []string{runID}}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, "--run-id", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitRunFailed {
+		t.Fatalf("setup: expected ExitRunFailed, got %d; stderr: %s", rc, stderr.String())
+	}
+	// Verify log has run.finished{permanent_failure} before returning.
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	lg, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("setup OpenLog: %v", err)
+	}
+	defer func() { _ = lg.Close() }()
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("setup Fold: %v", err)
+	}
+	var gotPermanent bool
+	for _, e := range events {
+		if e.Type == engine.EventRunFinished {
+			var d engine.RunFinishedData
+			if jsonErr := json.Unmarshal(e.Data, &d); jsonErr == nil && d.Outcome == "permanent_failure" {
+				gotPermanent = true
+			}
+		}
+	}
+	if !gotPermanent {
+		t.Fatalf("setup: log does not contain run.finished{permanent_failure}")
+	}
+	return stateDir, runID, wfPath
+}
+
+// TestCLIResumeForce_RefusedWithoutFlag confirms that a permanently-failed run
+// is refused (ExitUsage) without --force, and that the error message names the
+// --force flag so the user knows what to do.
+func TestCLIResumeForce_RefusedWithoutFlag(t *testing.T) {
+	t.Parallel()
+	stateDir, runID, wfPath := buildPermanentFailureRun(t)
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, runID, wfPath,
+	}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Errorf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--force") {
+		t.Errorf("stderr missing '--force' hint: %q", stderr.String())
+	}
+}
+
+// TestCLIResumeForce_AdmittedWithFlag confirms that --force admits a
+// permanently-failed run, emits the warning to stderr, and completes with
+// ExitOK when the underlying cause has been fixed (fake reprogrammed to exit 0).
+func TestCLIResumeForce_AdmittedWithFlag(t *testing.T) {
+	t.Parallel()
+	stateDir, runID, wfPath := buildPermanentFailureRun(t)
+
+	// Reprogram the fake: the operator "fixed the cause" so step1 now exits 0.
+	fakeOK := container.NewFake()
+	fakeOK.ProgramExec("./fail.sh", container.ExecResult{ExitCode: 0}, nil)
+	runner := &cli.Runner{Backend: fakeOK, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, "--force", runID, wfPath,
+	}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--force") {
+		t.Errorf("stderr missing '--force' warning: %q", stderr.String())
+	}
+}
