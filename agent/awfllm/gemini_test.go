@@ -2,6 +2,7 @@ package awfllm_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -134,6 +135,77 @@ func TestCallGemini_StructuredOutputOff(t *testing.T) {
 	}
 	if strings.Contains(gotBody, "_responseJsonSchema") {
 		t.Errorf("structured_output:off must OMIT _responseJsonSchema: %s", gotBody)
+	}
+}
+
+// TestCallGemini_ThreadRendered — finding #1: the Gemini transport advertises a
+// global Threaded:true but previously DROPPED the engine-assembled thread. A
+// continues: chain landing on a gemini step must replay the prior turns. Gemini's
+// generateContent contents[] is multi-turn natively: each prior turn becomes a
+// {role:user} then {role:model} pair (Gemini uses "model", NOT "assistant"), in
+// chronological order, with the CURRENT user turn last.
+func TestCallGemini_ThreadRendered(t *testing.T) {
+	const resp = `{"candidates":[{"content":{"parts":[{"text":"a2"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"cachedContentTokenCount":0}}`
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return jsonResponse(resp), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+
+	cfg := awfllm.ReqConfigForTest{
+		Provider: "gemini",
+		BaseURL:  "https://generativelanguage.googleapis.com",
+		Model:    "gemini-3.5-flash",
+		APIKey:   "k",
+	}
+	thread := []agent.ThreadTurn{{User: "q1", Assistant: "a1"}}
+	_, _, _, _, err := a.StreamWithFilesForTest(
+		context.Background(), cfg, "q2", nil, thread, nil,
+		func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("callGemini: %v", err)
+	}
+
+	// Decode the contents[] and assert role/text ordering: prior turn user/model
+	// pair BEFORE the current user turn.
+	var req struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &req); err != nil {
+		t.Fatalf("unmarshal request body: %v (%s)", err, gotBody)
+	}
+	if len(req.Contents) != 3 {
+		t.Fatalf("contents len = %d, want 3 (prior user, prior model, current user): %s", len(req.Contents), gotBody)
+	}
+	type rt0 struct{ role, text string }
+	got := []rt0{}
+	for _, c := range req.Contents {
+		text := ""
+		if len(c.Parts) > 0 {
+			text = c.Parts[0].Text
+		}
+		got = append(got, rt0{role: c.Role, text: text})
+	}
+	want := []rt0{
+		{role: "user", text: "q1"},
+		{role: "model", text: "a1"}, // Gemini's assistant role is "model", NOT "assistant"
+		{role: "user", text: "q2"},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("contents[%d] = %+v, want %+v (full: %s)", i, got[i], want[i], gotBody)
+		}
+	}
+	// Defensive: the assistant role must never be "assistant" on the Gemini wire.
+	if strings.Contains(gotBody, `"role":"assistant"`) {
+		t.Errorf("Gemini wire must use role \"model\" not \"assistant\": %s", gotBody)
 	}
 }
 

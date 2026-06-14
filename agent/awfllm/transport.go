@@ -108,7 +108,7 @@ func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletion
 func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	switch cfg.Provider {
 	case providerGemini:
-		return a.callGemini(ctx, cfg, prompt, schema, files, emit)
+		return a.callGemini(ctx, cfg, prompt, schema, thread, files, emit)
 	case providerOllama:
 		return a.streamOllama(ctx, cfg, prompt, schema, thread, files, emit)
 	default:
@@ -490,9 +490,20 @@ func ollamaErrType(body []byte) string {
 // none is sent. Cost is left UNREPORTED automatically — pricing.Derive returns
 // ok=false for any model absent from rates.json, and metricsFrom skips cost on a
 // miss (no special-casing here).
-func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/v1beta/models/" + cfg.Model + ":generateContent"
 
+	// Prior turns (continues: threading) — Gemini's contents array is multi-turn.
+	// The assistant role on the wire is "model", NOT "assistant". Chronological,
+	// before the current user turn, so Threaded:true is honest for this transport too.
+	contents := make([]map[string]any, 0, len(thread)*2+1)
+	for _, t := range thread {
+		contents = append(contents,
+			map[string]any{"role": "user", "parts": []map[string]any{{"text": t.User}}},
+			map[string]any{"role": "model", "parts": []map[string]any{{"text": t.Assistant}}},
+		)
+	}
+	// Current user turn: prompt text + one inlineData part per file.
 	parts := []map[string]any{{"text": prompt}}
 	for _, f := range files {
 		// Accept/reject via the shared capability table (previously MISSING here —
@@ -506,7 +517,8 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 			"data":     base64.StdEncoding.EncodeToString(f.Content), // bare base64, no data: prefix
 		}})
 	}
-	body := map[string]any{"contents": []map[string]any{{"role": "user", "parts": parts}}}
+	contents = append(contents, map[string]any{"role": "user", "parts": parts})
+	body := map[string]any{"contents": contents}
 	if cfg.SystemPrompt != "" {
 		body["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": cfg.SystemPrompt}}}
 	}
