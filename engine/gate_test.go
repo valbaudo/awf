@@ -60,7 +60,7 @@ func TestRunGateSingleAttemptPasses(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, false)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -105,7 +105,7 @@ func TestRunGateRepairsAndPassesOnAttempt2(t *testing.T) {
 	}}
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, wrapper, lg, blobs, &clock.Fake{}, nil, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, wrapper, lg, blobs, &clock.Fake{}, nil, nil, false)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -161,7 +161,7 @@ func TestRunGateMaxAttemptsReturnsRejected(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, false)
 	if oc != OutcomeRejected {
 		t.Errorf("oc = %q, want %q", oc, OutcomeRejected)
 	}
@@ -193,7 +193,7 @@ func TestRunGateGenerateCrashDoesNotCommitAttempt(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, false)
 	if oc == OutcomeOK {
 		t.Errorf("oc = ok, want propagation of generate crash")
 	}
@@ -233,7 +233,7 @@ func TestRunGateEvaluateCrashDoesNotCommitAttempt(t *testing.T) {
 	})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	_, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
+	_, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "eval crashed") {
 		t.Errorf("err = %v, want contains \"eval crashed\"", err)
 	}
@@ -258,7 +258,7 @@ func TestRunGateSkipInGenerateEndsGateAsOK(t *testing.T) {
 	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{})
 	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
 	rs := NewRunState("run-x", "digest", nil)
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, false)
 	if oc != OutcomeOK || err != nil {
 		t.Errorf("got (%q, %v), want (ok, nil) — skip ends gate as ok per design §D", oc, err)
 	}
@@ -284,6 +284,65 @@ func TestRunGateSkipInGenerateEndsGateAsOK(t *testing.T) {
 // skip-in-generate test above covers the gate's SkipUnwind target-scope
 // detection, which is identical for both subtrees.
 
+func TestRunGateForceResumeGrantsFreshBudget(t *testing.T) {
+	// A rejected gate (3/3 attempts folded, all rejected). Under forceResume the
+	// gate must run a FRESH allotment numbered ABOVE the committed attempts
+	// (4,5,6) and, with a now-passing evaluator, PASS — not immediately re-reject.
+	until := ir.Expr("{{ evaluate.verified }}")
+	g := &ir.Gate{
+		Generate:    ir.NodeList{&ir.CodeStep{ID: "gen1", Run: "echo gen", Container: "c0"}},
+		Evaluate:    ir.NodeList{&ir.CodeStep{ID: "eval1", Run: "eval", Container: "c0", OutputSchema: schemaForVerdict()}},
+		Until:       until,
+		MaxAttempts: 3,
+	}
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
+		"gen1":  {outcome: OutcomeOK},
+		"eval1": {outcome: OutcomeOK, outputs: map[string]any{"verified": true, "feedback": "fixed"}},
+	})
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 1, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false, "feedback": "a"}})
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 2, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false, "feedback": "b"}})
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 3, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false, "feedback": "c"}})
+
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, true)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("got (%q, %v), want (ok, nil) — rejected gate should re-run fresh and pass under force", oc, err)
+	}
+	got := rs.LookupGateAttempts("gate[0]")
+	if len(got) != 4 {
+		t.Fatalf("attempts len = %d, want 4 (3 folded + 1 fresh that passed)", len(got))
+	}
+	if got[3].N != 4 || got[3].AttemptOutcome != AttemptPassed {
+		t.Fatalf("fresh attempt = {N:%d,%s}, want {N:4,passed}", got[3].N, got[3].AttemptOutcome)
+	}
+}
+
+func TestRunGateNoForceRejectedStaysRejected(t *testing.T) {
+	g := &ir.Gate{
+		Generate:    ir.NodeList{&ir.CodeStep{ID: "gen1", Run: "echo gen", Container: "c0"}},
+		Evaluate:    ir.NodeList{&ir.CodeStep{ID: "eval1", Run: "eval", Container: "c0", OutputSchema: schemaForVerdict()}},
+		Until:       ir.Expr("{{ evaluate.verified }}"),
+		MaxAttempts: 3,
+	}
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
+		"gen1":  {outcome: OutcomeOK},
+		"eval1": {outcome: OutcomeOK, outputs: map[string]any{"verified": true, "feedback": "fixed"}},
+	})
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
+	rs := NewRunState("run-x", "digest", nil)
+	for n := 1; n <= 3; n++ {
+		rs.RecordGateAttempt("gate[0]", AttemptResult{N: n, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false}})
+	}
+	oc, _ := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, false)
+	if oc != OutcomeRejected {
+		t.Fatalf("oc = %q, want rejected (no force, budget spent)", oc)
+	}
+	if got := rs.LookupGateAttempts("gate[0]"); len(got) != 3 {
+		t.Fatalf("attempts len = %d, want 3 (no fresh attempt without force)", len(got))
+	}
+}
+
 func TestRunGateMidResumeStartsAtNextAttempt(t *testing.T) {
 	// Pre-populate RunState.GateAttempts with two prior attempts (both rejected).
 	// runGate should start at attempt 3, NOT attempt 1.
@@ -307,7 +366,7 @@ func TestRunGateMidResumeStartsAtNextAttempt(t *testing.T) {
 	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 1, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false, "feedback": "X"}})
 	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 2, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false, "feedback": "Y"}})
 
-	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, false)
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
 	}

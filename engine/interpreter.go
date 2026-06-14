@@ -56,6 +56,11 @@ type RunOptions struct {
 	// LiveFinalizer, if non-nil, is called after a successful live agent step's
 	// node.completed event has been appended and synced.
 	LiveFinalizer func(context.Context, LiveDispatchRecord) error
+
+	// ForceResume, when true, makes the gate executor grant an exhausted (rejected)
+	// gate a fresh attempt allotment on resume (engine/gate.go). Set by
+	// `awf resume --force`. No other node kind reads it.
+	ForceResume bool
 }
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
@@ -121,6 +126,7 @@ func Run(
 		tap:           opts.Tap,
 		broker:        opts.Broker,
 		liveFinalizer: opts.LiveFinalizer,
+		forceResume:   opts.ForceResume,
 	}
 	if err := preflightCallStartedRuntimes(ctx, ictx); err != nil {
 		return "", err

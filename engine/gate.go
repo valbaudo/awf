@@ -24,8 +24,9 @@ import (
 // State machine:
 //
 //	startN := len(runstate.GateAttempts[gatePath]) + 1
-//	for n := startN; n <= g.MaxAttempts; n++ {
-//	  attemptPath := AttemptPath(gatePath, n)
+//	for n := startN; n <= ceiling; n++ {   // ceiling == g.MaxAttempts, except a
+//	  attemptPath := AttemptPath(gatePath, n)   // resume --force grants an exhausted
+//	                                            // gate a fresh allotment (see below)
 //
 //	  1. Run generate. interpNodes(attemptPath + ".generate", g.Generate).
 //	     Any non-nil non-skip err → return (oc, err); NO commit.
@@ -50,7 +51,7 @@ import (
 //	  6. RecordGateAttempt — in-memory mirror.
 //
 //	  7. If attempt_passed: return (OutcomeOK, nil).
-//	     Else if n == MaxAttempts: return (OutcomeRejected, gateRejectedError).
+//	     Else if n == ceiling: return (OutcomeRejected, gateRejectedError).
 //	     Else: continue to attempt n+1.
 //	}
 //
@@ -67,9 +68,10 @@ func runGate(
 	clk clock.Clock,
 	tap io.Writer,
 	broker *signal.Broker,
+	forceResume bool,
 ) (Outcome, error) {
 	return runGateWithContext(ctx, g, gatePath, interpreterContext{
-		wf: wf, runstate: runstate, dispatcher: dispatcher, log: log, blobs: blobs, clk: clk, tap: tap, broker: broker,
+		wf: wf, runstate: runstate, dispatcher: dispatcher, log: log, blobs: blobs, clk: clk, tap: tap, broker: broker, forceResume: forceResume,
 	})
 }
 
@@ -91,8 +93,17 @@ func runGateWithContext(
 	}
 
 	startN := len(ictx.runstate.LookupGateAttempts(gatePath)) + 1
+	folded := startN - 1
+	ceiling := g.MaxAttempts
+	if ictx.forceResume && folded >= g.MaxAttempts {
+		// resume --force: an exhausted gate rejected. Grant ONE fresh MaxAttempts
+		// allotment numbered ABOVE the committed attempts so attempt-N sub-node
+		// paths are uncommitted and really re-run (rather than replaying the old
+		// rejected attempts). The prior verdict auto-feeds as repair feedback.
+		ceiling = folded + g.MaxAttempts
+	}
 
-	for n := startN; n <= g.MaxAttempts; n++ {
+	for n := startN; n <= ceiling; n++ {
 		attemptPath := AttemptPath(gatePath, n) // "gate[0].attempt-1"
 		generatePath := attemptPath + ".generate"
 		evaluatePath := attemptPath + ".evaluate"
@@ -180,7 +191,7 @@ func runGateWithContext(
 		if passed {
 			return OutcomeOK, nil
 		}
-		if n == g.MaxAttempts {
+		if n == ceiling {
 			return OutcomeRejected, fmt.Errorf("engine.runGate: gate %q rejected after %d attempts", gatePath, n)
 		}
 		// Continue to attempt n+1; GateAttempts now has the verdict-1 entry for

@@ -26,6 +26,7 @@ type interpreterContext struct {
 	tap           io.Writer
 	broker        *signal.Broker
 	liveFinalizer func(context.Context, LiveDispatchRecord) error
+	forceResume   bool
 }
 
 func (ictx interpreterContext) scope(path string) *Scope {
