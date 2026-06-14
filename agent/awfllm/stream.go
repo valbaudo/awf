@@ -60,8 +60,10 @@ func isPermanentLLMError(err error) bool {
 // model is the wire model id captured from the streamed response (last non-empty
 // across chunks); it is always stamped into Metrics.Model even on a pricing miss.
 // An unknown or empty model → cost ABSENT (Source == ""), never $0.
-// Because OpenAI's prompt_tokens includes cached tokens, the Breakdown normalizes:
-// Input = usage.Input - usage.CacheRead; CacheRead = usage.CacheRead.
+// Cache normalization is PROVIDER-DEPENDENT (see metricsFrom): OpenAI/Gemini report a
+// prompt-token count that INCLUDES cached tokens (subtract for cost); Anthropic reports
+// input_tokens EXCLUSIVE of cache (no subtract). buildResult selects the mode from the
+// resolved provider below.
 func buildResult(full string, usage usageRec, model string, pricer pricing.Table, inv agent.AgentInvocation) (agent.AgentResult, error) {
 	var output map[string]any
 	if inv.OutputSchema != nil {
