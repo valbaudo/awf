@@ -73,3 +73,8 @@ func (a *Adapter) RunOneToolCallForTest(ctx context.Context, cfg ReqConfigForTes
 func GeminiCacheKeyForTest(model, systemPrompt string, files []agent.InputFile) string {
 	return geminiCacheKey(model, systemPrompt, files)
 }
+
+// EnsureGeminiCacheForTest exposes the cache-lifecycle helper.
+func EnsureGeminiCacheForTest(a *Adapter, ctx context.Context, cfg ReqConfigForTest, files []agent.InputFile) (string, error) {
+	return a.ensureGeminiCache(ctx, reqConfig(cfg), files)
+}
