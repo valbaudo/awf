@@ -1,0 +1,18 @@
+workflow: awf-llm-anthropic-demo
+version: 1
+graph:
+  - id: draft
+    uses: awf/llm
+    with:
+      provider: anthropic
+      model: claude-sonnet-4-6
+      max_tokens: 2048
+      system_prompt: "You are a technical writer. Produce concise, precise output."
+      cache_system: true   # caches the (stable) system prompt; works without input files
+      prompt: "Summarize the AWF gate concept in exactly three bullet points."
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [summary]
+      properties:
+        summary: { type: array, items: { type: string } }
