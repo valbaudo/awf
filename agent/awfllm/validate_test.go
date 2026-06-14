@@ -145,6 +145,26 @@ func TestValidate_OllamaKeyOptional(t *testing.T) {
 	}
 }
 
+func TestValidate_AnthropicProviderAccepted(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+	if err := a.ValidateConfig(ir.RawConfig{"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "x"}); err != nil {
+		t.Errorf("provider: anthropic must validate with ANTHROPIC_API_KEY present: %v", err)
+	}
+}
+
+func TestValidate_AnthropicMissingKeyRejected(t *testing.T) {
+	// anthropic is NOT local → an absent ANTHROPIC_API_KEY is a permanent config error.
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"OPENAI_API_KEY": "x"}))
+	err := a.ValidateConfig(ir.RawConfig{"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "x"})
+	if err == nil {
+		t.Fatal("provider: anthropic without ANTHROPIC_API_KEY must be rejected")
+	}
+	var ic *agent.ErrInvalidConfig
+	if !errors.As(err, &ic) {
+		t.Fatalf("want *agent.ErrInvalidConfig, got %T", err)
+	}
+}
+
 func TestValidate_MaxInlineBytes(t *testing.T) {
 	a := llmAdapter(t, okEnv())
 	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "max_inline_bytes": 1024}); err != nil {

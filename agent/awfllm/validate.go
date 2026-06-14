@@ -23,12 +23,14 @@ const (
 	keyTLSInsecure      = "tls_insecure"
 	keyProvider         = "provider"
 	keyMaxInlineBytes   = "max_inline_bytes"
+	keyCacheSystem      = "cache_system"
+	keyCacheDocuments   = "cache_documents"
 )
 
 var allowedKeys = map[string]struct{}{
 	keyModel: {}, keyPrompt: {}, keyBaseURL: {}, keyAPIKeyEnv: {},
 	keySystemPrompt: {}, keyTemperature: {}, keyMaxTokens: {}, keyStructuredOutput: {},
-	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {},
+	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {}, keyCacheSystem: {}, keyCacheDocuments: {},
 }
 
 // rejectedKeys never belong in `with:` — `api_key` would inline a secret into
@@ -45,7 +47,7 @@ var structuredOutputValues = []string{soResponseFormat, soOllamaFormat, soOff}
 // (Fix B): openai (default) → OpenAI-compat, gemini → native generateContent,
 // ollama → native /api/chat. structured_output: ollama_format remains a back-compat
 // alias that selects the ollama transport when no provider is set (effectiveProvider).
-var providerValues = []string{providerOpenAI, providerGemini, providerOllama}
+var providerValues = []string{providerOpenAI, providerGemini, providerOllama, providerAnthropic}
 
 // defaultAPIKeyEnv is the canonical default API-key env-var name for this adapter.
 // DefaultEnvAllowlist (errors.go) is built from this constant so the two values
