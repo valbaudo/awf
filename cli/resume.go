@@ -51,7 +51,7 @@ func printResumeUsage(w io.Writer) {
 	fprintln(w, "  re-enter an interrupted run. The workflow file at <path> must hash to the")
 	fprintln(w, "  same digest as the run's original definition (spec §8 pinning); a mismatch is a hard")
 	fprintln(w, "  error. A run that already finished (run.finished in the log) or terminated on a")
-	fprintln(w, "  failed step (node.failed in the log) cannot be resumed.")
+	fprintln(w, "  failed step (node.failed in the log) is not resumed by default; pass --force.")
 	fprintln(w, "")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 	fprintln(w, "  --force            re-enter a terminally-failed run (permanent_failure/rejected/cancelled);")

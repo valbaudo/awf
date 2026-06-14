@@ -343,6 +343,62 @@ func TestRunGateNoForceRejectedStaysRejected(t *testing.T) {
 	}
 }
 
+func TestRunGateForceResumePartialBudgetNoOverGrant(t *testing.T) {
+	// folded=1 (< MaxAttempts=3) under force: the budget is NOT exhausted, so the
+	// ceiling stays MaxAttempts (no fresh allotment). With a still-rejecting
+	// evaluator the gate runs attempts 2,3 and rejects at the true last attempt —
+	// total 3, NOT 1+3=4. Pins the `folded >= g.MaxAttempts` boundary.
+	g := &ir.Gate{
+		Generate:    ir.NodeList{&ir.CodeStep{ID: "gen1", Run: "echo gen", Container: "c0"}},
+		Evaluate:    ir.NodeList{&ir.CodeStep{ID: "eval1", Run: "eval", Container: "c0", OutputSchema: schemaForVerdict()}},
+		Until:       ir.Expr("{{ evaluate.verified }}"),
+		MaxAttempts: 3,
+	}
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
+		"gen1":  {outcome: OutcomeOK},
+		"eval1": {outcome: OutcomeOK, outputs: map[string]any{"verified": false, "feedback": "no"}},
+	})
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 1, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false}})
+
+	oc, _ := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, true)
+	if oc != OutcomeRejected {
+		t.Fatalf("oc = %q, want rejected", oc)
+	}
+	if got := rs.LookupGateAttempts("gate[0]"); len(got) != 3 {
+		t.Fatalf("attempts len = %d, want 3 (a partial-budget gate is NOT over-granted under force)", len(got))
+	}
+}
+
+func TestRunGateForceResumeFreshAllotmentAlsoRejects(t *testing.T) {
+	// folded=3 == MaxAttempts under force, evaluator still rejects: the fresh
+	// allotment (4,5,6) all reject → OutcomeRejected at the raised ceiling (6),
+	// total 6. Pins the raised-ceiling reject path (`n == ceiling`).
+	g := &ir.Gate{
+		Generate:    ir.NodeList{&ir.CodeStep{ID: "gen1", Run: "echo gen", Container: "c0"}},
+		Evaluate:    ir.NodeList{&ir.CodeStep{ID: "eval1", Run: "eval", Container: "c0", OutputSchema: schemaForVerdict()}},
+		Until:       ir.Expr("{{ evaluate.verified }}"),
+		MaxAttempts: 3,
+	}
+	disp, lg, blobs := newGateRig(t, map[string]scriptedResult{
+		"gen1":  {outcome: OutcomeOK},
+		"eval1": {outcome: OutcomeOK, outputs: map[string]any{"verified": false, "feedback": "still no"}},
+	})
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
+	rs := NewRunState("run-x", "digest", nil)
+	for n := 1; n <= 3; n++ {
+		rs.RecordGateAttempt("gate[0]", AttemptResult{N: n, AttemptOutcome: AttemptRejected, Verdict: map[string]any{"verified": false}})
+	}
+	oc, _ := runGate(context.Background(), g, "gate[0]", wf, rs, disp, lg, blobs, &clock.Fake{}, nil, nil, true)
+	if oc != OutcomeRejected {
+		t.Fatalf("oc = %q, want rejected (fresh allotment also failed)", oc)
+	}
+	if got := rs.LookupGateAttempts("gate[0]"); len(got) != 6 {
+		t.Fatalf("attempts len = %d, want 6 (3 folded + 3 fresh, all rejected)", len(got))
+	}
+}
+
 func TestRunGateMidResumeStartsAtNextAttempt(t *testing.T) {
 	// Pre-populate RunState.GateAttempts with two prior attempts (both rejected).
 	// runGate should start at attempt 3, NOT attempt 1.
