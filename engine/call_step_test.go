@@ -1140,6 +1140,172 @@ func TestRunCallStepChildMapReduceReusesQualifiedContainer(t *testing.T) {
 	}
 }
 
+// A run: reducer inside a CALLED sub-workflow must resolve its template refs
+// against the SAME (child) scope the rest of the sub-workflow uses — the call
+// frame's prefix-stripped RunState + typed-call input. Before the fix the reducer
+// built its scope off the PARENT RunState + the PREFIXED map path with no input
+// override, so an OUTER sibling step ref (step.resolve_digests, committed at
+// recon.workflow.resolve_digests) was looked up at the bare key "resolve_digests"
+// and missed -> AWF4002 "step ... not yet committed". The map's own `over` used
+// the same ref and resolved fine (it goes through ictx.scope), which is what made
+// this call-specific. Regression for the cve-feasibility version-universe report.
+func TestReduceInCalledSubworkflowResolvesOuterStepRefAndInput(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	// Child outer sibling step (committed at recon.workflow.resolve_digests).
+	rig.fake.ProgramExec("resolve-digests", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"digest":"sha256:deadbeef"}`),
+	}, nil)
+	// Map body, one item.
+	rig.fake.ProgramExec("scan a", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"k":"a"}`),
+	}, nil)
+	// The reducer command AFTER templating against the OUTER sibling step output
+	// AND the typed call input. If resolution is wrong this exact command never
+	// runs and the run fails.
+	rig.fake.ProgramExec("merge sha256:deadbeef example.com", container.ExecResult{
+		ExitCode:  0,
+		AWFOutput: []byte(`{"csv_rows":1}`),
+	}, nil)
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Input: &ir.JSONSchema{
+			"type": "object",
+			"properties": map[string]any{
+				"items":  map[string]any{"type": "array"},
+				"target": map[string]any{"type": "string"},
+			},
+		},
+		Containers: map[string]ir.Container{
+			"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+		},
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "resolve_digests", Container: "c", Run: "resolve-digests", OutputSchema: awfStringObjectSchema("digest")},
+			&ir.Map{
+				ID:          "fanout",
+				Over:        ir.Expr("{{ input.items }}"),
+				As:          "item",
+				Container:   "c",
+				Concurrency: 1,
+				Body: ir.NodeList{
+					&ir.CodeStep{ID: "scan", Container: "c", Run: "scan {{ item }}", OutputSchema: awfStringObjectSchema("k")},
+				},
+				Reduce: &ir.Reduce{
+					Run:          "merge {{ step.resolve_digests.digest }} {{ input.target }}",
+					Container:    "c",
+					OutputSchema: awfIntegerObjectSchema("csv_rows"),
+				},
+			},
+		},
+	}
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{"scan": "scan.awf.yaml"},
+		Graph: ir.NodeList{
+			&ir.CallStep{ID: "recon", Call: "scan", Input: map[string]ir.TemplateValue{
+				"items":  json.RawMessage(`["a"]`),
+				"target": json.RawMessage(`"example.com"`),
+			}},
+		},
+	}
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	if !sawReduceCmd(rig.fake, "merge sha256:deadbeef example.com") {
+		t.Fatalf("reducer command not templated against outer step + call input; Calls=%v", reduceCmdRuns(rig.fake))
+	}
+}
+
+// A run: reducer inside a CALLED sub-workflow must also resolve BODY-step
+// aggregate refs (step.<bodyId>.<field> -> the index-ordered canonical-JSON array
+// of committed per-item outputs). Before the fix the reducer's mapPath stayed
+// PREFIXED (recon.workflow.map[0]) while ir.SingleMapBodyShape yields the static
+// "map[0]", so body-step aggregate detection mismatched and fell through to a
+// parent-rs lookup that produced an empty/unresolvable aggregate. Stripping the
+// call prefix from BOTH the base scope (child rs) and the mapPath fixes it.
+func TestReduceInCalledSubworkflowResolvesBodyAggregateRef(t *testing.T) {
+	rig := newCallRunRig(t)
+	rig.seedRunStarted(t)
+	rig.fake.ProgramExec("scan a", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"k":"a"}`)}, nil)
+	// {{ step.scan.k }} aggregates the one item's k into the canonical JSON ["a"].
+	rig.fake.ProgramExec(`merge-agg ["a"]`, container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"csv_rows":1}`)}, nil)
+	child := &ir.Workflow{
+		ID:      "scan",
+		Version: 1,
+		Input: &ir.JSONSchema{
+			"type":       "object",
+			"properties": map[string]any{"items": map[string]any{"type": "array"}},
+		},
+		Containers: map[string]ir.Container{
+			"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+		},
+		Graph: ir.NodeList{
+			&ir.Map{
+				ID:          "fanout",
+				Over:        ir.Expr("{{ input.items }}"),
+				As:          "item",
+				Container:   "c",
+				Concurrency: 1,
+				Body: ir.NodeList{
+					&ir.CodeStep{ID: "scan", Container: "c", Run: "scan {{ item }}", OutputSchema: awfStringObjectSchema("k")},
+				},
+				Reduce: &ir.Reduce{
+					Run:          `merge-agg {{ step.scan.k }}`,
+					Container:    "c",
+					OutputSchema: awfIntegerObjectSchema("csv_rows"),
+				},
+			},
+		},
+	}
+	root := &ir.Workflow{
+		ID:      "root",
+		Version: 1,
+		Imports: map[string]string{"scan": "scan.awf.yaml"},
+		Graph: ir.NodeList{
+			&ir.CallStep{ID: "recon", Call: "scan", Input: map[string]ir.TemplateValue{
+				"items": json.RawMessage(`["a"]`),
+			}},
+		},
+	}
+
+	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, OutcomeOK)
+	}
+	if !sawReduceCmd(rig.fake, `merge-agg ["a"]`) {
+		t.Fatalf("reducer body-aggregate ref not rendered to canonical JSON; Calls=%v", reduceCmdRuns(rig.fake))
+	}
+}
+
+func sawReduceCmd(f *container.Fake, want string) bool {
+	for _, c := range f.Calls {
+		if c.Run == want {
+			return true
+		}
+	}
+	return false
+}
+
+func reduceCmdRuns(f *container.Fake) []string {
+	runs := make([]string, 0, len(f.Calls))
+	for _, c := range f.Calls {
+		runs = append(runs, c.Run)
+	}
+	return runs
+}
+
 func TestRunCallStepChildSignalWhereUsesChildScope(t *testing.T) {
 	rig := newCallRunRig(t)
 	rig.seedRunStarted(t)

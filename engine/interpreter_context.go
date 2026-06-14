@@ -29,18 +29,31 @@ type interpreterContext struct {
 }
 
 func (ictx interpreterContext) scope(path string) *Scope {
-	if ictx.runtimeParent != "" {
-		rs := childRunStateForRuntimeParent(ictx.runstate, ictx.runtimeParent, ictx.input)
-		childPath := stripRuntimeParent(path, ictx.runtimeParent)
-		if ictx.input != nil || ictx.inputFiles != nil {
-			return NewScopeWithInputAndFiles(rs, ictx.wf, childPath, ictx.input, ictx.inputFiles)
+	return callContextScope(ictx.runstate, ictx.wf, path, ictx.runtimeParent, ictx.input, ictx.inputFiles)
+}
+
+// callContextScope builds a *Scope honoring an optional call sub-workflow frame.
+// When runtimeParent is non-empty it reads a prefix-stripped child RunState and
+// applies the typed-call input/files override, so a called sub-workflow's
+// templates resolve against the child's own (unprefixed) view. With an empty
+// runtimeParent AND nil input/files it is exactly NewScope(parentRS, wf, path) —
+// the top-level behavior. This is the single source of truth for call-aware scope
+// construction: both ictx.scope and the reduce executor (engine/reduce.go, via
+// newReduceTemplateScopeForExec) go through it, so a reducer resolves refs against
+// the SAME frame as the rest of its (possibly called) workflow.
+func callContextScope(parentRS *RunState, wf *ir.Workflow, path, runtimeParent string, input map[string]any, inputFiles map[string]string) *Scope {
+	if runtimeParent != "" {
+		rs := childRunStateForRuntimeParent(parentRS, runtimeParent, input)
+		childPath := stripRuntimeParent(path, runtimeParent)
+		if input != nil || inputFiles != nil {
+			return NewScopeWithInputAndFiles(rs, wf, childPath, input, inputFiles)
 		}
-		return NewScope(rs, ictx.wf, childPath)
+		return NewScope(rs, wf, childPath)
 	}
-	if ictx.input != nil || ictx.inputFiles != nil {
-		return NewScopeWithInputAndFiles(ictx.runstate, ictx.wf, path, ictx.input, ictx.inputFiles)
+	if input != nil || inputFiles != nil {
+		return NewScopeWithInputAndFiles(parentRS, wf, path, input, inputFiles)
 	}
-	return NewScope(ictx.runstate, ictx.wf, path)
+	return NewScope(parentRS, wf, path)
 }
 
 func (ictx interpreterContext) scopeWithVerdict(path string, verdict map[string]any) *Scope {
