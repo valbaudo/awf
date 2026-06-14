@@ -68,6 +68,7 @@ func (r *Runner) runAndFinish(
 	blobs state.Blobs,
 	stdout, stderr io.Writer,
 	runID, opName, successSuffix string,
+	resume bool,
 	assets map[string]engine.RunStartedAsset,
 	inputFiles map[string]string,
 	broker *signal.Broker,
@@ -90,6 +91,7 @@ func (r *Runner) runAndFinish(
 		Assets:        assets,
 		InputFiles:    inputFiles,
 		LiveFinalizer: liveDispatchFinalizer(liveRoot),
+		Resume:        resume,
 	})
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished

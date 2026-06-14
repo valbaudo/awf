@@ -432,7 +432,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// RunOptions.InputFiles when non-nil — so the folded value wins, exactly
 	// like the typed input and Assets channels. `awf resume` has no
 	// --input-files flag (per the same no-re-supply rule as --input).
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, nil, broker, liveRoot, &skipTeardown)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", true, recordedAssets, nil, broker, liveRoot, &skipTeardown)
 }
 
 func preflightLiveResume(ctx context.Context, ld *ir.LoadedDefinition, rs *engine.RunState, resolver agent.Resolver) error {

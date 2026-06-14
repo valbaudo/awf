@@ -56,6 +56,10 @@ type RunOptions struct {
 	// LiveFinalizer, if non-nil, is called after a successful live agent step's
 	// node.completed event has been appended and synced.
 	LiveFinalizer func(context.Context, LiveDispatchRecord) error
+
+	// Resume is true on `awf resume` re-entry; the map reconciliation re-runs
+	// transiently-failed items only when set (spec §6.3). false on fresh `awf run`.
+	Resume bool
 }
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
@@ -121,6 +125,7 @@ func Run(
 		tap:           opts.Tap,
 		broker:        opts.Broker,
 		liveFinalizer: opts.LiveFinalizer,
+		resume:        opts.Resume,
 	}
 	if err := preflightCallStartedRuntimes(ctx, ictx); err != nil {
 		return "", err

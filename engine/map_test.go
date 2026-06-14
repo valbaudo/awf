@@ -1541,3 +1541,75 @@ func TestFoldMapItemLastWinsByN(t *testing.T) {
 		t.Errorf("Status = %q, want %q (last event wins)", got[0].Status, ItemPassed)
 	}
 }
+
+// Pure predicate: who re-runs on resume. Keyed on the existing MapItemRecord
+// (no parallel projection type — rule 2).
+func TestShouldRerunItem(t *testing.T) {
+	plain := &ir.Map{}                   // n.Prune == nil
+	prune := &ir.Map{Prune: &ir.Prune{}} // any non-nil Prune
+	cases := []struct {
+		name   string
+		n      *ir.Map
+		resume bool
+		mr     MapItemRecord
+		want   bool
+	}{
+		{"retryable-on-resume", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, true},
+		{"permanent-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "permanent_failure"}, false},
+		{"rejected-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "rejected"}, false},
+		{"absent-outcome-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: ""}, false},
+		{"image-unavailable-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "", Reason: ReasonImageUnavailable}, false},
+		{"passed-stays", plain, true, MapItemRecord{Status: ItemPassed}, false},
+		{"pruned-stays", plain, true, MapItemRecord{Status: ItemPruned}, false},
+		{"prune-map-never", prune, true, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, false},
+		{"not-resume-never", plain, false, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := shouldRerunItem(c.n, c.resume, c.mr); got != c.want {
+				t.Errorf("shouldRerunItem = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// Integration: a retryable item recovers on resume → map ok, single record per N.
+func runMapResumeTrue(ctx context.Context, n *ir.Map, mapPath string, wf *ir.Workflow, rs *RunState, rig *mapRig) (Outcome, error) {
+	return runMapWithContext(ctx, n, mapPath, interpreterContext{
+		wf: wf, runstate: rs, dispatcher: rig.ld, log: rig.lg, blobs: rig.blobs, clk: rig.clk, resume: true,
+	})
+}
+
+func TestRunMapResumeRetryableItemReRuns(t *testing.T) {
+	rig1 := newMapRig(t, ok("echo a"), fail("echo b"), ok("echo c"))
+	input := runOverItems("a", "b", "c")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	minSuccess := ir.Ratio("3")
+	wf := staticOverWorkflow("x", echoStep("x", &ir.RetryPolicy{Attempts: 1}), 3, &minSuccess)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs1 := NewRunState(testRunID, testDigest, input)
+
+	oc1, _ := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
+	if oc1 != OutcomeRetryableFailure {
+		t.Fatalf("round-1 outcome = %q, want OutcomeRetryableFailure", oc1)
+	}
+
+	rig2 := bareRig(t, rig1, ok("echo a"), ok("echo b"), ok("echo c"))
+	rs2 := foldFromRig(t, rig2)
+
+	oc2, err2 := runMapResumeTrue(context.Background(), mapNode, testMapPath, wf, rs2, rig2)
+	if oc2 != OutcomeOK || err2 != nil {
+		t.Fatalf("resume outcome = %q err = %v, want OutcomeOK/nil (retryable item recovered)", oc2, err2)
+	}
+	if len(rig2.fake.Calls) == 0 {
+		t.Error("resume did NOT re-run the failed item (fake.Calls empty)")
+	}
+	// Single record per N after re-run.
+	seen := map[int]bool{}
+	for _, mr := range rs2.LookupMapItems(testMapPath) {
+		if seen[mr.N] {
+			t.Errorf("duplicate MapItemRecord for N=%d", mr.N)
+		}
+		seen[mr.N] = true
+	}
+}
