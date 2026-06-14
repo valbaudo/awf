@@ -68,3 +68,8 @@ func (a *Adapter) ValidateConfigForToolLoopForTest(with ir.RawConfig) error {
 func (a *Adapter) RunOneToolCallForTest(ctx context.Context, cfg ReqConfigForTest, nodePath string, msgs []agent.ReactTurn, tools []agent.ToolDef, schema *ir.JSONSchema) (agent.ToolLoopResult, error) {
 	return a.runOneToolCall(ctx, reqConfig(cfg), nodePath, msgs, tools, schema)
 }
+
+// GeminiCacheKeyForTest exposes the content-address key function.
+func GeminiCacheKeyForTest(model, systemPrompt string, files []agent.InputFile) string {
+	return geminiCacheKey(model, systemPrompt, files)
+}
