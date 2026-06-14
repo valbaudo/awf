@@ -30,8 +30,9 @@ const (
 	defaultGeminiAPIKeyEnv = "GEMINI_API_KEY"
 )
 
-// defaultMaxInlineBytes caps the size of a single inline (base64) input file. 32
-// MiB is comfortably above provider inline limits while bounding memory blow-up.
+// defaultMaxInlineBytes caps the TOTAL size of a step's inline (base64) input
+// files (summed across all of them; see launch.go's pre-flight). 32 MiB is
+// comfortably above provider inline limits while bounding memory blow-up.
 const defaultMaxInlineBytes = 32 << 20 // 32 MiB
 
 // structured_output mode constants — the accepted values for the

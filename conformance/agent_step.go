@@ -199,19 +199,17 @@ const reconMarker = "%PDF-RECONMARKER"
 //     NO journaled event — confirming AgentInvocation.InputFiles' json:"-" tag and
 //     the emit path keep input bytes out of the durable log.
 //
-// DEVIATION — input.files.<name> vs asset.<id>: the feature resolves both a
-// workflow input file (input.files.<name>) and a single-file asset (asset.<id>)
-// through the SAME containerless resolver (engine.resolveContainerlessInputFiles
-// -> resolveSingleRefBytes -> DetectMIME -> agent.InputFile), and both converge
-// on the identical dispatcher threading (ResolvedInputs.ContainerlessFiles ->
-// AgentInvocation.InputFiles, json:"-"). But only asset.<id> is wired end-to-end
-// through engine.Run + the fake-backend harness: the top-level input.files.<name>
-// channel is reachable only by constructing a Scope directly (covered by
-// engine/input_files_containerless_test.go) — engine.Run never populates the root
-// ictx.inputFiles, and no RunOptions/CLI mechanism supplies it yet. So this
-// conformance test exercises the run-start file channel the fake-backend harness
-// genuinely supports (asset.<id>); the delivery + no-bytes-in-log behavior under
-// test is identical for both ref forms.
+// NOTE — input.files.<name> vs asset.<id>: the feature resolves both a workflow
+// input file (input.files.<name>) and a single-file asset (asset.<id>) through
+// the SAME containerless resolver (engine.resolveContainerlessInputFiles ->
+// resolveSingleRefBytes -> DetectMIME -> agent.InputFile), and both converge on
+// the identical dispatcher threading (ResolvedInputs.ContainerlessFiles ->
+// AgentInvocation.InputFiles, json:"-"). This conformance test exercises the
+// asset.<id> channel; the top-level input.files.<name> run-start channel is
+// covered separately (engine/input_files_runstart_test.go drives RunOptions.InputFiles
+// through engine.Run, and cli/run_input_files_test.go covers the --input-files
+// flag). The delivery + no-bytes-in-log behavior under test is identical for both
+// ref forms.
 func testAgentContainerlessInputFiles(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	// The asset bytes: a valid PDF (starts with "%PDF-" so agent.DetectMIME sniffs
