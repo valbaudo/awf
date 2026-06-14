@@ -369,12 +369,11 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 	}
 	userMsg := msg{Role: "user", Content: prompt}
 	for _, f := range files {
-		if !strings.HasPrefix(f.MIME, "image/") {
-			return "", usageRec{}, "", "", &agent.ErrInvalidConfig{
-				Ref:    AdapterRef,
-				Key:    "input_files",
-				Reason: "ollama transport supports images only, not " + f.MIME + "; rasterize the PDF to images first",
-			}
+		// Accept/reject via the shared capability table; only modalityImage is
+		// forwardable here (Ollama has no document part). Keep the helpful
+		// "rasterize the PDF" hint for the rejected-document case.
+		if _, ok := forwardable(providerOllama, f.MIME); !ok {
+			return "", usageRec{}, "", "", unsupportedMIMEErr(f.MIME, "; rasterize the PDF to images first")
 		}
 		// Bare standard-base64 — NOT a data URI. Ollama /api/chat images[] is
 		// the OPPOSITE of the OpenAI path (which uses data:...;base64, URIs).
@@ -496,6 +495,12 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 
 	parts := []map[string]any{{"text": prompt}}
 	for _, f := range files {
+		// Accept/reject via the shared capability table (previously MISSING here —
+		// callGemini forwarded any f.MIME blindly). Both image and document modalities
+		// share the same inlineData encoding on Gemini, so no per-modality switch.
+		if _, ok := forwardable(providerGemini, f.MIME); !ok {
+			return "", usageRec{}, "", "", unsupportedMIMEErr(f.MIME, "")
+		}
 		parts = append(parts, map[string]any{"inlineData": map[string]any{
 			"mimeType": f.MIME,
 			"data":     base64.StdEncoding.EncodeToString(f.Content), // bare base64, no data: prefix

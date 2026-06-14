@@ -2,7 +2,6 @@ package awfllm
 
 import (
 	"encoding/base64"
-	"strings"
 
 	"github.com/valbaudo/awf/agent"
 
@@ -15,19 +14,23 @@ import (
 func buildOpenAIParts(prompt string, files []agent.InputFile) ([]openai.ChatCompletionContentPartUnionParam, error) {
 	parts := []openai.ChatCompletionContentPartUnionParam{openai.TextContentPart(prompt)}
 	for _, f := range files {
+		// Accept/reject goes through the shared capability table; the ENCODING below
+		// (data: URIs) stays OpenAI-specific.
+		m, ok := forwardable(providerOpenAI, f.MIME)
+		if !ok {
+			return nil, unsupportedMIMEErr(f.MIME, "")
+		}
 		b64 := base64.StdEncoding.EncodeToString(f.Content)
-		switch {
-		case strings.HasPrefix(f.MIME, "image/"):
+		switch m {
+		case modalityImage:
 			parts = append(parts, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{
 				URL: "data:" + f.MIME + ";base64," + b64,
 			}))
-		case f.MIME == "application/pdf":
+		case modalityDocument:
 			parts = append(parts, openai.FileContentPart(openai.ChatCompletionContentPartFileFileParam{
 				FileData: openai.String("data:application/pdf;base64," + b64),
 				Filename: openai.String(f.Name),
 			}))
-		default:
-			return nil, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "input_files", Reason: "openai transport cannot forward MIME " + f.MIME}
 		}
 	}
 	return parts, nil

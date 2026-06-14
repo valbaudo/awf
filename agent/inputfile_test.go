@@ -1,6 +1,29 @@
 package agent
 
-import "testing"
+import (
+	"reflect"
+	"sort"
+	"testing"
+)
+
+// TestSupportedMIMEs asserts the exported floor lists exactly the supportedMIME
+// keys, sorted. This is the list the awfllm drift-guard test consumes to prove the
+// detection floor and the modality classifier do not drift.
+func TestSupportedMIMEs(t *testing.T) {
+	got := SupportedMIMEs()
+	want := make([]string, 0, len(supportedMIME))
+	for m := range supportedMIME {
+		want = append(want, m)
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SupportedMIMEs() = %v, want %v (sorted keys of supportedMIME)", got, want)
+	}
+	// sorted invariant
+	if !sort.StringsAreSorted(got) {
+		t.Fatalf("SupportedMIMEs() not sorted: %v", got)
+	}
+}
 
 func TestDetectMIME(t *testing.T) {
 	pngMagic := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}

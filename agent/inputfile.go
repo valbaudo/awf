@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -16,12 +17,28 @@ type InputFile struct {
 }
 
 // supportedMIME is the set a model adapter can forward. Extend additively.
+// Adding a key here is NOT enough: each transport classifies a supported MIME into
+// an encoding modality (see agent/awfllm/modality.go), and a drift-guard test there
+// fails if a new floor MIME is left unclassified — forcing a conscious per-transport
+// accept/reject decision.
 var supportedMIME = map[string]struct{}{
 	"application/pdf": {},
 	"image/png":       {},
 	"image/jpeg":      {},
 	"image/webp":      {},
 	"image/gif":       {},
+}
+
+// SupportedMIMEs returns the detection-floor MIMEs (the keys of supportedMIME),
+// sorted. It is the single list that downstream adapters consult to prove their
+// per-transport MIME classification has not drifted from the floor.
+func SupportedMIMEs() []string {
+	out := make([]string, 0, len(supportedMIME))
+	for m := range supportedMIME {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // DetectMIME infers a forwardable MIME from the CONTENT via http.DetectContentType
