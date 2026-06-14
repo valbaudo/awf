@@ -233,3 +233,15 @@ func TestValidateConfigToolLoopExemptsPrompt(t *testing.T) {
 		t.Fatal("ValidateConfig must still require prompt")
 	}
 }
+
+func TestDefaultEnvAllowlist_IncludesAnthropic(t *testing.T) {
+	found := false
+	for _, k := range awfllm.DefaultEnvAllowlist {
+		if k == "ANTHROPIC_API_KEY" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("DefaultEnvAllowlist must include ANTHROPIC_API_KEY, got %v", awfllm.DefaultEnvAllowlist)
+	}
+}
