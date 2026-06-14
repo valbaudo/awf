@@ -142,31 +142,63 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 3: terminal-event refusals (precedence: run.finished →
-	// run.cancelled → node.failed; each error message names the event).
+	// Step 3: terminal-event refusals, outcome-aware (spec §4 resumability
+	// contract). run.finished.Outcome is the SOLE admit/refuse authority when
+	// present; node.failed is consulted ONLY in the crash window (no
+	// run.finished). A retryable_failure rollup can co-exist with a nested
+	// permanent node.failed (a tolerated map-item body, a non-lowest-index
+	// parallel branch, or a try{do:permanent,catch:retryable}) — so a standalone
+	// node.failed scan would wrongly refuse a resumable run.
+	var finished *engine.RunFinishedData
 	for _, e := range events {
 		if e.Type == engine.EventRunFinished {
-			fprintf(stderr, "awf resume: run %q already finished (run.finished event in log). Cannot resume a completed run.\n", runID)
-			return ExitUsage
+			d, err := engine.RunFinishedDataFromEvent(e)
+			if err != nil {
+				fprintf(stderr, "awf resume: run %q has a corrupt run.finished record: %v\n", runID, err)
+				return ExitUsage
+			}
+			finished = &d
+			break
 		}
 	}
-	// Slice 3.5: refusal — run.cancelled already in log (terminal).
-	// Checked BEFORE node.failed: cancel-during-step writes both events; the
-	// user wants to see "cancelled," not "failed step."
+	// run.cancelled stays a blanket terminal refusal, BEFORE the node.failed
+	// fallback. A cancelled run has run.cancelled and NO run.finished (execute.go
+	// short-circuits on ErrCancelled before writing run.finished). But a tolerated
+	// node.failed (a caught try/catch do, or a map-item body node.failed{permanent})
+	// CAN co-exist with run.cancelled when cancel lands during a later step — so
+	// check run.cancelled first to show "cancelled", not a nested-failure message.
 	for _, e := range events {
 		if e.Type == engine.EventRunCancelled {
 			fprintf(stderr, "awf resume: run %q was cancelled (run.cancelled in log). Cannot resume a cancelled run; start a new run id.\n", runID)
 			return ExitUsage
 		}
 	}
-	// Refusal — node.failed already in the log (terminal-by-propagation).
-	// Phase 2 has no try/catch (Phase 3 lights it up); a failed step halts the
-	// run, and resuming would try to re-execute the failed step, which is not
-	// the Phase-2 retry semantic. Refuse explicitly.
-	for _, e := range events {
-		if e.Type == engine.EventNodeFailed {
-			fprintf(stderr, "awf resume: run %q terminated on a failed step (node.failed at path %q in log). Phase 2 does not resume past a failed step; Phase 3's try/catch will revisit this.\n", runID, e.Path)
+	if finished != nil {
+		switch engine.Outcome(finished.Outcome) {
+		case engine.OutcomeRetryableFailure:
+			fprintf(stderr, "awf resume: run %q eligible for resume (retryable_failure); attempting the uncommitted frontier\n", runID)
+			// ADMIT — fall through to backend wiring. Do NOT scan node.failed. (This
+			// notice is printed in the guard, BEFORE the digest/runtime-drift/preflight
+			// checks that may still refuse — hence "eligible", not "re-attempting".)
+		case engine.OutcomeOK:
+			fprintf(stderr, "awf resume: run %q already finished (ok). Nothing to resume.\n", runID)
 			return ExitUsage
+		default: // permanent_failure, rejected, empty/unknown
+			fprintf(stderr, "awf resume: run %q ended with a terminal %s (not resumable); start a new run id.\n", runID, finished.Outcome)
+			return ExitUsage
+		}
+	} else {
+		// Crash window: no run.finished. node.failed is the terminal record.
+		// Admit ONLY a retryable failure; refuse permanent/rejected/empty.
+		for _, e := range events {
+			if e.Type == engine.EventNodeFailed {
+				d, err := engine.NodeFailedDataFromEvent(e)
+				if err == nil && engine.Outcome(d.Outcome) == engine.OutcomeRetryableFailure {
+					continue
+				}
+				fprintf(stderr, "awf resume: run %q terminated on a non-transient failure at path %q. Not resumable.\n", runID, e.Path)
+				return ExitUsage
+			}
 		}
 	}
 
