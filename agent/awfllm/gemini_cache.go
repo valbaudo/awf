@@ -42,13 +42,16 @@ func (a *Adapter) ensureGeminiCache(ctx context.Context, cfg reqConfig, files []
 		a.geminiCacheMu.Unlock()
 	}
 
+	a.geminiCacheMu.Lock()
+	defer a.geminiCacheMu.Unlock()
+	if name, ok := a.geminiCacheMap[key]; ok { // another goroutine won the race
+		return name, nil
+	}
 	name, err := a.geminiCacheCreate(ctx, cfg, files)
 	if err != nil {
 		return "", err
 	}
-	a.geminiCacheMu.Lock()
 	a.geminiCacheMap[key] = name
-	a.geminiCacheMu.Unlock()
 	return name, nil
 }
 

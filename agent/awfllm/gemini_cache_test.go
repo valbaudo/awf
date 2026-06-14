@@ -94,6 +94,24 @@ func TestEnsureGeminiCache_ExpiredHandleRecreated(t *testing.T) {
 	}
 }
 
+func TestEnsureGeminiCache_NoDoubleCreateUnderConcurrency(t *testing.T) {
+	f := &geminiCacheFake{createName: "cachedContents/once"}
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: f.rt()}))
+	cfg := awfllm.ReqConfigForTest{Provider: "gemini", BaseURL: "https://generativelanguage.googleapis.com", Model: "gemini-2.5-pro", APIKey: "k"}
+	files := []agent.InputFile{{Name: "d", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() { defer wg.Done(); _, _ = awfllm.EnsureGeminiCacheForTest(a, context.Background(), cfg, files) }()
+	}
+	wg.Wait()
+	if f.posts != 1 {
+		t.Errorf("concurrent first-use must create exactly once, got %d POSTs", f.posts)
+	}
+}
+
 func TestGeminiCacheKey_ContentAddressed(t *testing.T) {
 	f1 := []agent.InputFile{{Name: "a", MIME: "application/pdf", Content: []byte("DOC-A")}}
 	f1dup := []agent.InputFile{{Name: "different-name", MIME: "application/pdf", Content: []byte("DOC-A")}}
