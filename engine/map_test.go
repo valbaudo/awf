@@ -1051,6 +1051,71 @@ func TestRunMapQuorumReduceThresholdIsCohortWhenBranchCrashes(t *testing.T) {
 	}
 }
 
+func TestRunMapReduceResumeQuorumRecovers(t *testing.T) {
+	// §6.5 reduce safe-by-construction: a TRANSIENT item failure on round-1
+	// (item b exits 1 → ItemFailed retryable) means agree=2 < need=3 → the map
+	// returns retryable_failure and the reducer is NEVER committed (safe-by-
+	// construction: a committed reduce ⟺ map-ok ⟺ not this path). On resume
+	// all three items succeed → OutcomeOK; the reducer commits over the full
+	// recovered set (agree==3). This is NOT a false-vote test (item_failed is
+	// never re-run by shouldRerunItem on a {ok:false} vote); it is a transient
+	// body-crash (ExitCode 1) that shouldRerunItem selects because Status ==
+	// item_failed AND Outcome == retryable_failure.
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
+			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	q := ir.Ratio("3") // unanimous over 3 items
+	wf := staticOverWorkflow("x", body, 1, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+
+	// Round 1: a,c emit {"ok":true} (ExitCode 0); b exits 1 (transient ItemFailed).
+	// agree=2 < need=3 → retryable_failure; reducer must NOT commit.
+	rig1 := newMapRig(t,
+		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 1}},
+		execProgram{cmd: "./vote c", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+	)
+	input := runOverItems("a", "b", "c")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	rs1 := NewRunState(testRunID, testDigest, input)
+
+	oc1, _ := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
+	if oc1 != OutcomeRetryableFailure {
+		t.Fatalf("round-1: outcome = %q, want OutcomeRetryableFailure (transient item b crash + quorum not met)", oc1)
+	}
+	// Safe-by-construction: the reducer must NOT have committed (no node.completed
+	// at the map path). A committed reduce ⟺ map-ok ⟺ not this path.
+	if _, ok := rs1.LookupCompleted(testMapPath); ok {
+		t.Errorf("round-1: reducer committed at %q despite retryable_failure; safe-by-construction violated", testMapPath)
+	}
+
+	// Resume: all three items now emit {"ok":true}. The retryable item b is
+	// re-run; a and c replay from the log. agree=3 == need=3 → OutcomeOK.
+	rig2 := bareRig(t, rig1,
+		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+	)
+	rs2 := foldFromRig(t, rig2)
+
+	oc2, err2 := runMapResumeTrue(context.Background(), mapNode, testMapPath, wf, rs2, rig2)
+	if oc2 != OutcomeOK || err2 != nil {
+		t.Fatalf("resume: outcome = %q err = %v, want OutcomeOK/nil (recovered quorum)", oc2, err2)
+	}
+
+	// Reducer committed at the map path with agree==3 over the full recovered set.
+	nr, ok := rs2.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("resume: no NodeResult at map path %q (reducer should commit after quorum met)", testMapPath)
+	}
+	if nr.Outputs["agree"] != 3 {
+		t.Errorf("resume: agree = %v, want 3 (full recovered cohort)", nr.Outputs["agree"])
+	}
+	if nr.Outputs["passed"] != true {
+		t.Errorf("resume: passed = %v, want true", nr.Outputs["passed"])
+	}
+}
+
 func TestRunMapRunReduceReusesPreProvisionedContainer(t *testing.T) {
 	// Regression: a run-reduce whose container is a PRE-DECLARED one (already
 	// brought up + present in ld.Handles, like every declared container at run

@@ -83,9 +83,9 @@ const (
 
 // Map item statuses — the Status field on MapItemData. NOT the same vocabulary
 // as the Outcome enum (engine/runstate.go) or AttemptPassed/AttemptRejected:
-// a map item's body can succeed (item_passed) or fail (item_failed); the map
-// as a WHOLE returns OutcomeOK if the success count meets MinSuccess, else
-// returns an error.
+// a map item's body can succeed (item_passed), fail (item_failed), or be
+// discarded by the prune frontier (item_pruned); the map as a WHOLE returns
+// OutcomeOK if the success count meets MinSuccess, else returns an error.
 const (
 	ItemPassed = "item_passed"
 	ItemFailed = "item_failed"
@@ -128,8 +128,9 @@ type MapItemData struct {
 	// could not be booted). Empty for item_passed and for a plain body failure.
 	// It distinguishes "couldn't boot this element" from "this element ran and
 	// produced a negative result" (the Tekton/Temporal infra-vs-result split)
-	// WITHOUT a new status — the two-value Status tally and MinSuccess math are
-	// untouched; it is NOT a quality/result verdict (that is the gate's job). A
+	// WITHOUT a new status — the three-value Status tally (item_passed /
+	// item_failed / item_pruned) and MinSuccess math are untouched; it is NOT a
+	// quality/result verdict (that is the gate's job). A
 	// deterministic render/definition fault is NOT a reason — it fails the whole
 	// map as permanent_failure. Audit/forensic field: no production reader today
 	// (consumers are the docker RepoDigests follow-up + a future obs projection).
