@@ -145,6 +145,46 @@ func TestValidate_OllamaKeyOptional(t *testing.T) {
 	}
 }
 
+func TestValidate_GeminiCacheAcceptedOnGemini(t *testing.T) {
+	a := llmAdapter(t, map[string]string{"GEMINI_API_KEY": "k"})
+	err := a.ValidateConfig(ir.RawConfig{
+		"provider": "gemini", "model": "gemini-2.5-pro", "prompt": "x",
+		"gemini_cache": map[string]any{"mode": "explicit", "ttl": "600s"},
+	})
+	if err != nil {
+		t.Errorf("explicit gemini_cache on provider: gemini must validate: %v", err)
+	}
+}
+
+func TestValidate_GeminiCacheRejectedOffGemini(t *testing.T) {
+	a := llmAdapter(t, map[string]string{"OPENAI_API_KEY": "k"})
+	err := a.ValidateConfig(ir.RawConfig{
+		"model": "gpt-x", "prompt": "x",
+		"gemini_cache": map[string]any{"mode": "explicit"},
+	})
+	if err == nil {
+		t.Fatal("explicit gemini_cache without provider: gemini must be rejected")
+	}
+	var ic *agent.ErrInvalidConfig
+	if !errors.As(err, &ic) {
+		t.Fatalf("want *agent.ErrInvalidConfig, got %T", err)
+	}
+}
+
+func TestValidate_GeminiCacheBadShape(t *testing.T) {
+	a := llmAdapter(t, map[string]string{"GEMINI_API_KEY": "k"})
+	cases := []ir.RawConfig{
+		{"provider": "gemini", "model": "m", "prompt": "x", "gemini_cache": "explicit"},                                    // not a map
+		{"provider": "gemini", "model": "m", "prompt": "x", "gemini_cache": map[string]any{"mode": "weird"}},               // bad mode
+		{"provider": "gemini", "model": "m", "prompt": "x", "gemini_cache": map[string]any{"mode": "explicit", "ttl": ""}}, // empty ttl
+	}
+	for i, with := range cases {
+		if err := a.ValidateConfig(with); err == nil {
+			t.Errorf("case %d: expected rejection for %v", i, with["gemini_cache"])
+		}
+	}
+}
+
 func TestValidate_MaxInlineBytes(t *testing.T) {
 	a := llmAdapter(t, okEnv())
 	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "max_inline_bytes": 1024}); err != nil {

@@ -117,6 +117,27 @@ func TestEffectiveProviderAndDefaults_NoDrift(t *testing.T) {
 	}
 }
 
+func TestBuildReqConfig_GeminiCacheParsed(t *testing.T) {
+	a := llmAdapter(t, map[string]string{"GEMINI_API_KEY": "k"})
+	cfg, err := a.BuildReqConfigForTest(agent.AgentInvocation{With: ir.RawConfig{
+		"provider": "gemini", "model": "gemini-2.5-pro", "prompt": "x",
+		"gemini_cache": map[string]any{"mode": "explicit", "ttl": "120s"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GeminiCache == nil || cfg.GeminiCache.Mode != "explicit" || cfg.GeminiCache.TTL != "120s" {
+		t.Fatalf("GeminiCache parse wrong: %+v", cfg.GeminiCache)
+	}
+	off, err := a.BuildReqConfigForTest(agent.AgentInvocation{With: ir.RawConfig{"provider": "gemini", "model": "m", "prompt": "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.GeminiCache != nil {
+		t.Errorf("absent gemini_cache must yield nil, got %+v", off.GeminiCache)
+	}
+}
+
 // TestBuildReqConfig_MaxInlineBytesOverride: max_inline_bytes with-key overrides
 // the default.
 func TestBuildReqConfig_MaxInlineBytesOverride(t *testing.T) {

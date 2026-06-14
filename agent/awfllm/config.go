@@ -65,6 +65,16 @@ func effectiveProvider(with ir.RawConfig) string {
 	return providerOpenAI
 }
 
+// defaultGeminiCacheTTL is the CachedContent TTL when the author omits it (Gemini
+// accepts a seconds-suffixed duration string). 1 hour comfortably spans a gate.
+const defaultGeminiCacheTTL = "3600s"
+
+// geminiCacheConfig is the parsed gemini_cache with-key. Nil unless mode == explicit.
+type geminiCacheConfig struct {
+	Mode string // "explicit" (the only non-nil mode)
+	TTL  string // Gemini ttl string, e.g. "600s"
+}
+
 // defaultMaxInlineBytes caps the TOTAL size of a step's inline (base64) input
 // files (summed across all of them; see launch.go's pre-flight). 32 MiB is
 // comfortably above provider inline limits while bounding memory blow-up.
@@ -92,8 +102,9 @@ type reqConfig struct {
 	HasMaxTokens     bool
 	StructuredOutput string // response_format | ollama_format | off
 	IdempotencyKey   string
-	TLSInsecure      bool // opt-in: skip TLS verification (self-signed/internal endpoints — offensive use)
-	MaxInlineBytes   int  // cap on a single inline input file's byte size
+	TLSInsecure      bool               // opt-in: skip TLS verification (self-signed/internal endpoints — offensive use)
+	MaxInlineBytes   int                // cap on a single inline input file's byte size
+	GeminiCache      *geminiCacheConfig // explicit Gemini CachedContent (nil = off)
 }
 
 // buildReqConfig translates validated `with:` + the resolved env into a reqConfig.
@@ -142,6 +153,7 @@ func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 			cfg.MaxTokens, cfg.HasMaxTokens = n, true
 		}
 	}
+	cfg.GeminiCache = parseGeminiCache(with)
 	return cfg, nil
 }
 
@@ -184,6 +196,23 @@ func appendSchemaDirective(text string, schema *ir.JSONSchema) string {
 // schemaDirective nudges the model to make its FINAL message a single conforming JSON
 // object (idiom copied from agent/goose's schemaDirective).
 const schemaDirective = "\n\nIMPORTANT: your FINAL message must be ONLY a single JSON object conforming exactly to this JSON Schema — no prose before/after, no code fences:\n"
+
+// parseGeminiCache reads the gemini_cache with-key. Returns nil unless mode is
+// explicit. Validation (shape/enum/provider-guard) is done in validateConfigCommon.
+func parseGeminiCache(with ir.RawConfig) *geminiCacheConfig {
+	m, ok := with[keyGeminiCache].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if mode, _ := m["mode"].(string); mode != "explicit" {
+		return nil
+	}
+	gc := &geminiCacheConfig{Mode: "explicit", TTL: defaultGeminiCacheTTL}
+	if ttl, ok := m["ttl"].(string); ok && ttl != "" {
+		gc.TTL = ttl
+	}
+	return gc
+}
 
 func stringOr(with ir.RawConfig, key, def string) string {
 	if v, ok := with[key].(string); ok && v != "" {
