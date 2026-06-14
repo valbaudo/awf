@@ -13,7 +13,7 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **run** [**--input** _json_] [**--input-files** _csv_] [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _auto_|_fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
 
-**awf** **resume** [**--state-dir** _dir_] _run-id_ _path_
+**awf** **resume** [**--state-dir** _dir_] [**--force**] [**--from** _step_] _run-id_ _path_
 
 **awf** **signal** [**--payload** _json_] [**--state-dir** _dir_] _run-id_ _name_
 
@@ -147,7 +147,7 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     proves turn-boundary detection, permission handling, transcript
     correlation, prompt injection, and reconnect behavior.
 
-## awf resume [--force] _run-id_ _path_
+## awf resume [--force] [--from _step_] _run-id_ _path_
 
 Re-enter an interrupted run. **awf** folds the run's journal, then verifies that
 the on-disk _path_ still hashes to the recorded definition digest *and* that
@@ -182,6 +182,17 @@ run directory and `awf run --backend native …` again).
     after fixing the deterministic cause of the failure. (A transiently-failed
     `retryable_failure` run is re-entered too — **--force** admits any non-`ok`
     terminal run.)
+
+**--from** _step_
+:   Re-run from a committed node (named by a runtime-path prefix, e.g. a
+    top-level step id or `parallel[0].<step>`). Invalidates that node plus every
+    node after its top-level ancestor and re-runs them against the *current*
+    definition; everything before is replayed. **Bypasses pinning** (digest +
+    runtime drift) — a debug-mode exception, like **--force** to terminal-run
+    sealing; the operator owns the correctness of what is replayed, and the
+    re-run set (incl. its at-least-once side effects) is printed before running.
+    v1 supports a top-level node or a parallel branch; a node inside a
+    call/loop/gate/map-body is refused.
 
 ## awf signal _run-id_ _name_
 
