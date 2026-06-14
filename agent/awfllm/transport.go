@@ -103,17 +103,17 @@ func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletion
 // ollama_format → the native /api/chat path (Task B6); else → OpenAI-compat.
 // thread contains the engine-assembled prior turns (continues: threading) to
 // prepend in the message array between the system message and the current prompt.
-func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	if cfg.StructuredOutput == soOllamaFormat {
-		return a.streamOllama(ctx, cfg, prompt, schema, thread, emit)
+		return a.streamOllama(ctx, cfg, prompt, schema, thread, files, emit)
 	}
-	return a.streamOpenAI(ctx, cfg, prompt, schema, thread, emit)
+	return a.streamOpenAI(ctx, cfg, prompt, schema, thread, files, emit)
 }
 
 // streamOpenAI uses openai-go (v3) against any OpenAI-compatible base_url. The
 // wire (request body + SSE response) is asserted by transport_test; the openai-go
 // Go symbols below are pinned against v3.39.0 (go doc, Task B5 Step 1).
-func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	client := a.newOpenAIClient(cfg)
 
 	// SystemMessage ("system" role) is the right CROSS-BACKEND choice: Ollama/vLLM/
@@ -130,7 +130,15 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 		messages = append(messages, openai.UserMessage(t.User))
 		messages = append(messages, openai.AssistantMessage(t.Assistant))
 	}
-	messages = append(messages, openai.UserMessage(prompt))
+	if len(files) > 0 {
+		parts, err := buildOpenAIParts(prompt, files)
+		if err != nil {
+			return "", usageRec{}, "", "", err
+		}
+		messages = append(messages, openai.UserMessage(parts))
+	} else {
+		messages = append(messages, openai.UserMessage(prompt))
+	}
 
 	params := buildBaseParams(cfg, schema)
 	params.Messages = messages
@@ -335,7 +343,7 @@ func classifyOpenAIErr(err error) error {
 //
 // Do NOT prepend the schema to the prompt here — schema restatement is
 // centralized in assemblePrompt (Task B7) for ALL modes. Send prompt as-is.
-func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, _ []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/api/chat"
 
 	type msg struct {

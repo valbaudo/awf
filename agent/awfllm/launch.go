@@ -48,7 +48,7 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 			}
 		}
 
-		full, usage, wireModel, finish, serr := a.stream(ctx, cfg, prompt, inv.OutputSchema, inv.Thread, emit)
+		full, usage, wireModel, finish, serr := a.stream(ctx, cfg, prompt, inv.OutputSchema, inv.Thread, inv.InputFiles, emit)
 		if serr != nil {
 			errText := liveEventText(serr.Error())
 			// spec §B.7 step 4: emit a terminal DisplayError event before the

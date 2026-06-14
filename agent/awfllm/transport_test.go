@@ -87,6 +87,35 @@ func TestStream_OpenAICompat_AccumulatesAndEmits(t *testing.T) {
 	}
 }
 
+// TestStream_OpenAI_PDFContentPart — Task 7 wire test (OpenAI path). Drives a
+// request with one PDF InputFile through the OpenAI transport and asserts the
+// captured body carries the `file` content part with the base64 data URI.
+func TestStream_OpenAI_PDFContentPart(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(openAISSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-test", Model: "gpt-x",
+		StructuredOutput: "off",
+	}
+	files := []agent.InputFile{{Name: "doc", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
+	_, _, _, _, err := a.StreamWithFilesForTest(context.Background(), cfg, "extract", nil, nil, files,
+		func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if !strings.Contains(gotBody, `"type":"file"`) {
+		t.Errorf("body missing file content part: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"file_data":"data:application/pdf;base64,`) {
+		t.Errorf("body missing file_data data URI: %s", gotBody)
+	}
+}
+
 func TestStream_OpenAICompat_400IsPermanent(t *testing.T) {
 	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
