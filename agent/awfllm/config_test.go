@@ -117,6 +117,29 @@ func TestEffectiveProviderAndDefaults_NoDrift(t *testing.T) {
 	}
 }
 
+func TestBuildReqConfig_AnthropicDefaults(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-ant"}))
+	cfg, err := a.BuildReqConfigForTest(agent.AgentInvocation{With: ir.RawConfig{
+		"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "hi",
+		"cache_system": true, "cache_documents": true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic", cfg.Provider)
+	}
+	if cfg.BaseURL != "https://api.anthropic.com" {
+		t.Errorf("BaseURL = %q, want anthropic host", cfg.BaseURL)
+	}
+	if cfg.APIKey != "sk-ant" {
+		t.Errorf("APIKey = %q, want sk-ant (resolved ANTHROPIC_API_KEY)", cfg.APIKey)
+	}
+	if !cfg.CacheSystem || !cfg.CacheDocuments {
+		t.Errorf("cache flags not set: %+v", cfg)
+	}
+}
+
 // TestBuildReqConfig_MaxInlineBytesOverride: max_inline_bytes with-key overrides
 // the default.
 func TestBuildReqConfig_MaxInlineBytesOverride(t *testing.T) {

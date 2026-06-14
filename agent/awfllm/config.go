@@ -20,9 +20,21 @@ const defaultBaseURL = "https://api.openai.com/v1"
 // (providerDefaults) is centralized so buildReqConfig (resolve) and
 // validateConfigCommon (presence-check) can never drift.
 const (
-	providerOpenAI = "openai" // default; OpenAI-compat /v1 chat completions
-	providerGemini = "gemini" // native Gemini :generateContent transport
-	providerOllama = "ollama" // native Ollama /api/chat transport
+	providerOpenAI    = "openai"    // default; OpenAI-compat /v1 chat completions
+	providerGemini    = "gemini"    // native Gemini :generateContent transport
+	providerOllama    = "ollama"    // native Ollama /api/chat transport
+	providerAnthropic = "anthropic" // native Anthropic Messages API transport
+
+	// defaultAnthropicBaseURL is the native Anthropic API host; the transport appends /v1/messages.
+	defaultAnthropicBaseURL = "https://api.anthropic.com"
+	// defaultAnthropicAPIKeyEnv is the default env-var name for provider: anthropic.
+	defaultAnthropicAPIKeyEnv = "ANTHROPIC_API_KEY"
+	// anthropicVersion is the required anthropic-version header value. Bump on a documented
+	// Anthropic API version change (NOT a with-key). Verify the current value at impl time.
+	anthropicVersion = "2023-06-01"
+	// anthropicDefaultMaxTokens is sent when the author omits max_tokens (Anthropic requires
+	// the field). Conservative; authors should set max_tokens for long output.
+	anthropicDefaultMaxTokens = 8192
 
 	// defaultGeminiBaseURL is the native Gemini generateContent host (no /v1 suffix;
 	// the Gemini transport appends the versioned model path itself).
@@ -41,6 +53,8 @@ const (
 // (presence-check) cannot drift.
 func providerDefaults(provider string) (baseURL, apiKeyEnv string) {
 	switch provider {
+	case providerAnthropic:
+		return defaultAnthropicBaseURL, defaultAnthropicAPIKeyEnv
 	case providerGemini:
 		return defaultGeminiBaseURL, defaultGeminiAPIKeyEnv
 	case providerOllama:
@@ -94,6 +108,8 @@ type reqConfig struct {
 	IdempotencyKey   string
 	TLSInsecure      bool // opt-in: skip TLS verification (self-signed/internal endpoints — offensive use)
 	MaxInlineBytes   int  // cap on a single inline input file's byte size
+	CacheSystem      bool // anthropic: mark the system block cacheable (cache_control)
+	CacheDocuments   bool // anthropic: mark the LAST input-file block cacheable (the static/varying boundary)
 }
 
 // buildReqConfig translates validated `with:` + the resolved env into a reqConfig.
@@ -113,6 +129,8 @@ func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 		IdempotencyKey:   inv.IdempotencyKey,
 		TLSInsecure:      boolOr(with, keyTLSInsecure, false),
 		MaxInlineBytes:   defaultMaxInlineBytes,
+		CacheSystem:      boolOr(with, keyCacheSystem, false),
+		CacheDocuments:   boolOr(with, keyCacheDocuments, false),
 	}
 	if v, ok := with[keyMaxInlineBytes]; ok {
 		if n, okN := toInt(v); okN {

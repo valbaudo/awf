@@ -365,3 +365,36 @@ func TestLaunch_RejectsOversizeInline(t *testing.T) {
 		t.Errorf("ErrInvalidConfig.Key = %q, want %q", bad.Key, "input_files")
 	}
 }
+
+func TestLaunch_AnthropicEndToEnd(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) { return sseAnthropicResponse(anthropicSSE), nil })
+	// claude-sonnet-4-6 is in the embedded rates table → cost renders.
+	a, _ := awfllm.New(
+		awfllm.WithHTTPClient(&http.Client{Transport: rt}),
+		awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}),
+	)
+	inv := agent.AgentInvocation{
+		With:         ir.RawConfig{"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "2+2 as json"},
+		OutputSchema: &ir.JSONSchema{"type": "object"},
+	}
+	events, outcome, err := a.Launch(context.Background(), container.Handle{}, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range events { // drain
+	}
+	out := <-outcome
+	if out.Err != nil {
+		t.Fatalf("outcome err: %v", out.Err)
+	}
+	if out.Result.Output["answer"] != float64(42) {
+		t.Errorf("Output = %+v, want answer:42", out.Result.Output)
+	}
+	// Normalization end-to-end: Anthropic input_tokens NOT subtracted.
+	if out.Result.Metrics.Tokens.Input != 100 || out.Result.Metrics.Tokens.CacheReadInput != 50 || out.Result.Metrics.Tokens.CacheCreationInput != 20 {
+		t.Errorf("tokens = %+v, want Input:100 CacheRead:50 CacheCreation:20", out.Result.Metrics.Tokens)
+	}
+	if out.Result.Metrics.Cost.Source != agent.CostSourceDerived || out.Result.Metrics.Cost.Total <= 0 {
+		t.Errorf("cost not derived: %+v", out.Result.Metrics.Cost)
+	}
+}

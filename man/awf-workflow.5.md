@@ -1134,6 +1134,53 @@ only (a `structured_output: ollama_format` config is rejected). A top-level `rea
 via `{{ <id>.* }}`; a `react:` nested in `loop`/`gate`/`map` is readable via `awf outputs --step`
 only.
 
+## awf/llm providers
+
+The `awf/llm` adapter selects a transport via the `provider:` `with:` key.
+
+**`provider: openai`** (default) — OpenAI-compatible streaming (`POST /v1/chat/completions`).
+Works with any OpenAI-compatible endpoint; `base_url:` overrides the default
+`https://api.openai.com`. `api_key_env:` names the env var carrying the key (default
+`OPENAI_API_KEY`). `structured_output: response_format` sends a `response_format: json_schema`
+request body field; `structured_output: ollama_format` sends `format: json` (Ollama). `ollama`
+selects the Ollama transport.
+
+**`provider: gemini`** — native Google Gemini REST API. Default `base_url:
+https://generativelanguage.googleapis.com`; default `api_key_env: GEMINI_API_KEY`.
+
+**`provider: ollama`** — Ollama-native transport. Default `base_url:
+http://localhost:11434`; no API key required (`api_key_env:` optional).
+
+**`provider: anthropic`** — uses the native Anthropic Messages API (`POST /v1/messages`, SSE
+streaming). Default `base_url: https://api.anthropic.com`; default `api_key_env:
+ANTHROPIC_API_KEY`. Requires `max_tokens` (the Anthropic API has no server-side default;
+`awf/llm` sends 8192 when the author omits it). `structured_output: response_format` is
+rejected (Anthropic has no `response_format json_schema`); use `structured_output: off` (the
+implicit default on this provider) and rely on the schema directive in the prompt and the
+layer-2 parse.
+
+**Prompt caching keys (`provider: anthropic` only):**
+
+- `cache_system: true` — adds a `cache_control: {type: "ephemeral"}` marker to the system block,
+  enabling Anthropic prompt caching for the system prompt. Minimum cacheable prefix: 1024 tokens
+  (Sonnet 4.6 / Opus 4.8), 4096 (Haiku 4.5). Cache is billed at 0.1x the base input rate on
+  reads, 1.25x on first write (5-minute TTL). Break-even at approximately 2 re-reads.
+- `cache_documents: true` — adds the `cache_control` marker to the **last `input_files` document
+  block** (the boundary between the static document and the varying prompt; the prompt itself is
+  left uncached so the cached prefix is stable across repair attempts). No effect without
+  `input_files`. Combines with `cache_system: true` for two of the four available breakpoints.
+
+Both keys default to `false` and are silently ignored on non-Anthropic providers. `base_url:`
+may be overridden only for **x-api-key-compatible** endpoints (a self-hosted
+Anthropic-compatible proxy); it does **not** reach Amazon Bedrock or Google Vertex (different
+auth schemes).
+
+**Usage reporting.** Anthropic reports `input_tokens`, `cache_read_input_tokens`, and
+`cache_creation_input_tokens` as separate fields; unlike OpenAI, the cached amounts are NOT
+included in `input_tokens`. AWF normalizes correctly: derived cost uses the true non-cached
+input for billing, plus the read/write cache rates from the embedded rates table for the cached
+portions.
+
 # OUTCOMES, RETRY, AND REPAIR
 
 Step outcomes are *mechanical only* — quality is the gate's job, not an outcome

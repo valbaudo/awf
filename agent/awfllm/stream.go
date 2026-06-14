@@ -10,13 +10,14 @@ import (
 	"github.com/valbaudo/awf/pricing"
 )
 
-// usageRec is the normalized token usage both transports fill (OpenAI
-// prompt/completion + cached; Ollama prompt_eval/eval). CacheRead maps to
-// MetricTokens.CacheReadInput. Zero when a backend omits usage (obs-only).
+// usageRec is the normalized token usage every transport fills. CacheRead maps to
+// MetricTokens.CacheReadInput; CacheWrite (Anthropic cache_creation_input_tokens)
+// maps to MetricTokens.CacheCreationInput. Zero when a backend omits usage.
 type usageRec struct {
-	Input     int
-	Output    int
-	CacheRead int
+	Input      int
+	Output     int
+	CacheRead  int
+	CacheWrite int // Anthropic cache_creation_input_tokens (0 elsewhere)
 }
 
 // apiError is the uniform HTTP error both transports produce, so classification
@@ -59,8 +60,10 @@ func isPermanentLLMError(err error) bool {
 // model is the wire model id captured from the streamed response (last non-empty
 // across chunks); it is always stamped into Metrics.Model even on a pricing miss.
 // An unknown or empty model → cost ABSENT (Source == ""), never $0.
-// Because OpenAI's prompt_tokens includes cached tokens, the Breakdown normalizes:
-// Input = usage.Input - usage.CacheRead; CacheRead = usage.CacheRead.
+// Cache normalization is PROVIDER-DEPENDENT (see metricsFrom): OpenAI/Gemini report a
+// prompt-token count that INCLUDES cached tokens (subtract for cost); Anthropic reports
+// input_tokens EXCLUSIVE of cache (no subtract). buildResult selects the mode from the
+// resolved provider below.
 func buildResult(full string, usage usageRec, model string, pricer pricing.Table, inv agent.AgentInvocation) (agent.AgentResult, error) {
 	var output map[string]any
 	if inv.OutputSchema != nil {
@@ -70,7 +73,11 @@ func buildResult(full string, usage usageRec, model string, pricer pricing.Table
 		}
 		output = obj
 	}
-	ms := metricsFrom(usage, model, pricer)
+	// Anthropic's input_tokens excludes cache tokens; the single-call path derives
+	// the normalization mode from the resolved provider (callAnthropic doesn't call
+	// metricsFrom itself).
+	anthropicNorm := effectiveProvider(inv.With) == providerAnthropic
+	ms := metricsFrom(usage, model, pricer, anthropicNorm)
 	return agent.AgentResult{
 		Output:   output,
 		ExitCode: 0,
@@ -86,20 +93,29 @@ func buildResult(full string, usage usageRec, model string, pricer pricing.Table
 	}, nil
 }
 
-// metricsFrom builds a MetricSet from token usage + the wire model id, deriving a
-// USD cost from the injected pricer. Extracted verbatim from buildResult so the
-// tool-loop path (runOneToolCall) and the single-call path share one cost rule:
-// the model id is always stamped (even on a pricing miss); an unknown/empty model →
-// cost ABSENT (Source == ""), never $0; OpenAI's prompt_tokens includes cached, so
-// the Breakdown normalizes Input = usage.Input - usage.CacheRead.
-func metricsFrom(usage usageRec, model string, pricer pricing.Table) agent.MetricSet {
-	tokens := agent.MetricTokens{Input: usage.Input, Output: usage.Output, CacheReadInput: usage.CacheRead}
+// metricsFrom builds a MetricSet from token usage + wire model, deriving USD cost
+// via the injected pricer. anthropicNorm gates the cache normalization: OpenAI &
+// Gemini report a prompt-token count that INCLUDES cached tokens (subtract them
+// for the non-cached input cost); Anthropic reports input_tokens EXCLUSIVE of
+// cache (do NOT subtract). Model "" → cost ABSENT (never $0).
+func metricsFrom(usage usageRec, model string, pricer pricing.Table, anthropicNorm bool) agent.MetricSet {
+	tokens := agent.MetricTokens{
+		Input:              usage.Input,
+		Output:             usage.Output,
+		CacheReadInput:     usage.CacheRead,
+		CacheCreationInput: usage.CacheWrite,
+	}
 	ms := agent.MetricSet{Tokens: tokens, Turns: 1, Model: model}
 	if model != "" {
+		inTokens := usage.Input
+		if !anthropicNorm {
+			inTokens -= usage.CacheRead // prompt count includes cached; normalize for cost
+		}
 		b := pricing.Breakdown{
-			Input:     usage.Input - usage.CacheRead, // prompt_tokens includes cached; normalize
-			Output:    usage.Output,
-			CacheRead: usage.CacheRead,
+			Input:      inTokens,
+			Output:     usage.Output,
+			CacheRead:  usage.CacheRead,
+			CacheWrite: usage.CacheWrite,
 		}
 		if c, ok := pricer.Derive(model, b); ok {
 			ms.Cost = agent.MetricCost{Source: agent.CostSourceDerived, Currency: c.Currency, Total: c.Total, Input: c.Input, Output: c.Output}
@@ -109,9 +125,10 @@ func metricsFrom(usage usageRec, model string, pricer pricing.Table) agent.Metri
 }
 
 // metricsFrom (method form) closes over the adapter's injected pricer — the
-// tool-loop path's accessor for the shared cost rule.
+// tool-loop path's accessor. The tool-loop is OpenAI-compat only, so anthropicNorm
+// is always false here.
 func (a *Adapter) metricsFrom(usage usageRec, model string) agent.MetricSet {
-	return metricsFrom(usage, model, a.pricer)
+	return metricsFrom(usage, model, a.pricer, false)
 }
 
 // tokenSummary is the DisplayFinal text (used by launch.go — B7).

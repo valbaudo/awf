@@ -109,6 +109,31 @@ func TestBuildResult_Transcript_D13_Typed(t *testing.T) {
 	}
 }
 
+func TestMetricsFrom_PerProviderCacheNormalization(t *testing.T) {
+	tbl := pricing.Table{"claude-sonnet-4-6": {Currency: "USD", InputPerM: 3, OutputPerM: 15, CacheReadPerM: 0.3, CacheWritePerM: 3.75}}
+	const eps = 1e-9
+
+	// OpenAI/Gemini semantics (anthropicNorm=false): prompt count INCLUDES cached → subtract.
+	openai := awfllm.MetricsFromForTest(1_000_000, 0, 200_000, 0, "claude-sonnet-4-6", tbl, false)
+	// cost.Input = (1_000_000-200_000)/1e6*3 + 200_000/1e6*0.3 = 2.4 + 0.06 = 2.46
+	if math.Abs(openai.Cost.Input-2.46) > eps {
+		t.Errorf("non-anthropic Input cost = %v, want 2.46 (subtract cached)", openai.Cost.Input)
+	}
+
+	// Anthropic semantics (anthropicNorm=true): input_tokens EXCLUDES cache → no subtract.
+	anth := awfllm.MetricsFromForTest(1_000_000, 0, 200_000, 100_000, "claude-sonnet-4-6", tbl, true)
+	// cost.Input = 1_000_000/1e6*3 + 200_000/1e6*0.3 + 100_000/1e6*3.75 = 3 + 0.06 + 0.375 = 3.435
+	if math.Abs(anth.Cost.Input-3.435) > eps {
+		t.Errorf("anthropic Input cost = %v, want 3.435 (no subtract, +cache write)", anth.Cost.Input)
+	}
+	if anth.Tokens.CacheCreationInput != 100_000 {
+		t.Errorf("CacheCreationInput = %d, want 100000", anth.Tokens.CacheCreationInput)
+	}
+	if anth.Tokens.CacheReadInput != 200_000 {
+		t.Errorf("CacheReadInput = %d, want 200000", anth.Tokens.CacheReadInput)
+	}
+}
+
 func TestIsPermanentLLMError(t *testing.T) {
 	if !awfllm.IsPermanentLLMErrorForTest(awfllm.NewAPIErrorForTest(400, "invalid_request_error", "bad model")) {
 		t.Error("400 + invalid_request_error should be permanent")

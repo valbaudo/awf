@@ -145,6 +145,41 @@ func TestValidate_OllamaKeyOptional(t *testing.T) {
 	}
 }
 
+func TestValidate_AnthropicProviderAccepted(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+	if err := a.ValidateConfig(ir.RawConfig{"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "x"}); err != nil {
+		t.Errorf("provider: anthropic must validate with ANTHROPIC_API_KEY present: %v", err)
+	}
+}
+
+func TestValidate_AnthropicMissingKeyRejected(t *testing.T) {
+	// anthropic is NOT local → an absent ANTHROPIC_API_KEY is a permanent config error.
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"OPENAI_API_KEY": "x"}))
+	err := a.ValidateConfig(ir.RawConfig{"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "x"})
+	if err == nil {
+		t.Fatal("provider: anthropic without ANTHROPIC_API_KEY must be rejected")
+	}
+	var ic *agent.ErrInvalidConfig
+	if !errors.As(err, &ic) {
+		t.Fatalf("want *agent.ErrInvalidConfig, got %T", err)
+	}
+}
+
+func TestValidate_AnthropicRejectsResponseFormat(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+	err := a.ValidateConfig(ir.RawConfig{
+		"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "x",
+		"structured_output": "response_format",
+	})
+	if err == nil {
+		t.Fatal("provider: anthropic + structured_output: response_format must be rejected")
+	}
+	var ic *agent.ErrInvalidConfig
+	if !errors.As(err, &ic) {
+		t.Fatalf("want *agent.ErrInvalidConfig (permanent), got %T", err)
+	}
+}
+
 func TestValidate_MaxInlineBytes(t *testing.T) {
 	a := llmAdapter(t, okEnv())
 	if err := a.ValidateConfig(ir.RawConfig{"model": "m", "prompt": "hi", "max_inline_bytes": 1024}); err != nil {
@@ -196,5 +231,17 @@ func TestValidateConfigToolLoopExemptsPrompt(t *testing.T) {
 	// ValidateConfig (the agent: path) STILL requires prompt:
 	if err := a.ValidateConfig(ir.RawConfig{"model": "m"}); err == nil {
 		t.Fatal("ValidateConfig must still require prompt")
+	}
+}
+
+func TestDefaultEnvAllowlist_IncludesAnthropic(t *testing.T) {
+	found := false
+	for _, k := range awfllm.DefaultEnvAllowlist {
+		if k == "ANTHROPIC_API_KEY" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("DefaultEnvAllowlist must include ANTHROPIC_API_KEY, got %v", awfllm.DefaultEnvAllowlist)
 	}
 }
