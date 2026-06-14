@@ -900,6 +900,39 @@ graph:
         answer: { type: string }
 `
 
+// agentStepContainerlessInputFilesWorkflow — Task 12. One CONTAINERLESS
+// agent step that receives a PDF via input_files. The file is provided at run
+// start as a single-file ASSET (doc.pdf, written next to the workflow); the
+// step forwards it to the containerless adapter under the logical label "doc".
+//
+// Deviation (documented in the test): the engine resolves input.files.<name>
+// (workflow input file) and asset.<id> through the SAME containerless resolver
+// (engine.resolveContainerlessInputFiles -> resolveSingleRefBytes -> DetectMIME),
+// but only the asset.<id> run-start channel is wired end-to-end through
+// engine.Run + the fake-backend harness. input.files.<name> at the top level is
+// reachable only by constructing a Scope directly (engine's
+// input_files_containerless_test.go covers that), so the conformance harness
+// drives the same delivery path via asset.<id>.
+const agentStepContainerlessInputFilesWorkflow = `workflow: conformance-agent-containerless-input-files
+version: 1
+assets:
+  doc: doc.pdf
+graph:
+  - id: ask
+    uses: awf/llm
+    with:
+      model: m
+      prompt: "Summarize the attached document."
+    input_files:
+      doc: asset.doc
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [answer]
+      properties:
+        answer: { type: string }
+`
+
 // parallelResumeWorkflow — Bucket 4b parallel_resume_consistency:
 // simple 3-branch parallel followed by a sequential after-step. The test
 // programs pb2.sh to fail deterministically on first run, then re-programs
