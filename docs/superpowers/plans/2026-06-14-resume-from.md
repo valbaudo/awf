@@ -11,7 +11,9 @@
 **Spec:** `docs/superpowers/specs/2026-06-14-resume-rerun-design.md`.
 
 > ### v1 SCOPE NOTE (read first — narrower than spec §4)
-> The spec describes a general "happens-after" over arbitrary nesting. **v1 implements the correct *subset* where the target's runtime path traverses only `parallel` containers** (top-level nodes; parallel branches — covers the motivating `parallel[N].merge_runtime_compose`). For such targets, the invalidation set is exactly `subtree(target) ∪ {committed path p : rootSlot(p) > rootSlot(target)}`. Targets nested inside a `call`/`loop`/`gate`/`try`/`if`/`map`-body are **refused** with a clear message (`engine/rerun.go` `rerunSupported`). The general happens-after (sequential-sibling walks, the `.workflow` boundary) is deferred. Because v1's granularity is top-level-ancestor-coarse, a committed map is always wholly invalidated-or-replayed, so the prune-frontier widening (spec §4 boundary case) cannot arise in v1.
+> The spec describes a general "happens-after" over arbitrary nesting. **v1 implements the correct *subset* where the target's runtime path traverses only `parallel` containers** (top-level nodes; parallel branches — covers the motivating `parallel[N].merge_runtime_compose`). For such targets, the invalidation set is exactly `subtree(target) ∪ {committed path p : rootSlot(p) > rootSlot(target)}`. Targets nested inside a `call`/`loop`/`gate`/`try`/`if`/`map`-body are **refused** with a clear message (`engine/rerun.go` `rerunSupported`). The general happens-after (sequential-sibling walks, the `.workflow` boundary) is deferred. Because v1's granularity is top-level-ancestor-coarse, a committed map is always wholly invalidated-or-replayed, so the prune-frontier widening (spec §4 boundary case) cannot arise in v1 (proven in Task 2 `TestComputeRerunInvalidation_MapWholly`).
+>
+> **Structure-preserving assumption (C1):** `--from` bypasses the digest pin, so the operator may have edited the workflow. The invalidation set is computed from the CURRENT graph's top-level order but matches OLD committed paths — so `--from` is correct for **body/script edits** (the motivating case), not graph-shape edits. `ComputeRerunInvalidation` **refuses loudly** if any committed top-level segment is absent from the current graph (a removed/renamed/reordered top-level node — including a reordered control node, whose `<kw>[N]` segment changes), instead of silently dropping it and replaying stale output. A pure top-level **step** reorder is the one structural change not refused (step ids are position-independent) and is safe (it re-runs per the new order — conservative over-invalidation, never stale reuse). Prior art (Temporal refuses on drift; Nextflow/Bazel content-hash so changes auto-cascade) backs fail-loud over the silent-reuse of Make/Airflow-pre-3.0.
 
 > ### COORDINATION
 > `--from` is the third change around the resume guard (after `--force` and the in-flight retryable scope-b). It only *reads* `resumeAdmission` (bypasses it when `--from` is set); no guard rewrite. The `RunOptions`/`runAndFinish` trailing-param pattern mirrors `--force`'s `ForceResume`.
@@ -136,7 +138,6 @@ The pure core. Covers the v1 supported subset; refuses the rest.
 package engine
 
 import (
-	"sort"
 	"strings"
 	"testing"
 
@@ -170,7 +171,6 @@ func TestComputeRerunInvalidation_ParallelBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeRerunInvalidation: %v", err)
 	}
-	sort.Strings(got)
 	want := []string{"parallel[1].branchA", "s2"} // branch subtree + later root-slot; branchB (concurrent) + s0 replay
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("set = %v, want %v", got, want)
@@ -181,7 +181,6 @@ func TestComputeRerunInvalidation_TopLevelStep(t *testing.T) {
 	wf := rerunTestWF()
 	rs := rsWithCompleted("s0", "parallel[1].branchA", "parallel[1].branchB", "s2")
 	got, _ := ComputeRerunInvalidation(wf, rs, "s0")
-	sort.Strings(got)
 	want := []string{"parallel[1].branchA", "parallel[1].branchB", "s0", "s2"} // s0 + everything after slot 0
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("set = %v, want %v", got, want)
@@ -190,24 +189,69 @@ func TestComputeRerunInvalidation_TopLevelStep(t *testing.T) {
 
 func TestComputeRerunInvalidation_RefusesNestedSequential(t *testing.T) {
 	wf := rerunTestWF()
-	rs := rsWithCompleted("recon.workflow.step")
-	if _, err := ComputeRerunInvalidation(wf, rs, "recon.workflow.step"); err == nil {
+	if _, err := ComputeRerunInvalidation(wf, rsWithCompleted("recon.workflow.step"), "recon.workflow.step"); err == nil {
 		t.Fatal("expected refusal for a target inside a call (.workflow)")
 	}
-	rs2 := rsWithCompleted("loop[0].body.iter-1.step")
-	if _, err := ComputeRerunInvalidation(wf, rs2, "loop[0].body.iter-1.step"); err == nil {
+	if _, err := ComputeRerunInvalidation(wf, rsWithCompleted("loop[0].body.iter-1.step"), "loop[0].body.iter-1.step"); err == nil {
 		t.Fatal("expected refusal for a target inside a loop body")
 	}
 }
 
-func TestResolveRerunTarget(t *testing.T) {
-	rs := rsWithCompleted("s0", "parallel[1].branchA", "parallel[1].branchB")
-	got, err := ResolveRerunTarget(rs, "parallel[1].branchA")
-	if err != nil || got != "parallel[1].branchA" {
-		t.Fatalf("exact: (%q,%v)", got, err)
+// C1 structural-drift guard: a committed path whose top-level segment is absent
+// from the (edited) graph must REFUSE, not silently drop the node and replay stale.
+func TestComputeRerunInvalidation_RefusesStructuralDrift(t *testing.T) {
+	wf := rerunTestWF() // graph has s0, parallel[1], s2 — but NOT "gone"
+	rs := rsWithCompleted("s0", "gone", "s2")
+	if _, err := ComputeRerunInvalidation(wf, rs, "s0"); err == nil {
+		t.Fatal("expected refusal: committed node \"gone\" has no top-level node in the current graph")
 	}
-	if _, err := ResolveRerunTarget(rs, "parallel[1].nope"); err == nil {
-		t.Fatal("expected error for absent prefix")
+}
+
+// m6: a committed map is wholly invalidated — never a subset (a partial frontier
+// would corrupt keep:top(k)). v1's root-slot granularity guarantees it.
+func TestComputeRerunInvalidation_MapWholly(t *testing.T) {
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{
+		&ir.CodeStep{ID: "s0", Run: "x", Container: "c"},
+		&ir.Map{Over: ir.Expr("{{ input.xs }}"), As: "x", Container: "c",
+			Body: ir.NodeList{&ir.CodeStep{ID: "scan", Run: "x", Container: "c"}}},
+		&ir.CodeStep{ID: "s2", Run: "x", Container: "c"},
+	}}
+	rs := rsWithCompleted("s0", "map[1].item-0.scan", "map[1].item-1.scan", "s2")
+	rs.MapItems["map[1]"] = []MapItemRecord{{N: 0, Status: ItemPassed}, {N: 1, Status: ItemPassed}}
+	got, err := ComputeRerunInvalidation(wf, rs, "s0") // s0 at slot 0 -> map[1] (slot 1) wholly after
+	if err != nil {
+		t.Fatalf("ComputeRerunInvalidation: %v", err)
+	}
+	for _, p := range []string{"map[1].item-0.scan", "map[1].item-1.scan", "map[1]"} {
+		if !contains(got, p) {
+			t.Fatalf("map path %q must be in the whole-map invalidation set; got %v", p, got)
+		}
+	}
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+func TestResolveRerunTarget(t *testing.T) {
+	wf := rerunTestWF()
+	rs := rsWithCompleted("s0", "parallel[1].branchA", "parallel[1].branchB")
+	if got, err := ResolveRerunTarget(wf, rs, "parallel[1].branchA"); err != nil || got != "parallel[1].branchA" {
+		t.Fatalf("exact: (%q,%v)", got, err) // (1) exact committed path
+	}
+	if got, err := ResolveRerunTarget(wf, rs, "parallel[1]"); err != nil || got != "parallel[1]" {
+		t.Fatalf("container: (%q,%v)", got, err) // (2) top-level container (no committed key of its own)
+	}
+	if got, err := ResolveRerunTarget(wf, rs, "branchA"); err != nil || got != "parallel[1].branchA" {
+		t.Fatalf("bare-id: (%q,%v)", got, err) // (3) unique bare step id
+	}
+	if _, err := ResolveRerunTarget(wf, rs, "nope"); err == nil {
+		t.Fatal("expected error for absent arg")
 	}
 }
 ```
@@ -237,47 +281,24 @@ func rerunFirstSegment(path string) string {
 }
 
 // rerunRootSlots maps each root-graph child's first-segment form to its slot
-// index, so rootSlot(p) = rerunRootSlots(wf)[rerunFirstSegment(p)]. Steps map by
-// id; control nodes by "<keyword>[i]" (matching ir.PathFor).
+// index, so rootSlot(p) = rerunRootSlots(wf)[rerunFirstSegment(p)]. Built from the
+// canonical ir.WalkNodes walk (which routes every path through ir.PathFor): the
+// no-dot paths are exactly the top-level nodes, visited in declaration order, so
+// a counter gives an order-preserving slot. Using the canonical walker (not a
+// hand-rolled kind→"<kw>[i]" switch) respects CLAUDE.md "node addressing is one
+// pure function (engine/path); don't compute paths ad hoc". (WalkNodes excludes
+// *Skip; that only renumbers, which is order-preserving and harmless — the
+// comparison below needs relative order, not absolute slot.)
 func rerunRootSlots(wf *ir.Workflow) map[string]int {
 	out := map[string]int{}
-	for i, n := range wf.Graph {
-		out[rerunRootSegment(n, i)] = i
-	}
+	i := 0
+	ir.WalkNodes(wf.Graph, "", func(_ ir.Node, path string) {
+		if !strings.Contains(path, ".") { // no dot ⟺ a top-level node
+			out[path] = i
+			i++
+		}
+	})
 	return out
-}
-
-// rerunRootSegment is the path segment ir.PathFor assigns a root-graph child at
-// slot i: a step's id, or "<keyword>[i]" for a control node.
-func rerunRootSegment(n ir.Node, i int) string {
-	switch v := n.(type) {
-	case *ir.CodeStep:
-		return v.ID
-	case *ir.AgentStep:
-		return v.ID
-	case *ir.SignalStep:
-		return v.ID
-	case *ir.CallStep:
-		return v.ID
-	case *ir.If:
-		return fmt.Sprintf("if[%d]", i)
-	case *ir.Loop:
-		return fmt.Sprintf("loop[%d]", i)
-	case *ir.Try:
-		return fmt.Sprintf("try[%d]", i)
-	case *ir.Parallel:
-		return fmt.Sprintf("parallel[%d]", i)
-	case *ir.Gate:
-		return fmt.Sprintf("gate[%d]", i)
-	case *ir.Map:
-		return fmt.Sprintf("map[%d]", i)
-	case *ir.React:
-		return fmt.Sprintf("react[%d]", i)
-	case *ir.Compose:
-		return fmt.Sprintf("compose[%d]", i)
-	default:
-		return fmt.Sprintf("?[%d]", i)
-	}
 }
 
 // rerunSupported reports whether `--from target` is in the v1 subset: every
@@ -334,19 +355,26 @@ func allCommittedPaths(rs *RunState) []string {
 	return out
 }
 
-// ResolveRerunTarget matches a --from prefix against committed paths, returning
-// the unique committed node path it names. Exact match wins; else a single path
-// with that prefix; ambiguity/absence is an error listing candidates.
-func ResolveRerunTarget(rs *RunState, prefix string) (string, error) {
+// ResolveRerunTarget resolves a --from argument to one node path, in priority:
+// (1) an exact committed path; (2) a top-level graph node segment — a CONTAINER
+// like `parallel[1]` or `map[3]` has NO committed key of its own (only children),
+// so it is matched against rerunRootSlots, not allCommittedPaths; (3) a unique
+// TRAILING segment (a bare step id, e.g. `merge` → `parallel[0].merge`). A bare
+// id shared by two committed paths (e.g. one per parallel branch — ids are unique
+// only within a sibling list) is an error listing candidates.
+func ResolveRerunTarget(wf *ir.Workflow, rs *RunState, arg string) (string, error) {
 	paths := allCommittedPaths(rs)
-	for _, p := range paths {
-		if p == prefix {
+	for _, p := range paths { // (1) exact committed path
+		if p == arg {
 			return p, nil
 		}
 	}
-	var matches []string
+	if _, ok := rerunRootSlots(wf)[arg]; ok { // (2) top-level node segment (incl. containers)
+		return arg, nil
+	}
+	var matches []string // (3) unique trailing segment (bare id)
 	for _, p := range paths {
-		if strings.HasPrefix(p, prefix+".") {
+		if p[strings.LastIndexByte(p, '.')+1:] == arg {
 			matches = append(matches, p)
 		}
 	}
@@ -355,16 +383,34 @@ func ResolveRerunTarget(rs *RunState, prefix string) (string, error) {
 	case 1:
 		return matches[0], nil
 	case 0:
-		return "", fmt.Errorf("--from %q matches no committed node", prefix)
+		return "", fmt.Errorf("--from %q matches no committed node (give a committed runtime path, a top-level node like parallel[0], or a unique step id)", arg)
 	default:
-		return "", fmt.Errorf("--from %q is ambiguous (%d committed nodes share it; name one exactly): %s", prefix, len(matches), strings.Join(matches, ", "))
+		return "", fmt.Errorf("--from %q is ambiguous (%d committed nodes share that id; name one exactly): %s", arg, len(matches), strings.Join(matches, ", "))
 	}
 }
 
 // ComputeRerunInvalidation returns the sorted set of committed paths to
 // invalidate for `--from target`: target's subtree ∪ every committed path whose
-// top-level root slot is greater than target's. Errors if target is unsupported
-// (rerunSupported) or its root segment isn't a root-graph node.
+// top-level root slot is greater than target's.
+//
+// Errors if: target is unsupported (rerunSupported); its root segment isn't in
+// the current graph; OR **any committed path's top-level segment is absent from
+// the current graph**. The last guard is load-bearing: `--from` bypasses the
+// digest pin, so the operator may have edited the workflow. A structure-changing
+// edit (a top-level node removed/renamed, or a control node reordered — its
+// "<kw>[N]" segment changes) leaves a committed path whose top-level segment no
+// longer maps to a node. Without the guard, `known=false` would SILENTLY drop
+// that path from the set → it stays committed → its stale output is replayed
+// (the exact silent-stale-reuse bug that Make/Airflow-pre-3.0 have and
+// Temporal/Nextflow refuse-or-recompute). Refusing loud honors "pinning is a hard
+// error on drift" at top-level-node granularity.
+//
+// ASSUMPTION (documented contract): `--from` is for STRUCTURE-PRESERVING edits
+// (step bodies / scripts), not graph-shape edits. A pure top-level STEP reorder
+// is the one structural change NOT refused (step ids are position-independent, so
+// all segments still resolve) — and it is safe: the new slot order re-derives
+// "after-ness" from the current graph, re-running per the new order (conservative
+// over-invalidation, never stale under-invalidation).
 func ComputeRerunInvalidation(wf *ir.Workflow, rs *RunState, target string) ([]string, error) {
 	if err := rerunSupported(target); err != nil {
 		return nil, err
@@ -374,11 +420,16 @@ func ComputeRerunInvalidation(wf *ir.Workflow, rs *RunState, target string) ([]s
 	if !ok {
 		return nil, fmt.Errorf("--from %q: top-level node %q not found in workflow", target, rerunFirstSegment(target))
 	}
+	committed := allCommittedPaths(rs)
+	for _, p := range committed { // structural-drift guard (see doc)
+		if _, known := slots[rerunFirstSegment(p)]; !known {
+			return nil, fmt.Errorf("--from: committed node %q has no top-level node %q in the current workflow — its top-level structure changed since the run started; --from cannot map committed steps onto it (revert the structural change, or start a fresh run)", p, rerunFirstSegment(p))
+		}
+	}
 	var out []string
-	for _, p := range allCommittedPaths(rs) {
+	for _, p := range committed {
 		inSubtree := p == target || strings.HasPrefix(p, target+".")
-		pSlot, known := slots[rerunFirstSegment(p)]
-		afterRoot := known && pSlot > tSlot
+		afterRoot := slots[rerunFirstSegment(p)] > tSlot // known: guard above
 		if inSubtree || afterRoot {
 			out = append(out, p)
 		}
@@ -419,27 +470,9 @@ git commit -m "feat(engine): rerun invalidation-set computation + target resolve
 
 ## Task 3: `RunOptions.RerunFrom` + engine apply
 
-**Files:** Modify `engine/interpreter.go`; Test `engine/rerun_test.go` (add an engine-level test) or `engine/interpreter_test.go`.
+**Files:** Modify `engine/interpreter.go`. **No standalone engine unit test** — this is pure wiring; its red→green is driven by **Task 4's end-to-end `TestCLIResumeFrom_ReRunsFromStep`** (which exercises `RunOptions.RerunFrom` through the CLI) and **Task 5's re-fold-determinism conformance test**. (M4 fix: the prior draft had a `t.Skip` stub here; a standalone engine `Run` rig for this is redundant with Task 4's CLI path. If executing strictly red-green, write Task 4 Step 1 first; it fails on the missing field/apply, and this task makes it pass.)
 
-- [ ] **Step 1: Write the failing test** — add to `engine/rerun_test.go` (uses the existing engine test rig pattern; mirror a simple `Run` test in the package — e.g. how `interpreter_test.go` constructs a fake dispatcher + InMemoryLog/Blobs). Minimal shape:
-
-```go
-func TestRunRerunFromInvalidatesAndAppendsEvent(t *testing.T) {
-	// Seed a log: run.started + node.completed(s0,s2). Fold, then Run with
-	// RerunFrom="s0" must append a node.invalidated event covering s0+s2 and
-	// re-run them (the fake dispatcher records the re-execution).
-	// Build on the simplest existing engine Run test harness in this package;
-	// assert: (a) the log gains a node.invalidated event whose Paths include
-	// "s0" and "s2"; (b) after Run, rs.Completed no longer had them pre-walk
-	// (i.e. they re-ran). Keep it to a 2-step linear wf [s0, s2].
-	t.Skip("replace with the package's Run harness; see interpreter_test.go")
-}
-```
-Then replace the `t.Skip` body with a real test mirroring the package's existing `Run(...)` harness (fake dispatcher, `state.NewInMemoryLog`, `state.NewInMemoryBlobs`): seed `run.started` + `node.completed` for `s0` and `s2`, fold, call `Run(ctx, def, rs, disp, log, blobs, clk, RunOptions{RerunFrom: "s0"})`, then read back the log and assert a `node.invalidated` event with `Paths ⊇ {"s0","s2"}` exists, and the dispatcher re-executed both.
-
-- [ ] **Step 2: Run → fail.** `go test ./engine/ -run TestRunRerunFrom -count=1` → FAIL (`unknown field RerunFrom`).
-
-- [ ] **Step 3: Add the option + apply.** In `engine/interpreter.go`, add to `RunOptions` (after `ForceResume`):
+- [ ] **Step 1: Add the option.** In `engine/interpreter.go`, add to `RunOptions` (after `ForceResume`):
 ```go
 	// RerunFrom, when non-empty, is a committed node runtime path. At resume
 	// start the engine invalidates that node's subtree + everything after its
@@ -447,7 +480,8 @@ Then replace the `t.Skip` body with a real test mirroring the package's existing
 	// `awf resume --from`.
 	RerunFrom string
 ```
-In `Run`, insert AFTER `preflightCallStartedRuntimes` returns and BEFORE the `runCtx, cancel := context.WithCancel(ctx)` line (single-threaded, before the poller — so direct rs writes + log.Append are race-free):
+
+- [ ] **Step 2: Apply in Run.** In `Run`, insert AFTER `preflightCallStartedRuntimes` returns and BEFORE the `runCtx, cancel := context.WithCancel(ctx)` line (single-threaded, before the poller — so direct rs writes + log.Append are race-free):
 ```go
 	if opts.RerunFrom != "" {
 		paths, err := ComputeRerunInvalidation(def.Workflow, runstate, opts.RerunFrom)
@@ -469,11 +503,11 @@ In `Run`, insert AFTER `preflightCallStartedRuntimes` returns and BEFORE the `ru
 ```
 (Ensure `encoding/json` and `github.com/valbaudo/awf/state` are imported in interpreter.go — they already are.)
 
-- [ ] **Step 4: Run → pass.** `go test ./engine/ -run TestRunRerunFrom -count=1` → PASS. Then `go test ./engine/ -count=1` (full engine suite — RerunFrom defaults to "" so every existing test is unaffected).
+- [ ] **Step 3: Verify wiring.** `go build ./...`, then `go test ./engine/ -count=1` (full engine suite — `RerunFrom` defaults to `""`, so every existing test is unaffected). The behavioral red→green for this code is Task 4's `TestCLIResumeFrom_ReRunsFromStep`.
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 4: Commit.**
 ```bash
-git add engine/interpreter.go engine/rerun_test.go
+git add engine/interpreter.go
 git commit -m "feat(engine): RunOptions.RerunFrom applies invalidation at resume start"
 ```
 
@@ -551,7 +585,7 @@ Write `buildTwoStepOKRun(t)` in the test file: a wf with two top-level code step
 ```go
 	rerunFrom := ""
 	if *from != "" {
-		target, err := engine.ResolveRerunTarget(rs, *from)
+		target, err := engine.ResolveRerunTarget(ld.Workflow, rs, *from)
 		if err != nil {
 			fprintf(stderr, "awf resume: %v\n", err)
 			return ExitUsage
@@ -561,10 +595,12 @@ Write `buildTwoStepOKRun(t)` in the test file: a wf with two top-level code step
 			fprintf(stderr, "awf resume: %v\n", err)
 			return ExitUsage
 		}
-		fprintf(stderr, "awf resume --from %s: re-running %d step(s) (and their side effects) against the current definition; pins bypassed. Re-run set: %v\n", target, len(set), set)
+		fprintf(stderr, "awf resume --from %s: re-running %d committed step(s) (and their side effects) against the current definition; pins bypassed.\n", target, len(set))
+		fprintf(stderr, "  re-run set: %s\n", sampleRerunSet(set, 10))
 		rerunFrom = target
 	}
 ```
+  m7: `sampleRerunSet(set, n)` is a tiny helper (in cli/resume.go) that joins up to `n` sorted paths and appends `" … (N total)"` if `len(set) > n` — so the disclosure is readable on a large run instead of dumping the whole slice. m10: `--from` takes precedence over `--force` (both bypass admission; `--from` also bypasses the pins per `*from == ""` gating, so `--force` is redundant when `--from` is given). `--from` admits unconditionally — it never goes through `resumeAdmission`'s outcome logic (the `*force || *from != ""` gate above short-circuits it for both the ok-run and terminal-run cases). m8: the CLI computes the set here ONLY to disclose it; the engine recomputes + applies it (Task 3). Both call the same pure `ComputeRerunInvalidation` over the same `rs`+`ld.Workflow`, so they agree by construction; the recompute is cheap and keeps the engine the sole writer of `node.invalidated` (CLAUDE.md "the interpreter is the only writer to state").
   - At the `runAndFinish(...)` call, append `rerunFrom` as the new trailing arg (after `*force`).
   - Update `printResumeUsage` to add `[--from <step>]` and a one-line description.
 
@@ -584,7 +620,7 @@ git commit -m "feat(cli): awf resume --from flag (resolve, bypass pins, disclose
 
 ## Task 5: conformance — re-fold determinism + end-to-end
 
-**Files:** add to `cli/resume_test.go` (or the conformance package, matching where resume conformance lives).
+**Files:** the re-fold-determinism test goes in the **`conformance/` package** (fake backend) — CLAUDE.md line 94-96: new durability behavior is defined-done by a conformance test, not a `cli` unit test. First read `conformance/` to match how existing resume/durability conformance cases are structured (the same fake-backend harness `--force`/map-reduce durability use); add the `--from` case there. The lighter end-to-end re-run assertion may also live in `cli/resume_test.go`, but the **load-bearing re-fold-determinism case is a `conformance/` test**.
 
 - [ ] **Step 1: Write the test.**
 ```go
