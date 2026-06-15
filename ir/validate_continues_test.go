@@ -324,20 +324,24 @@ func TestContinuesChainSameUsesClean(t *testing.T) {
 	assertNoCode(t, Validate(ld), "AWF1029")
 }
 
-// --- AWF1030: evaluate-block prohibition (A.3.5) ---
+// --- AWF1030: evaluate-block context evidence guard (A.3.5) ---
 
-// A step inside a gate's evaluate: block that declares continues: is AWF1030.
-// The evaluator must judge in a fresh context; a conversation thread would couple
-// the evaluator to the history of the generate side, violating gate independence.
-func TestContinuesInEvaluateRejected(t *testing.T) {
+// The evaluator stays fresh, but may receive prior non-evaluator source context
+// as context evidence.
+func TestContinuesInEvaluateAllowsSourceContext(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
+		Agents: map[string]AgentRole{
+			"writer": {Uses: "awf/llm"},
+			"judge":  {Uses: "awf/llm"},
+		},
 		Graph: NodeList{
-			&AgentStep{ID: "draft", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}},
+			&AgentStep{ID: "draft", Uses: "writer", With: RawConfig{"model": "m", "prompt": "p"}},
+			&AgentStep{ID: "critique", Uses: "writer", Continues: "draft", With: RawConfig{"model": "m", "prompt": "p"}},
 			&Gate{
-				Generate: NodeList{&AgentStep{ID: "gen", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}}},
+				Generate: NodeList{&AgentStep{ID: "gen", Uses: "writer", With: RawConfig{"model": "m", "prompt": "p"}}},
 				Evaluate: NodeList{
-					&AgentStep{ID: "judge", Uses: "awf/llm", Continues: "draft", // forbidden in evaluate
+					&AgentStep{ID: "judge", Uses: "judge", Continues: "critique",
 						With:         RawConfig{"model": "m", "prompt": "p"},
 						OutputSchema: &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}},
 				},
@@ -346,7 +350,75 @@ func TestContinuesInEvaluateRejected(t *testing.T) {
 			},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF1030", "gate[1].evaluate.judge")
+	assertNoCode(t, Validate(ld), "AWF1030")
+	assertNoCode(t, Validate(ld), "AWF1029")
+}
+
+func TestContinuesInEvaluateRejectsDirectEvaluatorTarget(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{&AgentStep{ID: "gen", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}}},
+				Evaluate: NodeList{
+					&AgentStep{ID: "judge_a", Uses: "awf/llm",
+						With:         RawConfig{"model": "m", "prompt": "p"},
+						OutputSchema: &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}},
+					&AgentStep{ID: "judge_b", Uses: "awf/llm", Continues: "judge_a",
+						With:         RawConfig{"model": "m", "prompt": "p"},
+						OutputSchema: &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}},
+				},
+				Until:       Expr("{{ step.judge_b.ok }}"),
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1030", "gate[0].evaluate.judge_b")
+}
+
+func TestContinuesInEvaluateDifferentResolvedBaseAdapterRejected(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Agents: map[string]AgentRole{
+			"writer": {Uses: "awf/llm"},
+			"judge":  {Uses: "anthropic/claude-code"},
+		},
+		Graph: NodeList{
+			&AgentStep{ID: "draft", Uses: "writer", With: RawConfig{"model": "m", "prompt": "p"}},
+			&Gate{
+				Generate: NodeList{&AgentStep{ID: "gen", Uses: "writer", With: RawConfig{"model": "m", "prompt": "p"}}},
+				Evaluate: NodeList{
+					&AgentStep{ID: "judge", Uses: "judge", Continues: "draft",
+						With:         RawConfig{"model": "m", "prompt": "p"},
+						OutputSchema: &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}},
+				},
+				Until:       Expr("{{ step.judge.ok }}"),
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1029", "gate[1].evaluate.judge")
+}
+
+func TestContinuesChainTouchesEvaluate(t *testing.T) {
+	agents := map[string]*AgentStep{
+		"draft":   {ID: "draft"},
+		"judge":   {ID: "judge"},
+		"relay":   {ID: "relay", Continues: "judge"},
+		"outside": {ID: "outside", Continues: "draft"},
+	}
+	paths := map[string]string{
+		"draft":   "draft",
+		"judge":   "gate[0].evaluate.judge",
+		"relay":   "relay",
+		"outside": "outside",
+	}
+	if !continuesChainTouchesEvaluate("relay", agents, paths) {
+		t.Fatal("relay chain should touch gate.evaluate through judge")
+	}
+	if continuesChainTouchesEvaluate("outside", agents, paths) {
+		t.Fatal("outside chain should not touch gate.evaluate")
+	}
 }
 
 // A step inside a gate's generate: block is allowed to use continues:

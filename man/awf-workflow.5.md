@@ -428,17 +428,26 @@ format never hard-codes one harness's options.
 
 **continues**
 :   Optional (`continues:` field). The `id` of an agent step that **dominates** this turn (an earlier
-    step guaranteed to have run on every path reaching this one) and uses the
-    **same** agent runtime. The engine prepends that step's conversation (its
-    prior turns, verbatim) before this turn's prompt, so the model continues one
-    thread. You may **not** inline `messages:` in `with:` — the conversation is
-    engine-owned and durable. A target inside a `gate`/`map` this turn is
-    *outside* of, or reachable only through **nested loops**, is rejected (it is
-    not addressable); to gate a conversation, gate its **leaf** turn or place a
-    whole sub-conversation inside one gate's `generate`. A step inside a gate's
-    `evaluate:` block may not use `continues` (the evaluator judges in a fresh
-    context). For map/parallel fan-out caching, branches must share
-    `system_prompt` (the prefix cache matches from the start).
+    step guaranteed to have run on every path reaching this one). Outside
+    `gate.evaluate`, the source and target use the **same** agent runtime and
+    the engine prepends that step's conversation (its prior turns, verbatim)
+    before this turn's prompt, so the model continues one thread. You may
+    **not** inline `messages:` in `with:` — the conversation is engine-owned
+    and durable. A target inside a `gate`/`map` this turn is *outside* of, or
+    reachable only through **nested loops**, is rejected (it is not
+    addressable); to gate a conversation, gate its **leaf** turn or place a
+    whole sub-conversation inside one gate's `generate`.
+
+    Inside `gate.evaluate`, `continues:` names a dominating prior
+    non-evaluator agent step whose committed transcript is provided as
+    untrusted context evidence. The evaluator still starts in a fresh context:
+    it does not resume the target provider session, does not receive evaluator
+    transcript turns assembled by AWF, and does not receive prior verdict
+    feedback. A direct or transitive target inside any `gate.evaluate` block is
+    invalid. For evaluator context evidence, role aliases are compatible when
+    they resolve to the same base adapter runtime. For map/parallel fan-out
+    caching, branches must share `system_prompt` (the prefix cache matches from
+    the start).
 
 **output_schema**
 :   Required iff a `step.<id>.<field>` of this step is referenced elsewhere.

@@ -79,18 +79,19 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 		if !ok || as.Continues == "" {
 			return
 		}
-		// A.3.5 — source must not be inside a gate evaluate: block (gate independence /
-		// D8). Decidable from the source's static path alone; runs before the target
-		// lookup so it fires regardless of whether the target is valid.
-		if inEvaluateBlock(srcPath) {
-			c.errf(srcPath, "AWF1030", catalog["AWF1030"])
-			// fall through: a misplaced evaluator turn may also have a bad target; both diagnostics help.
-		}
+		evaluatorSource := inEvaluateBlock(srcPath)
 		// A.3.1 — target exists and is an agent step.
 		tgt, isAgent := agents[as.Continues]
 		if !isAgent {
 			c.errf(srcPath, "AWF1026", fmt.Sprintf("%s (continues: %q)", catalog["AWF1026"], as.Continues))
 			return // every downstream rule needs a real target.
+		}
+		// A.3.5 — evaluator sources may use continues: only as source context evidence.
+		// Direct or transitive targets inside gate.evaluate would feed evaluator-only
+		// transcript turns back into a judge and violate gate independence.
+		if evaluatorSource && continuesChainTouchesEvaluate(as.Continues, agents, paths) {
+			c.errf(srcPath, "AWF1030", fmt.Sprintf("%s (continues: %q)", catalog["AWF1030"], as.Continues))
+			return
 		}
 		// A.3.7 — concurrent parallel-sibling reject (race fix). A parallel child has a
 		// BARE path (no branch label) under parallel[N] (ir.WalkNodes), so two distinct
@@ -125,9 +126,10 @@ func validateContinues(ld *LoadedDefinition, c *collector) {
 			c.errf(srcPath, "AWF1031", fmt.Sprintf("%s (target %q)", catalog["AWF1031"], as.Continues))
 		}
 
-		// A.3.4 — same-uses. S and T must declare the same agent runtime identifier.
-		// (Same-model is intentionally not enforced; that is adapter-level config in with:.)
-		if as.Uses != tgt.Uses {
+		// A.3.4 — same runtime. Normal conversation continuation keeps the existing
+		// raw uses: comparison. Evaluator context evidence compares resolved base
+		// adapter refs so two roles backed by the same adapter can share source context.
+		if !continuesUsesCompatible(wf, as, tgt, evaluatorSource) {
 			c.errf(srcPath, "AWF1029", fmt.Sprintf("%s (this step uses %q, target uses %q)", catalog["AWF1029"], as.Uses, tgt.Uses))
 		}
 	})
@@ -219,4 +221,37 @@ func inEvaluateBlock(path string) bool {
 		}
 	}
 	return false
+}
+
+func continuesChainTouchesEvaluate(id string, agents map[string]*AgentStep, paths map[string]string) bool {
+	seen := map[string]bool{}
+	for cur := id; cur != ""; {
+		if seen[cur] {
+			return false
+		}
+		seen[cur] = true
+		if inEvaluateBlock(paths[cur]) {
+			return true
+		}
+		step, ok := agents[cur]
+		if !ok {
+			return false
+		}
+		cur = step.Continues
+	}
+	return false
+}
+
+func resolvedBaseUses(wf *Workflow, uses string) string {
+	if role, ok := wf.RoleByName(uses); ok && role.Uses != "" {
+		return role.Uses
+	}
+	return uses
+}
+
+func continuesUsesCompatible(wf *Workflow, src, tgt *AgentStep, evaluatorSource bool) bool {
+	if evaluatorSource {
+		return resolvedBaseUses(wf, src.Uses) == resolvedBaseUses(wf, tgt.Uses)
+	}
+	return src.Uses == tgt.Uses
 }
