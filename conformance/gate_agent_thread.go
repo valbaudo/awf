@@ -65,6 +65,44 @@ func testGateAgentEvaluatorIndependence(t *testing.T, factory BackendFactory) {
 	}
 }
 
+func testGateAgentEvaluatorContextEvidence(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	var llmFake *fake.Fake
+	register := func(reg *agent.Registry) {
+		llmFake = fake.New("test/llm").
+			WithCaps(agent.Caps{NativeSchema: true, Threaded: true, ContextEvidence: true}).
+			Script(0, fake.Result{Output: map[string]any{}, Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"}}).
+			Script(1, fake.Result{Output: map[string]any{}, Transcript: agent.ThreadTurn{User: "u2", Assistant: "a2"}}).
+			Script(2, fake.Result{Output: map[string]any{"draft": "d"}, Transcript: agent.ThreadTurn{User: "u3", Assistant: "a3"}}).
+			Script(3, fake.Result{Output: map[string]any{"verified": true, "fooled_by_benign": false, "feedback": ""}, Transcript: agent.ThreadTurn{User: "judge", Assistant: "approved"}})
+		if err := reg.Register(llmFake); err != nil {
+			t.Fatalf("Register llmFake: %v", err)
+		}
+	}
+	h := newHarnessWithAgentRegistry(t, factory, gatedEvaluatorContextEvidenceWorkflow, register)
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("runWorkflow: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+	calls := llmFake.Calls()
+	if len(calls) != 4 {
+		t.Fatalf("test/llm Calls len = %d, want 4", len(calls))
+	}
+	if len(calls[3].Thread) != 0 {
+		t.Fatalf("judge Thread = %+v, want empty", calls[3].Thread)
+	}
+	if calls[3].Feedback != nil {
+		t.Fatalf("judge Feedback = %v, want nil", calls[3].Feedback)
+	}
+	want := []agent.ThreadTurn{{User: "u1", Assistant: "a1"}, {User: "u2", Assistant: "a2"}}
+	if !reflect.DeepEqual(calls[3].ContextEvidence, want) {
+		t.Fatalf("judge ContextEvidence = %+v, want %+v", calls[3].ContextEvidence, want)
+	}
+}
+
 // testGateAgentThread is the T2 bucket (Phase 5 slice 5.3): a sub-conversation
 // INSIDE one gate's generate — generate: [ask, refine continues: ask]. ask runs
 // once per attempt; refine continues ask. The gate fails attempt 1 (oracle

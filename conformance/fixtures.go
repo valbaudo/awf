@@ -769,6 +769,62 @@ graph:
       max_attempts: 2
 `, fakeImageDigest, phase5VerdictSchemaYAML)
 
+// gatedEvaluatorContextEvidenceWorkflow verifies that an evaluator may declare
+// continues: for upstream source evidence while still receiving no active Thread.
+var gatedEvaluatorContextEvidenceWorkflow = fmt.Sprintf(`workflow: conformance-gated-evaluator-context-evidence
+version: 1
+containers:
+  lab:
+    image: %s
+graph:
+  - id: draft
+    container: lab
+    uses: test/llm
+    with:
+      model: m
+      prompt: draft
+    output_schema:
+      type: object
+      additionalProperties: false
+  - id: critique
+    container: lab
+    uses: test/llm
+    continues: draft
+    with:
+      model: m
+      prompt: critique
+    output_schema:
+      type: object
+      additionalProperties: false
+  - gate:
+      max_attempts: 1
+      generate:
+        - id: revise
+          container: lab
+          uses: test/llm
+          continues: critique
+          with:
+            model: m
+            prompt: revise
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [draft]
+            properties:
+              draft: { type: string }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: test/llm
+          continues: critique
+          retry: { attempts: 1 }
+          with:
+            model: m
+            prompt: judge
+          %s
+      until: "{{ evaluate.verified && !evaluate.fooled_by_benign }}"
+`, fakeImageDigest, phase5VerdictSchemaYAML)
+
 // signalAwaitWorkflow — Bucket 8 signal_await_delivers + signal_resume_replays.
 // A single `await: human_review` step followed by an echo step that references
 // the signal payload. No containers entry for the await itself; the after step

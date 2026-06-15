@@ -1303,6 +1303,79 @@ graph:
 	}
 }
 
+func TestRunAgentStep_EvaluatorContextMissingTranscriptIsMechanicalFailure(t *testing.T) {
+	const yaml = `workflow: evaluator-context-missing-transcript
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: source
+    container: lab
+    uses: awf/llm
+    with: { model: m, prompt: source }
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [k]
+      properties: { k: { type: string } }
+  - gate:
+      max_attempts: 1
+      until: "{{ step.judge.ok }}"
+      generate:
+        - id: gen
+          container: lab
+          uses: awf/llm
+          with: { model: m, prompt: gen }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [k]
+            properties: { k: { type: string } }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: awf/llm
+          continues: source
+          with: { model: m, prompt: judge }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties: { ok: { type: boolean } }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	rs := engine.NewRunState("r1", "d", nil)
+	rs.RecordCompleted("source", engine.NodeResult{Outcome: engine.OutcomeOK, Outputs: map[string]any{"k": "source"}})
+
+	var reg agent.Registry
+	fk := fake.New("awf/llm").
+		WithCaps(agent.Caps{NativeSchema: true, Threaded: true, ContextEvidence: true}).
+		Script(0, fake.Result{Output: map[string]any{"k": "gen"}, Transcript: agent.ThreadTurn{User: "gen", Assistant: "draft"}}).
+		Script(1, fake.Result{Output: map[string]any{"ok": true}, Transcript: agent.ThreadTurn{User: "judge", Assistant: "approved"}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+	if err == nil {
+		t.Fatal("engine.Run err = nil, want missing transcript error")
+	}
+	if oc != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomePermanentFailure)
+	}
+}
+
 // TestRunAgentStep_LeafTranscriptNotCommitted pins the participates invariant:
 // only a turn that is continued-FROM (a "thread target") commits a transcript
 // blob. A leaf turn — one that continues someone else but nobody continues IT —

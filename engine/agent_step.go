@@ -146,6 +146,10 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 			return failStep(log, path, OutcomePermanentFailure,
 				fmt.Errorf("engine.runAgentStep: continues target %q not committed (runtime %q)", cur, predRuntime))
 		}
+		if predNR.Transcript == (agent.ThreadTurn{}) {
+			return failStep(log, path, OutcomePermanentFailure,
+				fmt.Errorf("engine.runAgentStep: continues target %q has no committed transcript (runtime %q)", cur, predRuntime))
+		}
 		continuedTurns = append([]agent.ThreadTurn{{User: predNR.Transcript.User, Assistant: predNR.Transcript.Assistant}}, continuedTurns...)
 		if tgt, ok2 := byID[cur]; ok2 {
 			cur = tgt.Continues
