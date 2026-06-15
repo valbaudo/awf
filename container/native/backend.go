@@ -45,6 +45,7 @@ type Backend struct {
 	blobs                   state.Blobs
 	snapshotMaxBlobBytes    int64
 	snapshotMaxRestoreBytes int64
+	maxEntries              int
 
 	mu      sync.Mutex
 	handles map[string]nativeHandle
@@ -76,6 +77,7 @@ func New(workdirRoot string, opts ...Option) (*Backend, error) {
 		handles:                 map[string]nativeHandle{},
 		snapshotMaxBlobBytes:    snapshotDefaultMaxBlobBytes,
 		snapshotMaxRestoreBytes: snapshotDefaultMaxRestoreBytes,
+		maxEntries:              snapshotMaxEntries,
 	}
 	for _, opt := range opts {
 		if err := opt(b); err != nil {

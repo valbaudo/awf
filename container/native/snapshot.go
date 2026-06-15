@@ -67,6 +67,23 @@ func (c *cappedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// cappedReader bounds cumulative decompressed bytes across the WHOLE restore
+// (counts bytes READ from the decompressor — never trusts tar hdr.Size).
+type cappedReader struct {
+	r     io.Reader
+	n     int64
+	limit int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	if c.n > c.limit {
+		return n, &nativeSnapshotTooLarge{n: c.n, limit: c.limit}
+	}
+	return n, err
+}
+
 // Snapshot captures the container workdir as a deterministic gzip-tar blob.
 // Enforces TWO caps: the compressed-output cap (cappedWriter on the gzip stream)
 // and the decompressed-total cap (uncompressed bytes fed in) — the latter
@@ -159,7 +176,10 @@ func (b *Backend) Snapshot(ctx context.Context, h container.Handle) (container.S
 // Restore re-materializes a container workdir from a SnapshotRef. EVERY
 // filesystem op goes through one os.Root rooted at the (trusted, fixed) workdir,
 // so a '..' name or an attacker-planted/captured symlink cannot redirect a write
-// outside the workdir (TOCTOU-safe at openat; the same primitive loader.go uses).
+// outside the workdir. The confinement is enforced by os.Root at whichever op
+// the malicious path hits first — the parent MkdirAll (e.g. "evil/x" after an
+// "evil"->outside symlink trips EEXIST at ensureParent) or the create/symlink
+// itself (TOCTOU-safe at openat; the same primitive loader.go uses).
 // Perms are set AT CREATE (no post-create Root.Chmod) to avoid CVE-2026-32282.
 func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name string) (container.Handle, error) {
 	if err := ctx.Err(); err != nil {
@@ -212,7 +232,12 @@ func (b *Backend) extractInto(root *os.Root, base string, ref container.Snapshot
 		return fmt.Errorf("container/native: Restore: gzip: %w", err)
 	}
 	defer func() { _ = gr.Close() }()
-	tr := tar.NewReader(gr)
+	// cappedReader is the load-bearing cumulative budget: it counts bytes read
+	// from the decompressor, so neither many large files nor a single large file
+	// can evade the limit (hdr.Size is never trusted).
+	capped := &cappedReader{r: gr, limit: b.snapshotMaxRestoreBytes}
+	tr := tar.NewReader(capped)
+	entries := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -220,6 +245,10 @@ func (b *Backend) extractInto(root *os.Root, base string, ref container.Snapshot
 		}
 		if err != nil {
 			return fmt.Errorf("container/native: Restore: tar: %w", err)
+		}
+		entries++
+		if entries > b.maxEntries {
+			return &nativeSnapshotTooLarge{n: int64(entries), limit: int64(b.maxEntries)}
 		}
 		rel := path.Join(base, path.Clean("/"+hdr.Name)) // join under base; leading-slash-stripped
 		switch hdr.Typeflag {
@@ -235,11 +264,15 @@ func (b *Backend) extractInto(root *os.Root, base string, ref container.Snapshot
 			if err != nil {
 				return fmt.Errorf("container/native: Restore: create %q: %w", rel, err)
 			}
-			_, cpErr := io.Copy(f, tr) // Task 6: replace with capped reader + io.CopyN
-			_ = f.Close()
-			if cpErr != nil {
+			// Defense-in-depth per-file bound; the cappedReader is the real budget.
+			// io.CopyN returns io.EOF when the source ends before n (the normal
+			// case) — treat that as success. A cap trip surfaces as
+			// *nativeSnapshotTooLarge from cappedReader.Read, propagating here.
+			if _, cpErr := io.CopyN(f, tr, b.snapshotMaxRestoreBytes+1); cpErr != nil && cpErr != io.EOF {
+				_ = f.Close()
 				return fmt.Errorf("container/native: Restore: write %q: %w", rel, cpErr)
 			}
+			_ = f.Close()
 		case tar.TypeSymlink:
 			if err := ensureParent(root, rel); err != nil {
 				return err

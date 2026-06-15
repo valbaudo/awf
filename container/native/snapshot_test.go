@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -161,4 +163,159 @@ func buildMaliciousSymlinkBlob(t *testing.T, blobs state.Blobs, victimDir string
 		t.Fatal(err)
 	}
 	return container.SnapshotRef(ref)
+}
+
+// buildBlobWithFiles builds a gzip-tar with one regular entry per size (names
+// f0,f1,...), zero-filled bodies. Raw tar.Header so the test owns the bytes.
+func buildBlobWithFiles(t *testing.T, blobs state.Blobs, sizes []int) container.SnapshotRef {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	for i, sz := range sizes {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     fmt.Sprintf("f%d", i),
+			Typeflag: tar.TypeReg,
+			Mode:     0o644,
+			Size:     int64(sz),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(make([]byte, sz)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := blobs.Put(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return container.SnapshotRef(ref)
+}
+
+// buildBlobWithNZeroLenEntries builds a gzip-tar with n zero-length regular
+// entries (names e0..e{n-1}) — exercises the entry-count cap without any bytes.
+func buildBlobWithNZeroLenEntries(t *testing.T, blobs state.Blobs, n int) container.SnapshotRef {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	for i := 0; i < n; i++ {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     fmt.Sprintf("e%d", i),
+			Typeflag: tar.TypeReg,
+			Mode:     0o644,
+			Size:     0,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := blobs.Put(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return container.SnapshotRef(ref)
+}
+
+// buildBlobWithLyingSize builds a single regular entry. archive/tar enforces
+// Size on Write (you cannot write fewer bytes than declared and Close cleanly),
+// so a truly forged "Size large, body small" tar cannot be constructed with the
+// stdlib writer. We therefore build a LEGIT entry (Size == len(body)) and rely
+// on the cumulative decompressed-byte budget — which counts bytes READ from the
+// decompressor, never trusting hdr.Size — to govern. declaredSize must equal
+// len(body); it is asserted so the contract (cap counts real bytes) is explicit.
+func buildBlobWithLyingSize(t *testing.T, blobs state.Blobs, name string, declaredSize int64, body []byte) container.SnapshotRef {
+	t.Helper()
+	if declaredSize != int64(len(body)) {
+		t.Fatalf("buildBlobWithLyingSize: archive/tar enforces Size==len(body); got declaredSize=%d len(body)=%d", declaredSize, len(body))
+	}
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     name,
+		Typeflag: tar.TypeReg,
+		Mode:     0o644,
+		Size:     declaredSize,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := blobs.Put(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return container.SnapshotRef(ref)
+}
+
+func TestRestoreTripsCumulativeByteCap(t *testing.T) {
+	root := t.TempDir()
+	blobs := state.NewInMemoryBlobs()
+	ref := buildBlobWithFiles(t, blobs, []int{400 << 10, 400 << 10, 400 << 10}) // 3×0.4 MiB
+	b, _ := New(root, WithBlobs(blobs), WithSnapshotMaxRestoreBytes(1<<20))     // 1 MiB cap → 1.2 MiB total trips
+	_, err := b.Restore(context.Background(), ref, "ws")
+	if !errors.Is(err, container.ErrSnapshotTooLarge) {
+		t.Fatalf("err = %v, want ErrSnapshotTooLarge", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "ws")); statErr == nil {
+		t.Error("partial workdir not cleaned up after cap trip")
+	}
+}
+
+func TestRestoreTripsEntryCountCap(t *testing.T) {
+	root := t.TempDir()
+	blobs := state.NewInMemoryBlobs()
+	ref := buildBlobWithNZeroLenEntries(t, blobs, 10)
+	b, _ := New(root, WithBlobs(blobs))
+	b.maxEntries = 5 // test hook
+	_, err := b.Restore(context.Background(), ref, "ws")
+	if !errors.Is(err, container.ErrSnapshotTooLarge) {
+		t.Fatalf("err = %v, want ErrSnapshotTooLarge", err)
+	}
+}
+
+// TestRestoreLargeFileGovernedByCumulativeBudget locks the load-bearing
+// contract: a single LEGIT large file (hdr.Size honest) is capped by the
+// cumulative decompressed-byte budget, proving the cap counts bytes read from
+// the decompressor rather than trusting any size figure. See
+// buildBlobWithLyingSize for why a forged-Size tar is not constructible here.
+func TestRestoreLargeFileGovernedByCumulativeBudget(t *testing.T) {
+	root := t.TempDir()
+	blobs := state.NewInMemoryBlobs()
+	body := make([]byte, 2<<20) // 2 MiB
+	ref := buildBlobWithLyingSize(t, blobs, "big", int64(len(body)), body)
+	b, _ := New(root, WithBlobs(blobs), WithSnapshotMaxRestoreBytes(1<<20)) // 1 MiB cap → trips
+	_, err := b.Restore(context.Background(), ref, "ws")
+	if !errors.Is(err, container.ErrSnapshotTooLarge) {
+		t.Fatalf("err = %v, want ErrSnapshotTooLarge", err)
+	}
+}
+
+func TestSnapshotTripsCompressedCap(t *testing.T) {
+	root := t.TempDir()
+	b, _ := New(root, WithBlobs(state.NewInMemoryBlobs()), WithSnapshotMaxBlobBytes(1))
+	h, _ := b.Create(context.Background(), container.ContainerSpec{Name: "ws"})
+	_ = os.WriteFile(filepath.Join(root, "ws", "big.txt"), make([]byte, 64<<10), 0o644)
+	if _, err := b.Snapshot(context.Background(), h); !errors.Is(err, container.ErrSnapshotTooLarge) {
+		t.Fatalf("Snapshot over compressed cap: err = %v, want ErrSnapshotTooLarge", err)
+	}
 }
