@@ -1096,6 +1096,54 @@ not collide at the Docker project layer. The native backend
 does not advertise runtime-Compose support; `awf run --backend native` rejects a
 workflow containing `compose:` before execution.
 
+## awf/llm
+
+`awf/llm` is the built-in containerless adapter for direct LLM calls (OpenAI-compatible endpoints
+and the native Gemini REST API). It requires no container. The relevant `with:` keys for agent
+steps and `react:` are:
+
+    with:
+      provider: openai | gemini | ollama | anthropic  # optional (default openai); selects the call path
+      model: <model-id>                           # required
+      base_url: <url>                             # optional; override endpoint
+      api_key_env: <env-var>                      # optional; name of the API-key env var
+      system_prompt: <string>                     # optional; a system / developer message
+      prompt: <template>                          # required for agent steps; omit in react:
+      gemini_cache:                               # optional; Gemini explicit CachedContent
+        mode: explicit                            # only non-trivial value; "off" or omitted = disabled
+        ttl: "600s"                               # optional; default 3600s — TTL for the cache object
+
+**gemini_cache**
+:   Optional. Requires `provider: gemini` and at least one `input_files` document on the step.
+    When `mode: explicit`, the adapter uploads the document(s) once per `awf run` as a
+    Gemini `CachedContent` object and references it by name on every `:generateContent` call,
+    omitting the inline document and `systemInstruction` (both are baked into the cache).
+    Native structured output (`output_schema`) and thread continuation (`continues:`) work unchanged.
+
+    **Reuse scope.** Cache names are in-process only: keyed by `model + system_prompt + document
+    bytes` (content-addressed), alive for one `awf run`, and never journaled or resumed. On resume,
+    the document is re-uploaded and a fresh cache object is created.
+
+    **system_prompt and cross-step sharing.** Because `system_prompt` is baked into the cache and
+    forms part of the key, a gate whose `generate` and `evaluate` steps set *different*
+    `system_prompt` values get *per-role* caches (the document is still cached once per role, so
+    read savings still apply). To share a single document cache across both roles — one upload for
+    the entire gate — leave `system_prompt` empty and embed role-specific instructions in the user
+    `prompt` instead.
+
+    **Cost.** Cache-read savings (`cachedContentTokenCount`) are reflected in AWF's derived cost.
+    Gemini also bills for cache **storage** (per-token-per-hour for the full TTL, regardless of
+    how many reads occur); AWF does not include that storage cost in its pricing breakdown — verify
+    totals on the Google Cloud console. Set `ttl` to approximately the gate's expected wall-clock
+    duration to avoid paying for unused cache lifetime.
+
+    **Minimum size.** The document must exceed the model's minimum cacheable token count (~2048 for
+    Gemini 2.5, ~4096 for 3.x). A smaller document causes `CachedContent` creation to fail with a
+    400 permanent error; retry will not help — use a larger document or disable explicit caching.
+
+    When `gemini_cache` is absent or `mode: off`, the document is sent inline on every call and
+    Gemini's free *implicit* prefix caching may apply (best-effort, document-first order assumed).
+
 ## react
 
 `react:` is a control node that runs a model + tools loop on the `awf/llm` path. It is the only
@@ -1133,6 +1181,53 @@ artifacts); non-UTF-8 output is referenced by size, not inlined.
 only (a `structured_output: ollama_format` config is rejected). A top-level `react:` is referenceable
 via `{{ <id>.* }}`; a `react:` nested in `loop`/`gate`/`map` is readable via `awf outputs --step`
 only.
+
+## awf/llm providers
+
+The `awf/llm` adapter selects a transport via the `provider:` `with:` key.
+
+**`provider: openai`** (default) — OpenAI-compatible streaming (`POST /v1/chat/completions`).
+Works with any OpenAI-compatible endpoint; `base_url:` overrides the default
+`https://api.openai.com`. `api_key_env:` names the env var carrying the key (default
+`OPENAI_API_KEY`). `structured_output: response_format` sends a `response_format: json_schema`
+request body field; `structured_output: ollama_format` sends `format: json` (Ollama). `ollama`
+selects the Ollama transport.
+
+**`provider: gemini`** — native Google Gemini REST API. Default `base_url:
+https://generativelanguage.googleapis.com`; default `api_key_env: GEMINI_API_KEY`.
+
+**`provider: ollama`** — Ollama-native transport. Default `base_url:
+http://localhost:11434`; no API key required (`api_key_env:` optional).
+
+**`provider: anthropic`** — uses the native Anthropic Messages API (`POST /v1/messages`, SSE
+streaming). Default `base_url: https://api.anthropic.com`; default `api_key_env:
+ANTHROPIC_API_KEY`. Requires `max_tokens` (the Anthropic API has no server-side default;
+`awf/llm` sends 8192 when the author omits it). `structured_output: response_format` is
+rejected (Anthropic has no `response_format json_schema`); use `structured_output: off` (the
+implicit default on this provider) and rely on the schema directive in the prompt and the
+layer-2 parse.
+
+**Prompt caching keys (`provider: anthropic` only):**
+
+- `cache_system: true` — adds a `cache_control: {type: "ephemeral"}` marker to the system block,
+  enabling Anthropic prompt caching for the system prompt. Minimum cacheable prefix: 1024 tokens
+  (Sonnet 4.6 / Opus 4.8), 4096 (Haiku 4.5). Cache is billed at 0.1x the base input rate on
+  reads, 1.25x on first write (5-minute TTL). Break-even at approximately 2 re-reads.
+- `cache_documents: true` — adds the `cache_control` marker to the **last `input_files` document
+  block** (the boundary between the static document and the varying prompt; the prompt itself is
+  left uncached so the cached prefix is stable across repair attempts). No effect without
+  `input_files`. Combines with `cache_system: true` for two of the four available breakpoints.
+
+Both keys default to `false` and are silently ignored on non-Anthropic providers. `base_url:`
+may be overridden only for **x-api-key-compatible** endpoints (a self-hosted
+Anthropic-compatible proxy); it does **not** reach Amazon Bedrock or Google Vertex (different
+auth schemes).
+
+**Usage reporting.** Anthropic reports `input_tokens`, `cache_read_input_tokens`, and
+`cache_creation_input_tokens` as separate fields; unlike OpenAI, the cached amounts are NOT
+included in `input_tokens`. AWF normalizes correctly: derived cost uses the true non-cached
+input for billing, plus the read/write cache rates from the embedded rates table for the cached
+portions.
 
 # OUTCOMES, RETRY, AND REPAIR
 
@@ -1313,7 +1408,12 @@ content-addressed artifact, never a live container's process state.
     `output_files` are reused, not recomputed; and re-executes only the
     *uncommitted frontier* — the in-flight step on each active branch. A
     deterministic (code) replay is exact; an interrupted agent step may differ on
-    re-run, which is correct — its work was never committed.
+    re-run, which is correct — its work was never committed. A run is resumable
+    iff its terminal outcome is `retryable_failure` (the log holds
+    `run.finished{retryable_failure}`, or — in the brief window where a
+    `node.failed{retryable_failure}` has been recorded but `run.finished` has
+    not yet been written — only that `node.failed{retryable_failure}`).
+    `ok`, `permanent_failure`, `rejected`, and `cancelled` are not resumable.
 
 **Pinning**
 :   The workflow definition (by digest, including the resolved import graph,
@@ -1335,7 +1435,8 @@ content-addressed artifact, never a live container's process state.
 
 **Cancellation**
 :   Interrupts in-flight steps, runs enclosing `finally` blocks, tears down
-    containers/projects, and marks the run terminal (not resumable).
+    containers/projects, and marks the run terminal — not resumable (see Resume
+    for the full resumability rule).
 
 Step addressing, used for resume and traces, names step nodes by `id`, call
 children by `<call-id>.workflow.<child-path>`, and control nodes positionally,
@@ -1358,6 +1459,13 @@ through its own tools* (an `mcp://` call, a network `exec`) are at-least-once an
 outside the guarantee. For exactly-once there, model the side-effecting action as
 a code step (so the runtime mediates the key) or thread a key into the agent via
 `with:`.
+
+Resuming a `retryable_failure` run re-executes a frontier that already ran to its
+full retry budget; this is the same at-least-once exposure crash-resume accepts.
+`idempotency_key` is a hint the external system enforces (injected as
+`AWF_IDEMPOTENCY_KEY` / `Idempotency-Key`), never engine dedup; agent autonomous
+effects remain outside the guarantee. There is no resume-attempt cap — a flapping
+transient fault re-fails each manual resume; the operator is the only bound.
 
 # EXAMPLE
 

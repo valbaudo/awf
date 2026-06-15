@@ -20,9 +20,21 @@ const defaultBaseURL = "https://api.openai.com/v1"
 // (providerDefaults) is centralized so buildReqConfig (resolve) and
 // validateConfigCommon (presence-check) can never drift.
 const (
-	providerOpenAI = "openai" // default; OpenAI-compat /v1 chat completions
-	providerGemini = "gemini" // native Gemini :generateContent transport
-	providerOllama = "ollama" // native Ollama /api/chat transport
+	providerOpenAI    = "openai"    // default; OpenAI-compat /v1 chat completions
+	providerGemini    = "gemini"    // native Gemini :generateContent transport
+	providerOllama    = "ollama"    // native Ollama /api/chat transport
+	providerAnthropic = "anthropic" // native Anthropic Messages API transport
+
+	// defaultAnthropicBaseURL is the native Anthropic API host; the transport appends /v1/messages.
+	defaultAnthropicBaseURL = "https://api.anthropic.com"
+	// defaultAnthropicAPIKeyEnv is the default env-var name for provider: anthropic.
+	defaultAnthropicAPIKeyEnv = "ANTHROPIC_API_KEY"
+	// anthropicVersion is the required anthropic-version header value. Bump on a documented
+	// Anthropic API version change (NOT a with-key). Verify the current value at impl time.
+	anthropicVersion = "2023-06-01"
+	// anthropicDefaultMaxTokens is sent when the author omits max_tokens (Anthropic requires
+	// the field). Conservative; authors should set max_tokens for long output.
+	anthropicDefaultMaxTokens = 8192
 
 	// defaultGeminiBaseURL is the native Gemini generateContent host (no /v1 suffix;
 	// the Gemini transport appends the versioned model path itself).
@@ -41,6 +53,8 @@ const (
 // (presence-check) cannot drift.
 func providerDefaults(provider string) (baseURL, apiKeyEnv string) {
 	switch provider {
+	case providerAnthropic:
+		return defaultAnthropicBaseURL, defaultAnthropicAPIKeyEnv
 	case providerGemini:
 		return defaultGeminiBaseURL, defaultGeminiAPIKeyEnv
 	case providerOllama:
@@ -63,6 +77,16 @@ func effectiveProvider(with ir.RawConfig) string {
 		return providerOllama
 	}
 	return providerOpenAI
+}
+
+// defaultGeminiCacheTTL is the CachedContent TTL when the author omits it (Gemini
+// accepts a seconds-suffixed duration string). 1 hour comfortably spans a gate.
+const defaultGeminiCacheTTL = "3600s"
+
+// geminiCacheConfig is the parsed gemini_cache with-key. Nil unless mode == explicit.
+type geminiCacheConfig struct {
+	Mode string // "explicit" (the only non-nil mode)
+	TTL  string // Gemini ttl string, e.g. "600s"
 }
 
 // defaultMaxInlineBytes caps the TOTAL size of a step's inline (base64) input
@@ -92,8 +116,11 @@ type reqConfig struct {
 	HasMaxTokens     bool
 	StructuredOutput string // response_format | ollama_format | off
 	IdempotencyKey   string
-	TLSInsecure      bool // opt-in: skip TLS verification (self-signed/internal endpoints — offensive use)
-	MaxInlineBytes   int  // cap on a single inline input file's byte size
+	TLSInsecure      bool               // opt-in: skip TLS verification (self-signed/internal endpoints — offensive use)
+	MaxInlineBytes   int                // cap on a single inline input file's byte size
+	CacheSystem      bool               // anthropic: mark the system block cacheable (cache_control)
+	CacheDocuments   bool               // anthropic: mark the LAST input-file block cacheable (the static/varying boundary)
+	GeminiCache      *geminiCacheConfig // explicit Gemini CachedContent (nil = off)
 }
 
 // buildReqConfig translates validated `with:` + the resolved env into a reqConfig.
@@ -113,6 +140,8 @@ func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 		IdempotencyKey:   inv.IdempotencyKey,
 		TLSInsecure:      boolOr(with, keyTLSInsecure, false),
 		MaxInlineBytes:   defaultMaxInlineBytes,
+		CacheSystem:      boolOr(with, keyCacheSystem, false),
+		CacheDocuments:   boolOr(with, keyCacheDocuments, false),
 	}
 	if v, ok := with[keyMaxInlineBytes]; ok {
 		if n, okN := toInt(v); okN {
@@ -142,6 +171,7 @@ func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 			cfg.MaxTokens, cfg.HasMaxTokens = n, true
 		}
 	}
+	cfg.GeminiCache = parseGeminiCache(with)
 	return cfg, nil
 }
 
@@ -184,6 +214,23 @@ func appendSchemaDirective(text string, schema *ir.JSONSchema) string {
 // schemaDirective nudges the model to make its FINAL message a single conforming JSON
 // object (idiom copied from agent/goose's schemaDirective).
 const schemaDirective = "\n\nIMPORTANT: your FINAL message must be ONLY a single JSON object conforming exactly to this JSON Schema — no prose before/after, no code fences:\n"
+
+// parseGeminiCache reads the gemini_cache with-key. Returns nil unless mode is
+// explicit. Validation (shape/enum/provider-guard) is done in validateConfigCommon.
+func parseGeminiCache(with ir.RawConfig) *geminiCacheConfig {
+	m, ok := with[keyGeminiCache].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if mode, _ := m["mode"].(string); mode != "explicit" {
+		return nil
+	}
+	gc := &geminiCacheConfig{Mode: "explicit", TTL: defaultGeminiCacheTTL}
+	if ttl, ok := m["ttl"].(string); ok && ttl != "" {
+		gc.TTL = ttl
+	}
+	return gc
+}
 
 func stringOr(with ir.RawConfig, key, def string) string {
 	if v, ok := with[key].(string); ok && v != "" {

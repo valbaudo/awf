@@ -3,6 +3,7 @@ package awfllm_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -91,5 +92,15 @@ func TestAdapterRunToolLoopValidates(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("RunToolLoop must reject a tools with-key via validateConfigForToolLoop")
+	}
+}
+
+func TestRunToolLoop_RejectsAnthropic(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+	_, err := a.RunToolLoop(context.Background(), agent.ToolLoopInvocation{
+		With: ir.RawConfig{"provider": "anthropic", "model": "claude-sonnet-4-6"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "anthropic") {
+		t.Fatalf("react: on provider: anthropic must be rejected in v1, got %v", err)
 	}
 }

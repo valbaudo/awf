@@ -802,3 +802,18 @@ func TestChildRunStateCopiesReactRounds(t *testing.T) {
 		t.Errorf("parent ReactRounds was mutated by child append")
 	}
 }
+
+func TestRecordMapItemUpsertByN(t *testing.T) {
+	rs := NewRunState("run-x", "digest", nil)
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, Status: ItemFailed, Outcome: "retryable_failure"})
+	// Re-run re-records the same N with the recovered status + re-derived value.
+	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, Status: ItemPassed, ItemValue: "v"})
+
+	got := rs.LookupMapItems("map[0]")
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1 (upsert by N, not append)", len(got))
+	}
+	if got[0].Status != ItemPassed || got[0].ItemValue != "v" {
+		t.Errorf("record = %+v, want Status=item_passed ItemValue=v", got[0])
+	}
+}

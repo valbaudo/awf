@@ -93,12 +93,12 @@ func runMapWithContext(
 	}
 
 	// 2. Resume reconciliation. Walk existing MapItems[mapPath]: record each
-	//    N's Status in `committed`; re-fill ItemValue from overArr[N] (Design Q3);
+	//    N's MapItemRecord in `committed`; re-fill ItemValue from overArr[N] (Design Q3);
 	//    track maxCommittedN to detect non-deterministic `over` (H8).
-	committed := map[int]string{} // N → Status, for items already in MapItems
+	committed := map[int]MapItemRecord{} // N → MapItemRecord (folded disposition) for items already in MapItems
 	maxCommittedN := -1
 	for _, mr := range ictx.runstate.LookupMapItems(mapPath) {
-		committed[mr.N] = mr.Status
+		committed[mr.N] = mr
 		if mr.N > maxCommittedN {
 			maxCommittedN = mr.N
 		}
@@ -156,9 +156,14 @@ func runMapWithContext(
 		// Skip already-committed items (resume: replayed, not recomputed). A
 		// folded item_pruned status lands here too — the prune decision is
 		// replayed verbatim, never re-fed to the controller (resume safety).
-		if status, ok := committed[i]; ok {
-			statuses[i] = status
-			continue
+		// Exception: a retryable item on resume falls through to re-dispatch.
+		if mr, ok := committed[i]; ok {
+			if !shouldRerunItem(n, ictx.resume, mr) {
+				statuses[i] = mr.Status
+				continue
+			}
+			// retryable item on resume: fall through to re-dispatch. Task 2's
+			// RecordMapItem upsert replaces the folded record by N.
 		}
 		// Record a pending MapItemRecord BEFORE goroutine fires so the
 		// body's templates can resolve <as>.<field> via LookupMapItems.
@@ -460,7 +465,7 @@ func dispatchItem(
 				if pr != nil {
 					return ItemFailed, nil
 				}
-				return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable)
+				return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable, "")
 			}
 			// Any OTHER Create error is a deterministic definition error (an invalid
 			// per-element spec — bad resources, a host config the daemon rejects):
@@ -491,6 +496,7 @@ func dispatchItem(
 	bodyOC, bodyErr := interpNodes(ctx, n.Body, itemPath, itemCtx)
 
 	status := ItemPassed // default optimistic; revised below
+	itemOutcome := ""    // set only on a body failure (spec §6.1)
 	var su *SkipUnwind
 	if errors.As(bodyErr, &su) {
 		// Skip ends the item as ok (design §E step 5). Record node.skipped
@@ -503,22 +509,25 @@ func dispatchItem(
 		// map this includes a frontier cancel (ctx unwind of an in-flight loser);
 		// runMap's final pass overrides it with item_pruned for any pruned[i].
 		status = ItemFailed
+		if bodyOC != OutcomeOK {
+			itemOutcome = string(bodyOC) // retryable_failure | permanent_failure | rejected
+		}
 	}
 
 	// SP5: defer the map.item commit to runMap's final pass for a prune map.
 	if pr != nil {
 		return status, nil
 	}
-	return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "")
+	return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "", itemOutcome)
 }
 
 // commitMapItem appends the map.item commit (with the optional captured runtime
-// image digest and failure reason), fsyncs, mirrors the in-memory status, and
-// returns the item's terminal status. Extracted (P6a) so the normal end and the
-// per-item image-failure paths share one commit point and preserve commit-
-// atomicity (digest+reason are in the payload BEFORE Append+Sync).
-func commitMapItem(log state.Log, runstate *RunState, mapPath string, itemN int, status, imageDigest, reason string) (string, error) {
-	data, mErr := json.Marshal(MapItemData{N: itemN, Status: status, ImageDigest: imageDigest, Reason: reason})
+// image digest, failure reason, and body outcome), fsyncs, mirrors the in-memory
+// status, and returns the item's terminal status. Extracted (P6a) so the normal
+// end and the per-item image-failure paths share one commit point and preserve
+// commit-atomicity (digest+reason+outcome are in the payload BEFORE Append+Sync).
+func commitMapItem(log state.Log, runstate *RunState, mapPath string, itemN int, status, imageDigest, reason, outcome string) (string, error) {
+	data, mErr := json.Marshal(MapItemData{N: itemN, Status: status, ImageDigest: imageDigest, Reason: reason, Outcome: outcome})
 	if mErr != nil {
 		return "", fmt.Errorf("marshal map.item for item-%d: %w", itemN, mErr)
 	}
@@ -599,6 +608,21 @@ func evalOver(src string, scope template.Scope) (any, error) {
 		return nil, fmt.Errorf("`over` must be a single reference (got compound %T) — Phase 3 slice 3.4 minimum", e)
 	}
 	return scope.Resolve(ref)
+}
+
+// shouldRerunItem reports whether a committed map item must re-run on resume
+// (spec §6.3). Only on resume, only for a NON-prune map (a prune disposition is
+// an atomic frontier decision — never re-run one participating item, §6.4), only
+// a retryable body failure; image_unavailable is digest-pinned and treated as
+// non-rerunnable. Passed/pruned/permanent/rejected/absent all replay-as-committed.
+func shouldRerunItem(n *ir.Map, resume bool, mr MapItemRecord) bool {
+	if !resume || n.Prune != nil {
+		return false
+	}
+	if mr.Status != ItemFailed || mr.Reason == ReasonImageUnavailable {
+		return false
+	}
+	return Outcome(mr.Outcome) == OutcomeRetryableFailure
 }
 
 // tallyResults counts ItemPassed vs other statuses in the per-item slice.

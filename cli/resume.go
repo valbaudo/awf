@@ -49,10 +49,11 @@ func (e *ErrRuntimeDrift) Error() string {
 func printResumeUsage(w io.Writer) {
 	fprintln(w, "usage: awf resume <run-id> <path> [--state-dir <dir>] [--force] [--from <step>]")
 	fprintln(w, "")
-	fprintln(w, "  re-enter an interrupted run. The workflow file at <path> must hash to the")
-	fprintln(w, "  same digest as the run's original definition (spec §8 pinning); a mismatch is a hard")
-	fprintln(w, "  error. A run that already finished (run.finished in the log) or terminated on a")
-	fprintln(w, "  failed step (node.failed in the log) is not resumed by default; pass --force.")
+	fprintln(w, "  re-enter an interrupted or transiently-failed run. The workflow file at <path>")
+	fprintln(w, "  must hash to the same digest as the run's original definition (spec §8 pinning); a")
+	fprintln(w, "  mismatch is a hard error. A run that failed transiently (retryable_failure) is")
+	fprintln(w, "  resumed by default; one that finished ok is never resumable; one that failed")
+	fprintln(w, "  permanently, was rejected, or was cancelled is resumed only with --force.")
 	fprintln(w, "")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 	fprintln(w, "  --force            re-enter a terminally-failed run (permanent_failure/rejected/cancelled);")
@@ -158,13 +159,13 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 3: terminal-outcome guard. resumeAdmission relaxes ONLY the terminal
-	// guard under --force; the pin checks below (digest, runtime drift) are
-	// unconditional. COORDINATION: reconcile with the retryable scope-b guard at
-	// merge (one helper; admit retryable always ∪ {permanent,rejected,cancelled}
-	// under --force).
+	// Step 3: terminal-outcome guard (unified: retryable-by-default + --force).
+	// resumeAdmission admits a transiently-failed (retryable_failure) run by
+	// default, and — under --force — a permanent_failure/rejected/cancelled run
+	// too. The pin checks below (digest, runtime drift) are unconditional.
 	// --from admits unconditionally (bypasses the terminal guard entirely,
-	// including the ok-run refusal that --force still enforces).
+	// including the ok-run refusal that --force still enforces), so it skips
+	// resumeAdmission rather than passing through it.
 	if *from == "" {
 		admit, refuseMsg, termLabel := resumeAdmission(runID, events, *force)
 		if !admit {
@@ -173,6 +174,8 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		}
 		if *force && termLabel != "" {
 			fprintf(stderr, "awf resume --force: re-entering a terminally-%s run %q; the uncommitted frontier (and its side effects) will re-run. Pins remain enforced.\n", termLabel, runID)
+		} else if !*force && termLabel == string(engine.OutcomeRetryableFailure) {
+			fprintf(stderr, "awf resume: run %q eligible for resume (retryable_failure); attempting the uncommitted frontier\n", runID)
 		}
 	}
 
@@ -431,7 +434,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// RunOptions.InputFiles when non-nil — so the folded value wins, exactly
 	// like the typed input and Assets channels. `awf resume` has no
 	// --input-files flag (per the same no-re-supply rule as --input).
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", recordedAssets, nil, broker, liveRoot, &skipTeardown, *force, rerunFrom)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", true, recordedAssets, nil, broker, liveRoot, &skipTeardown, *force, rerunFrom)
 }
 
 func preflightLiveResume(ctx context.Context, ld *ir.LoadedDefinition, rs *engine.RunState, resolver agent.Resolver) error {

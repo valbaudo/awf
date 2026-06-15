@@ -30,6 +30,8 @@ func TestResumeAdmission(t *testing.T) {
 		{"rejected-force", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"rejected"}`)}, true, true, "rejected", ""},
 		{"retryable-finished-force", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"retryable_failure"}`)}, true, true, "retryable_failure", ""},
 		{"crashwindow-retryable-force", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"retryable_failure"}`)}, true, true, "retryable_failure", ""},
+		{"retryable-finished-noforce", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"retryable_failure"}`)}, false, true, "retryable_failure", ""},
+		{"crashwindow-retryable-noforce", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"retryable_failure"}`)}, false, true, "retryable_failure", ""},
 		{"cancelled-noforce", []state.Event{started, ev(engine.EventRunCancelled, `{}`)}, false, false, "", "cancelled"},
 		{"cancelled-force", []state.Event{started, ev(engine.EventRunCancelled, `{}`)}, true, true, "cancelled", ""},
 		{"crashwindow-permanent-force", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"permanent_failure"}`)}, true, true, "permanent_failure", ""},

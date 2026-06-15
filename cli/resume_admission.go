@@ -50,6 +50,9 @@ func resumeAdmission(runID string, events []state.Event, force bool) (admit bool
 			switch engine.Outcome(finished.Outcome) {
 			case engine.OutcomeOK:
 				return false, fmt.Sprintf("awf resume: run %q already finished (ok). Cannot resume a completed run.\n", runID), ""
+			case engine.OutcomeRetryableFailure:
+				// Scope B: a transiently-failed run resumes by default (no --force).
+				return true, "", finished.Outcome
 			default:
 				return false, fmt.Sprintf("awf resume: run %q finished with outcome %q. Re-run with --force to re-enter after fixing the cause.\n", runID, finished.Outcome), ""
 			}
@@ -59,6 +62,11 @@ func resumeAdmission(runID string, events []state.Event, force bool) (admit bool
 		}
 		for _, e := range events {
 			if e.Type == engine.EventNodeFailed {
+				d, derr := engine.NodeFailedDataFromEvent(e)
+				if derr == nil && engine.Outcome(d.Outcome) == engine.OutcomeRetryableFailure {
+					// Scope B: crash-window transient failure resumes by default.
+					return true, "", d.Outcome
+				}
 				return false, fmt.Sprintf("awf resume: run %q terminated on a failed step (node.failed at path %q in log). Re-run with --force to re-enter after fixing the cause.\n", runID, e.Path), ""
 			}
 		}

@@ -57,6 +57,9 @@ type RunOptions struct {
 	// node.completed event has been appended and synced.
 	LiveFinalizer func(context.Context, LiveDispatchRecord) error
 
+	// Resume is true on `awf resume` re-entry; the map reconciliation re-runs
+	// transiently-failed items only when set (spec §6.3). false on fresh `awf run`.
+	Resume bool
 	// ForceResume, when true, makes the gate executor grant an exhausted (rejected)
 	// gate a fresh attempt allotment on resume (engine/gate.go). Set by
 	// `awf resume --force`. No other node kind reads it.
@@ -132,6 +135,7 @@ func Run(
 		tap:           opts.Tap,
 		broker:        opts.Broker,
 		liveFinalizer: opts.LiveFinalizer,
+		resume:        opts.Resume,
 		forceResume:   opts.ForceResume,
 	}
 	if err := preflightCallStartedRuntimes(ctx, ictx); err != nil {

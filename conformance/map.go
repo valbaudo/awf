@@ -20,6 +20,10 @@ import (
 //     duplicate map.item event, which the assertions catch).
 //   - map_skip_in_item_records_passed: skip inside an item commits item_passed
 //     (design §E step 5).
+//   - map_retryable_item_recovers_on_resume: round-1 has item b exit 1
+//     (retryable_failure → item_failed); the map returns retryable_failure.
+//     Round-2 resumes: b is re-run and succeeds; a,c replay from the log
+//     (not re-executed). Map completes ok.
 //
 // Per CLAUDE.md ("the conformance suite is the definition of done... new
 // durability behavior needs a conformance test"). Slice-3.4 deliberate
@@ -29,6 +33,7 @@ func testMap(t *testing.T, factory BackendFactory) {
 	t.Run("map_per_item_commits", func(t *testing.T) { testMapPerItemCommits(t, factory) })
 	t.Run("map_resume_skips_committed_items", func(t *testing.T) { testMapResumeSkipsCommittedItems(t, factory) })
 	t.Run("map_skip_in_item_records_passed", func(t *testing.T) { testMapSkipInItemRecordsPassed(t, factory) })
+	t.Run("map_retryable_item_recovers_on_resume", func(t *testing.T) { testMapRetryableItemRecoversOnResume(t, factory) })
 }
 
 func testMapPerItemCommits(t *testing.T, factory BackendFactory) {
@@ -191,5 +196,85 @@ func testMapSkipInItemRecordsPassed(t *testing.T, factory BackendFactory) {
 		if status != engine.ItemPassed {
 			t.Errorf("Bucket 7 map_skip_in_item: item N=%d status=%q, want item_passed (skip ends item as ok per design §E step 5)", n, status)
 		}
+	}
+}
+
+func testMapRetryableItemRecoversOnResume(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	// §6.5 resume recovery: round-1 has item b exit 1 (transient → item_failed /
+	// retryable_failure); the map returns retryable_failure (default min_success
+	// requires ALL items). Round-2 resumes with RunOptions.Resume=true (wired in
+	// harness Step 1): shouldRerunItem selects b; a and c REPLAY from the log
+	// without re-executing. The map completes ok.
+	//
+	// Round 1: a,c succeed; b exits 1.
+	factory1 := preProgramFake(t, factory, []execProgram{
+		{cmd: "./process.sh a", res: container.ExecResult{ExitCode: 0}},
+		{cmd: "./process.sh b", res: container.ExecResult{ExitCode: 1}},
+		{cmd: "./process.sh c", res: container.ExecResult{ExitCode: 0}},
+	})
+	h := newHarnessWithInput(t, factory1, mapStandardWorkflow,
+		map[string]any{"items": []any{"a", "b", "c"}})
+	oc1, err1 := h.runWorkflow(t)
+	if oc1 != engine.OutcomeRetryableFailure {
+		t.Fatalf("map_retryable_item_recovers: round-1 outcome = %q (err=%v), want retryable_failure", oc1, err1)
+	}
+
+	// Count map.item events after round-1: a,b,c all committed (a=passed,
+	// b=failed, c=passed).
+	events1 := mustFoldEvents(t, h)
+	var round1Items int
+	for _, e := range events1 {
+		if e.Type == engine.EventMapItem {
+			round1Items++
+		}
+	}
+	if round1Items != 3 {
+		t.Fatalf("map_retryable_item_recovers: round-1 map.item count = %d, want 3", round1Items)
+	}
+
+	// Round 2: re-program b to succeed; a,c should NOT be re-executed (they are
+	// committed as item_passed and will replay). Provide only process.sh b in the
+	// fresh factory — a bare factory for a,c so any re-execution would error,
+	// catching any regression.
+	factory2 := preProgramFake(t, factory, []execProgram{
+		{cmd: "./process.sh b", res: container.ExecResult{ExitCode: 0}},
+	})
+	h.factory = factory2
+	oc2, err2 := h.resumeWorkflow(t)
+	if err2 != nil {
+		t.Fatalf("map_retryable_item_recovers: round-2 err = %v", err2)
+	}
+	if oc2 != engine.OutcomeOK {
+		t.Errorf("map_retryable_item_recovers: round-2 outcome = %q, want ok (b recovered)", oc2)
+	}
+
+	// Post-resume: a (N=0) and c (N=2) each have exactly 1 map.item event (not
+	// re-executed); b (N=1) has 2 map.item events (failed in round-1, passed in
+	// round-2). Total = 4.
+	events2 := mustFoldEvents(t, h)
+	nCounts := map[int]int{}
+	for _, e := range events2 {
+		if e.Type == engine.EventMapItem {
+			var d engine.MapItemData
+			_ = json.Unmarshal(e.Data, &d)
+			nCounts[d.N]++
+		}
+	}
+	total := 0
+	for _, cnt := range nCounts {
+		total += cnt
+	}
+	if total != 4 {
+		t.Errorf("map_retryable_item_recovers: post-resume map.item total = %d, want 4 (3 round-1 + 1 re-run of b)", total)
+	}
+	if nCounts[0] != 1 {
+		t.Errorf("map_retryable_item_recovers: item a (N=0) re-executed on resume (count=%d, want 1)", nCounts[0])
+	}
+	if nCounts[2] != 1 {
+		t.Errorf("map_retryable_item_recovers: item c (N=2) re-executed on resume (count=%d, want 1)", nCounts[2])
+	}
+	if nCounts[1] != 2 {
+		t.Errorf("map_retryable_item_recovers: item b (N=1) events = %d, want 2 (fail in round-1, pass in round-2)", nCounts[1])
 	}
 }

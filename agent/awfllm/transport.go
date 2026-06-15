@@ -107,6 +107,8 @@ func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletion
 // current prompt.
 func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	switch cfg.Provider {
+	case providerAnthropic:
+		return a.callAnthropic(ctx, cfg, prompt, schema, thread, files, emit)
 	case providerGemini:
 		return a.callGemini(ctx, cfg, prompt, schema, thread, files, emit)
 	case providerOllama:
@@ -503,30 +505,46 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 			map[string]any{"role": "model", "parts": []map[string]any{{"text": t.Assistant}}},
 		)
 	}
-	// Current user turn: document parts FIRST, then the prompt text LAST. The order
-	// is deliberate — the document is the stable, large content and the prompt (which
-	// on a gate repair attempt carries the varying prior verdict) is the suffix, so
-	// the document sits in the request's common prefix and Gemini's implicit caching
-	// can reuse it across a step's repair attempts (cached tokens are billed at ~25%
-	// of the input rate). The systemInstruction precedes contents in that prefix, so
-	// keeping it byte-stable also helps. Verified: Gemini caching docs.
-	parts := make([]map[string]any, 0, len(files)+1)
-	for _, f := range files {
-		// Accept/reject via the shared capability table (previously MISSING here —
-		// callGemini forwarded any f.MIME blindly). Both image and document modalities
-		// share the same inlineData encoding on Gemini, so no per-modality switch.
-		if _, ok := forwardable(providerGemini, f.MIME); !ok {
-			return "", usageRec{}, "", "", unsupportedMIMEErr(f.MIME, "")
+	// Explicit caching: upload [systemInstruction + document] once, reference by name.
+	// The :generateContent call then carries only the live (per-call) parts. Requires
+	// files (nothing to cache otherwise). On a cache error, fail (classifyLaunchErr maps it).
+	var cacheName string
+	if cfg.GeminiCache != nil && cfg.GeminiCache.Mode == "explicit" && len(files) > 0 {
+		n, err := a.ensureGeminiCache(ctx, cfg, files)
+		if err != nil {
+			return "", usageRec{}, "", "", err
 		}
-		parts = append(parts, map[string]any{"inlineData": map[string]any{
-			"mimeType": f.MIME,
-			"data":     base64.StdEncoding.EncodeToString(f.Content), // bare base64, no data: prefix
-		}})
+		cacheName = n
+	}
+
+	parts := make([]map[string]any, 0, len(files)+1)
+	if cacheName == "" { // uncached: document inline, document-first
+		for _, f := range files {
+			// Accept/reject via the shared capability table (previously MISSING here —
+			// callGemini forwarded any f.MIME blindly). Both image and document modalities
+			// share the same inlineData encoding on Gemini, so no per-modality switch.
+			if _, ok := forwardable(providerGemini, f.MIME); !ok {
+				return "", usageRec{}, "", "", unsupportedMIMEErr(f.MIME, "")
+			}
+			parts = append(parts, map[string]any{"inlineData": map[string]any{
+				"mimeType": f.MIME,
+				"data":     base64.StdEncoding.EncodeToString(f.Content), // bare base64, no data: prefix
+			}})
+		}
 	}
 	parts = append(parts, map[string]any{"text": prompt})
 	contents = append(contents, map[string]any{"role": "user", "parts": parts})
 	body := map[string]any{"contents": contents}
-	if cfg.SystemPrompt != "" {
+	if cacheName != "" {
+		// cachedContent is a TOP-LEVEL field (sibling of contents), NOT generationConfig;
+		// systemInstruction is baked into the cache and MUST NOT be re-sent here (400).
+		// NOTE: derived cost does NOT include CachedContent STORAGE (Gemini bills
+		// per-token-per-hour for the TTL regardless of reads; pricing.Breakdown has no
+		// per-hour dimension) — reported cost is optimistically low for explicit caching;
+		// cache-READ savings ARE reflected (cachedContentTokenCount → CacheRead → cache_read_per_m).
+		// Cost is also non-deterministic across runs (cache write vs read) — telemetry only.
+		body["cachedContent"] = cacheName
+	} else if cfg.SystemPrompt != "" {
 		body["systemInstruction"] = map[string]any{"parts": []map[string]any{{"text": cfg.SystemPrompt}}}
 	}
 	gc := map[string]any{}
@@ -536,8 +554,7 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 	if cfg.HasMaxTokens {
 		gc["maxOutputTokens"] = cfg.MaxTokens
 	}
-	// structured_output:off → no native structured output (prompt-restate only,
-	// via assemblePrompt's N2 floor); honored for ALL transports (Fix C).
+	// Native structured output is kept even with a cache (verified to coexist).
 	if schema != nil && cfg.StructuredOutput != soOff {
 		gc["responseMimeType"] = "application/json"
 		gc["_responseJsonSchema"] = map[string]any(*schema)

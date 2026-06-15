@@ -1051,6 +1051,71 @@ func TestRunMapQuorumReduceThresholdIsCohortWhenBranchCrashes(t *testing.T) {
 	}
 }
 
+func TestRunMapReduceResumeQuorumRecovers(t *testing.T) {
+	// §6.5 reduce safe-by-construction: a TRANSIENT item failure on round-1
+	// (item b exits 1 → ItemFailed retryable) means agree=2 < need=3 → the map
+	// returns retryable_failure and the reducer is NEVER committed (safe-by-
+	// construction: a committed reduce ⟺ map-ok ⟺ not this path). On resume
+	// all three items succeed → OutcomeOK; the reducer commits over the full
+	// recovered set (agree==3). This is NOT a false-vote test (item_failed is
+	// never re-run by shouldRerunItem on a {ok:false} vote); it is a transient
+	// body-crash (ExitCode 1) that shouldRerunItem selects because Status ==
+	// item_failed AND Outcome == retryable_failure.
+	body := ir.NodeList{
+		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
+			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+	}
+	q := ir.Ratio("3") // unanimous over 3 items
+	wf := staticOverWorkflow("x", body, 1, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+
+	// Round 1: a,c emit {"ok":true} (ExitCode 0); b exits 1 (transient ItemFailed).
+	// agree=2 < need=3 → retryable_failure; reducer must NOT commit.
+	rig1 := newMapRig(t,
+		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 1}},
+		execProgram{cmd: "./vote c", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+	)
+	input := runOverItems("a", "b", "c")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	rs1 := NewRunState(testRunID, testDigest, input)
+
+	oc1, _ := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
+	if oc1 != OutcomeRetryableFailure {
+		t.Fatalf("round-1: outcome = %q, want OutcomeRetryableFailure (transient item b crash + quorum not met)", oc1)
+	}
+	// Safe-by-construction: the reducer must NOT have committed (no node.completed
+	// at the map path). A committed reduce ⟺ map-ok ⟺ not this path.
+	if _, ok := rs1.LookupCompleted(testMapPath); ok {
+		t.Errorf("round-1: reducer committed at %q despite retryable_failure; safe-by-construction violated", testMapPath)
+	}
+
+	// Resume: all three items now emit {"ok":true}. The retryable item b is
+	// re-run; a and c replay from the log. agree=3 == need=3 → OutcomeOK.
+	rig2 := bareRig(t, rig1,
+		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
+	)
+	rs2 := foldFromRig(t, rig2)
+
+	oc2, err2 := runMapResumeTrue(context.Background(), mapNode, testMapPath, wf, rs2, rig2)
+	if oc2 != OutcomeOK || err2 != nil {
+		t.Fatalf("resume: outcome = %q err = %v, want OutcomeOK/nil (recovered quorum)", oc2, err2)
+	}
+
+	// Reducer committed at the map path with agree==3 over the full recovered set.
+	nr, ok := rs2.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("resume: no NodeResult at map path %q (reducer should commit after quorum met)", testMapPath)
+	}
+	if nr.Outputs["agree"] != 3 {
+		t.Errorf("resume: agree = %v, want 3 (full recovered cohort)", nr.Outputs["agree"])
+	}
+	if nr.Outputs["passed"] != true {
+		t.Errorf("resume: passed = %v, want true", nr.Outputs["passed"])
+	}
+}
+
 func TestRunMapRunReduceReusesPreProvisionedContainer(t *testing.T) {
 	// Regression: a run-reduce whose container is a PRE-DECLARED one (already
 	// brought up + present in ld.Handles, like every declared container at run
@@ -1480,5 +1545,136 @@ func TestRunInputFilesMapBodyConsumesTopLevelProducer(t *testing.T) {
 	}
 	if stagedCount != 3 {
 		t.Errorf("recon doc staged into %d item containers, want 3", stagedCount)
+	}
+}
+
+func TestMapItemRecordsRetryableOutcome(t *testing.T) {
+	rig := newMapRig(t, fail("echo a")) // exit 1 → retryable_failure
+	input := runOverItems("a")
+	seedRunStartedWithInput(t, rig.lg, rig.blobs, input)
+	minSuccess := ir.Ratio("1")
+	wf := staticOverWorkflow("x", echoStep("x", &ir.RetryPolicy{Attempts: 1}), 1, &minSuccess)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, input)
+
+	_, _ = runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+
+	// Fold the log (resume's path) — the folded record must carry the outcome.
+	rs2 := foldFromRig(t, rig)
+	items := rs2.LookupMapItems(testMapPath)
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if items[0].Status != ItemFailed {
+		t.Errorf("Status = %q, want %q", items[0].Status, ItemFailed)
+	}
+	if items[0].Outcome != string(OutcomeRetryableFailure) {
+		t.Errorf("Outcome = %q, want %q", items[0].Outcome, OutcomeRetryableFailure)
+	}
+}
+
+func TestFoldMapItemLastWinsByN(t *testing.T) {
+	clk := &clock.Fake{T: testClockEpoch}
+	lg := state.NewInMemoryLog(clk)
+	blobs := state.NewInMemoryBlobs()
+	seedRunStartedWithInput(t, lg, blobs, runOverItems("a"))
+	for _, d := range []MapItemData{
+		{N: 0, Status: ItemFailed, Outcome: "retryable_failure"},
+		{N: 0, Status: ItemPassed},
+	} {
+		b, err := json.Marshal(d)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := lg.Append(state.Event{Type: EventMapItem, Path: testMapPath, Data: b}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatalf("Fold log: %v", err)
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := rs.LookupMapItems(testMapPath)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1 (last-wins by N)", len(got))
+	}
+	if got[0].Status != ItemPassed {
+		t.Errorf("Status = %q, want %q (last event wins)", got[0].Status, ItemPassed)
+	}
+}
+
+// Pure predicate: who re-runs on resume. Keyed on the existing MapItemRecord
+// (no parallel projection type — rule 2).
+func TestShouldRerunItem(t *testing.T) {
+	plain := &ir.Map{}                   // n.Prune == nil
+	prune := &ir.Map{Prune: &ir.Prune{}} // any non-nil Prune
+	cases := []struct {
+		name   string
+		n      *ir.Map
+		resume bool
+		mr     MapItemRecord
+		want   bool
+	}{
+		{"retryable-on-resume", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, true},
+		{"permanent-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "permanent_failure"}, false},
+		{"rejected-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "rejected"}, false},
+		{"absent-outcome-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: ""}, false},
+		{"image-unavailable-stays", plain, true, MapItemRecord{Status: ItemFailed, Outcome: "", Reason: ReasonImageUnavailable}, false},
+		{"passed-stays", plain, true, MapItemRecord{Status: ItemPassed}, false},
+		{"pruned-stays", plain, true, MapItemRecord{Status: ItemPruned}, false},
+		{"prune-map-never", prune, true, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, false},
+		{"not-resume-never", plain, false, MapItemRecord{Status: ItemFailed, Outcome: "retryable_failure"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := shouldRerunItem(c.n, c.resume, c.mr); got != c.want {
+				t.Errorf("shouldRerunItem = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// Integration: a retryable item recovers on resume → map ok, single record per N.
+func runMapResumeTrue(ctx context.Context, n *ir.Map, mapPath string, wf *ir.Workflow, rs *RunState, rig *mapRig) (Outcome, error) {
+	return runMapWithContext(ctx, n, mapPath, interpreterContext{
+		wf: wf, runstate: rs, dispatcher: rig.ld, log: rig.lg, blobs: rig.blobs, clk: rig.clk, resume: true,
+	})
+}
+
+func TestRunMapResumeRetryableItemReRuns(t *testing.T) {
+	rig1 := newMapRig(t, ok("echo a"), fail("echo b"), ok("echo c"))
+	input := runOverItems("a", "b", "c")
+	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
+	minSuccess := ir.Ratio("3")
+	wf := staticOverWorkflow("x", echoStep("x", &ir.RetryPolicy{Attempts: 1}), 3, &minSuccess)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs1 := NewRunState(testRunID, testDigest, input)
+
+	oc1, _ := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
+	if oc1 != OutcomeRetryableFailure {
+		t.Fatalf("round-1 outcome = %q, want OutcomeRetryableFailure", oc1)
+	}
+
+	rig2 := bareRig(t, rig1, ok("echo a"), ok("echo b"), ok("echo c"))
+	rs2 := foldFromRig(t, rig2)
+
+	oc2, err2 := runMapResumeTrue(context.Background(), mapNode, testMapPath, wf, rs2, rig2)
+	if oc2 != OutcomeOK || err2 != nil {
+		t.Fatalf("resume outcome = %q err = %v, want OutcomeOK/nil (retryable item recovered)", oc2, err2)
+	}
+	if len(rig2.fake.Calls) == 0 {
+		t.Error("resume did NOT re-run the failed item (fake.Calls empty)")
+	}
+	// Single record per N after re-run.
+	seen := map[int]bool{}
+	for _, mr := range rs2.LookupMapItems(testMapPath) {
+		if seen[mr.N] {
+			t.Errorf("duplicate MapItemRecord for N=%d", mr.N)
+		}
+		seen[mr.N] = true
 	}
 }

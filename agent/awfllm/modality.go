@@ -40,9 +40,10 @@ func mimeModality(mime string) (modality, bool) {
 // the single source the three builders consult; adding a MIME (→ a modality) or a
 // transport forces a conscious accept/reject decision HERE, not silently in 3 switches.
 var providerForwards = map[string]map[modality]bool{
-	providerOpenAI: {modalityImage: true, modalityDocument: true},
-	providerGemini: {modalityImage: true, modalityDocument: true},
-	providerOllama: {modalityImage: true}, // images only — Ollama has no document part
+	providerOpenAI:    {modalityImage: true, modalityDocument: true},
+	providerGemini:    {modalityImage: true, modalityDocument: true},
+	providerOllama:    {modalityImage: true}, // images only — Ollama has no document part
+	providerAnthropic: {modalityImage: true, modalityDocument: true},
 }
 
 // forwardable returns (modality, true) iff `provider` can forward `mime`.

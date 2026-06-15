@@ -267,6 +267,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool, rerunFrom string) (en
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, h.log, h.blobs, h.clk, engine.RunOptions{
 		Broker:    h.broker,
 		Assets:    recordedAssets,
+		Resume:    isResume,
 		RerunFrom: rerunFrom,
 	})
 	return outcome, runErr
