@@ -10,9 +10,12 @@ graph:
           uses: awf/llm
           with: { model: m, prompt: p }
       evaluate:
-        - id: judge
+        - id: judge_a
           uses: awf/llm
-          continues: draft
+          with: { model: m, prompt: p }
+        - id: judge_b
+          uses: awf/llm
+          continues: judge_a
           with: { model: m, prompt: p }
           output_schema:
             type: object
@@ -20,5 +23,5 @@ graph:
             required: [ok]
             properties:
               ok: { type: boolean }
-      until: "{{ step.judge.ok }}"
+      until: "{{ step.judge_b.ok }}"
       max_attempts: 3

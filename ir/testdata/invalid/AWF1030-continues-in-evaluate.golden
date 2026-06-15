@@ -1,8 +1,8 @@
 [
   {
     "severity": "error",
-    "path": "gate[1].evaluate.judge",
+    "path": "gate[1].evaluate.judge_b",
     "code": "AWF1030",
-    "message": "a step inside a gate's evaluate: block may not use continues (the evaluator must judge in a fresh context)"
+    "message": "evaluator `continues:` may only target non-evaluator source context; evaluator transcript turns cannot be continued or included (continues: \"judge_a\")"
   }
 ]
