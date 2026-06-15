@@ -133,12 +133,12 @@ func TestValidateBadFlagExitsUsage(t *testing.T) {
 func TestValidateUnknownFormatExitsUsage(t *testing.T) {
 	path := writeFixture(t, "wf.yaml", validMinimal)
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"validate", "--format", "xml", path}, &stdout, &stderr)
+	code := Run([]string{"validate", "--output", "xml", path}, &stdout, &stderr)
 	if code != ExitUsage {
-		t.Errorf("Run(validate --format xml) = %d, want %d", code, ExitUsage)
+		t.Errorf("Run(validate --output xml) = %d, want %d", code, ExitUsage)
 	}
-	if !strings.Contains(stderr.String(), "unknown --format") {
-		t.Errorf("expected 'unknown --format' on stderr; got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "unknown --output") {
+		t.Errorf("expected 'unknown --output' on stderr; got %q", stderr.String())
 	}
 }
 
@@ -164,9 +164,9 @@ func TestValidateLoadErrorExitsInvalidText(t *testing.T) {
 func TestValidateLoadErrorJSONDiagnostic(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	path := "/no/such/file.yaml"
-	code := Run([]string{"validate", "--format", "json", path}, &stdout, &stderr)
+	code := Run([]string{"validate", "--output", "json", path}, &stdout, &stderr)
 	if code != ExitInvalid {
-		t.Errorf("Run(validate --format json /no/such/file) = %d, want %d", code, ExitInvalid)
+		t.Errorf("Run(validate --output json /no/such/file) = %d, want %d", code, ExitInvalid)
 	}
 	if stderr.Len() > 0 {
 		t.Errorf("expected loader diagnostic JSON on stdout, got stderr %q", stderr.String())
@@ -236,7 +236,7 @@ func TestValidateInvalidWorkflowExitsInvalidText(t *testing.T) {
 func TestValidateCleanWorkflowJSONExitsOK(t *testing.T) {
 	path := writeFixture(t, "wf.yaml", validMinimal)
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"validate", "--format", "json", path}, &stdout, &stderr)
+	code := Run([]string{"validate", "--output", "json", path}, &stdout, &stderr)
 	if code != ExitOK {
 		t.Errorf("Run = %d, want %d (stderr=%q)", code, ExitOK, stderr.String())
 	}
@@ -263,7 +263,7 @@ func TestValidateCleanWorkflowJSONExitsOK(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"diagnostics": []`) {
 		t.Errorf("expected '\"diagnostics\": []' (empty array) in JSON output; got %s", stdout.String())
 	}
-	// Mirror of the text test: stderr must be silent so `awf validate --format json | jq` works.
+	// Mirror of the text test: stderr must be silent so `awf validate --output json | jq` works.
 	if stderr.Len() > 0 {
 		t.Errorf("unexpected stderr on clean JSON validation: %q", stderr.String())
 	}
@@ -272,7 +272,7 @@ func TestValidateCleanWorkflowJSONExitsOK(t *testing.T) {
 func TestValidateInvalidWorkflowJSONExitsInvalid(t *testing.T) {
 	path := writeFixture(t, "wf.yaml", invalidDupID)
 	var stdout, stderr bytes.Buffer
-	code := Run([]string{"validate", "--format", "json", path}, &stdout, &stderr)
+	code := Run([]string{"validate", "--output", "json", path}, &stdout, &stderr)
 	if code != ExitInvalid {
 		t.Errorf("Run = %d, want %d (stderr=%q)", code, ExitInvalid, stderr.String())
 	}

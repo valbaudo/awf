@@ -42,7 +42,7 @@ func cliInspect(args []string, stdout, stderr io.Writer) int {
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/")
 	foldArg := fs0.String("fold", "ok", "comma list of statuses to collapse")
 	depth := fs0.Int("depth", -1, "max tree depth (-1 = unlimited)")
-	output := fs0.String("output", "text", "output format: text or json")
+	output := fs0.StringP("output", "o", "text", "output format: text or json")
 	showTokens := fs0.Bool("tokens", false, "show per-step input/output token counts")
 	runID, code, ok := parseSinglePositional(fs0, args, "awf inspect", printInspectUsage, stdout, stderr)
 	if !ok {

@@ -28,13 +28,13 @@ type validateResult struct {
 // printValidateUsage writes the validate-subcommand usage line. Pulled out so help (stdout,
 // exit 0) and errors (stderr, exit 2) can share the same wording without drift.
 func printValidateUsage(w io.Writer) {
-	fprintln(w, "usage: awf validate [--format text|json] <path>")
+	fprintln(w, "usage: awf validate [-o|--output text|json] <path>")
 }
 
-// cliValidate runs `awf validate [--format text|json] <path>`. Returns:
+// cliValidate runs `awf validate [-o|--output text|json] <path>`. Returns:
 //   - ExitOK on clean validation (zero error-severity diagnostics; warnings are OK).
 //   - ExitInvalid on ≥1 error-severity diagnostic.
-//   - ExitUsage on missing/extra args, unknown --format, or loader-stage failure.
+//   - ExitUsage on missing/extra args, unknown --output, or loader-stage failure.
 //
 // Loader failures (unreadable file, bad YAML, path escape, missing compose) print to stderr
 // and return ExitUsage — they aren't validation diagnostics. ir.Validate diagnostics print
@@ -49,7 +49,14 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 	// can't drift between the two paths.
 	fs.SetOutput(io.Discard)
 	fs.Usage = func() {} // no-op; printValidateUsage is the canonical writer.
-	format := fs.String("format", "text", "output format: text or json")
+	// --output (with -o shorthand) is canonical; --format is a hidden, deprecated
+	// alias bound to the SAME target, so either name sets `output` and last-flag
+	// wins. The deprecation notice is printed by us (after parse) rather than via
+	// pflag's MarkDeprecated, because the FlagSet output is discarded.
+	var output string
+	fs.StringVarP(&output, "output", "o", "text", "output format: text or json")
+	fs.StringVar(&output, "format", "text", "deprecated alias for --output")
+	_ = fs.MarkHidden("format")
 	err := fs.Parse(args)
 	if errors.Is(err, pflag.ErrHelp) {
 		// pflag returns ErrHelp for `-h`, `--help`, AND `-help` (single dash, full
@@ -69,6 +76,11 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	path := fs.Arg(0)
+	if fs.Changed("format") {
+		// --format is the deprecated alias for --output; warn on stderr so that a
+		// `... --format json | jq` pipe still receives clean JSON on stdout.
+		fprintf(stderr, "awf validate: --format is deprecated; use --output\n")
+	}
 
 	ld, loadErr := loader.Load(path)
 	if loadErr != nil {
@@ -85,7 +97,7 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 				Code:     le.Code,
 				Message:  msg,
 			}}
-			switch *format {
+			switch output {
 			case "json":
 				enc := json.NewEncoder(stdout)
 				enc.SetIndent("", "  ")
@@ -96,7 +108,7 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 			case "text":
 				printTextResult(stdout, path, "", diags)
 			default:
-				fprintf(stderr, "awf validate: unknown --format %q (want text or json)\n", *format)
+				fprintf(stderr, "awf validate: unknown --output %q (want text or json)\n", output)
 				return ExitUsage
 			}
 			return ExitInvalid
@@ -117,7 +129,7 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 		digest = ""
 	}
 
-	switch *format {
+	switch output {
 	case "json":
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -128,7 +140,7 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 	case "text":
 		printTextResult(stdout, path, digest, diags)
 	default:
-		fprintf(stderr, "awf validate: unknown --format %q (want text or json)\n", *format)
+		fprintf(stderr, "awf validate: unknown --output %q (want text or json)\n", output)
 		return ExitUsage
 	}
 

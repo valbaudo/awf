@@ -9,7 +9,7 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** _command_ [_arguments_]
 
-**awf** **validate** [**--format** _text_|_json_] _path_
+**awf** **validate** [**-o**|**--output** _text_|_json_] _path_
 
 **awf** **run** [**--input** _json_] [**--input-files** _csv_] [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _auto_|_fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
 
@@ -73,11 +73,13 @@ the workflow's content-addressed definition digest. Validation collects *all*
 diagnostics in one pass; any error-severity diagnostic yields a non-zero exit
 (see **EXIT STATUS**). This command performs no container, network, or agent I/O.
 
-**--format** _text_|_json_
+**-o**, **--output** _text_|_json_
 :   Output format. _text_ (default) is human-readable. _json_ emits a
     machine-readable object carrying the digest and each diagnostic's stable
     namespaced `code` (`AWF1xxx` structural, `AWF2xxx` schema-floor, `AWF3xxx`
-    loader) — an API for tooling, never renumbered.
+    loader) — an API for tooling, never renumbered. **--format** is a
+    deprecated alias for **--output** (it still works but prints a notice to
+    standard error).
 
 ## awf run _path_
 
@@ -255,7 +257,7 @@ state; it executes nothing.
 **--state-dir** _dir_
 :   Base directory holding `runs/` and `blobs/` (default `./.awf`).
 
-**--output** _text_|_json_
+**-o**, **--output** _text_|_json_
 :   Output format. _text_ (default) prints one run per line; _json_ emits a
     machine-readable array.
 
@@ -271,7 +273,7 @@ failing branch stands out. This reads the journal offline and executes nothing.
 **--depth** _n_
 :   Maximum tree depth to render (default: unlimited).
 
-**--output** _text_|_json_
+**-o**, **--output** _text_|_json_
 :   _text_ (default) is the folded tree; _json_ emits the underlying span
     projection.
 
@@ -304,7 +306,7 @@ and executes nothing.
     that content — including anything sensitive embedded in prompts — to the
     collector.
 
-**--output** _otel_|_json_
+**-o**, **--output** _otel_|_json_
 :   _otel_ (default) exports spans; _json_ dumps the span projection as JSON, for
     download or scripting, instead of exporting.
 
@@ -378,7 +380,7 @@ offline and executes nothing.
 **--state-dir** _dir_
 :   Base directory holding runs (default `./.awf`).
 
-**--output** _json_
+**-o**, **--output** _json_
 :   Output format (only `json` today).
 
 ## awf ui _path_

@@ -45,7 +45,7 @@ func cliLS(args []string, stdout, stderr io.Writer) int {
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
-	output := fs0.String("output", "text", "output format: text or json")
+	output := fs0.StringP("output", "o", "text", "output format: text or json")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			printLSUsage(stdout)

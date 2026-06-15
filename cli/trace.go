@@ -40,7 +40,7 @@ func cliTrace(args []string, stdout, stderr io.Writer) int {
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	otlp := fs0.String("otlp", "", "OTLP/HTTP endpoint host:port")
-	output := fs0.String("output", "otel", "output format: otel or json")
+	output := fs0.StringP("output", "o", "otel", "output format: otel or json")
 	capture := fs0.Bool("capture-content", false, "attach agent I/O + typed-output/stdout content")
 	runID, code, ok := parseSinglePositional(fs0, args, "awf trace", printTraceUsage, stdout, stderr)
 	if !ok {

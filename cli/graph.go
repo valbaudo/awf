@@ -41,7 +41,7 @@ func cliGraph(args []string, stdout, stderr io.Writer) int {
 	fs0.Usage = func() {}
 	runID := fs0.String("run", "", "run id to overlay state from (omit for static graph)")
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/")
-	output := fs0.String("output", "json", "output format: json")
+	output := fs0.StringP("output", "o", "json", "output format: json")
 	// Path is the first positional, then flags (e.g. `awf graph wf.yaml --run r1`).
 	// parseSinglePositional returns that first positional (here, the workflow path).
 	path, code, ok := parseSinglePositional(fs0, args, "awf graph", printGraphUsage, stdout, stderr)
