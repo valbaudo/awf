@@ -1416,11 +1416,16 @@ content-addressed artifact, never a live container's process state.
     *uncommitted frontier* — the in-flight step on each active branch. A
     deterministic (code) replay is exact; an interrupted agent step may differ on
     re-run, which is correct — its work was never committed. A run is resumable
-    iff its terminal outcome is `retryable_failure` (the log holds
-    `run.finished{retryable_failure}`, or — in the brief window where a
-    `node.failed{retryable_failure}` has been recorded but `run.finished` has
-    not yet been written — only that `node.failed{retryable_failure}`).
-    `ok`, `permanent_failure`, `rejected`, and `cancelled` are not resumable.
+    iff its last outcome is *not* `ok` — that is, `retryable_failure`,
+    `permanent_failure`, `rejected`, or `cancelled` — or it was interrupted
+    (the process died with no terminal event, leaving an uncommitted frontier).
+    A run that finished `ok` is the only refusal: resume reports nothing to do
+    and exits. Note that this admission rule is broader than the `resumable`
+    *label* shown by `awf ls`: that label marks only a `retryable_failure`
+    terminal outcome (the case automated retry can drive forward without
+    operator judgment), whereas `awf resume` will re-enter any non-`ok`
+    terminal run — including `permanent_failure`, `rejected`, and `cancelled` —
+    so an operator can resume after correcting whatever caused the failure.
 
 **Pinning**
 :   The workflow definition (by digest, including the resolved import graph,
@@ -1442,8 +1447,10 @@ content-addressed artifact, never a live container's process state.
 
 **Cancellation**
 :   Interrupts in-flight steps, runs enclosing `finally` blocks, tears down
-    containers/projects, and marks the run terminal — not resumable (see Resume
-    for the full resumability rule).
+    containers/projects, and marks the run terminal with a non-`ok` outcome.
+    Because the outcome is not `ok`, a cancelled run is resumable: `awf resume`
+    re-enters it like any other non-`ok` terminal run (see Resume for the full
+    resumability rule).
 
 Step addressing, used for resume and traces, names step nodes by `id`, call
 children by `<call-id>.workflow.<child-path>`, and control nodes positionally,
