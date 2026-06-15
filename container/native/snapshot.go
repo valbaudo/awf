@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/valbaudo/awf/container"
@@ -152,4 +154,114 @@ func (b *Backend) Snapshot(ctx context.Context, h container.Handle) (container.S
 		return "", fmt.Errorf("container/native: Snapshot: blobs.Put: %w", err)
 	}
 	return container.SnapshotRef(ref), nil
+}
+
+// Restore re-materializes a container workdir from a SnapshotRef. EVERY
+// filesystem op goes through one os.Root rooted at the (trusted, fixed) workdir,
+// so a '..' name or an attacker-planted/captured symlink cannot redirect a write
+// outside the workdir (TOCTOU-safe at openat; the same primitive loader.go uses).
+// Perms are set AT CREATE (no post-create Root.Chmod) to avoid CVE-2026-32282.
+func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name string) (container.Handle, error) {
+	if err := ctx.Err(); err != nil {
+		return container.Handle{}, err
+	}
+	if name == "" {
+		return container.Handle{}, fmt.Errorf("container/native: Restore: name is required")
+	}
+	if b.blobs == nil {
+		return container.Handle{}, fmt.Errorf("container/native: Restore: no blob store (construct with native.WithBlobs)")
+	}
+	if !filepath.IsLocal(name) { // rejects "", "..", "/abs", "a/../../b"; defense-in-depth before OpenRoot
+		return container.Handle{}, fmt.Errorf("container/native: Restore: unsafe container name %q", name)
+	}
+	workdir := filepath.Join(b.workdirRoot, name)
+
+	rootDir, err := os.OpenRoot(b.workdirRoot)
+	if err != nil {
+		return container.Handle{}, fmt.Errorf("container/native: Restore: open root: %w", err)
+	}
+	defer func() { _ = rootDir.Close() }()
+
+	if err := rootDir.RemoveAll(name); err != nil {
+		return container.Handle{}, fmt.Errorf("container/native: Restore: remove %q: %w", name, err)
+	}
+	if err := rootDir.MkdirAll(name, 0o755); err != nil {
+		return container.Handle{}, fmt.Errorf("container/native: Restore: mkdir %q: %w", name, err)
+	}
+
+	if err := b.extractInto(rootDir, name, ref); err != nil {
+		_ = os.RemoveAll(workdir) // single cleanup path
+		return container.Handle{}, err
+	}
+
+	b.mu.Lock()
+	b.handles[workdir] = nativeHandle{workdir: workdir}
+	b.mu.Unlock()
+	return container.Handle{Name: name, ID: workdir}, nil
+}
+
+// extractInto streams the blob's gzip-tar into <root>/<base> via the root.
+// Task 6 wraps the decompressor in the three decompression caps.
+func (b *Backend) extractInto(root *os.Root, base string, ref container.SnapshotRef) error {
+	blob, err := b.blobs.Get(string(ref))
+	if err != nil {
+		return fmt.Errorf("container/native: Restore: blobs.Get: %w", err)
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(blob))
+	if err != nil {
+		return fmt.Errorf("container/native: Restore: gzip: %w", err)
+	}
+	defer func() { _ = gr.Close() }()
+	tr := tar.NewReader(gr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("container/native: Restore: tar: %w", err)
+		}
+		rel := path.Join(base, path.Clean("/"+hdr.Name)) // join under base; leading-slash-stripped
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := root.Mkdir(rel, fs.FileMode(hdr.Mode)&os.ModePerm); err != nil && !errors.Is(err, fs.ErrExist) {
+				return fmt.Errorf("container/native: Restore: mkdir %q: %w", rel, err)
+			}
+		case tar.TypeReg:
+			if err := ensureParent(root, rel); err != nil {
+				return err
+			}
+			f, err := root.OpenFile(rel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fs.FileMode(hdr.Mode)&os.ModePerm)
+			if err != nil {
+				return fmt.Errorf("container/native: Restore: create %q: %w", rel, err)
+			}
+			_, cpErr := io.Copy(f, tr) // Task 6: replace with capped reader + io.CopyN
+			_ = f.Close()
+			if cpErr != nil {
+				return fmt.Errorf("container/native: Restore: write %q: %w", rel, cpErr)
+			}
+		case tar.TypeSymlink:
+			if err := ensureParent(root, rel); err != nil {
+				return err
+			}
+			if err := root.Symlink(hdr.Linkname, rel); err != nil { // target verbatim (decision: store-verbatim)
+				return fmt.Errorf("container/native: Restore: symlink %q: %w", rel, err)
+			}
+		default:
+			return fmt.Errorf("container/native: Restore: unsupported tar entry %q (type %d)", hdr.Name, hdr.Typeflag)
+		}
+	}
+	return nil
+}
+
+// ensureParent creates rel's parent directories through the root (confined).
+func ensureParent(root *os.Root, rel string) error {
+	dir := path.Dir(rel)
+	if dir == "." || dir == "/" {
+		return nil
+	}
+	if err := root.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("container/native: Restore: mkdir parent %q: %w", dir, err)
+	}
+	return nil
 }

@@ -174,11 +174,8 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	return os.RemoveAll(r.workdir)
 }
 
-// Restore returns ErrUnsupported — native does not implement
-// filesystem snapshots (decision 4).
-func (*Backend) Restore(_ context.Context, _ container.SnapshotRef, _ string) (container.Handle, error) {
-	return container.Handle{}, container.ErrUnsupported
-}
+// Restore re-materializes a container workdir from a SnapshotRef; it lives in
+// snapshot.go (os.Root-confined extraction).
 
 // Compile-time interface satisfaction.
 var _ container.Backend = (*Backend)(nil)
