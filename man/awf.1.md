@@ -33,6 +33,10 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **ui** _path_ [**--state-dir** _dir_] [**--port** _n_] [**--open**]
 
+**awf** **version** [**-o**|**--output** _text_|_json_]
+
+**awf** [**--version**]
+
 **awf** **help**
 
 # DESCRIPTION
@@ -402,6 +406,26 @@ graph is rendered from the same projection as **awf graph**.
 
 **--open**
 :   Open the printed URL in the default browser (best-effort).
+
+## awf version
+
+Print the build identity on one line and exit `0`:
+
+```
+awf <version> (commit <12-char-sha>[+dirty], built <vcs.time>, <go-version>)
+```
+
+_version_ is `(devel)` for an ordinary build, or the tag baked in at release time via
+`-ldflags "-X github.com/valbaudo/awf/cli.version=<tag>"`. The commit, build time, and dirty
+flag come from the VCS metadata Go records in the binary; a `go run` build with no such
+metadata collapses to `awf <version> (commit unknown, <go-version>)` rather than erroring.
+
+**-o**, **--output** _text_|_json_
+:   Output format (default `text`). `json` emits
+    `{"version","commit","dirty","build_time","go_version"}` — the full untruncated commit, and
+    empty strings where a field is unknown.
+
+The top-level **awf --version** flag prints the same one-line text form.
 
 ## awf help
 

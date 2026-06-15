@@ -142,6 +142,10 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 		return cliTrace(args[1:], stdout, stderr)
 	case "outputs":
 		return cliOutputs(args[1:], stdout, stderr)
+	case "version":
+		return cliVersion(args[1:], stdout, stderr)
+	case "--version":
+		return cliVersion(nil, stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return ExitOK
@@ -197,6 +201,8 @@ func printUsage(w io.Writer) {
 	fprintln(w, "                              --output <fmt>     otel (default) or json")
 	fprintln(w, "                              --state-dir <dir>  state directory")
 	fprintln(w, "  outputs <run-id>          read a completed run's typed outputs as JSON")
+	fprintln(w, "  version                   print version, commit, and build metadata (also: awf --version)")
+	fprintln(w, "                              --output <fmt>     text (default) or json")
 	fprintln(w, "  help                      print this usage")
 }
 
