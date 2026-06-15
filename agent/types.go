@@ -35,6 +35,11 @@ type Caps struct {
 	// precedent.
 	Threaded bool `json:"threaded,omitempty"`
 
+	// ContextEvidence reports that this adapter can render engine-assembled
+	// evaluator source context as evidence, without treating it as an active
+	// conversation continuation. Normal continues: threading still uses Threaded.
+	ContextEvidence bool `json:"context_evidence,omitempty"`
+
 	// PersistentSession reports that this adapter can reuse a live/persistent
 	// session across launches. It is a static runtime declaration used by CLI
 	// guards, defensive engine guards, conformance routing, and docs. Zero value
@@ -119,15 +124,16 @@ type LiveResumePreflightRequest struct {
 // `json:"-"` tag prevents JSON serialization from ever exposing them.
 // See the SecretEnv doc-comment for the formatter + JSON guarantees.
 type AgentInvocation struct {
-	NodePath       string         `json:"node_path"`                 // engine/path output for the AgentStep (e.g. "graph[0]" or "gate[2].attempt-1.generate[0]")
-	Uses           string         `json:"uses"`                      // agent-runtime ref (must match Adapter.Ref())
-	RunContext     RunContext     `json:"run_context"`               // explicit run/epoch identity for live-capable adapters
-	With           ir.RawConfig   `json:"with,omitempty"`            // opaque per-runtime config; validated by Adapter.ValidateConfig
-	OutputSchema   *ir.JSONSchema `json:"output_schema,omitempty"`   // step's output_schema (the adapter passes to harness as --json-schema or layer-2 extractor schema)
-	Env            SecretEnv      `json:"-"`                         // env vars forwarded into the harness exec (slice 5.3 reads ANTHROPIC_API_KEY etc.); never JSON-marshaled so secrets cannot reach the state log
-	IdempotencyKey string         `json:"idempotency_key,omitempty"` // resolved-template; passed to harness env per spec §10
-	Feedback       ir.RawConfig   `json:"feedback,omitempty"`        // prior gate verdict on repair attempts > 1 (nil on attempt 1)
-	Thread         []ThreadTurn   `json:"thread,omitempty"`          // engine-assembled prior turns (separate channel from Feedback); generator-only
+	NodePath        string         `json:"node_path"`                  // engine/path output for the AgentStep (e.g. "graph[0]" or "gate[2].attempt-1.generate[0]")
+	Uses            string         `json:"uses"`                       // agent-runtime ref (must match Adapter.Ref())
+	RunContext      RunContext     `json:"run_context"`                // explicit run/epoch identity for live-capable adapters
+	With            ir.RawConfig   `json:"with,omitempty"`             // opaque per-runtime config; validated by Adapter.ValidateConfig
+	OutputSchema    *ir.JSONSchema `json:"output_schema,omitempty"`    // step's output_schema (the adapter passes to harness as --json-schema or layer-2 extractor schema)
+	Env             SecretEnv      `json:"-"`                          // env vars forwarded into the harness exec (slice 5.3 reads ANTHROPIC_API_KEY etc.); never JSON-marshaled so secrets cannot reach the state log
+	IdempotencyKey  string         `json:"idempotency_key,omitempty"`  // resolved-template; passed to harness env per spec §10
+	Feedback        ir.RawConfig   `json:"feedback,omitempty"`         // prior gate verdict on repair attempts > 1 (nil on attempt 1)
+	Thread          []ThreadTurn   `json:"thread,omitempty"`           // engine-assembled prior turns (separate channel from Feedback); generator-only
+	ContextEvidence []ThreadTurn   `json:"context_evidence,omitempty"` // evaluator-only source evidence; not active conversation history
 	// InputFiles carries resolved file bytes to a CONTAINERLESS adapter (the
 	// containerless analog of container.InputFile staging). Empty for
 	// container-backed steps. json:"-": bytes never reach the state log.

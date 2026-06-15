@@ -27,3 +27,12 @@ func TestDispatchResultCarriesTranscript(t *testing.T) {
 		t.Fatalf("zero DispatchResult.Transcript = %+v, want zero", zero.Transcript)
 	}
 }
+
+func TestResolvedInputsCarriesContextEvidence(t *testing.T) {
+	ri := engine.ResolvedInputs{
+		ContextEvidence: []agent.ThreadTurn{{User: "u1", Assistant: "a1"}},
+	}
+	if len(ri.ContextEvidence) != 1 || ri.ContextEvidence[0].User != "u1" || ri.ContextEvidence[0].Assistant != "a1" {
+		t.Fatalf("ResolvedInputs.ContextEvidence = %+v, want one {u1,a1} turn", ri.ContextEvidence)
+	}
+}

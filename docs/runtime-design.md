@@ -418,18 +418,20 @@ type AgentResult struct {
 `Caps` are static runtime declarations. The core may use them for runtime
 pinning, container requirements, gate guards, resume preflight, and docs, but
 provider-specific behavior stays inside the named adapter and its opaque
-`with:` config.
+`with:` config. `ContextEvidence` means the adapter can render engine-assembled
+source context as untrusted evidence without treating it as active prior
+conversation. Normal conversation continuation still uses `Threaded`.
 
-| Runtime ref | Mode | Native schema | Containerless | Threaded | Persistent session | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| `anthropic/claude-code` | strict CLI | yes | no | no | no | built-in |
-| `factory/droid` | strict CLI | no | no | no | no | built-in |
-| `block/goose` | strict CLI | no | no | no | no | built-in |
-| `openai/codex` | strict CLI | yes | no | no | no | built-in |
-| `awf/llm` | single HTTP call | no | yes | yes | no | built-in |
-| `openai/codex-live` | live app-server | yes | yes | no | yes | built-in |
-| `block/goose-live` | live ACP | no | yes | no | yes | reserved implementation-track ref; no adapter registered yet |
-| `anthropic/claude-code-live` | live PTY proof spike | yes | yes | no | yes | deferred; not supported |
+| Runtime ref | Mode | Native schema | Containerless | Threaded | Context evidence | Persistent session | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `anthropic/claude-code` | strict CLI | yes | no | no | no | no | built-in |
+| `factory/droid` | strict CLI | no | no | no | no | no | built-in |
+| `block/goose` | strict CLI | no | no | no | no | no | built-in |
+| `openai/codex` | strict CLI | yes | no | no | no | no | built-in |
+| `awf/llm` | single HTTP call | no | yes | yes | no | no | built-in |
+| `openai/codex-live` | live app-server | yes | yes | no | no | yes | built-in |
+| `block/goose-live` | live ACP | no | yes | no | no | yes | reserved implementation-track ref; no adapter registered yet |
+| `anthropic/claude-code-live` | live PTY proof spike | yes | yes | no | no | yes | deferred; not supported |
 
 The registered Codex live ref uses the same `uses:` resolution and
 run-start/runtime-version pinning path as strict refs. Live refs do not add a

@@ -107,6 +107,11 @@ type ResolvedInputs struct {
 	// committed log via stepRuntimePath, copied into AgentInvocation.Thread by runAgent.
 	// The dispatcher has no RunState access, so assembly happens interpreter-side.
 	Thread []agent.ThreadTurn
+
+	// ContextEvidence carries evaluator-only source evidence assembled by the
+	// interpreter. It is copied into AgentInvocation.ContextEvidence by runAgent
+	// and must not be rendered as active prior conversation.
+	ContextEvidence []agent.ThreadTurn
 }
 
 type OutputFileContract struct {

@@ -222,6 +222,44 @@ func TestCaps_ThreadedZeroValueAndTag(t *testing.T) {
 	}
 }
 
+func TestCapsContextEvidenceJSONRoundTrip(t *testing.T) {
+	caps := agent.Caps{Threaded: true, ContextEvidence: true}
+	b, err := json.Marshal(caps)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"context_evidence":true`) {
+		t.Fatalf("caps JSON = %s, want context_evidence true", b)
+	}
+	var got agent.Caps
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !got.ContextEvidence {
+		t.Fatalf("ContextEvidence = false, want true")
+	}
+}
+
+func TestAgentInvocationContextEvidenceJSONRoundTrip(t *testing.T) {
+	inv := agent.AgentInvocation{
+		ContextEvidence: []agent.ThreadTurn{{User: "source user", Assistant: "source answer"}},
+	}
+	b, err := json.Marshal(inv)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"context_evidence"`) {
+		t.Fatalf("invocation JSON = %s, want context_evidence field", b)
+	}
+	var got agent.AgentInvocation
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(got.ContextEvidence) != 1 || got.ContextEvidence[0].User != "source user" || got.ContextEvidence[0].Assistant != "source answer" {
+		t.Fatalf("ContextEvidence = %+v", got.ContextEvidence)
+	}
+}
+
 func TestCapsPersistentSessionMatrixMetadata(t *testing.T) {
 	claudeAdapter, err := claude.New()
 	if err != nil {
@@ -305,12 +343,13 @@ func TestCapsPersistentSessionMatrixMetadata(t *testing.T) {
 }
 
 func capabilityMatrixRow(ref, mode string, caps agent.Caps, status string) string {
-	return fmt.Sprintf("| `%s` | %s | %s | %s | %s | %s | %s |",
+	return fmt.Sprintf("| `%s` | %s | %s | %s | %s | %s | %s | %s |",
 		ref,
 		mode,
 		yesNo(caps.NativeSchema),
 		yesNo(caps.Containerless),
 		yesNo(caps.Threaded),
+		yesNo(caps.ContextEvidence),
 		yesNo(caps.PersistentSession),
 		status,
 	)
