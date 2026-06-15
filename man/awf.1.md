@@ -11,7 +11,7 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **validate** [**-o**|**--output** _text_|_json_] _path_
 
-**awf** **run** [**--input** _json_|**--input-file** _path_] [**--input-files** _csv_] [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _auto_|_fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
+**awf** **run** [**--input** _json_|**--input-file** _path_] [**--input-files** _name=path_]... [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _auto_|_fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
 
 **awf** **resume** [**--state-dir** _dir_] [**--from** _step_] _run-id_ _path_
 
@@ -111,14 +111,19 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     (`awf run -`) is not supported, as the loader confines workflows to real files
     on disk.
 
-**--input-files** _csv_
-:   Top-level workflow input files as a comma-separated list of _name_=_path_
-    entries, one per name declared in the workflow's `input_files:` map. Each
-    file's bytes are content-addressed on run start and resolvable inside the
-    workflow as `input.files.<name>`. Every declared name must be supplied, and
-    every supplied name must be declared; a mismatch is a hard error before any
-    state is written. Not re-supplied on **awf resume** — the file refs are
-    folded from the durable `run.started` journal entry.
+**--input-files** _name=path_
+:   Bind one top-level workflow input file. Repeatable — supply the flag once per
+    name declared in the workflow's `input_files:` map (`--input-files
+    document=doc.txt --input-files image=pic.png`). For back-compat a single
+    occurrence may instead carry a comma-separated list (`--input-files
+    a=x,b=y`); because that lone value is split on commas, a _path_ that itself
+    contains a comma must be supplied via the repeated form (two or more flags),
+    where values are taken literally. Each file's bytes are content-addressed on
+    run start and resolvable inside the workflow as `input.files.<name>`. Every
+    declared name must be supplied, and every supplied name must be declared; a
+    mismatch is a hard error before any state is written. Not re-supplied on
+    **awf resume** — the file refs are folded from the durable `run.started`
+    journal entry.
 
 **--run-id** _id_
 :   Use _id_ as the run id instead of minting a fresh random one. A testing and

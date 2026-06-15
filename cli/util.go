@@ -29,19 +29,35 @@ func parseCSV(s string) []string {
 	return out
 }
 
-// parseInputFilesCSV parses the --input-files flag value: a comma-separated
-// list of `name=path` entries. Returns name → path. An empty input yields a nil
-// map (no files supplied — the caller's declared-vs-supplied check decides if
-// that is an error). Each entry must contain exactly one `=`; the name and path
-// must both be non-empty. A duplicate name is rejected (last-wins would silently
-// drop a supplied file). Mirrors parseCSV's comma-splitting + whitespace-trim.
-func parseInputFilesCSV(s string) (map[string]string, error) {
-	entries := parseCSV(s)
-	if len(entries) == 0 {
+// parseInputFilesCSV parses the repeatable --input-files flag into name → path.
+// Each flag occurrence is one element of entries (pflag StringArray does NOT split
+// on commas), so paths containing commas are safe when supplied via the repeated
+// form (`--input-files a=x --input-files b=y`). For back-compat with the legacy
+// single CSV form (`--input-files a=x,b=y`), a lone element is split on commas —
+// which is why a comma-containing path must be supplied via the repeated form (two
+// or more occurrences) so the legacy split never applies. Each resolved entry must
+// be `name=path` with non-empty halves; a duplicate name is rejected (last-wins
+// would silently drop a supplied file). No entries → nil map (the caller's
+// declared-vs-supplied check decides whether that is an error).
+func parseInputFilesCSV(entries []string) (map[string]string, error) {
+	// Drop empty occurrences (e.g. `--input-files ""`) before deciding the form.
+	nonEmpty := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.TrimSpace(e) != "" {
+			nonEmpty = append(nonEmpty, e)
+		}
+	}
+	if len(nonEmpty) == 0 {
 		return nil, nil
 	}
-	out := make(map[string]string, len(entries))
-	for _, e := range entries {
+	// A single occurrence may be the legacy comma-separated form, so split it; two
+	// or more occurrences are taken literally so comma-bearing paths survive.
+	pairs := nonEmpty
+	if len(nonEmpty) == 1 {
+		pairs = parseCSV(nonEmpty[0])
+	}
+	out := make(map[string]string, len(pairs))
+	for _, e := range pairs {
 		name, path, ok := strings.Cut(e, "=")
 		name = strings.TrimSpace(name)
 		path = strings.TrimSpace(path)

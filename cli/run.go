@@ -25,11 +25,11 @@ import (
 
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
-	fprintln(w, "usage: awf run [--input <json>|--input-file <path>] [--input-files <CSV>] [--run-id <id>] [--state-dir <dir>] [--backend <auto|native|docker|fake>] [--agent-env <CSV>] <path>")
+	fprintln(w, "usage: awf run [--input <json>|--input-file <path>] [--input-files <name=path>]... [--run-id <id>] [--state-dir <dir>] [--backend <auto|native|docker|fake>] [--agent-env <CSV>] <path>")
 	fprintln(w, "")
 	fprintln(w, "  --input <json>        run-input as a JSON object (validated against workflow.input schema if declared)")
 	fprintln(w, "  --input-file <path>   run-input JSON read from a file, or '-' for stdin (mutually exclusive with --input)")
-	fprintln(w, "  --input-files <CSV>   top-level workflow input files as name=path entries (one per declared input_files name)")
+	fprintln(w, "  --input-files <e>     workflow input file as name=path; repeatable (legacy: a single comma-separated value)")
 	fprintln(w, "  --run-id <id>         override the minted run id (testing aid)")
 	fprintln(w, "  --state-dir <dir>     base directory for .awf/runs and .awf/blobs (default: ./.awf)")
 	fprintln(w, "  --backend <kind>      container backend: \"auto\", \"native\", \"docker\", or \"fake\" (default: auto)")
@@ -45,7 +45,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	flags.Usage = func() {}
 	inputJSON := flags.String("input", "", "run-input JSON")
 	inputFile := flags.String("input-file", "", "run-input JSON from a file, or '-' for stdin (mutually exclusive with --input)")
-	inputFilesCSV := flags.String("input-files", "", "top-level workflow input files as name=path CSV")
+	inputFiles := flags.StringArray("input-files", nil, "top-level workflow input file as name=path; repeatable (legacy: a single comma-separated value)")
 	runID := flags.String("run-id", "", "override the run id")
 	stateDir := flags.String("state-dir", defaultStateDir(), "base directory for runs/ and blobs/")
 	backendKind := flags.String("backend", backendAuto, "container backend: auto, native, docker, or fake")
@@ -131,7 +131,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// mirrors the call-step input_files contract (ir.validateCallInputFiles):
 	// every DECLARED name must be supplied and every SUPPLIED name must be
 	// declared (a top-level run is the call-step's run-start equivalent).
-	inputFilePaths, err := parseInputFilesCSV(*inputFilesCSV)
+	inputFilePaths, err := parseInputFilesCSV(*inputFiles)
 	if err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage

@@ -173,3 +173,120 @@ func TestCLIRunInputFilesMalformedEntryIsExitUsage(t *testing.T) {
 		t.Errorf("orphan log exists; err = %v, want fs.ErrNotExist", err)
 	}
 }
+
+// writeTwoInputFilesWorkflow declares two top-level input files (document, image)
+// with an empty graph, for the repeatable --input-files end-to-end tests.
+func writeTwoInputFilesWorkflow(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "two-input-files.yaml")
+	if err := os.WriteFile(path, []byte(`workflow: two-input-files
+version: 1
+input_files:
+  document: {}
+  image: {}
+containers: {}
+graph: []
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestCLIRunInputFilesRepeatedFormBindsBoth (S8): two --input-files flags bind both
+// declared names — the new repeatable form.
+func TestCLIRunInputFilesRepeatedFormBindsBoth(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	wfDir := t.TempDir()
+	wfPath := writeTwoInputFilesWorkflow(t, wfDir)
+	docPath := filepath.Join(wfDir, "doc.txt")
+	imgPath := filepath.Join(wfDir, "img.png")
+	if err := os.WriteFile(docPath, []byte("doc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imgPath, []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"run", "--state-dir", stateDir, "--backend", "fake",
+		"--input-files", "document=" + docPath,
+		"--input-files", "image=" + imgPath,
+		wfPath,
+	}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	started := readRunStartedData(t, stateDir, "test-run-1")
+	for _, name := range []string{"document", "image"} {
+		if ref, ok := started.InputFiles[name]; !ok || ref == "" {
+			t.Errorf("run.started.InputFiles missing %q; got %+v", name, started.InputFiles)
+		}
+	}
+}
+
+// TestCLIRunInputFilesCommaInPathViaRepeatedForm (S8): a real path containing a
+// comma binds correctly when supplied via the repeated form (no comma-splitting).
+func TestCLIRunInputFilesCommaInPathViaRepeatedForm(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	wfDir := t.TempDir()
+	wfPath := writeTwoInputFilesWorkflow(t, wfDir)
+	commaPath := filepath.Join(wfDir, "a,b.txt") // filename with a comma
+	plainPath := filepath.Join(wfDir, "c.png")
+	if err := os.WriteFile(commaPath, []byte("comma"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plainPath, []byte("plain"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"run", "--state-dir", stateDir, "--backend", "fake",
+		"--input-files", "document=" + commaPath, // comma path, safe via repeated form
+		"--input-files", "image=" + plainPath,
+		wfPath,
+	}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	started := readRunStartedData(t, stateDir, "test-run-1")
+	if ref, ok := started.InputFiles["document"]; !ok || ref == "" {
+		t.Errorf("comma-path input not bound; got %+v", started.InputFiles)
+	}
+}
+
+// TestCLIRunInputFilesLegacyCSVStillBindsBoth (S8): the legacy single comma-
+// separated value still binds multiple names.
+func TestCLIRunInputFilesLegacyCSVStillBindsBoth(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	wfDir := t.TempDir()
+	wfPath := writeTwoInputFilesWorkflow(t, wfDir)
+	docPath := filepath.Join(wfDir, "doc.txt")
+	imgPath := filepath.Join(wfDir, "img.png")
+	if err := os.WriteFile(docPath, []byte("doc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imgPath, []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"run", "--state-dir", stateDir, "--backend", "fake",
+		"--input-files", "document=" + docPath + ",image=" + imgPath, // single legacy CSV value
+		wfPath,
+	}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	started := readRunStartedData(t, stateDir, "test-run-1")
+	for _, name := range []string{"document", "image"} {
+		if ref, ok := started.InputFiles[name]; !ok || ref == "" {
+			t.Errorf("legacy CSV did not bind %q; got %+v", name, started.InputFiles)
+		}
+	}
+}
