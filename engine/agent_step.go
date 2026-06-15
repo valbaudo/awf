@@ -129,8 +129,10 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// (ctxPath == path), which is why rejected gate attempts and foreign map
 	// items are excluded by addressing, not special-casing. One Scope is reused
 	// across the walk. Walked root->current (prepend), so the oldest turn is
-	// Thread[0] and the immediate predecessor is last.
-	var thread []agent.ThreadTurn
+	// first and the immediate predecessor is last. Outside gate.evaluate these
+	// turns become Thread; inside gate.evaluate they become ContextEvidence so
+	// adapters cannot accidentally render source evidence as active judge history.
+	var continuedTurns []agent.ThreadTurn
 	idx := runstate.stepPathIndex(wf)
 	byID := runstate.agentStepByID(wf)
 	for cur := as.Continues; cur != ""; {
@@ -144,12 +146,19 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 			return failStep(log, path, OutcomePermanentFailure,
 				fmt.Errorf("engine.runAgentStep: continues target %q not committed (runtime %q)", cur, predRuntime))
 		}
-		thread = append([]agent.ThreadTurn{{User: predNR.Transcript.User, Assistant: predNR.Transcript.Assistant}}, thread...)
+		continuedTurns = append([]agent.ThreadTurn{{User: predNR.Transcript.User, Assistant: predNR.Transcript.Assistant}}, continuedTurns...)
 		if tgt, ok2 := byID[cur]; ok2 {
 			cur = tgt.Continues
 		} else {
 			cur = ""
 		}
+	}
+	var thread []agent.ThreadTurn
+	var contextEvidence []agent.ThreadTurn
+	if isGateEvaluateContext(path) {
+		contextEvidence = continuedTurns
+	} else {
+		thread = continuedTurns
 	}
 
 	// Containerless agent steps deliver input_files to the adapter as inline
@@ -214,8 +223,9 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		OutputSchema:          as.OutputSchema,
 		NonRetryableExitCodes: policy.NonRetryableExitCodes,
 		Snapshot:              wf.Containers[snapBare].Snapshot,
-		Feedback:              feedback,           // slice 5.3
-		Thread:                thread,             // Task 4.5
+		Feedback:              feedback, // slice 5.3
+		Thread:                thread,   // Task 4.5
+		ContextEvidence:       contextEvidence,
 		InputFiles:            inputFiles,         // SP1 artifact channel (container path)
 		ContainerlessFiles:    containerlessFiles, // inline message parts (containerless path)
 		OutputFileContracts:   outputFileContracts,

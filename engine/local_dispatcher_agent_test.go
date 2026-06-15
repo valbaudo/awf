@@ -191,6 +191,76 @@ func TestRunAgent_Thread_ThreadedAdapter_OK(t *testing.T) {
 	}
 }
 
+func TestRunAgent_ContextEvidence_UnsupportedAdapter_Permanent(t *testing.T) {
+	ctx := context.Background()
+	fk := agentfake.New("awf/llm").WithCaps(agent.Caps{Containerless: true}).
+		Script(0, agentfake.Result{Output: map[string]any{"answer": "42"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{Resolver: &reg, Handles: map[string]container.Handle{}}
+	intent := engine.NodeIntent{
+		Path: "gate[0].attempt-1.evaluate.judge",
+		Node: &ir.AgentStep{ID: "judge", Uses: "awf/llm", Container: ""},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:            "awf/llm",
+			With:            ir.RawConfig{"model": "m", "prompt": "hi"},
+			ContextEvidence: []agent.ThreadTurn{{User: "u1", Assistant: "a1"}},
+		},
+	}
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned engine-level error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Fatalf("Outcome = %q, want %q", dr.Outcome, engine.OutcomePermanentFailure)
+	}
+	var configErr *agent.ErrInvalidConfig
+	if !errors.As(dr.Err, &configErr) {
+		t.Fatalf("dr.Err = %v (%T), want *agent.ErrInvalidConfig", dr.Err, dr.Err)
+	}
+}
+
+func TestRunAgent_ContextEvidence_ContextEvidenceAdapter_OK(t *testing.T) {
+	ctx := context.Background()
+	fk := agentfake.New("awf/llm").
+		WithCaps(agent.Caps{NativeSchema: false, Containerless: true, ContextEvidence: true}).
+		Script(0, agentfake.Result{Output: map[string]any{"answer": "42"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{Resolver: &reg, Handles: map[string]container.Handle{}}
+	intent := engine.NodeIntent{
+		Path: "gate[0].attempt-1.evaluate.judge",
+		Node: &ir.AgentStep{ID: "judge", Uses: "awf/llm", Container: ""},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:            "awf/llm",
+			With:            ir.RawConfig{"model": "m", "prompt": "hi"},
+			ContextEvidence: []agent.ThreadTurn{{User: "u1", Assistant: "a1"}},
+		},
+	}
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", dr.Outcome, engine.OutcomeOK)
+	}
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Calls len = %d, want 1", len(calls))
+	}
+	if len(calls[0].ContextEvidence) != 1 || calls[0].ContextEvidence[0].User != "u1" {
+		t.Fatalf("ContextEvidence = %+v, want propagated turn", calls[0].ContextEvidence)
+	}
+}
+
 // TestRunAgent_Containerless_PassesInputFiles verifies that runAgent threads
 // the resolved containerless input_files (ResolvedInputs.ContainerlessFiles)
 // into the AgentInvocation it hands the adapter. Task 2 populated

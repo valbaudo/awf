@@ -80,6 +80,13 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}, closedChunks(), nil
 	}
 
+	if len(intent.ResolvedInputs.ContextEvidence) > 0 && !adapter.Capabilities().ContextEvidence {
+		return DispatchResult{
+			Outcome: OutcomePermanentFailure,
+			Err:     &agent.ErrInvalidConfig{Ref: intent.ResolvedInputs.Uses, Reason: fmt.Sprintf("step %q uses evaluator context evidence, but adapter %q does not support ContextEvidence", intent.Path, intent.ResolvedInputs.Uses)},
+		}, closedChunks(), nil
+	}
+
 	if intent.IsGateEvaluate && adapter.Capabilities().PersistentSession {
 		return DispatchResult{
 			Outcome: OutcomePermanentFailure,
@@ -151,15 +158,16 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// an implicit "previous verdict:" preamble (the Claude Code adapter) read
 	// it; nil on attempt 1, non-gate paths, and code steps.
 	inv := agent.AgentInvocation{
-		NodePath:       intent.Path,
-		Uses:           intent.ResolvedInputs.Uses,
-		RunContext:     intent.RunContext,
-		With:           intent.ResolvedInputs.With,
-		OutputSchema:   intent.ResolvedInputs.OutputSchema,
-		IdempotencyKey: intent.IdempotencyKey,
-		Feedback:       intent.ResolvedInputs.Feedback,           // slice 5.3
-		Thread:         intent.ResolvedInputs.Thread,             // Task 4.5
-		InputFiles:     intent.ResolvedInputs.ContainerlessFiles, // resolved input_files for containerless steps; nil for container-backed (those use stageInputFiles)
+		NodePath:        intent.Path,
+		Uses:            intent.ResolvedInputs.Uses,
+		RunContext:      intent.RunContext,
+		With:            intent.ResolvedInputs.With,
+		OutputSchema:    intent.ResolvedInputs.OutputSchema,
+		IdempotencyKey:  intent.IdempotencyKey,
+		Feedback:        intent.ResolvedInputs.Feedback, // slice 5.3
+		Thread:          intent.ResolvedInputs.Thread,   // Task 4.5
+		ContextEvidence: intent.ResolvedInputs.ContextEvidence,
+		InputFiles:      intent.ResolvedInputs.ContainerlessFiles, // resolved input_files for containerless steps; nil for container-backed (those use stageInputFiles)
 	}
 
 	// γ contract: Launch returns immediately with events + outcome channels

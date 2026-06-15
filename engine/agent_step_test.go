@@ -1110,6 +1110,199 @@ graph:
 	}
 }
 
+func TestRunAgentStep_EvaluateContinuesPopulatesContextEvidence(t *testing.T) {
+	const yaml = `workflow: evaluator-context-evidence
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    container: lab
+    uses: awf/llm
+    with: { model: m, prompt: draft }
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [k]
+      properties: { k: { type: string } }
+  - id: critique
+    container: lab
+    uses: awf/llm
+    continues: draft
+    with: { model: m, prompt: critique }
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [k]
+      properties: { k: { type: string } }
+  - gate:
+      max_attempts: 1
+      until: "{{ step.judge.ok }}"
+      generate:
+        - id: gen
+          container: lab
+          uses: awf/llm
+          with: { model: m, prompt: gen }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [k]
+            properties: { k: { type: string } }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: awf/llm
+          continues: critique
+          with: { model: m, prompt: judge }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties: { ok: { type: boolean } }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	fk := fake.New("awf/llm").
+		WithCaps(agent.Caps{NativeSchema: true, Threaded: true, ContextEvidence: true}).
+		Script(0, fake.Result{Output: map[string]any{"k": "draft"}, Transcript: agent.ThreadTurn{User: "u1", Assistant: "a1"}}).
+		Script(1, fake.Result{Output: map[string]any{"k": "critique"}, Transcript: agent.ThreadTurn{User: "u2", Assistant: "a2"}}).
+		Script(2, fake.Result{Output: map[string]any{"k": "gen"}, Transcript: agent.ThreadTurn{User: "u3", Assistant: "a3"}}).
+		Script(3, fake.Result{Output: map[string]any{"ok": true}, Transcript: agent.ThreadTurn{User: "judge prompt", Assistant: "judge answer"}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	calls := fk.Calls()
+	if len(calls) != 4 {
+		t.Fatalf("len(calls) = %d, want 4", len(calls))
+	}
+	if len(calls[3].Thread) != 0 {
+		t.Fatalf("judge Thread = %+v, want empty", calls[3].Thread)
+	}
+	if calls[3].Feedback != nil {
+		t.Fatalf("judge Feedback = %v, want nil", calls[3].Feedback)
+	}
+	want := []agent.ThreadTurn{{User: "u1", Assistant: "a1"}, {User: "u2", Assistant: "a2"}}
+	if !reflect.DeepEqual(calls[3].ContextEvidence, want) {
+		t.Fatalf("judge ContextEvidence = %+v, want %+v", calls[3].ContextEvidence, want)
+	}
+}
+
+func TestRunAgentStep_EvaluatorContextTargetTranscriptCommitted(t *testing.T) {
+	const yaml = `workflow: evaluator-context-transcript
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: source
+    container: lab
+    uses: awf/llm
+    with: { model: m, prompt: source }
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [k]
+      properties: { k: { type: string } }
+  - gate:
+      max_attempts: 1
+      until: "{{ step.judge.ok }}"
+      generate:
+        - id: gen
+          container: lab
+          uses: awf/llm
+          with: { model: m, prompt: gen }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [k]
+            properties: { k: { type: string } }
+      evaluate:
+        - id: judge
+          container: lab
+          uses: awf/llm
+          continues: source
+          with: { model: m, prompt: judge }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties: { ok: { type: boolean } }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	fk := fake.New("awf/llm").
+		WithCaps(agent.Caps{NativeSchema: true, Threaded: true, ContextEvidence: true}).
+		Script(0, fake.Result{Output: map[string]any{"k": "source"}, Transcript: agent.ThreadTurn{User: "source user", Assistant: "source answer"}}).
+		Script(1, fake.Result{Output: map[string]any{"k": "gen"}, Transcript: agent.ThreadTurn{User: "gen", Assistant: "draft"}}).
+		Script(2, fake.Result{Output: map[string]any{"ok": true}, Transcript: agent.ThreadTurn{User: "judge", Assistant: "approved"}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	transcriptRef := map[string]string{}
+	for _, ev := range events {
+		if ev.Type != engine.EventNodeCompleted {
+			continue
+		}
+		var d engine.NodeCompletedData
+		if err := json.Unmarshal(ev.Data, &d); err != nil {
+			t.Fatalf("unmarshal node.completed: %v", err)
+		}
+		transcriptRef[ev.Path] = d.TranscriptRef
+	}
+	if transcriptRef["source"] == "" {
+		t.Fatal("source TranscriptRef is empty, want committed transcript for evaluator context evidence")
+	}
+}
+
 // TestRunAgentStep_LeafTranscriptNotCommitted pins the participates invariant:
 // only a turn that is continued-FROM (a "thread target") commits a transcript
 // blob. A leaf turn — one that continues someone else but nobody continues IT —
