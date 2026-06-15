@@ -9,7 +9,34 @@ import (
 
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/container/native"
+	"github.com/valbaudo/awf/state"
 )
+
+func TestNativeCapsNoBlobsIsSnapshotNone(t *testing.T) {
+	b, err := native.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := b.Capabilities().Snapshot; got != container.SnapshotNone {
+		t.Errorf("Snapshot caps without blobs = %q, want %q", got, container.SnapshotNone)
+	}
+}
+
+func TestNativeCapsWithBlobsIsArchive(t *testing.T) {
+	b, err := native.New(t.TempDir(), native.WithBlobs(state.NewInMemoryBlobs()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := b.Capabilities().Snapshot; got != container.SnapshotFSArchive {
+		t.Errorf("Snapshot caps with blobs = %q, want %q", got, container.SnapshotFSArchive)
+	}
+}
+
+func TestNativeWithSnapshotMaxBlobBytesRejectsNonPositive(t *testing.T) {
+	if _, err := native.New(t.TempDir(), native.WithSnapshotMaxBlobBytes(0)); err == nil {
+		t.Error("WithSnapshotMaxBlobBytes(0): err = nil, want non-nil")
+	}
+}
 
 func TestNewBootstrapsTmpAwf(t *testing.T) {
 	t.Parallel()
