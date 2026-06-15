@@ -3,11 +3,12 @@ package cli
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
@@ -31,13 +32,13 @@ func printOutputsUsage(w io.Writer) {
 }
 
 func cliOutputs(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("outputs", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("outputs", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	step := fs0.String("step", "", "emit one top-level code/agent step's typed output")
 	workflow := fs0.String("workflow", "", "workflow file: evaluate its outputs: contract")
-	runID, code, ok := parseRunIDFirst(fs0, args, "awf outputs", printOutputsUsage, stdout, stderr)
+	runID, code, ok := parseSinglePositional(fs0, args, "awf outputs", printOutputsUsage, stdout, stderr)
 	if !ok {
 		return code
 	}

@@ -3,8 +3,9 @@ package cli
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/signal"
 )
@@ -22,13 +23,13 @@ func printSignalUsage(w io.Writer) {
 }
 
 func cliSignal(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("signal", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("signal", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	payload := fs0.String("payload", "", "typed payload JSON")
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	if err := fs0.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, pflag.ErrHelp) {
 			printSignalUsage(stdout)
 			return ExitOK
 		}
@@ -36,27 +37,12 @@ func cliSignal(args []string, stdout, stderr io.Writer) int {
 		printSignalUsage(stderr)
 		return ExitUsage
 	}
-	if fs0.NArg() < 2 {
+	if fs0.NArg() != 2 {
 		printSignalUsage(stderr)
 		return ExitUsage
 	}
 	runID := fs0.Arg(0)
 	name := fs0.Arg(1)
-	// Re-parse any remaining args after the two positionals so that flags like
-	// --payload may appear after <run-id> <name> on the command line. Go's
-	// flag package stops at the first non-flag token, so a second pass is
-	// needed for trailing flags.
-	if fs0.NArg() > 2 {
-		if err := fs0.Parse(fs0.Args()[2:]); err != nil {
-			fprintf(stderr, "awf signal: %v\n", err)
-			printSignalUsage(stderr)
-			return ExitUsage
-		}
-		if fs0.NArg() != 0 {
-			printSignalUsage(stderr)
-			return ExitUsage
-		}
-	}
 
 	// Validate --payload is well-formed JSON if non-empty (the await step's
 	// output_schema validation happens engine-side, but a malformed JSON

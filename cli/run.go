@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"io/fs"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -38,7 +39,7 @@ func printRunUsage(w io.Writer) {
 // for the operation ordering rationale (OpenLogExclusive runs LAST among
 // could-fail setup steps to minimize the orphan-log window).
 func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	flags := pflag.NewFlagSet("run", pflag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Usage = func() {}
 	inputJSON := flags.String("input", "", "run-input JSON")
@@ -49,7 +50,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	agentEnv := flags.String("agent-env", strings.Join(defaultAgentEnv, ","),
 		"CSV allowlist of env-var names forwarded into each agent CLI invocation")
 	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, pflag.ErrHelp) {
 			printRunUsage(stdout)
 			return ExitOK
 		}

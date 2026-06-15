@@ -55,6 +55,15 @@ A workflow is a single YAML document; its format is documented in
 graph — gating stages and checkpointing progress under _state-dir_ (default
 `./.awf`).
 
+# OPTIONS
+
+Options may appear before or after the positional operands of a command, in any
+order (`awf run wf.yaml --backend docker` and `awf run --backend docker wf.yaml`
+are equivalent). A bare `--` terminates option parsing: every argument after it is
+treated as an operand even if it begins with `-`. Long options are written
+`--name` (a single dash such as `-name` is not accepted); single-character
+shorthands, where defined, use one dash (`-h`).
+
 # COMMANDS
 
 ## awf validate _path_

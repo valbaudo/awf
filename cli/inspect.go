@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/engine"
@@ -35,7 +36,7 @@ func printInspectUsage(w io.Writer) {
 }
 
 func cliInspect(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("inspect", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/")
@@ -43,7 +44,7 @@ func cliInspect(args []string, stdout, stderr io.Writer) int {
 	depth := fs0.Int("depth", -1, "max tree depth (-1 = unlimited)")
 	output := fs0.String("output", "text", "output format: text or json")
 	showTokens := fs0.Bool("tokens", false, "show per-step input/output token counts")
-	runID, code, ok := parseRunIDFirst(fs0, args, "awf inspect", printInspectUsage, stdout, stderr)
+	runID, code, ok := parseSinglePositional(fs0, args, "awf inspect", printInspectUsage, stdout, stderr)
 	if !ok {
 		return code
 	}

@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"io/fs"
 	"path/filepath"
+
+	"github.com/spf13/pflag"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
@@ -34,14 +35,14 @@ func printTraceUsage(w io.Writer) {
 }
 
 func cliTrace(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("trace", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("trace", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	otlp := fs0.String("otlp", "", "OTLP/HTTP endpoint host:port")
 	output := fs0.String("output", "otel", "output format: otel or json")
 	capture := fs0.Bool("capture-content", false, "attach agent I/O + typed-output/stdout content")
-	runID, code, ok := parseRunIDFirst(fs0, args, "awf trace", printTraceUsage, stdout, stderr)
+	runID, code, ok := parseSinglePositional(fs0, args, "awf trace", printTraceUsage, stdout, stderr)
 	if !ok {
 		return code
 	}

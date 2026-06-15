@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
@@ -85,13 +86,13 @@ func sampleRerunSet(set []string, n int) string {
 //  11. Append run.resumed{epoch: rs.Epoch+1} + Sync.
 //  12. runAndFinish (shared with `awf run`).
 func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("resume", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("resume", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	from := fs0.String("from", "", "re-run from this committed node (prefix); invalidates it + everything after its top-level node. Bypasses pinning.")
 	if err := fs0.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, pflag.ErrHelp) {
 			printResumeUsage(stdout)
 			return ExitOK
 		}

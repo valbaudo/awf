@@ -1,11 +1,12 @@
 package cli
 
 import (
-	"flag"
 	"io"
 	"net/http"
 	"os/exec"
 	"runtime"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/loader"
 	"github.com/valbaudo/awf/ui"
@@ -26,13 +27,13 @@ func printUIUsage(w io.Writer) {
 // cliUI runs `awf ui <path> [--state-dir <dir>] [--port <n>] [--open]`. It blocks
 // serving until interrupted. Returns ExitUsage on a bad path / load / bind failure.
 func cliUI(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("ui", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("ui", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/")
 	port := fs0.Int("port", 0, "port to bind on 127.0.0.1 (0 = ephemeral)")
 	open := fs0.Bool("open", false, "open the URL in the default browser")
-	path, code, ok := parseRunIDFirst(fs0, args, "awf ui", printUIUsage, stdout, stderr)
+	path, code, ok := parseSinglePositional(fs0, args, "awf ui", printUIUsage, stdout, stderr)
 	if !ok {
 		return code
 	}

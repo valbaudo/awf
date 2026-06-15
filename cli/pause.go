@@ -2,8 +2,9 @@ package cli
 
 import (
 	"errors"
-	"flag"
 	"io"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/signal"
 )
@@ -24,7 +25,7 @@ func printPauseUsage(w io.Writer) {
 }
 
 func cliPause(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("pause", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("pause", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	// --before is accepted for parsing-compat (so users get a clear error
@@ -34,7 +35,7 @@ func cliPause(args []string, stdout, stderr io.Writer) int {
 	reason := fs0.String("reason", "", "free-text reason")
 	stateDir := fs0.String("state-dir", ".awf", "state directory")
 	if err := fs0.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, pflag.ErrHelp) {
 			printPauseUsage(stdout)
 			return ExitOK
 		}
@@ -42,25 +43,11 @@ func cliPause(args []string, stdout, stderr io.Writer) int {
 		printPauseUsage(stderr)
 		return ExitUsage
 	}
-	if fs0.NArg() < 1 {
+	if fs0.NArg() != 1 {
 		printPauseUsage(stderr)
 		return ExitUsage
 	}
 	runID := fs0.Arg(0)
-	// Re-parse any trailing flags after the positional <run-id>. Go's flag
-	// package stops at the first non-flag token, so flags like --reason that
-	// appear after the run-id require a second pass.
-	if fs0.NArg() > 1 {
-		if err := fs0.Parse(fs0.Args()[1:]); err != nil {
-			fprintf(stderr, "awf pause: %v\n", err)
-			printPauseUsage(stderr)
-			return ExitUsage
-		}
-		if fs0.NArg() != 0 {
-			printPauseUsage(stderr)
-			return ExitUsage
-		}
-	}
 	// H8 fix: reject --before explicitly. Phase 6 obs ships the breakpoint
 	// mechanism (watches commits in real time); Phase 3 has no machinery to
 	// check "execution reached node path X." Silent accept-and-ignore would

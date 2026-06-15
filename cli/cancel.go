@@ -2,8 +2,9 @@ package cli
 
 import (
 	"errors"
-	"flag"
 	"io"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/signal"
 )
@@ -20,13 +21,13 @@ func printCancelUsage(w io.Writer) {
 }
 
 func cliCancel(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("cancel", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("cancel", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	reason := fs0.String("reason", "", "free-text reason")
 	stateDir := fs0.String("state-dir", ".awf", "state directory")
 	if err := fs0.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, pflag.ErrHelp) {
 			printCancelUsage(stdout)
 			return ExitOK
 		}
@@ -34,25 +35,11 @@ func cliCancel(args []string, stdout, stderr io.Writer) int {
 		printCancelUsage(stderr)
 		return ExitUsage
 	}
-	if fs0.NArg() < 1 {
+	if fs0.NArg() != 1 {
 		printCancelUsage(stderr)
 		return ExitUsage
 	}
 	runID := fs0.Arg(0)
-	// Re-parse any trailing flags after the positional <run-id>. Go's flag
-	// package stops at the first non-flag token, so flags like --reason that
-	// appear after the run-id require a second pass.
-	if fs0.NArg() > 1 {
-		if err := fs0.Parse(fs0.Args()[1:]); err != nil {
-			fprintf(stderr, "awf cancel: %v\n", err)
-			printCancelUsage(stderr)
-			return ExitUsage
-		}
-		if fs0.NArg() != 0 {
-			printCancelUsage(stderr)
-			return ExitUsage
-		}
-	}
 	if rc := requireRunDir(*stateDir, runID, stderr); rc != ExitOK {
 		return rc
 	}

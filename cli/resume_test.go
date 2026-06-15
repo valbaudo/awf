@@ -323,18 +323,18 @@ func TestCLIResumeAdmitsCancelledRun(t *testing.T) {
 func TestCLIResumeRejectsBackendFlag(t *testing.T) {
 	t.Parallel()
 	// Resume DOES NOT accept --backend (per Phase 4 design § F). The
-	// flag.NewFlagSet for resume doesn't declare it; flag.Parse rejects
-	// the unknown flag with "flag provided but not defined: -backend".
+	// pflag.NewFlagSet for resume doesn't declare it; pflag.Parse rejects
+	// the unknown flag with "unknown flag: --backend".
 	//
 	// Stronger pin than rc-only: also asserts the stderr wording. This
 	// matches slice 3.5's TestCLIPauseRejectsBeforeFlag pattern at
 	// cli/pause_test.go:58, which asserts a specific deferral message.
 	// Without the substring check, a future refactor that adds --backend
 	// to resume would pass the test (the run-not-found path also returns
-	// ExitUsage) — true regression undetected. "not defined" is Go's
-	// standard flag-package wording for unknown flags; if stdlib ever
-	// changes it, this test will need updating, which is the right cost
-	// to pay for catching the regression class this pin exists for.
+	// ExitUsage) — true regression undetected. "unknown flag: --backend"
+	// is pflag's wording for an undeclared flag; if pflag ever changes it,
+	// this test will need updating, which is the right cost to pay for
+	// catching the regression class this pin exists for.
 	stateDir := t.TempDir()
 	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
 	var stdout, stderr bytes.Buffer
@@ -345,8 +345,8 @@ func TestCLIResumeRejectsBackendFlag(t *testing.T) {
 	if rc != cli.ExitUsage {
 		t.Errorf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "not defined") {
-		t.Errorf("stderr missing Go flag-package rejection wording 'not defined'; got %q. If a future refactor added --backend to resume, the rc-only check above would still pass (run-not-found also exits ExitUsage) — this substring is the actual regression pin.", stderr.String())
+	if !strings.Contains(stderr.String(), "unknown flag: --backend") {
+		t.Errorf("stderr missing pflag rejection wording 'unknown flag: --backend'; got %q. If a future refactor added --backend to resume, the rc-only check above would still pass (run-not-found also exits ExitUsage) — this substring is the actual regression pin.", stderr.String())
 	}
 }
 

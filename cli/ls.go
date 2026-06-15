@@ -3,13 +3,14 @@ package cli
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/obs"
@@ -40,17 +41,21 @@ type lsRow struct {
 }
 
 func cliLS(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("ls", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("ls", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
 	output := fs0.String("output", "text", "output format: text or json")
 	if err := fs0.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, pflag.ErrHelp) {
 			printLSUsage(stdout)
 			return ExitOK
 		}
 		fprintf(stderr, "awf ls: %v\n", err)
+		printLSUsage(stderr)
+		return ExitUsage
+	}
+	if fs0.NArg() != 0 {
 		printLSUsage(stderr)
 		return ExitUsage
 	}

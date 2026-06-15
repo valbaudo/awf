@@ -3,8 +3,9 @@ package cli
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/loader"
@@ -41,7 +42,7 @@ func printValidateUsage(w io.Writer) {
 // and printed even when validation has errors (it's the canonical hash, not a "valid" stamp;
 // operators benefit from seeing what they're hashing).
 func cliValidate(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("validate", pflag.ContinueOnError)
 	// Discard the FlagSet's auto-emitted output (the "Usage of validate:" boilerplate and the
 	// "flag provided but not defined: -bogus" error message). We own the output channels:
 	// help goes to stdout, errors to stderr — both via printValidateUsage so the wording
@@ -50,10 +51,11 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {} // no-op; printValidateUsage is the canonical writer.
 	format := fs.String("format", "text", "output format: text or json")
 	err := fs.Parse(args)
-	if errors.Is(err, flag.ErrHelp) {
-		// Go's flag package returns flag.ErrHelp for `-h`, `--help`, AND `-help` (single
-		// dash, full word). Catching the sentinel handles all three; a string-search would
-		// miss `-help`. Help goes to stdout so `awf validate -h | grep …` works.
+	if errors.Is(err, pflag.ErrHelp) {
+		// pflag returns ErrHelp for `-h`, `--help`, AND `-help` (single dash, full
+		// word — its first char `h` triggers the help shorthand). Catching the
+		// sentinel handles all three; a string-search would miss `-help`. Help goes
+		// to stdout so `awf validate -h | grep …` works.
 		printValidateUsage(stdout)
 		return ExitOK
 	}

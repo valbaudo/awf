@@ -3,10 +3,11 @@ package cli
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"io/fs"
 	"path/filepath"
+
+	"github.com/spf13/pflag"
 
 	"github.com/valbaudo/awf/graph"
 	"github.com/valbaudo/awf/loader"
@@ -35,15 +36,15 @@ func printGraphUsage(w io.Writer) {
 // No --run emits the static graph (exit 0). --run=<id> against a never-run id is an
 // error. There is no --run=latest: run ids are random and not time-ordered on disk.
 func cliGraph(args []string, stdout, stderr io.Writer) int {
-	fs0 := flag.NewFlagSet("graph", flag.ContinueOnError)
+	fs0 := pflag.NewFlagSet("graph", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	runID := fs0.String("run", "", "run id to overlay state from (omit for static graph)")
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/")
 	output := fs0.String("output", "json", "output format: json")
 	// Path is the first positional, then flags (e.g. `awf graph wf.yaml --run r1`).
-	// parseRunIDFirst returns that first positional (here, the workflow path).
-	path, code, ok := parseRunIDFirst(fs0, args, "awf graph", printGraphUsage, stdout, stderr)
+	// parseSinglePositional returns that first positional (here, the workflow path).
+	path, code, ok := parseSinglePositional(fs0, args, "awf graph", printGraphUsage, stdout, stderr)
 	if !ok {
 		return code
 	}
