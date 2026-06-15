@@ -428,7 +428,7 @@ conversation. Normal conversation continuation still uses `Threaded`.
 | `factory/droid` | strict CLI | no | no | no | no | no | built-in |
 | `block/goose` | strict CLI | no | no | no | no | no | built-in |
 | `openai/codex` | strict CLI | yes | no | no | no | no | built-in |
-| `awf/llm` | single HTTP call | no | yes | yes | no | no | built-in |
+| `awf/llm` | single HTTP call | no | yes | yes | yes | no | built-in |
 | `openai/codex-live` | live app-server | yes | yes | no | no | yes | built-in |
 | `block/goose-live` | live ACP | no | yes | no | no | yes | reserved implementation-track ref; no adapter registered yet |
 | `anthropic/claude-code-live` | live PTY proof spike | yes | yes | no | no | yes | deferred; not supported |

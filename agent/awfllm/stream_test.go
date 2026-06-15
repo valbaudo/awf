@@ -3,6 +3,7 @@ package awfllm_test
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -83,6 +84,26 @@ func TestBuildResult_Transcript_D13_FreeText(t *testing.T) {
 	want := agent.ThreadTurn{User: "write a draft", Assistant: "the draft text"}
 	if res.Transcript != want {
 		t.Errorf("Transcript = %+v, want %+v", res.Transcript, want)
+	}
+}
+
+func TestBuildResult_TranscriptExcludesContextEvidence(t *testing.T) {
+	inv := agent.AgentInvocation{
+		NodePath: "gate[0].attempt-1.evaluate.judge",
+		With:     ir.RawConfig{"prompt": "judge the candidate"},
+		ContextEvidence: []agent.ThreadTurn{
+			{User: "source user", Assistant: "source answer"},
+		},
+	}
+	res, err := awfllm.BuildResultForTest("approved", awfllm.NewUsageForTest(10, 5, 0), "", pricing.Default(), inv)
+	if err != nil {
+		t.Fatalf("buildResult: %v", err)
+	}
+	if res.Transcript.User != "judge the candidate" {
+		t.Fatalf("Transcript.User = %q, want clean prompt", res.Transcript.User)
+	}
+	if strings.Contains(res.Transcript.User, "awf_source_context") || strings.Contains(res.Transcript.User, "source user") {
+		t.Fatalf("Transcript.User contains context evidence: %q", res.Transcript.User)
 	}
 }
 

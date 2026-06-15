@@ -18,11 +18,11 @@ import (
 // system block, prior thread turns as user/assistant pairs, then the current user
 // turn with document blocks FIRST and the prompt text LAST (document-first for
 // prefix caching). cache_system marks the system block; cache_documents marks the
-// last DOCUMENT block (NOT the prompt). Files are gated by the shared forwardable()
-// capability table.
-func buildAnthropicBody(cfg reqConfig, prompt string, thread []agent.ThreadTurn, files []agent.InputFile) (map[string]any, error) {
+// last DOCUMENT block (NOT the prompt) unless cache_context marks the later context
+// block. Files are gated by the shared forwardable() capability table.
+func buildAnthropicBody(cfg reqConfig, prompt string, thread []agent.ThreadTurn, contextEvidence []agent.ThreadTurn, files []agent.InputFile) (map[string]any, error) {
 	// Current user content: documents first, prompt last.
-	content := make([]map[string]any, 0, len(files)+1)
+	content := make([]map[string]any, 0, len(files)+2)
 	for _, f := range files {
 		m, ok := forwardable(providerAnthropic, f.MIME)
 		if !ok {
@@ -43,8 +43,16 @@ func buildAnthropicBody(cfg reqConfig, prompt string, thread []agent.ThreadTurn,
 	// repair attempt and never yield a cache read (Anthropic "common mistake").
 	// No-op without files: nothing static to cache here (use system_prompt +
 	// cache_system for large stable instructions).
-	if cfg.CacheDocuments && len(files) > 0 {
+	if cfg.CacheDocuments && !cfg.CacheContext && len(files) > 0 {
 		content[len(files)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
+	}
+	contextText := renderContextEvidence(contextEvidence)
+	if contextText != "" {
+		block := map[string]any{"type": "text", "text": contextText}
+		if cfg.CacheContext {
+			block["cache_control"] = map[string]any{"type": "ephemeral"}
+		}
+		content = append(content, block)
 	}
 	content = append(content, map[string]any{"type": "text", "text": prompt})
 
@@ -109,8 +117,8 @@ type anthropicEvent struct {
 // callAnthropic hits the native Anthropic Messages API (POST /v1/messages) with
 // SSE streaming. Parallel to callGemini/streamOllama: hand-rolled net/http, one
 // AgentEvent per text_delta, full text reassembled for the layer-2 parse.
-func (a *Adapter) callAnthropic(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
-	body, err := buildAnthropicBody(cfg, prompt, thread, files)
+func (a *Adapter) callAnthropic(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, contextEvidence []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+	body, err := buildAnthropicBody(cfg, prompt, thread, contextEvidence, files)
 	if err != nil {
 		return "", usageRec{}, "", "", err // *ErrInvalidConfig (unsupported MIME) → permanent
 	}

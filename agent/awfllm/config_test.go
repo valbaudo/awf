@@ -1,12 +1,23 @@
 package awfllm_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/awfllm"
 	"github.com/valbaudo/awf/ir"
 )
+
+func TestCapabilitiesIncludeContextEvidence(t *testing.T) {
+	a, err := awfllm.New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !a.Capabilities().ContextEvidence {
+		t.Fatal("ContextEvidence = false, want true")
+	}
+}
 
 func TestBuildReqConfig_GeminiDefaults(t *testing.T) {
 	a := llmAdapter(t, map[string]string{"GEMINI_API_KEY": "k"})
@@ -121,7 +132,7 @@ func TestBuildReqConfig_AnthropicDefaults(t *testing.T) {
 	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-ant"}))
 	cfg, err := a.BuildReqConfigForTest(agent.AgentInvocation{With: ir.RawConfig{
 		"provider": "anthropic", "model": "claude-sonnet-4-6", "prompt": "hi",
-		"cache_system": true, "cache_documents": true,
+		"cache_system": true, "cache_documents": true, "cache_context": true,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -135,9 +146,32 @@ func TestBuildReqConfig_AnthropicDefaults(t *testing.T) {
 	if cfg.APIKey != "sk-ant" {
 		t.Errorf("APIKey = %q, want sk-ant (resolved ANTHROPIC_API_KEY)", cfg.APIKey)
 	}
-	if !cfg.CacheSystem || !cfg.CacheDocuments {
+	if !cfg.CacheSystem || !cfg.CacheDocuments || !cfg.CacheContext {
 		t.Errorf("cache flags not set: %+v", cfg)
 	}
+}
+
+func TestValidateConfigCacheContext(t *testing.T) {
+	t.Run("bool required", func(t *testing.T) {
+		a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+		err := a.ValidateConfig(ir.RawConfig{"provider": "anthropic", "model": "claude", "prompt": "p", "cache_context": "yes"})
+		if err == nil || !strings.Contains(err.Error(), "cache_context") {
+			t.Fatalf("err = %v, want cache_context type error", err)
+		}
+	})
+	t.Run("anthropic only", func(t *testing.T) {
+		a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"OPENAI_API_KEY": "k"}))
+		err := a.ValidateConfig(ir.RawConfig{"provider": "openai", "model": "gpt", "prompt": "p", "cache_context": true})
+		if err == nil || !strings.Contains(err.Error(), "only valid with provider: anthropic") {
+			t.Fatalf("err = %v, want anthropic-only error", err)
+		}
+	})
+	t.Run("anthropic valid", func(t *testing.T) {
+		a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+		if err := a.ValidateConfig(ir.RawConfig{"provider": "anthropic", "model": "claude", "prompt": "p", "cache_context": true}); err != nil {
+			t.Fatalf("ValidateConfig: %v, want nil", err)
+		}
+	})
 }
 
 func TestBuildReqConfig_GeminiCacheParsed(t *testing.T) {

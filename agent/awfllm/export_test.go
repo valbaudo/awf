@@ -29,13 +29,21 @@ func NewAPIErrorForTest(status int, typ, body string) *apiError {
 }
 
 func (a *Adapter) StreamForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(string, []byte)) (string, usageRec, string, string, error) {
-	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, nil, emit)
+	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, nil, nil, emit)
+}
+
+func (a *Adapter) StreamWithContextForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, contextEvidence []agent.ThreadTurn, emit func(string, []byte)) (string, usageRec, string, string, error) {
+	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, contextEvidence, nil, emit)
 }
 
 // StreamWithFilesForTest threads input files through stream for the OpenAI
 // content-part wire test (Task 7).
 func (a *Adapter) StreamWithFilesForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(string, []byte)) (string, usageRec, string, string, error) {
-	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, files, emit)
+	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, nil, files, emit)
+}
+
+func (a *Adapter) StreamWithFilesAndContextForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, contextEvidence []agent.ThreadTurn, emit func(string, []byte)) (string, usageRec, string, string, error) {
+	return a.stream(ctx, reqConfig(cfg), prompt, schema, thread, contextEvidence, files, emit)
 }
 
 // ReqConfigForTest mirrors reqConfig (unexported) for test construction.
@@ -76,8 +84,8 @@ func (a *Adapter) RunOneToolCallForTest(ctx context.Context, cfg ReqConfigForTes
 }
 
 // BuildAnthropicBodyForTest exposes the Anthropic request-body builder.
-func BuildAnthropicBodyForTest(cfg ReqConfigForTest, prompt string, thread []agent.ThreadTurn, files []agent.InputFile) (map[string]any, error) {
-	return buildAnthropicBody(reqConfig(cfg), prompt, thread, files)
+func BuildAnthropicBodyForTest(cfg ReqConfigForTest, prompt string, thread []agent.ThreadTurn, contextEvidence []agent.ThreadTurn, files []agent.InputFile) (map[string]any, error) {
+	return buildAnthropicBody(reqConfig(cfg), prompt, thread, contextEvidence, files)
 }
 
 // GeminiCacheKeyForTest exposes the content-address key function.

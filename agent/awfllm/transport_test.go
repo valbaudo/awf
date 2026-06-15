@@ -123,6 +123,35 @@ func TestStream_OpenAI_PDFContentPart(t *testing.T) {
 	}
 }
 
+func TestStream_OpenAI_ContextEvidencePrecedesPrompt(t *testing.T) {
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		return sseResponse(openAISSE), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		BaseURL:          "https://api.example.com/v1",
+		APIKey:           "sk-test",
+		Model:            "gpt-x",
+		StructuredOutput: "off",
+	}
+	contextEvidence := []agent.ThreadTurn{{User: "source user", Assistant: "source answer"}}
+	_, _, _, _, err := a.StreamWithContextForTest(context.Background(), cfg, "judge prompt", nil, nil, contextEvidence, func(string, []byte) {})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	ei := strings.Index(gotBody, "awf_source_context")
+	pi := strings.Index(gotBody, "judge prompt")
+	if ei < 0 || pi < 0 || ei > pi {
+		t.Fatalf("context evidence must precede prompt: evidence@%d prompt@%d body=%s", ei, pi, gotBody)
+	}
+	if !strings.Contains(gotBody, "source user") || !strings.Contains(gotBody, "source answer") {
+		t.Fatalf("body missing context evidence turn: %s", gotBody)
+	}
+}
+
 func TestStream_OpenAICompat_400IsPermanent(t *testing.T) {
 	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -820,7 +849,7 @@ func TestBuildAnthropicBody_DocBreakpointNotPrompt(t *testing.T) {
 	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-sonnet-4-6", SystemPrompt: "sys", CacheSystem: true, CacheDocuments: true}
 	files := []agent.InputFile{{Name: "d", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
 	thread := []agent.ThreadTurn{{User: "q1", Assistant: "a1"}}
-	body, err := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "extract", thread, files)
+	body, err := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "extract", thread, nil, files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -876,16 +905,45 @@ func TestBuildAnthropicBody_DocBreakpointNotPrompt(t *testing.T) {
 
 func TestBuildAnthropicBody_CacheDocumentsNoOpWithoutFiles(t *testing.T) {
 	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-haiku-4-5", CacheDocuments: true}
-	body, _ := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, nil)
+	body, _ := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, nil, nil)
 	raw, _ := json.Marshal(body)
 	if strings.Contains(string(raw), "cache_control") {
 		t.Errorf("cache_documents with no input files must be a no-op (nothing static to cache): %s", raw)
 	}
 }
 
+func TestBuildAnthropicBody_CacheContextMarksContextBlock(t *testing.T) {
+	cfg := awfllm.ReqConfigForTest{
+		Provider:         "anthropic",
+		Model:            "claude-3-5-sonnet",
+		APIKey:           "sk-test",
+		CacheContext:     true,
+		StructuredOutput: "off",
+	}
+	contextEvidence := []agent.ThreadTurn{{User: "source user", Assistant: "source answer"}}
+	body, err := awfllm.BuildAnthropicBodyForTest(cfg, "judge prompt", nil, contextEvidence, nil)
+	if err != nil {
+		t.Fatalf("BuildAnthropicBodyForTest: %v", err)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, "awf_source_context") {
+		t.Fatalf("body missing context evidence block: %s", s)
+	}
+	if !strings.Contains(s, `"cache_control":{"type":"ephemeral"}`) {
+		t.Fatalf("context evidence block missing cache_control: %s", s)
+	}
+	if ci, pi := strings.Index(s, "awf_source_context"), strings.Index(s, "judge prompt"); ci < 0 || pi < 0 || ci > pi {
+		t.Fatalf("context evidence must precede prompt: context@%d prompt@%d body=%s", ci, pi, s)
+	}
+}
+
 func TestBuildAnthropicBody_ExplicitMaxTokensAndSystemString(t *testing.T) {
 	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-haiku-4-5", SystemPrompt: "sys", MaxTokens: 256, HasMaxTokens: true}
-	body, _ := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, nil)
+	body, _ := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, nil, nil)
 	s := func() string { b, _ := json.Marshal(body); return string(b) }()
 	if !strings.Contains(s, `"max_tokens":256`) {
 		t.Errorf("explicit max_tokens not honored: %s", s)
@@ -899,7 +957,7 @@ func TestBuildAnthropicBody_ExplicitMaxTokensAndSystemString(t *testing.T) {
 func TestBuildAnthropicBody_UnsupportedMIME(t *testing.T) {
 	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-haiku-4-5"}
 	files := []agent.InputFile{{Name: "x", MIME: "text/plain", Content: []byte("hi")}}
-	if _, err := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, files); err == nil {
+	if _, err := awfllm.BuildAnthropicBodyForTest(awfllm.ReqConfigForTest(cfg), "p", nil, nil, files); err == nil {
 		t.Fatal("text/plain must be rejected by the forwardable table")
 	}
 }
@@ -1103,7 +1161,7 @@ func TestCallAnthropic_HTTP529IsRetryable(t *testing.T) {
 func TestCallAnthropic_IgnoresStructuredOutput(t *testing.T) {
 	build := func(so string) string {
 		cfg := awfllm.ReqConfigForTest{Provider: "anthropic", Model: "claude-sonnet-4-6", SystemPrompt: "sys", StructuredOutput: so}
-		body, err := awfllm.BuildAnthropicBodyForTest(cfg, "p", nil, nil)
+		body, err := awfllm.BuildAnthropicBodyForTest(cfg, "p", nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -25,13 +25,14 @@ const (
 	keyMaxInlineBytes   = "max_inline_bytes"
 	keyCacheSystem      = "cache_system"
 	keyCacheDocuments   = "cache_documents"
+	keyCacheContext     = "cache_context"
 	keyGeminiCache      = "gemini_cache"
 )
 
 var allowedKeys = map[string]struct{}{
 	keyModel: {}, keyPrompt: {}, keyBaseURL: {}, keyAPIKeyEnv: {},
 	keySystemPrompt: {}, keyTemperature: {}, keyMaxTokens: {}, keyStructuredOutput: {},
-	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {}, keyCacheSystem: {}, keyCacheDocuments: {}, keyGeminiCache: {},
+	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {}, keyCacheSystem: {}, keyCacheDocuments: {}, keyCacheContext: {}, keyGeminiCache: {},
 }
 
 // rejectedKeys never belong in `with:` — `api_key` would inline a secret into
@@ -135,6 +136,15 @@ func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 	if v, ok := with[keyTLSInsecure]; ok {
 		if _, ok := v.(bool); !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyTLSInsecure)
+		}
+	}
+	if v, ok := with[keyCacheContext]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyCacheContext)
+		}
+		if b && effectiveProvider(with) != providerAnthropic {
+			return wrapInvalidConfig("cache_context is only valid with provider: anthropic", keyCacheContext)
 		}
 	}
 	if v, ok := with[keyGeminiCache]; ok {

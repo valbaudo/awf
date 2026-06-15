@@ -105,24 +105,25 @@ func buildBaseParams(cfg reqConfig, schema *ir.JSONSchema) openai.ChatCompletion
 // OpenAI-compat. thread contains the engine-assembled prior turns (continues:
 // threading) to prepend in the message array between the system message and the
 // current prompt.
-func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) stream(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, contextEvidence []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	switch cfg.Provider {
 	case providerAnthropic:
-		return a.callAnthropic(ctx, cfg, prompt, schema, thread, files, emit)
+		return a.callAnthropic(ctx, cfg, prompt, schema, thread, contextEvidence, files, emit)
 	case providerGemini:
-		return a.callGemini(ctx, cfg, prompt, schema, thread, files, emit)
+		return a.callGemini(ctx, cfg, prompt, schema, thread, contextEvidence, files, emit)
 	case providerOllama:
-		return a.streamOllama(ctx, cfg, prompt, schema, thread, files, emit)
+		return a.streamOllama(ctx, cfg, prompt, schema, thread, contextEvidence, files, emit)
 	default:
-		return a.streamOpenAI(ctx, cfg, prompt, schema, thread, files, emit)
+		return a.streamOpenAI(ctx, cfg, prompt, schema, thread, contextEvidence, files, emit)
 	}
 }
 
 // streamOpenAI uses openai-go (v3) against any OpenAI-compatible base_url. The
 // wire (request body + SSE response) is asserted by transport_test; the openai-go
 // Go symbols below are pinned against v3.39.0 (go doc, Task B5 Step 1).
-func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, contextEvidence []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	client := a.newOpenAIClient(cfg)
+	wirePrompt := promptWithContextEvidence(prompt, contextEvidence)
 
 	// SystemMessage ("system" role) is the right CROSS-BACKEND choice: Ollama/vLLM/
 	// llama.cpp expect "system", and OpenAI auto-maps system→developer for reasoning
@@ -139,13 +140,13 @@ func (a *Adapter) streamOpenAI(ctx context.Context, cfg reqConfig, prompt string
 		messages = append(messages, openai.AssistantMessage(t.Assistant))
 	}
 	if len(files) > 0 {
-		parts, err := buildOpenAIParts(prompt, files)
+		parts, err := buildOpenAIParts(wirePrompt, files)
 		if err != nil {
 			return "", usageRec{}, "", "", err
 		}
 		messages = append(messages, openai.UserMessage(parts))
 	} else {
-		messages = append(messages, openai.UserMessage(prompt))
+		messages = append(messages, openai.UserMessage(wirePrompt))
 	}
 
 	params := buildBaseParams(cfg, schema)
@@ -351,8 +352,9 @@ func classifyOpenAIErr(err error) error {
 //
 // Do NOT prepend the schema to the prompt here — schema restatement is
 // centralized in assemblePrompt (Task B7) for ALL modes. Send prompt as-is.
-func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, contextEvidence []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/api/chat"
+	wirePrompt := promptWithContextEvidence(prompt, contextEvidence)
 
 	type msg struct {
 		Role    string   `json:"role"`
@@ -369,7 +371,7 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 		messages = append(messages, msg{Role: "user", Content: t.User})
 		messages = append(messages, msg{Role: "assistant", Content: t.Assistant})
 	}
-	userMsg := msg{Role: "user", Content: prompt}
+	userMsg := msg{Role: "user", Content: wirePrompt}
 	for _, f := range files {
 		// Accept/reject via the shared capability table; only modalityImage is
 		// forwardable here (Ollama has no document part). Keep the helpful
@@ -492,8 +494,9 @@ func ollamaErrType(body []byte) string {
 // none is sent. Cost is left UNREPORTED automatically — pricing.Derive returns
 // ok=false for any model absent from rates.json, and metricsFrom skips cost on a
 // miss (no special-casing here).
-func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
+func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, contextEvidence []agent.ThreadTurn, files []agent.InputFile, emit func(delta string, raw []byte)) (string, usageRec, string, string, error) {
 	url := strings.TrimSuffix(cfg.BaseURL, "/") + "/v1beta/models/" + cfg.Model + ":generateContent"
+	wirePrompt := promptWithContextEvidence(prompt, contextEvidence)
 
 	// Prior turns (continues: threading) — Gemini's contents array is multi-turn.
 	// The assistant role on the wire is "model", NOT "assistant". Chronological,
@@ -532,7 +535,7 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 			}})
 		}
 	}
-	parts = append(parts, map[string]any{"text": prompt})
+	parts = append(parts, map[string]any{"text": wirePrompt})
 	contents = append(contents, map[string]any{"role": "user", "parts": parts})
 	body := map[string]any{"contents": contents}
 	if cacheName != "" {
