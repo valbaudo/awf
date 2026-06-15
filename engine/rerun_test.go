@@ -128,7 +128,8 @@ func TestClearInvalidatedPaths_AllNineIndices(t *testing.T) {
 	rs.CallStarted["p"] = CallStartedRecord{}
 	rs.SignalReceivedAt["p"] = SignalReceivedEntry{}
 	rs.SelectedSkills["p"] = SkillsSelectedData{}
-	rs.SnapshotRefs["c"] = "snap" // container-NAME-keyed; a path sweep must NOT clear it
+	rs.SnapshotRefs["c"] = "snap"         // container-NAME-keyed; a path sweep must NOT clear it
+	rs.Signals["sig"] = []SignalEntry{{}} // signal-NAME-keyed; a path sweep must NOT clear it
 
 	clearInvalidatedPaths(rs, []string{"p"})
 
@@ -149,6 +150,9 @@ func TestClearInvalidatedPaths_AllNineIndices(t *testing.T) {
 	}
 	if !mapHas(rs.SnapshotRefs, "c") {
 		t.Error("SnapshotRefs is container-name-keyed and must survive a path-clear")
+	}
+	if !mapHas(rs.Signals, "sig") {
+		t.Error("Signals is signal-name-keyed and must survive a path-clear")
 	}
 }
 

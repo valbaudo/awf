@@ -106,6 +106,15 @@ runs being sealed. §8 records the contract note this requires.
 
 ## 4. Invalidation model — "the node + everything after it"
 
+> **v1 scope (as shipped):** the implementation ships the **parallel-subset** of
+> the general model below — a target must be a top-level node or a `parallel:`
+> branch (every non-last path segment is `parallel[...]`). A target nested in a
+> sequential scope (`call:` / loop body / `gate:` / `map:` body) is **refused**
+> with a clear message, not silently mishandled, and `map:` targets invalidate
+> **wholly**. The coarser v1 set is "`N`'s subtree ∪ every committed node whose
+> top-level slot is after `N`'s top-level slot." The general happens-after below
+> is the intended end state; see the implementation plan's "v1 SCOPE NOTE".
+
 `--from N` invalidates `N`'s committed subtree plus every committed node that
 **happens-after** `N` in the run's execution order, and replays everything else.
 "Happens-after" respects sequential vs concurrent scopes:
