@@ -32,6 +32,7 @@ import (
 const (
 	snapshotDefaultMaxBlobBytes    int64 = 256 << 20 // 256 MiB compressed
 	snapshotDefaultMaxRestoreBytes int64 = 4 << 30   // 4 GiB decompressed (256 MiB × 16, under DEFLATE's ~1032× max ratio)
+	snapshotMaxEntries             int   = 1_000_000 // entry-count cap (zip-bomb / inode-exhaustion guard)
 )
 
 // Backend implements container.Backend by spawning host processes via
@@ -171,13 +172,6 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	delete(b.handles, h.ID)
 	b.mu.Unlock()
 	return os.RemoveAll(r.workdir)
-}
-
-// Snapshot returns ErrUnsupported — native does not implement
-// filesystem snapshots (decision 4). Workflows with snapshot:workspace
-// containers must use --backend docker.
-func (*Backend) Snapshot(_ context.Context, _ container.Handle) (container.SnapshotRef, error) {
-	return "", container.ErrUnsupported
 }
 
 // Restore returns ErrUnsupported — native does not implement
