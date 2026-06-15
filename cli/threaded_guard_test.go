@@ -76,6 +76,87 @@ func TestCheckThreaded_ContinuesFromPersistentSessionTarget_Errors(t *testing.T)
 	}
 }
 
+func TestCheckThreaded_EvaluatorContextRequiresContextEvidence(t *testing.T) {
+	fk := fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true})
+	reg := regWith(t, fk)
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.AgentStep{ID: "draft", Uses: "awf/llm"},
+		&ir.Gate{
+			Generate: ir.NodeList{&ir.AgentStep{ID: "gen", Uses: "awf/llm"}},
+			Evaluate: ir.NodeList{&ir.AgentStep{
+				ID:           "judge",
+				Uses:         "awf/llm",
+				Continues:    "draft",
+				OutputSchema: &ir.JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false},
+			}},
+			Until:       ir.Expr("{{ step.judge.ok }}"),
+			MaxAttempts: 1,
+		},
+	}}
+	err := checkThreadedAdapters(wf, reg)
+	var want *ErrContextEvidenceRequired
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *ErrContextEvidenceRequired", err)
+	}
+	if want.StepID != "judge" || want.Ref != "awf/llm" {
+		t.Fatalf("got %+v, want {StepID:judge Ref:awf/llm}", want)
+	}
+}
+
+func TestCheckThreaded_EvaluatorContextEvidence_OK(t *testing.T) {
+	fk := fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, Threaded: true, ContextEvidence: true})
+	reg := regWith(t, fk)
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.AgentStep{ID: "draft", Uses: "awf/llm"},
+		&ir.Gate{
+			Generate: ir.NodeList{&ir.AgentStep{ID: "gen", Uses: "awf/llm"}},
+			Evaluate: ir.NodeList{&ir.AgentStep{
+				ID:           "judge",
+				Uses:         "awf/llm",
+				Continues:    "draft",
+				OutputSchema: &ir.JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false},
+			}},
+			Until:       ir.Expr("{{ step.judge.ok }}"),
+			MaxAttempts: 1,
+		},
+	}}
+	if err := checkThreadedAdapters(wf, reg); err != nil {
+		t.Fatalf("checkThreadedAdapters: %v, want nil", err)
+	}
+}
+
+func TestCheckThreaded_EvaluatorContextFromPersistentSessionTarget_Errors(t *testing.T) {
+	var reg agent.Registry
+	if err := reg.Register(fake.New("live/agent").WithCaps(agent.Caps{Containerless: true, PersistentSession: true})); err != nil {
+		t.Fatalf("Register live: %v", err)
+	}
+	if err := reg.Register(fake.New("awf/llm").WithCaps(agent.Caps{Containerless: true, ContextEvidence: true})); err != nil {
+		t.Fatalf("Register judge: %v", err)
+	}
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.AgentStep{ID: "draft", Uses: "live/agent"},
+		&ir.Gate{
+			Generate: ir.NodeList{&ir.AgentStep{ID: "gen", Uses: "awf/llm"}},
+			Evaluate: ir.NodeList{&ir.AgentStep{
+				ID:           "judge",
+				Uses:         "awf/llm",
+				Continues:    "draft",
+				OutputSchema: &ir.JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false},
+			}},
+			Until:       ir.Expr("{{ step.judge.ok }}"),
+			MaxAttempts: 1,
+		},
+	}}
+	err := checkThreadedAdapters(wf, &reg)
+	var want *ErrPersistentSessionContinuesTarget
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *ErrPersistentSessionContinuesTarget", err)
+	}
+	if want.StepID != "judge" || want.TargetID != "draft" || want.Ref != "live/agent" {
+		t.Fatalf("got %+v, want {StepID:judge TargetID:draft Ref:live/agent}", want)
+	}
+}
+
 func TestCheckThreaded_LoadedDefinitionUsesChildQualifiedRoleRef(t *testing.T) {
 	child := &ir.Workflow{
 		Agents: map[string]ir.AgentRole{

@@ -19,6 +19,18 @@ func (e *ErrThreadedRequired) Error() string {
 	return fmt.Sprintf("cli: step %q declares `continues:` but its agent runtime %q does not support engine-threaded conversations (Caps.Threaded is false)", e.StepID, e.Ref)
 }
 
+// ErrContextEvidenceRequired is returned at run start (and resume) when an
+// evaluator step declares `continues:` as source context evidence but its
+// resolved adapter cannot render engine-provided context evidence safely.
+type ErrContextEvidenceRequired struct {
+	StepID string
+	Ref    string
+}
+
+func (e *ErrContextEvidenceRequired) Error() string {
+	return fmt.Sprintf("cli: evaluator step %q declares `continues:` as context evidence but its agent runtime %q does not support ContextEvidence", e.StepID, e.Ref)
+}
+
 // ErrPersistentSessionContinuesTarget is returned when a `continues:` edge
 // targets a live/persistent adapter. Live transcripts stay provider-owned in
 // this slice, so engine-threaded conversation context cannot be reconstructed
