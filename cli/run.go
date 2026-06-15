@@ -141,7 +141,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	blobs, err := state.OpenBlobs(blobsDir)
 	if err != nil {
 		fprintf(stderr, "awf run: open blobs %q: %v\n", blobsDir, err)
-		return ExitUsage
+		return ExitInfra
 	}
 
 	// Step 6 (slice 4.5): determine the Backend for this invocation via
@@ -153,7 +153,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	backend, cleanup, err := r.resolveBackend(ctx, concreteBackendKind, id, workdirRoot, blobs)
 	if err != nil {
 		fprintf(stderr, "awf run: construct backend %q: %v\n", concreteBackendKind, err)
-		return ExitUsage
+		return ExitInfra
 	}
 	defer cleanup()
 
@@ -165,7 +165,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	liveRoot, err := openLiveHomeRoot(*stateDir)
 	if err != nil {
 		fprintf(stderr, "awf run: open live home: %v\n", err)
-		return ExitUsage
+		return ExitInfra
 	}
 
 	// Slice 5.3: if Resolver isn't test-injected, build the production
@@ -224,7 +224,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		h, err := backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
 		if err != nil {
 			fprintf(stderr, "awf run: create container %q: %v\n", name, err)
-			return ExitUsage
+			return ExitInfra
 		}
 		handles[name] = h
 	}
@@ -283,17 +283,20 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	runDir := filepath.Join(*stateDir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		fprintf(stderr, "awf run: create run dir %q: %v\n", runDir, err)
-		return ExitUsage
+		return ExitInfra
 	}
 	logPath := filepath.Join(runDir, "log")
 	log, err := state.OpenLogExclusive(logPath, clock.System{})
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
+			// A pre-existing run id is a usage conflict (pick a different --run-id),
+			// not an environment failure — stays ExitUsage.
 			fprintf(stderr, "awf run: run id %q already exists at %q — use `awf resume` to continue an interrupted run, or pick a different --run-id\n", id, logPath)
-		} else {
-			fprintf(stderr, "awf run: open log %q: %v\n", logPath, err)
+			return ExitUsage
 		}
-		return ExitUsage
+		// Any other open-log failure is AWF's own log-file I/O → ExitInfra.
+		fprintf(stderr, "awf run: open log %q: %v\n", logPath, err)
+		return ExitInfra
 	}
 	runStartedAppended := false
 	defer func() {
@@ -314,7 +317,9 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		} else {
 			fprintf(stderr, "awf run: acquire run lock: %v\n", lockErr)
 		}
-		return ExitUsage
+		// The run-lock is AWF-owned liveness metadata; a held lock (concurrent
+		// driver) or a lock I/O failure is an environment condition → ExitInfra.
+		return ExitInfra
 	}
 	defer lock.Release()
 

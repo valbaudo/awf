@@ -68,7 +68,7 @@ func cliTrace(args []string, stdout, stderr io.Writer) int {
 		fb, berr := state.OpenBlobs(filepath.Join(*stateDir, "blobs"))
 		if berr != nil {
 			fprintf(stderr, "awf trace: open blobs: %v\n", berr)
-			return ExitUsage
+			return ExitInfra
 		}
 		blobs = fb
 	}

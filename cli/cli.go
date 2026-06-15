@@ -31,11 +31,21 @@ import (
 // "the input was structurally fine but the operation didn't succeed." We keep
 // them as separate Go constants so each subcommand can name its own failure
 // mode for readability.
+//
+// The 2-vs-3 split is "whose artifact failed". Anything about the user-supplied
+// workflow file or arguments — bad flags, an unreadable/parse-failing file, a
+// path escape, a missing compose, or a precondition the user fixes by editing
+// args (run-id collision, digest mismatch, pin/runtime drift, terminal refusal,
+// capability mismatch) — is ExitUsage (2). Anything about the environment AWF
+// itself owns and sets up — the blob store, the backend/daemon client,
+// container create/restore, the run-dir/log I/O, the live-home, or the run-lock
+// — is ExitInfra (3). 2 = "your input is wrong"; 3 = "my environment is broken".
 const (
 	ExitOK        = 0 // success: validation produced zero error-severity diagnostics, OR run terminated ok
 	ExitInvalid   = 1 // `awf validate` produced ≥1 error-severity diagnostic (also returned by `awf run` if its pre-run validation finds errors)
-	ExitUsage     = 2 // bad arguments, unreadable file, or loader-stage failure (parse error, path escape, missing compose)
+	ExitUsage     = 2 // usage: bad args/flags, unreadable file, loader-stage failure (parse/path-escape/missing-compose), or a precondition refusal (run-id collision, digest/pin/runtime drift, terminal, capability)
 	ExitRunFailed = 1 // `awf run` completed but the run terminated as retryable_failure / permanent_failure
+	ExitInfra     = 3 // environment/setup failure AWF owns: blob store, backend/daemon client, container create/restore, run-dir/log I/O, live-home, run-lock
 )
 
 // Runner holds the dependencies that vary between production and tests. The

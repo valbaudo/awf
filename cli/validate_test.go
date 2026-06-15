@@ -299,16 +299,19 @@ func TestValidateInvalidWorkflowJSONExitsInvalid(t *testing.T) {
 	}
 }
 
-// TestValidateExitCodesAreStable locks the four exit-code values so a future "let's renumber
+// TestValidateExitCodesAreStable locks the exit-code values so a future "let's renumber
 // for symmetry with diff" idea is a loud test failure rather than a silent CI break in
 // downstream tooling that grep's `awf validate; echo $?`.
-// Locked by tests: ExitOK=0, ExitInvalid=1, ExitUsage=2, ExitRunFailed=1.
+// Locked by tests: ExitOK=0, ExitInvalid=1, ExitUsage=2, ExitRunFailed=1, ExitInfra=3.
 func TestValidateExitCodesAreStable(t *testing.T) {
 	if ExitOK != 0 || ExitInvalid != 1 || ExitUsage != 2 {
 		t.Errorf("exit codes drifted: OK=%d Invalid=%d Usage=%d; want 0/1/2", ExitOK, ExitInvalid, ExitUsage)
 	}
 	if ExitRunFailed != 1 {
 		t.Errorf("ExitRunFailed = %d, want 1", ExitRunFailed)
+	}
+	if ExitInfra != 3 {
+		t.Errorf("ExitInfra = %d, want 3", ExitInfra)
 	}
 }
 

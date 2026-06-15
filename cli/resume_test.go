@@ -602,8 +602,8 @@ func TestResumeRefusesWhenRunLockHeld(t *testing.T) {
 	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{IDs: []string{runID}}}
 	var stdout, stderr bytes.Buffer
 	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
-	if rc != cli.ExitUsage {
-		t.Fatalf("resume of a locked (live) run: rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	if rc != cli.ExitInfra {
+		t.Fatalf("resume of a locked (live) run: rc = %d, want ExitInfra (run-lock is AWF-owned env); stderr: %s", rc, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "already active") {
 		t.Errorf("expected an 'already active' refusal, got: %s", stderr.String())

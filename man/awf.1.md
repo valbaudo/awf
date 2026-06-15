@@ -444,7 +444,19 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
 
 **2**
 :   Usage error — bad arguments, an unreadable file, or a loader-stage failure
-    (parse error, path escape, or a missing Compose file).
+    (parse error, path escape, or a missing Compose file). Also covers
+    precondition refusals on input the user controls: a run-id collision, a
+    workflow digest mismatch, an agent-runtime pin drift, a terminal-state
+    resume refusal, or a backend capability mismatch.
+
+**3**
+:   Environment/setup failure that AWF owns — not your input: opening the blob
+    store, constructing the container backend or daemon client (e.g. the Docker
+    daemon is down), creating or restoring a container, the run-dir or log-file
+    I/O, opening the live-home, or acquiring the run-lock (including a run already
+    active in another process). The split is "whose artifact failed": code `2`
+    means your input is wrong; code `3` means AWF's environment is broken, so CI
+    can retry a transient infra failure without masking a real usage error.
 
 # ENVIRONMENT
 

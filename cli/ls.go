@@ -71,7 +71,7 @@ func cliLS(args []string, stdout, stderr io.Writer) int {
 			return emitLS(stdout, *output, nil)
 		}
 		fprintf(stderr, "awf ls: read runs dir %q: %v\n", runsDir, err)
-		return ExitUsage
+		return ExitInfra
 	}
 
 	var rows []lsRow
@@ -91,7 +91,7 @@ func cliLS(args []string, stdout, stderr io.Writer) int {
 			held, herr := runLockHeld(runDir)
 			if herr != nil {
 				fprintf(stderr, "awf ls: probe liveness for %q: %v\n", e.Name(), herr)
-				return ExitUsage
+				return ExitInfra
 			}
 			if held {
 				status = obs.RunRunning

@@ -133,7 +133,9 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		} else {
 			fprintf(stderr, "awf resume: acquire run lock: %v\n", lockErr)
 		}
-		return ExitUsage
+		// The run-lock is AWF-owned liveness metadata; a held lock (concurrent
+		// driver) or a lock I/O failure is an environment condition → ExitInfra.
+		return ExitInfra
 	}
 	defer lock.Release()
 
@@ -143,7 +145,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	blobs, err := state.OpenBlobs(blobsDir)
 	if err != nil {
 		fprintf(stderr, "awf resume: open blobs %q: %v\n", blobsDir, err)
-		return ExitUsage
+		return ExitInfra
 	}
 	events, err := log.Fold()
 	if err != nil {
@@ -194,7 +196,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	backend, cleanup, err := r.resolveBackend(ctx, kind, runID, workdirRoot, blobs)
 	if err != nil {
 		fprintf(stderr, "awf resume: construct backend %q: %v\n", kind, err)
-		return ExitUsage
+		return ExitInfra
 	}
 	defer cleanup()
 
@@ -262,7 +264,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	liveRoot, err := openLiveHomeRoot(*stateDir)
 	if err != nil {
 		fprintf(stderr, "awf resume: open live home: %v\n", err)
-		return ExitUsage
+		return ExitInfra
 	}
 
 	// Slice 5.3: if Resolver isn't test-injected, build the production
@@ -349,7 +351,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		}
 		if err != nil {
 			fprintf(stderr, "awf resume: create/restore container %q: %v\n", name, err)
-			return ExitUsage
+			return ExitInfra
 		}
 		handles[name] = h
 	}
