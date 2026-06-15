@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -317,5 +318,28 @@ func TestSnapshotTripsCompressedCap(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(root, "ws", "big.txt"), make([]byte, 64<<10), 0o644)
 	if _, err := b.Snapshot(context.Background(), h); !errors.Is(err, container.ErrSnapshotTooLarge) {
 		t.Fatalf("Snapshot over compressed cap: err = %v, want ErrSnapshotTooLarge", err)
+	}
+}
+
+func TestRestoreHugeCapDoesNotTruncate(t *testing.T) {
+	root := t.TempDir()
+	blobs := state.NewInMemoryBlobs()
+	b, _ := New(root, WithBlobs(blobs), WithSnapshotMaxRestoreBytes(math.MaxInt64))
+	h, _ := b.Create(context.Background(), container.ContainerSpec{Name: "ws"})
+	want := []byte("real content that must survive\n")
+	if err := os.WriteFile(filepath.Join(root, "ws", "a.txt"), want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := b.Snapshot(context.Background(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = b.Destroy(context.Background(), h)
+	if _, err := b.Restore(context.Background(), ref, "ws"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "ws", "a.txt"))
+	if err != nil || string(got) != string(want) {
+		t.Errorf("restored content = %q (err %v), want %q — per-file CopyN+1 overflow truncated the file", got, err, want)
 	}
 }

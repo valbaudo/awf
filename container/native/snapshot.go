@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -268,7 +269,11 @@ func (b *Backend) extractInto(root *os.Root, base string, ref container.Snapshot
 			// io.CopyN returns io.EOF when the source ends before n (the normal
 			// case) — treat that as success. A cap trip surfaces as
 			// *nativeSnapshotTooLarge from cappedReader.Read, propagating here.
-			if _, cpErr := io.CopyN(f, tr, b.snapshotMaxRestoreBytes+1); cpErr != nil && cpErr != io.EOF {
+			perFile := b.snapshotMaxRestoreBytes
+			if perFile < math.MaxInt64 {
+				perFile++ // +1 distinguishes at-cap from over-cap; clamp avoids int64 overflow when the cap is MaxInt64
+			}
+			if _, cpErr := io.CopyN(f, tr, perFile); cpErr != nil && cpErr != io.EOF {
 				_ = f.Close()
 				return fmt.Errorf("container/native: Restore: write %q: %w", rel, cpErr)
 			}
