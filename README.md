@@ -1,5 +1,7 @@
 # AWF
 
+[![CI](https://github.com/valbaudo/awf/actions/workflows/ci.yml/badge.svg)](https://github.com/valbaudo/awf/actions/workflows/ci.yml) [![Go Report Card](https://goreportcard.com/badge/github.com/valbaudo/awf)](https://goreportcard.com/report/github.com/valbaudo/awf) [![Go Reference](https://pkg.go.dev/badge/github.com/valbaudo/awf.svg)](https://pkg.go.dev/github.com/valbaudo/awf) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 AWF is a single-binary runtime for agentic workflows that need a real acceptance
 gate: run the agent, check the result independently, repair from the critique,
 and resume safely after crashes without redoing committed work.
@@ -9,8 +11,7 @@ coding agents, research agents, data-migration agents, support-reply agents,
 security triage agents, or any pipeline where each stage should advance only
 after an external check passes.
 
-[CLI reference](man/awf.1.md) | [Workflow format](man/awf-workflow.5.md) |
-[Runtime design](docs/runtime-design.md) | [Roadmap](ROADMAP.md)
+[CLI reference](man/awf.1.md) | [Workflow format](man/awf-workflow.5.md)
 
 ## Why AWF Exists
 
@@ -230,9 +231,6 @@ security caveats, and CLI flags.
 - [awf-workflow(5)](man/awf-workflow.5.md): the workflow-format reference and
   stable contract for fields, control flow, templating, typed outputs, and
   checkpoint/resume.
-- [Runtime design](docs/runtime-design.md): implementation architecture,
-  package boundaries, invariants, and conformance design.
-- [Roadmap](ROADMAP.md): shipped phases, current status, and planned slices.
 - [examples/](examples/): runnable examples for `awf/llm`, droid BYOK, and
   engine-owned conversation threads.
 

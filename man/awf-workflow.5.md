@@ -142,7 +142,11 @@ error, just like drift in the root workflow.
     step as `uses: <role>`.
 
 **containers**
-:   Required. The infrastructure the workflow runs against (see **CONTAINERS**).
+:   Optional, but required in practice for any step that names a container (every
+    `run:` step and every containerful agent step does — `container:` must resolve
+    to a declared name, else **AWF1009**). A fully containerless workflow — for
+    example one whose only steps use the `awf/llm` runtime — needs no `containers:`
+    block at all (see **CONTAINERS**).
 
 **tools**
 :   Optional. A map of named tool definitions offered to `react:` steps (see
@@ -985,19 +989,22 @@ name. Prefer scalar fields or a fixed output path for reducer artifacts.
 
 Example named aggregate with reducer artifacts:
 
-    steps:
+    graph:
       - map:
           id: version_universe
-          over: ${{ step.versions.items }}
+          over: "{{ step.versions.items }}"
           as: version
-          do:
+          container: scanner
+          concurrency: 4
+          body:
             - id: collect
+              container: scanner
               run: ./collect.sh
               output_files:
                 files: ./out/files.jsonl
           reduce:
-            id: merge
             run: ./merge.sh
+            container: scanner
             output_files:
               files: ./out/files.jsonl
 
@@ -1279,8 +1286,8 @@ Substitution fills references before a command runs:
     {{ step.<id>.exit_code }}   {{ step.<id>.stdout }}   {{ step.<id>.<field> }}
     {{ evaluate.<field> }}      # inside a gate's generate: the latest verdict; empty on attempt 1
 
-`exit_code` and `stdout` are strings; `<field>` references resolve to *typed
-values* from the producer's `output_schema`, never raw text. `evaluate.<field>`
+`exit_code` is an integer and `stdout` is a string; `<field>` references resolve
+to *typed values* from the producer's `output_schema`, never raw text. `evaluate.<field>`
 is the typed output of the enclosing gate's `evaluate` block, supplied
 automatically on repair attempts. Values over the runtime's inline limit are
 rejected at resolution (pass large data as an `output_files` artifact).
@@ -1503,7 +1510,8 @@ is torn down with the run.
       # skip-and-exit guards keep the main line flat
       - if:
           cond: "{{ !(step.triage.web_exploitable && step.triage.has_source) }}"
-          then: [ - skip: "not web-exploitable or no source" ]
+          then:
+            - skip: "not web-exploitable or no source"
 
       - try:
           do:
@@ -1540,7 +1548,8 @@ is torn down with the run.
 
             - if:
                 cond: "{{ !step.approve.approved }}"
-                then: [ - skip: "human rejected the exploit" ]
+                then:
+                  - skip: "human rejected the exploit"
 
             - id: open_pr
               container: lab
