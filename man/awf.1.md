@@ -11,7 +11,7 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **validate** [**-o**|**--output** _text_|_json_] _path_
 
-**awf** **run** [**--input** _json_] [**--input-files** _csv_] [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _auto_|_fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
+**awf** **run** [**--input** _json_|**--input-file** _path_] [**--input-files** _csv_] [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _auto_|_fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
 
 **awf** **resume** [**--state-dir** _dir_] [**--from** _step_] _run-id_ _path_
 
@@ -100,6 +100,16 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 :   Run parameters as a JSON object, validated against the workflow's `input`
     schema. It is an error to pass **--input** when the workflow declares no
     `input` schema.
+
+**--input-file** _path_
+:   Read the same run-input JSON from a file instead of inline; `--input-file -`
+    reads it from standard input. Validated against the workflow's `input` schema
+    exactly as **--input**, and mutually exclusive with it (supplying both is an
+    error). Prefer this for input carrying secrets, which leak through the process
+    table and shell history when passed inline via **--input**. The `-` form
+    supplies the run INPUT only — reading the WORKFLOW itself from stdin
+    (`awf run -`) is not supported, as the loader confines workflows to real files
+    on disk.
 
 **--input-files** _csv_
 :   Top-level workflow input files as a comma-separated list of _name_=_path_

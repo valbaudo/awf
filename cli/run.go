@@ -25,9 +25,10 @@ import (
 
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
-	fprintln(w, "usage: awf run [--input <json>] [--input-files <CSV>] [--run-id <id>] [--state-dir <dir>] [--backend <auto|native|docker|fake>] [--agent-env <CSV>] <path>")
+	fprintln(w, "usage: awf run [--input <json>|--input-file <path>] [--input-files <CSV>] [--run-id <id>] [--state-dir <dir>] [--backend <auto|native|docker|fake>] [--agent-env <CSV>] <path>")
 	fprintln(w, "")
 	fprintln(w, "  --input <json>        run-input as a JSON object (validated against workflow.input schema if declared)")
+	fprintln(w, "  --input-file <path>   run-input JSON read from a file, or '-' for stdin (mutually exclusive with --input)")
 	fprintln(w, "  --input-files <CSV>   top-level workflow input files as name=path entries (one per declared input_files name)")
 	fprintln(w, "  --run-id <id>         override the minted run id (testing aid)")
 	fprintln(w, "  --state-dir <dir>     base directory for .awf/runs and .awf/blobs (default: ./.awf)")
@@ -43,6 +44,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(io.Discard)
 	flags.Usage = func() {}
 	inputJSON := flags.String("input", "", "run-input JSON")
+	inputFile := flags.String("input-file", "", "run-input JSON from a file, or '-' for stdin (mutually exclusive with --input)")
 	inputFilesCSV := flags.String("input-files", "", "top-level workflow input files as name=path CSV")
 	runID := flags.String("run-id", "", "override the run id")
 	stateDir := flags.String("state-dir", defaultStateDir(), "base directory for runs/ and blobs/")
@@ -95,19 +97,27 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		id = r.IDGen.NewRunID()
 	}
 
-	// Step 3: parse + schema-validate --input BEFORE any state is created
-	// on disk. Pre-flight rejection here avoids orphan log files on bad input.
+	// Step 3: resolve + schema-validate run input BEFORE any state is created on
+	// disk (pre-flight rejection avoids orphan log files on bad input). Input is
+	// supplied inline via --input or from a file/stdin via --input-file (mutually
+	// exclusive); either way the resolved bytes are validated against
+	// workflow.input and content-addressed identically below (Step 8).
+	inputBytes, haveInput, inErr := resolveRunInput(*inputJSON, *inputFile, r.stdin())
+	if inErr != nil {
+		fprintf(stderr, "awf run: %v\n", inErr)
+		return ExitUsage
+	}
 	var inputMap map[string]any
-	if *inputJSON != "" {
+	if haveInput {
 		if ld.Workflow.Input == nil {
-			// --input is only meaningful when workflow declares an input schema.
-			// Quiet acceptance is a confused-deputy smell for a security tool.
-			fprintf(stderr, "awf run: --input provided but workflow declares no input schema. Drop --input or add an `input:` schema to the workflow.\n")
+			// Run input is only meaningful when the workflow declares an input
+			// schema. Quiet acceptance is a confused-deputy smell for a security tool.
+			fprintf(stderr, "awf run: run input provided but workflow declares no input schema. Drop --input/--input-file or add an `input:` schema to the workflow.\n")
 			return ExitUsage
 		}
-		m, err := engine.ValidateAgainstSchema([]byte(*inputJSON), ld.Workflow.Input)
+		m, err := engine.ValidateAgainstSchema(inputBytes, ld.Workflow.Input)
 		if err != nil {
-			fprintf(stderr, "awf run: --input failed validation: %v\n", err)
+			fprintf(stderr, "awf run: run input failed validation: %v\n", err)
 			return ExitUsage
 		}
 		inputMap = m
@@ -255,8 +265,8 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 
 	// Step 8: put input into Blobs (after validation, before log creation).
 	var inputRef string
-	if *inputJSON != "" {
-		ref, err := blobs.Put([]byte(*inputJSON))
+	if haveInput {
+		ref, err := blobs.Put(inputBytes)
 		if err != nil {
 			fprintf(stderr, "awf run: put input: %v\n", err)
 			return ExitUsage

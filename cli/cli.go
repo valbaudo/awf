@@ -103,6 +103,11 @@ type Runner struct {
 	// pass signal.WithPollInterval(time.Millisecond) for fast polling; the
 	// production cli.Run constructor leaves this nil (defaults to 100ms).
 	BrokerOptions []signal.BrokerOption
+	// Stdin is the reader `awf run --input-file -` consumes for stdin-supplied
+	// run input (S7). Tests inject a strings.Reader; production leaves it nil and
+	// the run subcommand falls back to os.Stdin (see (*Runner).stdin). Read ONLY
+	// on the `--input-file -` path — nil everywhere else.
+	Stdin io.Reader
 }
 
 // Run is the top-level CLI entry point — constructs the production Runner
@@ -173,6 +178,7 @@ func printUsage(w io.Writer) {
 	fprintln(w, "  validate <path>           parse, validate, and print the workflow's digest")
 	fprintln(w, "  run <path> [flags]        execute a workflow against the configured backend")
 	fprintln(w, "                              --input <json>     run-input JSON (validated vs workflow.input)")
+	fprintln(w, "                              --input-file <p>   run-input JSON from a file or '-' (stdin); excludes --input")
 	fprintln(w, "                              --run-id <id>      override the minted run id")
 	fprintln(w, "                              --state-dir <dir>  state directory (default: ./.awf)")
 	fprintln(w, "                              --backend <kind>   container backend: auto|native|docker|fake (default: auto)")
