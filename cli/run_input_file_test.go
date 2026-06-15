@@ -109,4 +109,8 @@ func TestRunInputFileMissingFileErrors(t *testing.T) {
 	if rc != cli.ExitUsage {
 		t.Fatalf("rc = %d, want ExitUsage (unreadable input file); stderr: %s", rc, stderr.String())
 	}
+	// Pin the failure to the input-file read path (not some other ExitUsage branch).
+	if !strings.Contains(stderr.String(), "read run input file") {
+		t.Errorf("stderr should name the input-file read failure; got %q", stderr.String())
+	}
 }

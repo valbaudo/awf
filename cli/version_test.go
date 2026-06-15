@@ -99,8 +99,25 @@ func TestRunVersionFlagSameAsSubcommand(t *testing.T) {
 	var a, b bytes.Buffer
 	Run([]string{"version"}, &a, new(bytes.Buffer))
 	Run([]string{"--version"}, &b, new(bytes.Buffer))
+	// Self-contained: both must produce a real "awf ..." line, so the equality
+	// below can't pass on mutual emptiness (e.g. both regressing to stderr).
+	if a.Len() == 0 || !strings.HasPrefix(a.String(), "awf ") {
+		t.Fatalf("`version` stdout = %q, want a non-empty \"awf \" line", a.String())
+	}
 	if a.String() != b.String() {
 		t.Errorf("`version` = %q, `--version` = %q; want identical", a.String(), b.String())
+	}
+}
+
+// TestRunVersionUnknownOutput: an unrecognized --output value is a usage error.
+func TestRunVersionUnknownOutput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"version", "-o", "xml"}, &stdout, &stderr)
+	if code != ExitUsage {
+		t.Fatalf("version -o xml = %d, want ExitUsage", code)
+	}
+	if !strings.Contains(stderr.String(), "unknown --output") {
+		t.Errorf("stderr = %q, want 'unknown --output'", stderr.String())
 	}
 }
 

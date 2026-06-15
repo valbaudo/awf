@@ -69,6 +69,12 @@ func parseInputFilesCSV(entries []string) (map[string]string, error) {
 		}
 		out[name] = path
 	}
+	if len(out) == 0 {
+		// A lone value that was all separators/whitespace (e.g. ",") survives the
+		// non-empty filter but splits to zero pairs; return nil (not an empty map)
+		// to honor the documented "no entries → nil map" contract.
+		return nil, nil
+	}
 	return out, nil
 }
 

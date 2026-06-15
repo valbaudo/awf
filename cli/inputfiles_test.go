@@ -42,6 +42,10 @@ func TestParseInputFilesCSV(t *testing.T) {
 		if got, err := parseInputFilesCSV([]string{""}); err != nil || got != nil {
 			t.Fatalf("[\"\"]: got (%v, %v), want (nil, nil)", got, err)
 		}
+		// A lone separators-only value splits to zero pairs → nil map, not empty.
+		if got, err := parseInputFilesCSV([]string{","}); err != nil || got != nil {
+			t.Fatalf("[\",\"]: got (%v, %v), want (nil, nil)", got, err)
+		}
 	})
 	t.Run("malformed entry errors", func(t *testing.T) {
 		if _, err := parseInputFilesCSV([]string{"noeq"}); err == nil {

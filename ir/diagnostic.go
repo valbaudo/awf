@@ -22,7 +22,7 @@ func (s Severity) String() string {
 }
 
 // MarshalJSON emits the human-readable severity name ("error" / "warning") rather than the
-// bare iota int. The CLI's `--format json` output is the primary consumer; opaque integers
+// bare iota int. The CLI's `--output json` output is the primary consumer; opaque integers
 // would be unusable for CI / IDE / dashboard tooling that reads the diagnostic stream.
 func (s Severity) MarshalJSON() ([]byte, error) {
 	switch s {
@@ -50,7 +50,7 @@ func (s *Severity) UnmarshalJSON(b []byte) error {
 
 // Diagnostic is one validation finding. Path is the static IR path (see ir/path.go) where the
 // issue lives — empty for top-level / definition-wide findings. Code is a stable enum from the
-// catalog below; never renumbered (the catalog is an API for --format json consumers).
+// catalog below; never renumbered (the catalog is an API for --output json consumers).
 //
 // Slice 1.4 collects all diagnostics in a single pass (no fail-fast). Slice 1.6's CLI computes
 // the exit code via HasErrors.

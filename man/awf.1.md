@@ -118,10 +118,14 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     occurrence may instead carry a comma-separated list (`--input-files
     a=x,b=y`); because that lone value is split on commas, a _path_ that itself
     contains a comma must be supplied via the repeated form (two or more flags),
-    where values are taken literally. Each file's bytes are content-addressed on
-    run start and resolvable inside the workflow as `input.files.<name>`. Every
-    declared name must be supplied, and every supplied name must be declared; a
-    mismatch is a hard error before any state is written. Not re-supplied on
+    where values are taken literally. (A workflow that declares a *single*
+    `input_files:` name whose path contains a comma cannot be supplied this way —
+    the repeated form needs two or more distinct names — so give that file a
+    comma-free path.) Each file's bytes are content-addressed on run start and
+    resolvable inside the workflow as `input.files.<name>`. Every declared name
+    must be supplied, every supplied name must be declared, and no name may be
+    supplied more than once (a duplicate is a hard error, never last-wins); any
+    mismatch is reported before any state is written. Not re-supplied on
     **awf resume** — the file refs are folded from the durable `run.started`
     journal entry.
 

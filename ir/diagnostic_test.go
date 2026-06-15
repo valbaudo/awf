@@ -117,7 +117,7 @@ func TestDiagnosticSourceRenders(t *testing.T) {
 	}
 }
 
-// TestSeverityJSONRoundTrip locks the wire format the slice-1.6 CLI's `--format json` emits:
+// TestSeverityJSONRoundTrip locks the wire format the slice-1.6 CLI's `--output json` emits:
 // severities are STRINGS ("error"/"warning"), not opaque ints. Round-trip via Unmarshal so
 // the same byte stream is consumable by another Go process.
 func TestSeverityJSONRoundTrip(t *testing.T) {

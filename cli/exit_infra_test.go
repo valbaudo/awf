@@ -20,6 +20,15 @@ import (
 // ExitInfra (3), distinct from ExitUsage (2) for bad input. These tests force each
 // reclassified site deterministically (filesystem type conflicts, a held flock, a
 // programmed backend.Create fault) — no Docker daemon required.
+//
+// Deterministically covered here: run open-blobs, run create-container, run
+// mkdir-run-dir, run open-live-home, run run-lock-held, resume open-blobs, resume
+// run-lock-held (resume_test.go), trace open-blobs, ls read-runs-dir. The remaining
+// reclassified sites are one-line const flips reached only past heavier preconditions
+// and are verified by inspection: backend-construct (run/resume — native.New defers
+// FS errors to Create, so unreachable without a real daemon), run open-log I/O
+// (non-fs.ErrExist), resume open-live-home / create-restore (need a digest-matching
+// in-flight log), and the ls lock-probe error branch.
 
 const seqImage = "oci://example.com/runner@sha256:" +
 	"0000000000000000000000000000000000000000000000000000000000000000"
@@ -75,6 +84,20 @@ func TestRunCreateContainerFailureExitsInfra(t *testing.T) {
 	rc := runner.Run([]string{"run", "--state-dir", stateDir, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
 	if rc != cli.ExitInfra {
 		t.Fatalf("run with backend.Create failing: rc = %d, want ExitInfra (3); stderr: %s", rc, stderr.String())
+	}
+}
+
+func TestRunOpenLiveHomeFailureExitsInfra(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	// openLiveHomeRoot → live.OpenRoot does MkdirAll(<stateDir>/live); a regular
+	// file there fails it (reached after blobs + backend + capabilities succeed).
+	plantFile(t, filepath.Join(stateDir, "live"))
+	runner := newTestRunner(t, container.NewFake())
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"run", "--state-dir", stateDir, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
+	if rc != cli.ExitInfra {
+		t.Fatalf("run with live-home as a file: rc = %d, want ExitInfra (3); stderr: %s", rc, stderr.String())
 	}
 }
 
