@@ -83,11 +83,11 @@ func RunCopyToContract(t *testing.T, b container.Backend) {
 
 func testCapsKnownMode(t *testing.T, b container.Backend) {
 	switch m := b.Capabilities().Snapshot; m {
-	case container.SnapshotNone, container.SnapshotFSCoW:
+	case container.SnapshotNone, container.SnapshotFSCoW, container.SnapshotFSArchive:
 		// ok
 	default:
-		t.Errorf("Capabilities().Snapshot = %q, want %q or %q",
-			m, container.SnapshotNone, container.SnapshotFSCoW)
+		t.Errorf("Capabilities().Snapshot = %q, want %q, %q, or %q",
+			m, container.SnapshotNone, container.SnapshotFSCoW, container.SnapshotFSArchive)
 	}
 }
 

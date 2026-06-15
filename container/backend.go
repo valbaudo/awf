@@ -195,6 +195,14 @@ const (
 	// SnapshotFSCoW — the backend can capture and restore a CoW filesystem
 	// diff. Phase 4 Docker for snapshot:workspace containers.
 	SnapshotFSCoW SnapshotMode = "fs-cow"
+	// SnapshotFSArchive — the backend captures and restores a FULL gzip-tar
+	// archive of the container workspace (no base image to diff against). The
+	// native backend (host workdir). Caps is a self-description: this is NOT a
+	// CoW diff, so it must not advertise SnapshotFSCoW. Behaviorally the engine
+	// treats any non-SnapshotNone mode identically; this value exists to keep
+	// the Caps honest, not to drive a code branch (YAGNI: do not add FSCoW-vs-
+	// FSArchive switches in engine logic).
+	SnapshotFSArchive SnapshotMode = "fs-archive"
 )
 
 // ContainerSpec describes a container the engine wants Created. The Backend
