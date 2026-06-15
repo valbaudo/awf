@@ -56,6 +56,8 @@ func (a *Adapter) BuildReqConfigForTest(inv agent.AgentInvocation) (ReqConfigFor
 
 var AssemblePromptForTest = assemblePrompt
 
+var RenderContextEvidenceForTest = renderContextEvidence
+
 // EffectiveProviderForTest + ProviderDefaultsForTest expose the single-source
 // transport-selection helpers for the drift/consistency white-box test.
 var (
