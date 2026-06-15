@@ -357,5 +357,5 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// r.BrokerOptions defaults to empty (100ms poll) in production; tests
 	// inject signal.WithPollInterval(time.Millisecond) for fast runs.
 	broker := awfsignal.NewBroker(awfsignal.ControlDir(*stateDir, id), r.BrokerOptions...)
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", false, assetSnapshots, inputFileRefs, broker, liveRoot, &skipTeardown, false, "")
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", false, assetSnapshots, inputFileRefs, broker, liveRoot, &skipTeardown, "")
 }

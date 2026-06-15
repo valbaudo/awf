@@ -74,7 +74,6 @@ func (r *Runner) runAndFinish(
 	broker *signal.Broker,
 	liveRoot live.Root,
 	skipTeardown *bool,
-	forceResume bool,
 	rerunFrom string,
 ) int {
 	tap := r.agentEventTap(stderr)
@@ -94,7 +93,6 @@ func (r *Runner) runAndFinish(
 		InputFiles:    inputFiles,
 		LiveFinalizer: liveDispatchFinalizer(liveRoot),
 		Resume:        resume,
-		ForceResume:   forceResume,
 		RerunFrom:     rerunFrom,
 	})
 

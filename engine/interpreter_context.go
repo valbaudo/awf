@@ -27,7 +27,6 @@ type interpreterContext struct {
 	broker        *signal.Broker
 	liveFinalizer func(context.Context, LiveDispatchRecord) error
 	resume        bool // true when re-entering a folded log (awf resume); gates map-item re-run
-	forceResume   bool
 }
 
 func (ictx interpreterContext) scope(path string) *Scope {
