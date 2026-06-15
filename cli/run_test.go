@@ -1208,7 +1208,7 @@ func TestCLIRunWritesBackendNativeOnRunStartedByDefault(t *testing.T) {
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q (default auto selection)", backendField, engine.BackendNative)
 	}
-	wantWarning := "awf run: backend auto selected native; this run cannot be resumed until native resume is supported. Use --backend docker for resumable runs."
+	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline."
 	if got := strings.Count(stderr.String(), wantWarning); got != 1 {
 		t.Errorf("native auto warning count = %d, want 1; stderr:\n%s", got, stderr.String())
 	}
@@ -1231,7 +1231,7 @@ func TestCLIRunBackendAutoFlagAcceptedAndRecordsConcreteBackend(t *testing.T) {
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
 	}
-	wantWarning := "awf run: backend auto selected native; this run cannot be resumed until native resume is supported. Use --backend docker for resumable runs."
+	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline."
 	if got := strings.Count(stderr.String(), wantWarning); got != 1 {
 		t.Errorf("native auto warning count = %d, want 1; stderr:\n%s", got, stderr.String())
 	}
@@ -1260,7 +1260,7 @@ func TestCLIRunBackendAutoSelectsDockerForStaticImage(t *testing.T) {
 	if backendField != engine.BackendDocker {
 		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendDocker)
 	}
-	if strings.Contains(stderr.String(), "backend auto selected native") {
+	if strings.Contains(stderr.String(), "auto-selected native backend") {
 		t.Errorf("docker auto selection printed native warning: %s", stderr.String())
 	}
 }
@@ -1307,7 +1307,7 @@ func TestCLIRunBackendNativeFlagWritesBackendNative(t *testing.T) {
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
 	}
-	if strings.Contains(stderr.String(), "backend auto selected native") {
+	if strings.Contains(stderr.String(), "auto-selected native backend") {
 		t.Errorf("explicit native printed auto warning: %s", stderr.String())
 	}
 }

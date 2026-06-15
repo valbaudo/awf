@@ -336,7 +336,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// Step 10: append run.started + fsync. Backend field carries the selected
 	// concrete backend kind so resume can pick the same backend without a flag.
 	if autoSelectedNative {
-		fprintf(stderr, "awf run: backend auto selected native; this run cannot be resumed until native resume is supported. Use --backend docker for resumable runs.\n")
+		fprintf(stderr, "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline.\n")
 	}
 	runStartedData, err := json.Marshal(engine.RunStartedData{
 		RunID:           id,

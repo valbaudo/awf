@@ -38,7 +38,10 @@ func newBackend(ctx context.Context, kind, runID, workdirRoot string, blobs stat
 	case engine.BackendFake:
 		return container.NewFake(), func() {}, nil
 	case engine.BackendNative:
-		b, err := native.New(workdirRoot)
+		if blobs == nil {
+			panic("cli: newBackend native: blobs must not be nil") // OpenBlobs never returns nil-without-error; callers exit first
+		}
+		b, err := native.New(workdirRoot, native.WithBlobs(blobs))
 		if err != nil {
 			return nil, nil, fmt.Errorf("cli: construct native backend: %w", err)
 		}
@@ -106,7 +109,7 @@ func readBackendKindFromLog(events []state.Event) (string, error) {
 			}
 			switch kind {
 			case engine.BackendNative:
-				return "", fmt.Errorf("cli: runs with --backend native are not resumable (no infra recipe to reconstruct host state). Delete the run directory and start fresh with 'awf run --backend native ...', or use --backend docker for resumable runs")
+				return kind, nil
 			case backendAuto:
 				return "", fmt.Errorf("cli: run log records unresolved backend %q", backendAuto)
 			case engine.BackendFake, engine.BackendDocker:
