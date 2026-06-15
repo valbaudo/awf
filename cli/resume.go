@@ -47,17 +47,14 @@ func (e *ErrRuntimeDrift) Error() string {
 
 // printResumeUsage writes the resume-subcommand usage line.
 func printResumeUsage(w io.Writer) {
-	fprintln(w, "usage: awf resume <run-id> <path> [--state-dir <dir>] [--force] [--from <step>]")
+	fprintln(w, "usage: awf resume <run-id> <path> [--state-dir <dir>] [--from <step>]")
 	fprintln(w, "")
-	fprintln(w, "  re-enter an interrupted or transiently-failed run. The workflow file at <path>")
+	fprintln(w, "  re-enter an interrupted or terminally-finished run. The workflow file at <path>")
 	fprintln(w, "  must hash to the same digest as the run's original definition (spec §8 pinning); a")
-	fprintln(w, "  mismatch is a hard error. A run that failed transiently (retryable_failure) is")
-	fprintln(w, "  resumed by default; one that finished ok is never resumable; one that failed")
-	fprintln(w, "  permanently, was rejected, or was cancelled is resumed only with --force.")
+	fprintln(w, "  mismatch is a hard error. Any run whose last outcome is not ok is resumed; a run")
+	fprintln(w, "  that finished ok is a no-op.")
 	fprintln(w, "")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
-	fprintln(w, "  --force            re-enter a terminally-failed run (permanent_failure/rejected/cancelled);")
-	fprintln(w, "                     replays committed work, re-runs the uncommitted frontier. Pins still enforced.")
 	fprintln(w, "  --from <step>      re-run from this committed node (prefix); invalidates it + everything after")
 	fprintln(w, "                     its top-level node. Bypasses pinning.")
 }
@@ -92,7 +89,6 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
-	force := fs0.Bool("force", false, "re-enter a terminally-failed run (permanent_failure/rejected/cancelled); pins are still enforced")
 	from := fs0.String("from", "", "re-run from this committed node (prefix); invalidates it + everything after its top-level node. Bypasses pinning.")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -159,23 +155,19 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	// Step 3: terminal-outcome guard (unified: retryable-by-default + --force).
-	// resumeAdmission admits a transiently-failed (retryable_failure) run by
-	// default, and — under --force — a permanent_failure/rejected/cancelled run
-	// too. The pin checks below (digest, runtime drift) are unconditional.
-	// --from admits unconditionally (bypasses the terminal guard entirely,
-	// including the ok-run refusal that --force still enforces), so it skips
-	// resumeAdmission rather than passing through it.
+	// Step 3: terminal-outcome admission. resumeAdmission refuses ONLY a
+	// finished-ok run (a genuine no-op); every non-ok terminal outcome and
+	// every interrupted/crash-window run is admitted. The pin checks below
+	// (digest, runtime drift) are unconditional. --from admits unconditionally
+	// (it bypasses pins too) so it skips resumeAdmission entirely.
 	if *from == "" {
-		admit, refuseMsg, termLabel := resumeAdmission(runID, events, *force)
+		admit, refuseMsg, termLabel := resumeAdmission(runID, events)
 		if !admit {
 			fprintf(stderr, "%s", refuseMsg)
 			return ExitUsage
 		}
-		if *force && termLabel != "" {
-			fprintf(stderr, "awf resume --force: re-entering a terminally-%s run %q; the uncommitted frontier (and its side effects) will re-run. Pins remain enforced.\n", termLabel, runID)
-		} else if !*force && termLabel == string(engine.OutcomeRetryableFailure) {
-			fprintf(stderr, "awf resume: run %q eligible for resume (retryable_failure); attempting the uncommitted frontier\n", runID)
+		if termLabel != "" {
+			fprintf(stderr, "awf resume: resuming a run that ended in %s; uncommitted frontier work re-runs, so side effects may repeat.\n", termLabel)
 		}
 	}
 
@@ -434,7 +426,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// RunOptions.InputFiles when non-nil — so the folded value wins, exactly
 	// like the typed input and Assets channels. `awf resume` has no
 	// --input-files flag (per the same no-re-supply rule as --input).
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", true, recordedAssets, nil, broker, liveRoot, &skipTeardown, *force, rerunFrom)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", true, recordedAssets, nil, broker, liveRoot, &skipTeardown, false, rerunFrom)
 }
 
 func preflightLiveResume(ctx context.Context, ld *ir.LoadedDefinition, rs *engine.RunState, resolver agent.Resolver) error {

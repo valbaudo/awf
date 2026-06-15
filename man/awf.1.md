@@ -13,7 +13,7 @@ awf - orchestrate black-box agent CLIs and shell commands as gated, checkpointed
 
 **awf** **run** [**--input** _json_] [**--input-files** _csv_] [**--run-id** _id_] [**--state-dir** _dir_] [**--backend** _auto_|_fake_|_docker_|_native_] [**--agent-env** _csv_] _path_
 
-**awf** **resume** [**--state-dir** _dir_] [**--force**] [**--from** _step_] _run-id_ _path_
+**awf** **resume** [**--state-dir** _dir_] [**--from** _step_] _run-id_ _path_
 
 **awf** **signal** [**--payload** _json_] [**--state-dir** _dir_] _run-id_ _name_
 
@@ -147,10 +147,10 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     proves turn-boundary detection, permission handling, transcript
     correlation, prompt injection, and reconnect behavior.
 
-## awf resume [--force] [--from _step_] _run-id_ _path_
+## awf resume [--from _step_] _run-id_ _path_
 
-Re-enter an interrupted run, or a run that terminated transiently
-(`retryable_failure`), re-running the transiently-failed frontier. **awf** folds
+Re-enter an interrupted run, or any run whose last outcome is not `ok`,
+re-running the uncommitted frontier. **awf** folds
 the run's journal, then verifies that
 the on-disk _path_ still hashes to the recorded definition digest *and* that
 every resolved agent-runtime version still matches — any drift is a hard error,
@@ -160,9 +160,13 @@ outputs reused, not recomputed); only the uncommitted frontier re-executes. The
 backend is read back from the journal, so no **--backend** flag is given and
 _auto_ is not re-evaluated on resume. Runs made with the _native_ backend are
 not resumable; **resume** rejects them with the native-backend limitation and
-guidance to use **--backend docker** for resumable runs. Runs that ended
-terminally (`permanent_failure`, `rejected`, or `cancelled`) are also refused by
-default; pass **--force** to override that refusal.
+guidance to use **--backend docker** for resumable runs. Any run whose last
+outcome is not `ok` (`permanent_failure`, `rejected`, `retryable_failure`, or
+`cancelled`) is resumed with no flag; a one-line non-fatal note prints to
+stderr because the uncommitted frontier — and its side effects — re-runs.
+Pinning is not relaxed: a changed definition digest or resolved runtime
+version is still a hard error (use **resume --from** for the fenced bypass). A
+run that finished `ok` is a no-op.
 
 **Native backend is not resumable.** `awf resume` of a run started with
 **--backend native** errors: there is no infra recipe to reconstruct host state.
@@ -174,24 +178,13 @@ run directory and `awf run --backend native …` again).
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).
 
-**--force**
-:   Re-enter a run that ended terminally — `permanent_failure`, `rejected`, or
-    `cancelled`. Committed steps are still replayed from the journal; the
-    uncommitted frontier re-executes (a rejected gate re-runs from a fresh
-    attempt budget). Pinning is not relaxed: a changed definition digest or
-    resolved runtime version is still a hard error. Because the frontier
-    re-runs, its side effects can repeat (at-least-once); use **--force** only
-    after fixing the deterministic cause of the failure. (A transiently-failed
-    `retryable_failure` run is re-entered too — **--force** admits any non-`ok`
-    terminal run.)
-
 **--from** _step_
 :   Re-run from a committed node (named by a runtime-path prefix, e.g. a
     top-level step id or `parallel[0].<step>`). Invalidates that node plus every
     node after its top-level ancestor and re-runs them against the *current*
     definition; everything before is replayed. **Bypasses pinning** (digest +
-    runtime drift) — a debug-mode exception, like **--force** to terminal-run
-    sealing; the operator owns the correctness of what is replayed, and the
+    runtime drift) — a debug-mode exception; the operator owns the correctness
+    of what is replayed, and the
     re-run set (incl. its at-least-once side effects) is printed before running.
     v1 supports a top-level node or a parallel branch; a node inside a
     call/loop/gate/map-body is refused.
@@ -231,8 +224,8 @@ specific node, but is not yet implemented.
 
 Terminally cancel a run: interrupt in-flight steps, run any enclosing `finally`
 blocks, tear down all containers and Compose projects, and append a terminal
-`cancelled` marker. A cancelled run is *not* resumable — **resume** refuses
-afterward.
+`cancelled` marker. A cancelled run can be re-entered with **resume** (its
+uncommitted frontier re-runs); the terminal marker is not a resume barrier.
 
 **--reason** _text_
 :   Operator note recorded in the journal.

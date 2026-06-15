@@ -15,31 +15,22 @@ func TestResumeAdmission(t *testing.T) {
 	cases := []struct {
 		name      string
 		events    []state.Event
-		force     bool
 		admit     bool
 		label     string
 		msgSubstr string // checked only when !admit
 	}{
-		{"interrupted-noforce", []state.Event{started}, false, true, "", ""},
-		{"interrupted-force", []state.Event{started}, true, true, "", ""},
-		{"finished-ok-noforce", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"ok"}`)}, false, false, "", "already finished"},
-		{"finished-ok-force", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"ok"}`)}, true, false, "", "already finished"},
-		{"permanent-noforce", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"permanent_failure"}`)}, false, false, "", "--force"},
-		{"permanent-force", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"permanent_failure"}`)}, true, true, "permanent_failure", ""},
-		{"rejected-noforce", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"rejected"}`)}, false, false, "", "--force"},
-		{"rejected-force", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"rejected"}`)}, true, true, "rejected", ""},
-		{"retryable-finished-force", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"retryable_failure"}`)}, true, true, "retryable_failure", ""},
-		{"crashwindow-retryable-force", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"retryable_failure"}`)}, true, true, "retryable_failure", ""},
-		{"retryable-finished-noforce", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"retryable_failure"}`)}, false, true, "retryable_failure", ""},
-		{"crashwindow-retryable-noforce", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"retryable_failure"}`)}, false, true, "retryable_failure", ""},
-		{"cancelled-noforce", []state.Event{started, ev(engine.EventRunCancelled, `{}`)}, false, false, "", "cancelled"},
-		{"cancelled-force", []state.Event{started, ev(engine.EventRunCancelled, `{}`)}, true, true, "cancelled", ""},
-		{"crashwindow-permanent-force", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"permanent_failure"}`)}, true, true, "permanent_failure", ""},
-		{"crashwindow-permanent-noforce", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"permanent_failure"}`)}, false, false, "", "--force"},
+		{"interrupted", []state.Event{started}, true, "", ""},
+		{"finished-ok", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"ok"}`)}, false, "", "Nothing to resume"},
+		{"permanent", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"permanent_failure"}`)}, true, "permanent_failure", ""},
+		{"rejected", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"rejected"}`)}, true, "rejected", ""},
+		{"retryable-finished", []state.Event{started, ev(engine.EventRunFinished, `{"outcome":"retryable_failure"}`)}, true, "retryable_failure", ""},
+		{"crashwindow-retryable", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"retryable_failure"}`)}, true, "", ""},
+		{"crashwindow-permanent", []state.Event{started, ev(engine.EventNodeFailed, `{"outcome":"permanent_failure"}`)}, true, "", ""},
+		{"cancelled", []state.Event{started, ev(engine.EventRunCancelled, `{}`)}, true, "cancelled", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			admit, msg, label := resumeAdmission("run-x", tc.events, tc.force)
+			admit, msg, label := resumeAdmission("run-x", tc.events)
 			if admit != tc.admit {
 				t.Fatalf("admit = %v, want %v (msg=%q)", admit, tc.admit, msg)
 			}

@@ -76,27 +76,23 @@ func TestCLIResumeRefusesTerminalRunFinished(t *testing.T) {
 	if rc == cli.ExitOK {
 		t.Errorf("rc = %d, want non-zero (run already finished)", rc)
 	}
-	if !strings.Contains(stderr.String(), "already finished") {
-		t.Errorf("stderr missing 'already finished': %q", stderr.String())
+	if !strings.Contains(stderr.String(), "Nothing to resume") {
+		t.Errorf("stderr missing 'Nothing to resume': %q", stderr.String())
 	}
 }
 
-func TestCLIResumeRefusesNodeFailedInLog(t *testing.T) {
+func TestCLIResumeAdmitsNodeFailedCrashWindow(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	runID := "test-resume-node-failed"
 
 	// Hand-craft a log with run.started + node.failed{permanent_failure} and NO
-	// run.finished so the crash-window permanent refusal can be tested in
-	// ISOLATION. This models a SIGKILL crash after node.failed but before
-	// run.finished — a real scenario the resume primitive must reject.
-	//
-	// Crash-window asymmetry (spec §4 / §5.1): a NESTED tolerated-permanent
-	// node.failed (e.g. map[0].item-2) with no run.finished is ALSO refused
-	// here — even though the same shape *with* run.finished{retryable_failure}
-	// is admitted by the new guard. With no run.finished there is no trusted
-	// rollup; the crash window conservatively refuses rather than re-derive it.
-	// This test pins that branch; no separate test is needed for the nested case.
+	// run.finished, modelling a SIGKILL crash after node.failed but before
+	// run.finished. The crash-window node.failed (no run.finished rollup) is now
+	// ADMITTED SILENTLY (label "", spec D2) — there is no terminal-resume barrier.
+	// The hand-crafted log uses an all-zeros digest that cannot match seq.yaml,
+	// so after the silent admit the resume reaches the digest-mismatch hard error
+	// (pinning is NOT relaxed). That hard error is the proof the guard admitted.
 	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -145,14 +141,14 @@ func TestCLIResumeRefusesNodeFailedInLog(t *testing.T) {
 		"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml",
 	}, &stdout, &stderr)
 	if rc == cli.ExitOK {
-		t.Errorf("rc = %d, want non-zero (node.failed in log)", rc)
+		t.Errorf("rc = %d, want non-zero (digest mismatch after silent crash-window admit)", rc)
 	}
 	stderrStr := stderr.String()
-	if !strings.Contains(stderrStr, "terminated on a failed step") || !strings.Contains(stderrStr, "Re-run with --force") {
-		t.Errorf("stderr missing the node.failed crash-window refusal (Re-run with --force): %q", stderrStr)
+	if !strings.Contains(stderrStr, "digest mismatch") {
+		t.Errorf("guard did not admit a crash-window node.failed run: %q", stderrStr)
 	}
-	if strings.Contains(stderrStr, "already finished") {
-		t.Errorf("run.finished refusal fired instead of node.failed (precedence inversion): %q", stderrStr)
+	if strings.Contains(stderrStr, "Re-run with --force") || strings.Contains(stderrStr, "terminated on a failed step") {
+		t.Errorf("guard wrongly refused a crash-window run: %q", stderrStr)
 	}
 }
 
@@ -278,11 +274,13 @@ func TestCLIResumeHappyPathSkipsCommittedSteps(t *testing.T) {
 	}
 }
 
-func TestCLIResumeRefusesTerminalRunCancelled(t *testing.T) {
+func TestCLIResumeAdmitsCancelledRun(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	runID := "test-resume-cancelled"
-	// Hand-craft a log with run.started + run.cancelled.
+	// Hand-craft a log with run.started + run.cancelled. A cancelled run is now
+	// admitted; the hand-crafted digest "abc" cannot match seq.yaml, so the
+	// admitted resume reaches the digest-mismatch hard error (the proof it admitted).
 	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -315,10 +313,10 @@ func TestCLIResumeRefusesTerminalRunCancelled(t *testing.T) {
 		"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml",
 	}, &stdout, &stderr)
 	if rc == cli.ExitOK {
-		t.Errorf("rc = %d, want non-zero", rc)
+		t.Errorf("rc = %d, want non-zero (digest mismatch after admit)", rc)
 	}
-	if !strings.Contains(stderr.String(), "cancelled") {
-		t.Errorf("stderr missing 'cancelled': %q", stderr.String())
+	if !strings.Contains(stderr.String(), "digest mismatch") {
+		t.Errorf("guard did not admit a cancelled run: %q", stderr.String())
 	}
 }
 
@@ -1393,42 +1391,49 @@ func TestCLIResumeAdmitsRetryableCrashWindow(t *testing.T) {
 	}
 }
 
-// REFUSE: run.finished{permanent_failure}.
-func TestCLIResumeRefusesPermanentRunFinished(t *testing.T) {
+// ADMIT: run.finished{permanent_failure}. Admission is proven by the digest
+// mismatch reached after admit (mirrors TestCLIResumeAdmitsRetryableCrashWindow).
+func TestCLIResumeAdmitsPermanentRunFinished(t *testing.T) {
 	t.Parallel()
-	runID := "test-resume-refuse-permanent"
+	runID := "test-resume-admit-permanent"
 	stateDir := buildResumeLog(t, "testdata/phase2/seq.yaml", runID,
 		runFinishedEvent(t, engine.OutcomePermanentFailure),
 	)
 	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
 	var stdout, stderr bytes.Buffer
-	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, mutatedSeqPath(t)}, &stdout, &stderr)
 	if rc == cli.ExitOK {
-		t.Errorf("rc = %d, want non-zero (permanent failure)", rc)
+		t.Errorf("rc = %d, want non-zero (digest mismatch after admit)", rc)
 	}
-	if !strings.Contains(stderr.String(), "Re-run with --force") {
-		t.Errorf("stderr missing 'Re-run with --force' (permanent refused without --force): %q", stderr.String())
+	got := stderr.String()
+	if !strings.Contains(got, "digest mismatch") {
+		t.Errorf("guard did not admit a permanent_failure run: %q", got)
 	}
-	assertNoRunResumed(t, stateDir, runID)
+	if strings.Contains(got, "Re-run with --force") {
+		t.Errorf("guard wrongly refused a permanent_failure run: %q", got)
+	}
 }
 
-// REFUSE: run.finished{rejected}.
-func TestCLIResumeRefusesRejectedRunFinished(t *testing.T) {
+// ADMIT: run.finished{rejected}.
+func TestCLIResumeAdmitsRejectedRunFinished(t *testing.T) {
 	t.Parallel()
-	runID := "test-resume-refuse-rejected"
+	runID := "test-resume-admit-rejected"
 	stateDir := buildResumeLog(t, "testdata/phase2/seq.yaml", runID,
 		runFinishedEvent(t, engine.OutcomeRejected),
 	)
 	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
 	var stdout, stderr bytes.Buffer
-	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, mutatedSeqPath(t)}, &stdout, &stderr)
 	if rc == cli.ExitOK {
-		t.Errorf("rc = %d, want non-zero (rejected)", rc)
+		t.Errorf("rc = %d, want non-zero (digest mismatch after admit)", rc)
 	}
-	if !strings.Contains(stderr.String(), "Re-run with --force") {
-		t.Errorf("stderr missing 'Re-run with --force' (rejected refused without --force): %q", stderr.String())
+	got := stderr.String()
+	if !strings.Contains(got, "digest mismatch") {
+		t.Errorf("guard did not admit a rejected run: %q", got)
 	}
-	assertNoRunResumed(t, stateDir, runID)
+	if strings.Contains(got, "Re-run with --force") {
+		t.Errorf("guard wrongly refused a rejected run: %q", got)
+	}
 }
 
 // END-TO-END: a real run fails transiently (echo_step exits 1); resume admits it
@@ -1470,8 +1475,8 @@ func TestCLIResumeRetryableEndToEnd(t *testing.T) {
 	if rc2 != cli.ExitOK {
 		t.Fatalf("resume rc=%d, want ExitOK; stderr=%s", rc2, e2.String())
 	}
-	if !strings.Contains(e2.String(), "eligible for resume") {
-		t.Errorf("resume did not log the transient-admit notice: %q", e2.String())
+	if !strings.Contains(e2.String(), "side effects may repeat") {
+		t.Errorf("resume did not print the terminal-resume note: %q", e2.String())
 	}
 }
 
@@ -1534,11 +1539,10 @@ graph:
 	return stateDir, runID, wfPath
 }
 
-// TestCLIResumeForce_StillEnforcesDigestPin verifies that --force overrides ONLY
-// the terminal-outcome guard; the definition-digest pin is still a hard error.
-// Editing the workflow after the run ends and then calling `resume --force` must
-// refuse with "digest mismatch", not admit the run.
-func TestCLIResumeForce_StillEnforcesDigestPin(t *testing.T) {
+// TestCLIResumeTerminalRunStillEnforcesDigestPin verifies plain resume of a
+// terminally-failed run still hard-errors on a changed definition digest:
+// dropping the terminal-admission gate does NOT relax pinning.
+func TestCLIResumeTerminalRunStillEnforcesDigestPin(t *testing.T) {
 	t.Parallel()
 	stateDir, runID, wfPath := buildPermanentFailureRun(t)
 
@@ -1567,9 +1571,9 @@ func TestCLIResumeForce_StillEnforcesDigestPin(t *testing.T) {
 
 	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
 	var stdout, stderr bytes.Buffer
-	rc := runner.Run([]string{"resume", "--state-dir", stateDir, "--force", runID, wfPath}, &stdout, &stderr)
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
 	if rc != cli.ExitUsage {
-		t.Fatalf("rc = %d, want ExitUsage (digest pin must hold under --force); stderr: %s", rc, stderr.String())
+		t.Fatalf("rc = %d, want ExitUsage (digest pin must hold on terminal-run resume); stderr: %s", rc, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "digest mismatch") {
 		t.Fatalf("want 'digest mismatch' error; got %q", stderr.String())
@@ -1587,35 +1591,15 @@ func TestCLIResumeForce_StillEnforcesDigestPin(t *testing.T) {
 	}
 	for _, e := range events {
 		if e.Type == engine.EventRunResumed {
-			t.Errorf("digest-mismatch refusal under --force must NOT append run.resumed; events: %+v", events)
+			t.Errorf("digest-mismatch refusal on terminal-run resume must NOT append run.resumed; events: %+v", events)
 		}
 	}
 }
 
-// TestCLIResumeForce_RefusedWithoutFlag confirms that a permanently-failed run
-// is refused (ExitUsage) without --force, and that the error message names the
-// --force flag so the user knows what to do.
-func TestCLIResumeForce_RefusedWithoutFlag(t *testing.T) {
-	t.Parallel()
-	stateDir, runID, wfPath := buildPermanentFailureRun(t)
-
-	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
-	var stdout, stderr bytes.Buffer
-	rc := runner.Run([]string{
-		"resume", "--state-dir", stateDir, runID, wfPath,
-	}, &stdout, &stderr)
-	if rc != cli.ExitUsage {
-		t.Errorf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "--force") {
-		t.Errorf("stderr missing '--force' hint: %q", stderr.String())
-	}
-}
-
-// TestCLIResumeForce_AdmittedWithFlag confirms that --force admits a
-// permanently-failed run, emits the warning to stderr, and completes with
-// ExitOK when the underlying cause has been fixed (fake reprogrammed to exit 0).
-func TestCLIResumeForce_AdmittedWithFlag(t *testing.T) {
+// TestCLIResumeTerminalRunResumesWithoutFlag confirms a permanently-failed run
+// resumes with NO flag, prints the non-fatal "side effects may repeat" note,
+// and completes ExitOK once the cause is fixed (fake reprogrammed to exit 0).
+func TestCLIResumeTerminalRunResumesWithoutFlag(t *testing.T) {
 	t.Parallel()
 	stateDir, runID, wfPath := buildPermanentFailureRun(t)
 
@@ -1625,12 +1609,13 @@ func TestCLIResumeForce_AdmittedWithFlag(t *testing.T) {
 	runner := &cli.Runner{Backend: fakeOK, IDGen: &clock.Fake{}}
 	var stdout, stderr bytes.Buffer
 	rc := runner.Run([]string{
-		"resume", "--state-dir", stateDir, "--force", runID, wfPath,
+		"resume", "--state-dir", stateDir, runID, wfPath,
 	}, &stdout, &stderr)
 	if rc != cli.ExitOK {
 		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "--force") {
-		t.Errorf("stderr missing '--force' warning: %q", stderr.String())
+	got := stderr.String()
+	if !strings.Contains(got, "ended in permanent_failure") || !strings.Contains(got, "side effects may repeat") {
+		t.Errorf("stderr missing the terminal-resume note: %q", got)
 	}
 }
