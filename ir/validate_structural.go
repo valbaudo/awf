@@ -39,6 +39,9 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 	// digest reference; compose-backed containers must declare a service; neither image nor
 	// service field may carry template syntax (those are static names).
 	for name, ctr := range wf.Containers {
+		if !containerNamePattern.MatchString(name) {
+			c.errf(ContainerPath(name, ""), "AWF1059", fmt.Sprintf("%s: %q (must match %s)", catalog["AWF1059"], name, containerNamePattern))
+		}
 		switch {
 		case ctr.Image != "" && ctr.Compose != "":
 			c.errf(ContainerPath(name, ""), "AWF1005", catalog["AWF1005"])
@@ -103,6 +106,14 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 // top-level env: lists NAMES (never values); a name outside this charset can't address a real
 // host variable, so the validator rejects it (AWF1024) rather than silently dropping it.
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// containerNamePattern constrains container map keys to a path-safe identifier
+// charset (mirrors stepIDPattern; bars '/', '\', '..', ':', '.'). The native
+// backend derives a host workdir from this name (filepath.Join + RemoveAll on
+// resume), so an unconstrained key is a path-traversal sink; docker sanitizes
+// via containerName() but native does not. The validator sees RAW per-workflow
+// keys ('::' qualification is composed at engine runtime), so the charset is strict.
+var containerNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 
 // NOTE: not built on ir.WalkNodes — walkStructural attaches diagnostics to nearly
 // every control kind (AWF1010-1015) and does sibling-set / last-element checks
