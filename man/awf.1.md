@@ -460,6 +460,13 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
 
 # ENVIRONMENT
 
+**AWF_STATE_DIR**
+:   Default base directory for `runs/` and `blobs/` when a command is invoked
+    without **--state-dir**. The precedence is explicit **--state-dir** >
+    **AWF_STATE_DIR** > `./.awf`, so a flag always wins and the env var only
+    supplies the default. Honored by every subcommand that takes **--state-dir**
+    (run, resume, signal, pause, cancel, ls, inspect, trace, outputs, graph, ui).
+
 **ANTHROPIC_API_KEY**, **ANTHROPIC_AUTH_TOKEN**, **CLAUDE_CODE_OAUTH_TOKEN**
 :   Authentication for the `anthropic/claude-code` agent runtime. **awf** does not
     read these itself; it forwards those named in **--agent-env** (all three by
@@ -703,6 +710,10 @@ launch as a permanent config error carrying droid's available-models list. Run
 `droid exec --model x` to print the IDs the installed droid accepts.
 
 # FILES
+
+The _state-dir_ is `./.awf` by default, overridable per-invocation with
+**--state-dir** or for a shell session with the **AWF_STATE_DIR** environment
+variable (an explicit flag wins; see **ENVIRONMENT**).
 
 _state-dir_/runs/_run-id_/log
 :   The run's append-only journal — the authoritative record folded on resume

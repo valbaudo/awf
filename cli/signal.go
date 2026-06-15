@@ -27,7 +27,7 @@ func cliSignal(args []string, stdout, stderr io.Writer) int {
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	payload := fs0.String("payload", "", "typed payload JSON")
-	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
+	stateDir := fs0.String("state-dir", defaultStateDir(), "base directory for runs/ and blobs/")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			printSignalUsage(stdout)

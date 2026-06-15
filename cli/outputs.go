@@ -35,7 +35,7 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	fs0 := pflag.NewFlagSet("outputs", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
-	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
+	stateDir := fs0.String("state-dir", defaultStateDir(), "base directory for runs/ and blobs/")
 	step := fs0.String("step", "", "emit one top-level code/agent step's typed output")
 	workflow := fs0.String("workflow", "", "workflow file: evaluate its outputs: contract")
 	runID, code, ok := parseSinglePositional(fs0, args, "awf outputs", printOutputsUsage, stdout, stderr)

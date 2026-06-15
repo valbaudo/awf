@@ -25,7 +25,7 @@ func cliCancel(args []string, stdout, stderr io.Writer) int {
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	reason := fs0.String("reason", "", "free-text reason")
-	stateDir := fs0.String("state-dir", ".awf", "state directory")
+	stateDir := fs0.String("state-dir", defaultStateDir(), "state directory")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			printCancelUsage(stdout)

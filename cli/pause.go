@@ -33,7 +33,7 @@ func cliPause(args []string, stdout, stderr io.Writer) int {
 	// reject explicitly than silently ignore (kubectl convention).
 	before := fs0.String("before", "", "node-path breakpoint (not yet supported)")
 	reason := fs0.String("reason", "", "free-text reason")
-	stateDir := fs0.String("state-dir", ".awf", "state directory")
+	stateDir := fs0.String("state-dir", defaultStateDir(), "state directory")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			printPauseUsage(stdout)

@@ -39,7 +39,7 @@ func cliInspect(args []string, stdout, stderr io.Writer) int {
 	fs0 := pflag.NewFlagSet("inspect", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
-	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/")
+	stateDir := fs0.String("state-dir", defaultStateDir(), "base directory for runs/")
 	foldArg := fs0.String("fold", "ok", "comma list of statuses to collapse")
 	depth := fs0.Int("depth", -1, "max tree depth (-1 = unlimited)")
 	output := fs0.StringP("output", "o", "text", "output format: text or json")

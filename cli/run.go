@@ -45,7 +45,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	inputJSON := flags.String("input", "", "run-input JSON")
 	inputFilesCSV := flags.String("input-files", "", "top-level workflow input files as name=path CSV")
 	runID := flags.String("run-id", "", "override the run id")
-	stateDir := flags.String("state-dir", ".awf", "base directory for runs/ and blobs/")
+	stateDir := flags.String("state-dir", defaultStateDir(), "base directory for runs/ and blobs/")
 	backendKind := flags.String("backend", backendAuto, "container backend: auto, native, docker, or fake")
 	agentEnv := flags.String("agent-env", strings.Join(defaultAgentEnv, ","),
 		"CSV allowlist of env-var names forwarded into each agent CLI invocation")

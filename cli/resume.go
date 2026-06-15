@@ -89,7 +89,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	fs0 := pflag.NewFlagSet("resume", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
-	stateDir := fs0.String("state-dir", ".awf", "base directory for runs/ and blobs/")
+	stateDir := fs0.String("state-dir", defaultStateDir(), "base directory for runs/ and blobs/")
 	from := fs0.String("from", "", "re-run from this committed node (prefix); invalidates it + everything after its top-level node. Bypasses pinning.")
 	if err := fs0.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
