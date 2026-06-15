@@ -11,14 +11,12 @@ import (
 	"github.com/valbaudo/awf/loader"
 )
 
-// validateResult is the JSON projection of one `awf validate` invocation. Outer fields use
-// lowercase JSON tags (CLI convention). The inner []ir.Diagnostic retains the Go-default
-// capitalized field names — slice 1.4 explicitly designed Diagnostic to marshal that way
-// (see ir/diagnostic.go's "String renders ... The JSON projection marshals the struct
-// directly with the default Go field names"), and its golden tests (ir/testdata/invalid/
-// *.golden, ~25 files) encode that contract. Changing it would force regenerating all those
-// goldens — out of scope for this slice. If the asymmetry ever becomes a real ergonomics
-// complaint, it lands as a dedicated follow-up.
+// validateResult is the JSON projection of one `awf validate` invocation. Both the outer
+// fields and the inner []ir.Diagnostic use lowercase JSON tags (CLI convention), so the whole
+// document reads with consistent casing — e.g. `awf validate --output json | jq
+// '.diagnostics[].code'` works without case-special-casing. The Diagnostic tags live in
+// ir/diagnostic.go; the 35 ir/testdata/invalid/*.golden fixtures (plus the cli golden) encode
+// the lowercase contract.
 type validateResult struct {
 	Path        string          `json:"path"`
 	Digest      string          `json:"digest,omitempty"`

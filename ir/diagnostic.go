@@ -55,19 +55,20 @@ func (s *Severity) UnmarshalJSON(b []byte) error {
 // Slice 1.4 collects all diagnostics in a single pass (no fail-fast). Slice 1.6's CLI computes
 // the exit code via HasErrors.
 type Diagnostic struct {
-	Severity Severity
-	Source   string `json:",omitempty"`
-	Path     string
-	Code     string
-	Message  string
+	Severity Severity `json:"severity"`
+	Source   string   `json:"source,omitempty"`
+	Path     string   `json:"path"`
+	Code     string   `json:"code"`
+	Message  string   `json:"message"`
 }
 
 // String renders a Diagnostic in human-readable form for the default CLI output. Format:
 //
 //	error AWF1005 at graph[0].run: image is a tag, not a digest
 //
-// The JSON projection (slice 1.6's `--format json`) marshals the struct directly with the
-// default Go field names.
+// The JSON projection (`awf validate --output json`) marshals the struct via its lowercase
+// json tags (severity/source/path/code/message), so consumers like `jq '.diagnostics[].code'`
+// read all-lowercase keys consistent with the validateResult envelope around them.
 func (d Diagnostic) String() string {
 	if d.Source != "" && d.Path != "" {
 		return fmt.Sprintf("%s %s at %s:%s: %s", d.Severity, d.Code, d.Source, d.Path, d.Message)

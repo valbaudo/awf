@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "containers.c.image",
-    "Code": "AWF1007",
-    "Message": "image must be content-addressed (tag forbidden, use @sha256:...)"
+    "severity": "error",
+    "path": "containers.c.image",
+    "code": "AWF1007",
+    "message": "image must be content-addressed (tag forbidden, use @sha256:...)"
   }
 ]

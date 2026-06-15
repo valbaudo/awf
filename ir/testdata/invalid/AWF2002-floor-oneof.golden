@@ -1,14 +1,14 @@
 [
   {
-    "Severity": "warning",
-    "Path": "a.output_schema",
-    "Code": "AWF2002",
-    "Message": "oneOf not allowed (forbidden by §7 floor)"
+    "severity": "warning",
+    "path": "a.output_schema",
+    "code": "AWF2002",
+    "message": "oneOf not allowed (forbidden by §7 floor)"
   },
   {
-    "Severity": "warning",
-    "Path": "a",
-    "Code": "AWF3002",
-    "Message": "agent output_schema declared but no reference into it (step \"a\")"
+    "severity": "warning",
+    "path": "a",
+    "code": "AWF3002",
+    "message": "agent output_schema declared but no reference into it (step \"a\")"
   }
 ]

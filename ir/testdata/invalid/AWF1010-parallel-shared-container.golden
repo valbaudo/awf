@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "parallel[0]",
-    "Code": "AWF1010",
-    "Message": "parallel branches use overlapping containers (§5.4 forbids): container \"c\" used by branches [0 1]"
+    "severity": "error",
+    "path": "parallel[0]",
+    "code": "AWF1010",
+    "message": "parallel branches use overlapping containers (§5.4 forbids): container \"c\" used by branches [0 1]"
   }
 ]

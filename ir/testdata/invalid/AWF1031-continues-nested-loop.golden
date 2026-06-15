@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "loop[0].body.loop[0].body.inner_revise",
-    "Code": "AWF1031",
-    "Message": "continues target is unaddressable: it lies inside nested loops (a target's path may cross at most one loop) (target \"inner_draft\")"
+    "severity": "error",
+    "path": "loop[0].body.loop[0].body.inner_revise",
+    "code": "AWF1031",
+    "message": "continues target is unaddressable: it lies inside nested loops (a target's path may cross at most one loop) (target \"inner_draft\")"
   }
 ]

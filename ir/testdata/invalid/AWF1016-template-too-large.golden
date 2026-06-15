@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "a",
-    "Code": "AWF1016",
-    "Message": "expression or template exceeds size limit (limit 65536 bytes, got 66005 bytes)"
+    "severity": "error",
+    "path": "a",
+    "code": "AWF1016",
+    "message": "expression or template exceeds size limit (limit 65536 bytes, got 66005 bytes)"
   }
 ]

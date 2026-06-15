@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "containers.vl",
-    "Code": "AWF1025",
-    "Message": "container is a map `image:` target and also declares a static image/compose; the static pin is silently overwritten per-element at dispatch — remove the static image/compose, or do not target it with a map `image:`"
+    "severity": "error",
+    "path": "containers.vl",
+    "code": "AWF1025",
+    "message": "container is a map `image:` target and also declares a static image/compose; the static pin is silently overwritten per-element at dispatch — remove the static image/compose, or do not target it with a map `image:`"
   }
 ]

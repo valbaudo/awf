@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "a.run",
-    "Code": "AWF3001",
-    "Message": "reference to undeclared step \"nope\""
+    "severity": "error",
+    "path": "a.run",
+    "code": "AWF3001",
+    "message": "reference to undeclared step \"nope\""
   }
 ]

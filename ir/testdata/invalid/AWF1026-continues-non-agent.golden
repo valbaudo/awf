@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "critique",
-    "Code": "AWF1026",
-    "Message": "continues target is not an agent step (must be the id of another agent step, not code/signal/control) (continues: \"build\")"
+    "severity": "error",
+    "path": "critique",
+    "code": "AWF1026",
+    "message": "continues target is not an agent step (must be the id of another agent step, not code/signal/control) (continues: \"build\")"
   }
 ]

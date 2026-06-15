@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "containers.lab",
-    "Code": "AWF3005",
-    "Message": "compose file uses `extends:` or `include:` directives; the validator refuses these (they would follow arbitrary disk paths and bypass loader confinement) (service \"vuln\" has `extends:`)"
+    "severity": "error",
+    "path": "containers.lab",
+    "code": "AWF3005",
+    "message": "compose file uses `extends:` or `include:` directives; the validator refuses these (they would follow arbitrary disk paths and bypass loader confinement) (service \"vuln\" has `extends:`)"
   }
 ]

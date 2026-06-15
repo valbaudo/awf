@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "gate[1].evaluate.judge",
-    "Code": "AWF1030",
-    "Message": "a step inside a gate's evaluate: block may not use continues (the evaluator must judge in a fresh context)"
+    "severity": "error",
+    "path": "gate[1].evaluate.judge",
+    "code": "AWF1030",
+    "message": "a step inside a gate's evaluate: block may not use continues (the evaluator must judge in a fresh context)"
   }
 ]

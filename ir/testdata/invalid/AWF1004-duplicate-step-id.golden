@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "a",
-    "Code": "AWF1004",
-    "Message": "step id is not unique (first seen at a)"
+    "severity": "error",
+    "path": "a",
+    "code": "AWF1004",
+    "message": "step id is not unique (first seen at a)"
   }
 ]

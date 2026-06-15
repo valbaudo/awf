@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "parallel[0].branch_b",
-    "Code": "AWF1032",
-    "Message": "continues target is a concurrent parallel sibling (not guaranteed to have run before this turn); continue a step outside the parallel instead (continues: \"branch_a\")"
+    "severity": "error",
+    "path": "parallel[0].branch_b",
+    "code": "AWF1032",
+    "message": "continues target is a concurrent parallel sibling (not guaranteed to have run before this turn); continue a step outside the parallel instead (continues: \"branch_a\")"
   }
 ]

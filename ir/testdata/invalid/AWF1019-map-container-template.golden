@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "map[0]",
-    "Code": "AWF1019",
-    "Message": "container or service reference uses template syntax (`{{ }}`); these fields must be static names"
+    "severity": "error",
+    "path": "map[0]",
+    "code": "AWF1019",
+    "message": "container or service reference uses template syntax (`{{ }}`); these fields must be static names"
   }
 ]

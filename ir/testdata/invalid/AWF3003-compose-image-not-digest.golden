@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "containers.lab",
-    "Code": "AWF3003",
-    "Message": "service \"vuln\" image \"nginx:latest\" is not pinned to a valid sha256 digest"
+    "severity": "error",
+    "path": "containers.lab",
+    "code": "AWF3003",
+    "message": "service \"vuln\" image \"nginx:latest\" is not pinned to a valid sha256 digest"
   }
 ]

@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "map[0]",
-    "Code": "AWF1012",
-    "Message": "map missing one of over/as/container/concurrency"
+    "severity": "error",
+    "path": "map[0]",
+    "code": "AWF1012",
+    "message": "map missing one of over/as/container/concurrency"
   }
 ]

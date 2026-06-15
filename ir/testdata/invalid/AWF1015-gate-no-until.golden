@@ -1,14 +1,14 @@
 [
   {
-    "Severity": "error",
-    "Path": "gate[0]",
-    "Code": "AWF1015",
-    "Message": "gate missing until"
+    "severity": "error",
+    "path": "gate[0]",
+    "code": "AWF1015",
+    "message": "gate missing until"
   },
   {
-    "Severity": "warning",
-    "Path": "gate[0].evaluate.j",
-    "Code": "AWF3006",
-    "Message": "code step declares output_schema but its run script never writes $AWF_OUTPUT"
+    "severity": "warning",
+    "path": "gate[0].evaluate.j",
+    "code": "AWF3006",
+    "message": "code step declares output_schema but its run script never writes $AWF_OUTPUT"
   }
 ]

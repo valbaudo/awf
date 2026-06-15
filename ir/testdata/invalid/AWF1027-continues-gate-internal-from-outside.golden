@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "after",
-    "Code": "AWF1027",
-    "Message": "continues target does not dominate this turn (must precede it in document order and every gate/map/loop/if-branch scope enclosing the target must also enclose this turn — forward/self refs, sibling branches, and gate/map/loop-internal targets are rejected) (continues: \"inner\")"
+    "severity": "error",
+    "path": "after",
+    "code": "AWF1027",
+    "message": "continues target does not dominate this turn (must precede it in document order and every gate/map/loop/if-branch scope enclosing the target must also enclose this turn — forward/self refs, sibling branches, and gate/map/loop-internal targets are rejected) (continues: \"inner\")"
   }
 ]

@@ -126,7 +126,7 @@ func TestSeverityJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"Severity":"error","Path":"p","Code":"AWF1003","Message":"m"}`
+	want := `{"severity":"error","path":"p","code":"AWF1003","message":"m"}`
 	if string(b) != want {
 		t.Errorf("Marshal = %s, want %s", b, want)
 	}
@@ -140,8 +140,32 @@ func TestSeverityJSONRoundTrip(t *testing.T) {
 	// Warning shape
 	w := Diagnostic{Severity: Warning, Path: "p", Code: "AWF2002", Message: "m"}
 	wb, _ := json.Marshal(w)
-	if !contains(string(wb), `"Severity":"warning"`) {
+	if !contains(string(wb), `"severity":"warning"`) {
 		t.Errorf("Warning marshal lacks the warning string: %s", wb)
+	}
+}
+
+// TestDiagnosticJSONFieldNames locks the all-lowercase wire keys (S3). `awf validate --output
+// json` is the primary consumer; lowercase keys let `jq '.diagnostics[].code'` work without a
+// case-special-casing dance. Field order follows struct declaration (severity, source, path,
+// code, message). Source carries omitempty: present (as "source") when set, absent when empty.
+func TestDiagnosticJSONFieldNames(t *testing.T) {
+	full := Diagnostic{Severity: Error, Source: "child.yaml", Path: "graph[0]", Code: "AWF1005", Message: "m"}
+	b, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"severity":"error","source":"child.yaml","path":"graph[0]","code":"AWF1005","message":"m"}`
+	if string(b) != want {
+		t.Errorf("Marshal(full) = %s, want %s", b, want)
+	}
+	// Source is omitempty: the key is absent when the field is empty.
+	bare, err := json.Marshal(Diagnostic{Severity: Warning, Path: "p", Code: "AWF2002", Message: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(string(bare), "source") {
+		t.Errorf("empty Source should be omitted, got %s", bare)
 	}
 }
 

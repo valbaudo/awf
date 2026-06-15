@@ -1,8 +1,8 @@
 [
   {
-    "Severity": "error",
-    "Path": "containers.c",
-    "Code": "AWF1008",
-    "Message": "compose-backed container missing required `service` field"
+    "severity": "error",
+    "path": "containers.c",
+    "code": "AWF1008",
+    "message": "compose-backed container missing required `service` field"
   }
 ]
