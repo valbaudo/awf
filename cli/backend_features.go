@@ -53,6 +53,56 @@ func firstDockerOnlyFeature(wf *ir.Workflow) (dockerFeature, bool) {
 }
 
 func firstDockerOnlyFeatureForLoadedDefinition(ld *ir.LoadedDefinition) (dockerFeature, bool) {
+	return firstFeatureForLoadedDefinition(ld, firstDockerOnlyFeature)
+}
+
+// firstNativeIncompatibleFeature detects only the features native genuinely
+// cannot run — static compose (native Create refuses compose), runtime compose
+// (ir.FirstRuntimeComposePath), and runtime map image (native Caps.RuntimeImage
+// is false). Unlike firstDockerOnlyFeature it deliberately does NOT flag a
+// static c.Image or snapshot: workspace: native CAN run those, just without
+// isolation — it ignores the declared image, runs steps on the host, and
+// snapshots the workdir. The "docker-preferred but native-runnable" set is left
+// for auto (which still prefers docker for reproducibility).
+func firstNativeIncompatibleFeature(wf *ir.Workflow) (dockerFeature, bool) {
+	if wf == nil {
+		return dockerFeature{}, false
+	}
+	names := make([]string, 0, len(wf.Containers))
+	for name := range wf.Containers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		c := wf.Containers[name]
+		if c.Compose != "" {
+			return dockerFeature{Kind: "static compose", Path: fmt.Sprintf("containers.%s.compose", name)}, true
+		}
+	}
+	if path, ok := ir.FirstRuntimeComposePath(wf); ok {
+		return dockerFeature{Kind: "runtime compose", Path: path}, true
+	}
+	targets := ir.MapImageTargets(wf)
+	if len(targets) > 0 {
+		names := make([]string, 0, len(targets))
+		for name := range targets {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return dockerFeature{Kind: "runtime map image", Path: fmt.Sprintf("containers.%s", names[0])}, true
+	}
+	return dockerFeature{}, false
+}
+
+func firstNativeIncompatibleFeatureForLoadedDefinition(ld *ir.LoadedDefinition) (dockerFeature, bool) {
+	return firstFeatureForLoadedDefinition(ld, firstNativeIncompatibleFeature)
+}
+
+// firstFeatureForLoadedDefinition walks the loaded modules in order, returning
+// the first feature detect reports, prefixing imported-module paths with the
+// module id. detect is firstDockerOnlyFeature (auto) or
+// firstNativeIncompatibleFeature (explicit native).
+func firstFeatureForLoadedDefinition(ld *ir.LoadedDefinition, detect func(*ir.Workflow) (dockerFeature, bool)) (dockerFeature, bool) {
 	if ld == nil {
 		return dockerFeature{}, false
 	}
@@ -62,7 +112,7 @@ func firstDockerOnlyFeatureForLoadedDefinition(ld *ir.LoadedDefinition) (dockerF
 		if found || module == nil {
 			return nil
 		}
-		feature, ok := firstDockerOnlyFeature(module.Workflow)
+		feature, ok := detect(module.Workflow)
 		if !ok {
 			return nil
 		}
@@ -74,6 +124,30 @@ func firstDockerOnlyFeatureForLoadedDefinition(ld *ir.LoadedDefinition) (dockerF
 		return nil
 	})
 	return out, found
+}
+
+// workflowHasStaticImage reports whether any module declares a static
+// container image. Native ignores declared images (it runs steps on the host
+// with no isolation), so the run path uses this to emit a non-silent warning
+// rather than silently dropping the declared image.
+func workflowHasStaticImage(ld *ir.LoadedDefinition) bool {
+	if ld == nil {
+		return false
+	}
+	var found bool
+	_ = ld.WalkModules(func(module *ir.LoadedModule) error {
+		if found || module == nil || module.Workflow == nil {
+			return nil
+		}
+		for _, c := range module.Workflow.Containers {
+			if c.Image != "" {
+				found = true
+				return nil
+			}
+		}
+		return nil
+	})
+	return found
 }
 
 func selectRunBackend(requested string, wf *ir.Workflow) (string, error) {
@@ -88,8 +162,14 @@ func selectRunBackendForLoadedDefinition(requested string, ld *ir.LoadedDefiniti
 		}
 		return engine.BackendNative, nil
 	case engine.BackendNative:
-		if feature, ok := firstDockerOnlyFeatureForLoadedDefinition(ld); ok {
-			return "", fmt.Errorf("--backend native cannot run Docker-only feature %q at %s; use --backend docker", feature.Kind, feature.Path)
+		// Explicit native is permissive: it runs static image and
+		// snapshot: workspace workflows on the host (ignoring the declared
+		// image, snapshotting the workdir). It still refuses the features
+		// native genuinely cannot do — compose, runtime compose, runtime map
+		// image. (Auto, above, still routes image/snapshot to docker for
+		// reproducibility.)
+		if feature, ok := firstNativeIncompatibleFeatureForLoadedDefinition(ld); ok {
+			return "", fmt.Errorf("--backend native cannot run %q at %s; use --backend docker", feature.Kind, feature.Path)
 		}
 		return engine.BackendNative, nil
 	case engine.BackendDocker, engine.BackendFake:

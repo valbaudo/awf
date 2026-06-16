@@ -338,6 +338,13 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	if autoSelectedNative {
 		fprintf(stderr, "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline.\n")
 	}
+	// Non-silent image warning: native ignores any declared container image and
+	// runs steps on the host. Fires for explicit --backend native too (auto
+	// never lands here with an image — image-mode routes to docker above), so
+	// native never silently drops a declared image.
+	if concreteBackendKind == engine.BackendNative && workflowHasStaticImage(ld) {
+		fprintf(stderr, "awf run: --backend native ignores declared container image(s); steps run on the host with no isolation.\n")
+	}
 	runStartedData, err := json.Marshal(engine.RunStartedData{
 		RunID:           id,
 		WorkflowDigest:  digest,

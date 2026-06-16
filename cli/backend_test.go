@@ -272,22 +272,125 @@ func TestSelectRunBackendAutoChoosesDockerForImportedFeature(t *testing.T) {
 	}
 }
 
-func TestSelectRunBackendExplicitNativeRejectsDockerOnlyFeature(t *testing.T) {
+// TestSelectRunBackendExplicitNativeRejectsIncompatibleFeature checks that
+// explicit --backend native still rejects the features native genuinely cannot
+// run: static compose, runtime compose, and runtime map image. (Static image
+// and snapshot: workspace are no longer rejected — see the Accepts tests below.)
+func TestSelectRunBackendExplicitNativeRejectsIncompatibleFeature(t *testing.T) {
 	t.Parallel()
-	_, err := cli.SelectRunBackendForTest(engine.BackendNative, &ir.Workflow{
-		Containers: map[string]ir.Container{
-			"lab": {Image: "oci://example.com/lab@sha256:" + strings.Repeat("0", 64)},
+	tests := []struct {
+		name string
+		wf   *ir.Workflow
+		path string
+	}{
+		{
+			name: "static compose",
+			wf: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {Compose: "lab/compose.yml", Service: "runner"},
+			}},
+			path: "containers.lab.compose",
 		},
-	})
-	if err == nil {
-		t.Fatal("err = nil, want native rejection for Docker-only feature")
+		{
+			name: "runtime compose",
+			wf: &ir.Workflow{
+				Containers: map[string]ir.Container{},
+				Graph: ir.NodeList{&ir.Compose{
+					As: "lab", From: "step.compose.files.compose", Service: "runner",
+					Body: ir.NodeList{},
+				}},
+			},
+		},
+		{
+			name: "runtime map image",
+			wf: &ir.Workflow{
+				Containers: map[string]ir.Container{"lab": {}},
+				Graph: ir.NodeList{&ir.Map{
+					Container: "lab", Image: "{{ item.image }}", Body: ir.NodeList{},
+				}},
+			},
+		},
 	}
-	if !strings.Contains(err.Error(), "--backend native") || !strings.Contains(err.Error(), "--backend docker") {
-		t.Errorf("err = %q, want native rejection with docker guidance", err)
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := cli.SelectRunBackendForTest(engine.BackendNative, tc.wf)
+			if err == nil {
+				t.Fatal("err = nil, want native rejection for native-incompatible feature")
+			}
+			if !strings.Contains(err.Error(), "--backend native") || !strings.Contains(err.Error(), "--backend docker") {
+				t.Errorf("err = %q, want native rejection with docker guidance", err)
+			}
+			if tc.path != "" && !strings.Contains(err.Error(), tc.path) {
+				t.Errorf("err = %q, want path %q", err, tc.path)
+			}
+		})
 	}
 }
 
-func TestSelectRunBackendExplicitNativeRejectsImportedDockerOnlyFeature(t *testing.T) {
+// TestSelectRunBackendExplicitNativeAcceptsImageAndSnapshot checks the relaxed
+// behavior: explicit --backend native now runs static-image and
+// snapshot: workspace workflows (steps run on the host, image ignored).
+func TestSelectRunBackendExplicitNativeAcceptsImageAndSnapshot(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		wf   *ir.Workflow
+	}{
+		{
+			name: "static image",
+			wf: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {Image: "oci://example.com/lab@sha256:" + strings.Repeat("0", 64)},
+			}},
+		},
+		{
+			name: "snapshot workspace",
+			wf: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {
+					Image:    "oci://example.com/lab@sha256:" + strings.Repeat("0", 64),
+					Snapshot: "workspace",
+				},
+			}},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := cli.SelectRunBackendForTest(engine.BackendNative, tc.wf)
+			if err != nil {
+				t.Fatalf("SelectRunBackend(native): %v", err)
+			}
+			if got != engine.BackendNative {
+				t.Errorf("selected backend = %q, want %q", got, engine.BackendNative)
+			}
+		})
+	}
+}
+
+func TestSelectRunBackendExplicitNativeRejectsImportedIncompatibleFeature(t *testing.T) {
+	t.Parallel()
+	ld := &ir.LoadedDefinition{
+		Workflow: simpleBackendWF(),
+		Modules: map[string]*ir.LoadedModule{
+			"": {ID: "", Workflow: simpleBackendWF()},
+			"recon": {ID: "recon", Workflow: &ir.Workflow{Containers: map[string]ir.Container{
+				"lab": {Compose: "lab/compose.yml", Service: "runner"},
+			}}},
+		},
+	}
+	_, err := cli.SelectRunBackendForLoadedDefinitionForTest(engine.BackendNative, ld)
+	if err == nil {
+		t.Fatal("err = nil, want native rejection for imported native-incompatible feature")
+	}
+	if !strings.Contains(err.Error(), "module recon") || !strings.Contains(err.Error(), "containers.lab.compose") {
+		t.Errorf("err = %q, want imported module/path diagnostic", err)
+	}
+}
+
+// TestSelectRunBackendExplicitNativeAcceptsImportedImage checks that an imported
+// module's static image no longer forces native rejection.
+func TestSelectRunBackendExplicitNativeAcceptsImportedImage(t *testing.T) {
 	t.Parallel()
 	ld := &ir.LoadedDefinition{
 		Workflow: simpleBackendWF(),
@@ -298,12 +401,12 @@ func TestSelectRunBackendExplicitNativeRejectsImportedDockerOnlyFeature(t *testi
 			}}},
 		},
 	}
-	_, err := cli.SelectRunBackendForLoadedDefinitionForTest(engine.BackendNative, ld)
-	if err == nil {
-		t.Fatal("err = nil, want native rejection for imported Docker-only feature")
+	got, err := cli.SelectRunBackendForLoadedDefinitionForTest(engine.BackendNative, ld)
+	if err != nil {
+		t.Fatalf("SelectRunBackendForLoadedDefinition(native): %v", err)
 	}
-	if !strings.Contains(err.Error(), "module recon") || !strings.Contains(err.Error(), "containers.lab.image") {
-		t.Errorf("err = %q, want imported module/path diagnostic", err)
+	if got != engine.BackendNative {
+		t.Errorf("selected backend = %q, want %q", got, engine.BackendNative)
 	}
 }
 
