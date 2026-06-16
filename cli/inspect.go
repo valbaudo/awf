@@ -235,6 +235,8 @@ func nodeLine(s obs.Span, toolCalls map[string]int, showTokens bool) string {
 		if len(suffix) > 0 {
 			parts = append(parts, "("+strings.Join(suffix, ", ")+")")
 		}
+	} else if ms, ok := s.Attributes[obs.AttrNodeDurationMS].(int64); ok {
+		parts = append(parts, "("+formatDurationMS(ms)+")")
 	}
 	// Token counts (--tokens flag): shown wherever the projected token attrs are present.
 	if showTokens {
@@ -245,6 +247,10 @@ func nodeLine(s obs.Span, toolCalls map[string]int, showTokens bool) string {
 		}
 	}
 	return strings.Join(parts, "  ")
+}
+
+func formatDurationMS(ms int64) string {
+	return (time.Duration(ms) * time.Millisecond).String()
 }
 
 // countToolCalls tallies agent.event tool-call entries per node path, from the raw

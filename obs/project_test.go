@@ -59,6 +59,25 @@ func TestProjectStepSpanOK(t *testing.T) {
 	}
 }
 
+func TestProjectStepDurationMS(t *testing.T) {
+	t0 := time.Unix(1000, 0).UTC()
+	events := []state.Event{
+		ev(t, engine.EventNodeStarted, "s1", t0.Add(500*time.Millisecond), engine.NodeStartedData{Kind: "agent"}),
+		ev(t, engine.EventNodeCompleted, "s1", t0.Add(3*time.Second), engine.NodeCompletedData{Outcome: "ok"}),
+	}
+	spans, err := Project(events, nil)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	s, ok := findSpan(spans, "s1")
+	if !ok {
+		t.Fatal("no span for s1")
+	}
+	if got := s.Attributes[AttrNodeDurationMS]; got != int64(2500) {
+		t.Fatalf("%s = %v, want 2500", AttrNodeDurationMS, got)
+	}
+}
+
 func TestProjectStepSpanFailed(t *testing.T) {
 	t0 := time.Unix(1000, 0).UTC()
 	events := []state.Event{

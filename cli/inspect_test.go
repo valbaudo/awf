@@ -167,3 +167,20 @@ func TestInspectTokensFlag(t *testing.T) {
 		t.Errorf("inspect --tokens missing '8000 out'; got:\n%s", text)
 	}
 }
+
+func TestNodeLineShowsCompletedDuration(t *testing.T) {
+	line := nodeLine(obs.Span{
+		Path:   "gen",
+		Name:   "gen",
+		Kind:   "agent",
+		Status: obs.StatusOK,
+		Attributes: map[string]any{
+			obs.AttrNodeOutcome:    "ok",
+			obs.AttrNodeDurationMS: int64(2500),
+		},
+	}, nil, false)
+
+	if !strings.Contains(line, "2.5s") {
+		t.Fatalf("nodeLine missing completed duration; got %q", line)
+	}
+}

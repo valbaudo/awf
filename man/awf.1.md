@@ -288,7 +288,8 @@ state; it executes nothing.
 
 Render a run's addressing tree as a text tree, folded by status: `ok` subtrees
 collapse, while `failed`, `rejected`, and `incomplete` subtrees expand, so a
-failing branch stands out. This reads the journal offline and executes nothing.
+failing branch stands out. Completed steps include their recorded elapsed time.
+This reads the journal offline and executes nothing.
 
 **--fold** _statuses_
 :   Comma-separated list of node outcomes to collapse (default `ok`).
@@ -314,10 +315,11 @@ determinism contract.
 ## awf trace _run-id_
 
 Project a run's journal into OpenTelemetry spans — one span per addressing-tree
-node, mirroring the resume tree — and export them. By default the spans are
-written to standard output (a zero-infrastructure local exporter); with
-**--otlp** they are sent to a collector instead. This reads the journal offline
-and executes nothing.
+node, mirroring the resume tree — and export them. Step spans include
+`awf.node.duration_ms`, derived from the journal's `node.started` and terminal
+event timestamps. By default the spans are written to standard output (a
+zero-infrastructure local exporter); with **--otlp** they are sent to a collector
+instead. This reads the journal offline and executes nothing.
 
 **--otlp** _endpoint_
 :   Export to an OTLP/HTTP collector at _host:port_ (plaintext) instead of
