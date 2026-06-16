@@ -207,7 +207,7 @@ run that finished `ok` is a no-op.
 
 **Native backend resume** mirrors Docker: committed steps are replayed from the
 journal, `snapshot: workspace` workdirs are restored from their last committed
-diff, and other containers are recreated fresh. Resume of a native run prints a
+archive, and other containers are recreated fresh. Resume of a native run prints a
 one-line caveat to stderr:
 
         awf resume: native backend — committed work is replayed and snapshot: workspace workdirs are restored, but the host base environment is not pinned; shell-step tooling runs against the current host.
