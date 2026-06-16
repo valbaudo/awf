@@ -143,21 +143,26 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     processes with no isolation; _fake_ is an in-memory backend for tests.
     _auto_ selects _native_ unless the workflow uses Docker-only features such as
     static image-backed containers, Compose-mode containers, or runtime map
-    images, in which case it selects _docker_. **awf run** records the selected
-    concrete backend in `run.started`;
+    images, in which case it selects _docker_ for a pinned, reproducible
+    baseline. **awf run** records the selected concrete backend in `run.started`;
     **awf resume** uses that recorded backend and does not re-run auto-selection.
-    Only _docker_ and _fake_ runs are resumable — a _native_ run cannot be
-    resumed.
+    All three concrete backends — _docker_, _native_, and _fake_ — are resumable.
 
     When _auto_ selects _native_, **awf run** prints:
 
-        awf run: backend auto selected native; this run cannot be resumed until native resume is supported. Use --backend docker for resumable runs.
+        awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline.
 
-    A simple auto run therefore records _native_; because native resume is not
-    supported, **awf resume** rejects that run with the existing native-backend
-    limitation and the same **--backend docker** guidance. An explicit
-    **--backend native** keeps the existing behavior and does not print the
-    auto-selection warning.
+    An explicit **--backend native** runs static image-mode and
+    `snapshot: workspace` workflows directly on the host, *ignoring* the declared
+    container image — there is no isolation and the image is not pulled. When a
+    workflow declares an image, native prints:
+
+        awf run: --backend native ignores declared container image(s); steps run on the host with no isolation.
+
+    Explicit native still **rejects** Compose-mode containers, runtime Compose,
+    and runtime map images — those have no host equivalent — with guidance to use
+    **--backend docker**. _auto_ never selects native for any of those; it routes
+    them (and image-mode and `snapshot: workspace`) to _docker_ instead.
 
 **--agent-env** _csv_
 :   Comma-separated allowlist of environment-variable *names* forwarded into
@@ -192,9 +197,7 @@ never silently adapted. It recreates containers from their recipe and continues
 in a new epoch. Committed steps are replayed from the journal (their recorded
 outputs reused, not recomputed); only the uncommitted frontier re-executes. The
 backend is read back from the journal, so no **--backend** flag is given and
-_auto_ is not re-evaluated on resume. Runs made with the _native_ backend are
-not resumable; **resume** rejects them with the native-backend limitation and
-guidance to use **--backend docker** for resumable runs. Any run whose last
+_auto_ is not re-evaluated on resume. Any run whose last
 outcome is not `ok` (`permanent_failure`, `rejected`, `retryable_failure`, or
 `cancelled`) is resumed with no flag; a one-line non-fatal note prints to
 stderr because the uncommitted frontier — and its side effects — re-runs.
@@ -202,12 +205,18 @@ Pinning is not relaxed: a changed definition digest or resolved runtime
 version is still a hard error (use **resume --from** for the fenced bypass). A
 run that finished `ok` is a no-op.
 
-**Native backend is not resumable.** `awf resume` of a run started with
-**--backend native** errors: there is no infra recipe to reconstruct host state.
-The exact error is: _runs with --backend native are not resumable (no infra
-recipe to reconstruct host state)_. Two escape hatches: use **--backend docker**
-for resumable runs, or re-drive a deterministic run from the start (delete the
-run directory and `awf run --backend native …` again).
+**Native backend resume** mirrors Docker: committed steps are replayed from the
+journal, `snapshot: workspace` workdirs are restored from their last committed
+diff, and other containers are recreated fresh. Resume of a native run prints a
+one-line caveat to stderr:
+
+        awf resume: native backend — committed work is replayed and snapshot: workspace workdirs are restored, but the host base environment is not pinned; shell-step tooling runs against the current host.
+
+Checkpoint integrity is preserved (committed replay plus the digest and
+runtime-version pins above), but the host baseline is not pinned: native does
+not pull or pin the declared image, so shell-step tooling runs against whatever
+is on the current host. Use **--backend docker** for a fully reproducible
+baseline.
 
 **--state-dir** _dir_
 :   Base directory holding the run (default `./.awf`).

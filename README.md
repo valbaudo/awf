@@ -217,7 +217,7 @@ spike.
 
 Execution backends:
 
-- `native`: host processes, fastest path, no isolation; not resumable (`awf resume` hard-errors — use `--backend docker` for resumable runs)
+- `native`: host processes, fastest path, no isolation; resumable (`snapshot: workspace` workdirs are restored on resume). Explicit `--backend native` runs image-mode workflows on the host, ignoring the declared image; the host base environment is not pinned — use `--backend docker` for a fully reproducible baseline
 - `docker`: digest-pinned images and Compose projects, resumable
 - `fake`: in-memory backend for conformance tests
 
