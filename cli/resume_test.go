@@ -350,27 +350,68 @@ func TestCLIResumeRejectsBackendFlag(t *testing.T) {
 	}
 }
 
-func TestCLIResumeRejectsNativeLogWithDockerGuidance(t *testing.T) {
+// Native resume is now admitted (mirror-Docker): a native run already proved
+// it uses no Docker-only features at run time, so resume reuses the recorded
+// backend without a flag. This rebuilds the OLD "native is rejected" test as a
+// POSITIVE one: an in-flight native log (one committed step + an uncommitted
+// frontier) resumes to completion, and stderr carries the host-base-env caveat.
+//
+// The fake backend is test-injected, so newBackend's native arm (blob wiring +
+// nil guard) is NOT exercised here — that path is covered by the dedicated
+// native run→pause→resume e2e (Task 9). What this asserts is the CLI admission
+// flip and the Change-3 caveat, both keyed off the kind read from run.started.
+func TestCLIResumeAdmitsNativeLogWithHostEnvCaveat(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	runID := "native-open"
-	runDir := filepath.Join(stateDir, "runs", runID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatal(err)
+	runID := "test-resume-native"
+
+	// Hand-craft an in-flight native log: run.started{Backend: native} +
+	// node.completed(touch_marker). Same SIGKILL model as the happy-path test
+	// (the CLI always writes run.finished on engine.Run return, so an in-flight
+	// log can't be produced via the CLI alone in a unit test). The workflow file
+	// MUST hash to the recorded digest and its resolved runtimes must match, else
+	// resume errors at the digest/runtime-drift pin for the WRONG reason.
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
-	log, err := state.OpenLog(filepath.Join(runDir, "log"), clock.System{})
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
 	if err != nil {
-		t.Fatalf("OpenLog: %v", err)
+		t.Fatalf("OpenBlobs: %v", err)
 	}
-	startedData, err := json.Marshal(engine.RunStartedData{
-		RunID:   runID,
-		Backend: engine.BackendNative,
+	ld, err := loader.Load("testdata/phase2/seq.yaml")
+	if err != nil {
+		t.Fatalf("Load fixture: %v", err)
+	}
+	if diags := ir.Validate(ld); ir.HasErrors(diags) {
+		t.Fatalf("fixture invalid: %v", diags)
+	}
+	digest, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatalf("ComputeDigest: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	log, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	runStartedData, _ := json.Marshal(engine.RunStartedData{
+		RunID: runID, WorkflowDigest: digest, Backend: engine.BackendNative,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: startedData}); err != nil {
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
 		t.Fatalf("Append run.started: %v", err)
+	}
+	stdoutRef, err := blobs.Put([]byte("created marker\n"))
+	if err != nil {
+		t.Fatalf("Put stdout: %v", err)
+	}
+	exit0 := 0
+	completedData, _ := json.Marshal(engine.NodeCompletedData{
+		Outcome: string(engine.OutcomeOK), ExitCode: &exit0, StdoutRef: stdoutRef,
+	})
+	if err := log.Append(state.Event{
+		Type: engine.EventNodeCompleted, Path: "touch_marker", Data: completedData,
+	}); err != nil {
+		t.Fatalf("Append node.completed: %v", err)
 	}
 	if err := log.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
@@ -379,17 +420,32 @@ func TestCLIResumeRejectsNativeLogWithDockerGuidance(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	runner := &cli.Runner{}
+	// Resume against the same fixture; program ONLY the uncommitted frontier
+	// (steps 2 and 3). The fake reports full caps so the kind=native
+	// capability checks pass.
+	fake := container.NewFake()
+	fake.ProgramExec("echo step2", container.ExecResult{
+		ExitCode: 0, AWFOutput: []byte(`{"message":"step2"}`),
+	}, nil)
+	fake.ProgramExec("cat /tmp/awf-seq-marker", container.ExecResult{ExitCode: 0}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{}}
 	var stdout, stderr bytes.Buffer
-	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
-	if rc != cli.ExitUsage {
-		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, stderr.String())
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml",
+	}, &stdout, &stderr)
+	if rc == cli.ExitUsage {
+		t.Fatalf("rc = ExitUsage (native admission still rejecting); stderr: %s", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "not resumable") {
-		t.Errorf("stderr missing native-resume limitation: %s", stderr.String())
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "--backend docker") {
-		t.Errorf("stderr missing docker guidance: %s", stderr.String())
+	// touch_marker MUST NOT have been dispatched (committed step replayed).
+	if len(fake.Calls) != 2 {
+		t.Fatalf("fake.Calls len = %d, want 2 (touch_marker must NOT re-execute)", len(fake.Calls))
+	}
+	// The Change-3 host-base-env caveat MUST print on native resume.
+	if !strings.Contains(stderr.String(), "the host base environment is not pinned") {
+		t.Errorf("stderr missing native host-env caveat: %s", stderr.String())
 	}
 }
 

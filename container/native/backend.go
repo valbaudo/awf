@@ -20,11 +20,19 @@ package native
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/state"
+)
+
+const (
+	snapshotDefaultMaxBlobBytes    int64 = 256 << 20 // 256 MiB compressed
+	snapshotDefaultMaxRestoreBytes int64 = 4 << 30   // 4 GiB decompressed (256 MiB × 16, under DEFLATE's ~1032× max ratio)
+	snapshotMaxEntries             int   = 1_000_000 // entry-count cap (zip-bomb / inode-exhaustion guard)
 )
 
 // Backend implements container.Backend by spawning host processes via
@@ -33,6 +41,11 @@ import (
 // /tmp/awf/<step>.json clobber failure mode).
 type Backend struct {
 	workdirRoot string
+
+	blobs                   state.Blobs
+	snapshotMaxBlobBytes    int64
+	snapshotMaxRestoreBytes int64
+	maxEntries              int
 
 	mu      sync.Mutex
 	handles map[string]nativeHandle
@@ -52,27 +65,74 @@ type nativeHandle struct {
 // Edge case: pre-existing /tmp/awf with restrictive perms (e.g.,
 // root-owned 0o700) is NOT detected here — first Exec fails with
 // shell "permission denied" instead.
-func New(workdirRoot string) (*Backend, error) {
+func New(workdirRoot string, opts ...Option) (*Backend, error) {
 	if workdirRoot == "" {
 		return nil, errors.New("container/native: New: workdirRoot is required")
 	}
 	if err := os.MkdirAll(container.AWFOutputDir, 0o755); err != nil {
 		return nil, err
 	}
-	return &Backend{
-		workdirRoot: workdirRoot,
-		handles:     map[string]nativeHandle{},
-	}, nil
+	b := &Backend{
+		workdirRoot:             workdirRoot,
+		handles:                 map[string]nativeHandle{},
+		snapshotMaxBlobBytes:    snapshotDefaultMaxBlobBytes,
+		snapshotMaxRestoreBytes: snapshotDefaultMaxRestoreBytes,
+		maxEntries:              snapshotMaxEntries,
+	}
+	for _, opt := range opts {
+		if err := opt(b); err != nil {
+			return nil, err
+		}
+	}
+	return b, nil
 }
 
-// Capabilities reports SnapshotNone — native does not implement
-// Snapshot/Restore. Workflows with snapshot:workspace containers
+// Option configures a native Backend at construction.
+type Option func(*Backend) error
+
+// WithBlobs supplies the CAS store Snapshot/Restore use. Without it the backend
+// advertises SnapshotNone and Snapshot returns a descriptive error.
+func WithBlobs(b state.Blobs) Option {
+	return func(n *Backend) error { n.blobs = b; return nil }
+}
+
+// WithSnapshotMaxBlobBytes overrides the compressed snapshot-blob cap (default
+// snapshotDefaultMaxBlobBytes). n must be > 0.
+func WithSnapshotMaxBlobBytes(n int64) Option {
+	return func(b *Backend) error {
+		if n <= 0 {
+			return fmt.Errorf("container/native: WithSnapshotMaxBlobBytes: n must be > 0, got %d", n)
+		}
+		b.snapshotMaxBlobBytes = n
+		return nil
+	}
+}
+
+// WithSnapshotMaxRestoreBytes overrides the cumulative decompressed-bytes cap
+// (default snapshotDefaultMaxRestoreBytes). n must be > 0.
+func WithSnapshotMaxRestoreBytes(n int64) Option {
+	return func(b *Backend) error {
+		if n <= 0 {
+			return fmt.Errorf("container/native: WithSnapshotMaxRestoreBytes: n must be > 0, got %d", n)
+		}
+		b.snapshotMaxRestoreBytes = n
+		return nil
+	}
+}
+
+// Capabilities reports SnapshotFSArchive iff blobs were supplied (WithBlobs),
+// else SnapshotNone — native implements Snapshot/Restore only against an
+// injected CAS store. Without it, workflows with snapshot:workspace containers
 // must use --backend docker.
-func (*Backend) Capabilities() container.Caps {
+func (b *Backend) Capabilities() container.Caps {
+	snap := container.SnapshotNone
+	if b.blobs != nil {
+		snap = container.SnapshotFSArchive
+	}
 	// RuntimeImage is false: native ignores spec.Image and runs on the host, so
 	// a map's runtime image cannot be honored. The CLI guard rejects such a
 	// workflow on native (P6a) — fail closed.
-	return container.Caps{Snapshot: container.SnapshotNone, RuntimeImage: false, RuntimeCompose: false}
+	return container.Caps{Snapshot: snap, RuntimeImage: false, RuntimeCompose: false}
 }
 
 // Create rejects compose-mode (no service-routing on host), ignores
@@ -116,18 +176,8 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	return os.RemoveAll(r.workdir)
 }
 
-// Snapshot returns ErrUnsupported — native does not implement
-// filesystem snapshots (decision 4). Workflows with snapshot:workspace
-// containers must use --backend docker.
-func (*Backend) Snapshot(_ context.Context, _ container.Handle) (container.SnapshotRef, error) {
-	return "", container.ErrUnsupported
-}
-
-// Restore returns ErrUnsupported — native does not implement
-// filesystem snapshots (decision 4).
-func (*Backend) Restore(_ context.Context, _ container.SnapshotRef, _ string) (container.Handle, error) {
-	return container.Handle{}, container.ErrUnsupported
-}
+// Restore re-materializes a container workdir from a SnapshotRef; it lives in
+// snapshot.go (os.Root-confined extraction).
 
 // Compile-time interface satisfaction.
 var _ container.Backend = (*Backend)(nil)

@@ -21,6 +21,7 @@ const (
 	AttrNodeKind        = "awf.node.kind"  // leaf step spans only — one of the 12 real node kinds
 	AttrScopeKind       = "awf.scope.kind" // synthesized control-scope spans only — structural role (M1)
 	AttrNodeOutcome     = "awf.node.outcome"
+	AttrNodeDurationMS  = "awf.node.duration_ms"
 	AttrExitCode        = "awf.exit_code"
 	AttrAgentTurns      = "awf.agent.turns"
 	AttrBranch          = "awf.branch"

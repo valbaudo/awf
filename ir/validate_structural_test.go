@@ -738,3 +738,51 @@ func TestAWF1024MessageReflectsEnvPattern(t *testing.T) {
 		t.Errorf("AWF1024 message %q must contain the enforcing regex %q (derived, not a hand-typed copy)", msg, envNamePattern.String())
 	}
 }
+
+func TestStructuralContainerNameCharset(t *testing.T) {
+	// AWF1059: a container map key must be a path-safe identifier. The native
+	// backend derives a host workdir from this raw per-workflow key, so a key
+	// like "../escape" is a path-traversal sink — reject it at the format level.
+	ld := makeLD(&Workflow{
+		ID: "bad-container-name", Version: 1,
+		Containers: map[string]Container{
+			"../escape": {Image: "oci://x@sha256:abc"},
+		},
+		Graph: NodeList{
+			&CodeStep{ID: "a", Container: "../escape", Run: "true"},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1059", "containers.../escape")
+}
+
+func TestStructuralContainerNameValidClean(t *testing.T) {
+	// A path-safe container key trips no AWF1059.
+	ld := makeLD(&Workflow{
+		ID: "ok-container-name", Version: 1,
+		Containers: map[string]Container{"runner": {Image: "oci://x@sha256:abc"}},
+		Graph:      NodeList{&CodeStep{ID: "a", Container: "runner", Run: "true"}},
+	})
+	assertNoCode(t, Validate(ld), "AWF1059")
+}
+
+func TestAWF1059MessageReflectsContainerNamePattern(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "bad-container-name", Version: 1,
+		Containers: map[string]Container{
+			"../escape": {Image: "oci://x@sha256:abc"},
+		},
+		Graph: NodeList{&CodeStep{ID: "a", Container: "../escape", Run: "true"}},
+	})
+	var msg string
+	for _, d := range Validate(ld) {
+		if d.Code == "AWF1059" {
+			msg = d.Message
+		}
+	}
+	if msg == "" {
+		t.Fatal("no AWF1059 diagnostic emitted")
+	}
+	if !strings.Contains(msg, containerNamePattern.String()) {
+		t.Errorf("AWF1059 message %q must contain the enforcing regex %q (derived, not a hand-typed copy)", msg, containerNamePattern.String())
+	}
+}

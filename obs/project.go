@@ -105,6 +105,9 @@ func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOpt
 			for k, v := range stepAttributes(e.Path, kind, d) {
 				s.Attributes[k] = v
 			}
+			if started[e.Path] {
+				attachNodeDuration(s)
+			}
 			if opts.CaptureContent {
 				attachNodeCompletedContent(s, d, blobs)
 			}
@@ -132,6 +135,9 @@ func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOpt
 			// NodeFailedData — deferred unless 6.3 conformance demands it.)
 			if s.Kind != "" {
 				s.Attributes[AttrNodeKind] = s.Kind
+			}
+			if started[e.Path] {
+				attachNodeDuration(s)
 			}
 
 		case engine.EventRunStarted:
@@ -225,6 +231,9 @@ func ProjectWithOptions(events []state.Event, blobs state.Blobs, opts ProjectOpt
 			if s.Attributes[AttrNodeOutcome] == nil {
 				s.Attributes[AttrNodeOutcome] = outcomeIncomplete
 			}
+			if started[path] {
+				attachNodeDuration(s)
+			}
 		}
 	}
 
@@ -272,6 +281,13 @@ func kindFromCompleted(d engine.NodeCompletedData) string {
 		return "code"
 	}
 	return "agent"
+}
+
+func attachNodeDuration(s *Span) {
+	if s.Start.IsZero() || s.End.IsZero() || s.End.Before(s.Start) {
+		return
+	}
+	s.Attributes[AttrNodeDurationMS] = int64(s.End.Sub(s.Start).Milliseconds())
 }
 
 // collect returns the spans sorted by Path (deterministic order).

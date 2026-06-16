@@ -211,6 +211,7 @@ var catalog = map[string]string{
 	"AWF1056": "tool impl must name a containers:-declared container (container field is missing or undeclared)",
 	"AWF1057": "react: requires uses: awf/llm (the only Containerless+Threaded adapter; CLI adapters cannot drive a tool loop)",
 	"AWF1058": "react: structured_output: ollama_format is incompatible with the OpenAI tool-call protocol",
+	"AWF1059": "container name uses an unsupported charset (must be a path-safe identifier)",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
 	"AWF_IMPORT_DECODE":         "imported workflow failed to decode",

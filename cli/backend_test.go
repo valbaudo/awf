@@ -57,8 +57,11 @@ func TestNewBackendNativeKindReturnsNative(t *testing.T) {
 	if backend == nil {
 		t.Fatal("backend = nil")
 	}
-	if got := backend.Capabilities().Snapshot; got != container.SnapshotNone {
-		t.Errorf("Capabilities().Snapshot = %v, want SnapshotNone (native)", got)
+	// newBackend now wires blobs into the native backend (native.WithBlobs), so
+	// snapshot capability is blob-contingent: with a non-nil Blobs it advertises
+	// SnapshotFSArchive (the snapshot: workspace facility), not SnapshotNone.
+	if got := backend.Capabilities().Snapshot; got != container.SnapshotFSArchive {
+		t.Errorf("Capabilities().Snapshot = %v, want SnapshotFSArchive (native + blobs)", got)
 	}
 }
 
@@ -139,7 +142,7 @@ func TestReadBackendKindFromLogErrorsIfNoRunStarted(t *testing.T) {
 	}
 }
 
-func TestReadBackendKindFromLogRejectsNative(t *testing.T) {
+func TestReadBackendKindFromLogAdmitsNative(t *testing.T) {
 	t.Parallel()
 	payload, err := json.Marshal(engine.RunStartedData{
 		RunID:          "r1",
@@ -150,18 +153,12 @@ func TestReadBackendKindFromLogRejectsNative(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := []state.Event{{Type: engine.EventRunStarted, Data: payload}}
-	_, err = cli.ReadBackendKindFromLogForTest(events)
-	if err == nil {
-		t.Fatal("err = nil, want non-nil (native is not resumable)")
+	kind, err := cli.ReadBackendKindFromLogForTest(events)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (native resume is now admitted, mirror-Docker)", err)
 	}
-	if !strings.Contains(err.Error(), "not resumable") {
-		t.Errorf("err = %q, want substring 'not resumable'", err)
-	}
-	if !strings.Contains(err.Error(), "native") {
-		t.Errorf("err = %q, want to mention 'native'", err)
-	}
-	if !strings.Contains(err.Error(), "--backend docker") {
-		t.Errorf("err = %q, want --backend docker guidance", err)
+	if kind != engine.BackendNative {
+		t.Errorf("kind = %q, want %q", kind, engine.BackendNative)
 	}
 }
 

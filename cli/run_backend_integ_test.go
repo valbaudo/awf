@@ -446,13 +446,16 @@ func TestCLIRunNativeBackendContainerlessRunRecordsNative(t *testing.T) {
 	}
 }
 
-// Slice 4.7: awf resume of a native log returns the typed
-// non-resumable error.
-func TestCLIResumeOfNativeLogIsRejected(t *testing.T) {
+// Native resume is now admitted (mirror-Docker: the run already proved no
+// Docker-only features at run time). A native run that finished OK is still a
+// no-op on resume — but for the SAME reason a finished-ok docker run is: the
+// finished-ok refusal in resumeAdmission fires before any backend handling,
+// not because native is unresumable.
+func TestCLIResumeOfFinishedNativeLogIsNoOp(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	// First, run native to completion to produce a log.
-	runner := &cli.Runner{IDGen: &clock.Fake{IDs: []string{"native-reject-1"}}}
+	runner := &cli.Runner{IDGen: &clock.Fake{IDs: []string{"native-noop-1"}}}
 	var stdout, stderr bytes.Buffer
 	rc := runner.Run(
 		[]string{"run", "--state-dir", stateDir, "--backend", "native", "testdata/phase4/native-seq.yaml"},
@@ -461,20 +464,19 @@ func TestCLIResumeOfNativeLogIsRejected(t *testing.T) {
 	if rc != cli.ExitOK {
 		t.Fatalf("initial run rc = %d, stderr: %s", rc, stderr.String())
 	}
-	// Resume must fail with the non-resumable error.
+	// Resume of a finished-ok run is refused as a no-op.
 	stdout.Reset()
 	stderr.Reset()
 	rc = runner.Run(
-		[]string{"resume", "--state-dir", stateDir, "native-reject-1", "testdata/phase4/native-seq.yaml"},
+		[]string{"resume", "--state-dir", stateDir, "native-noop-1", "testdata/phase4/native-seq.yaml"},
 		&stdout, &stderr,
 	)
 	if rc == cli.ExitOK {
-		t.Errorf("resume of native log returned ExitOK; want failure")
+		t.Errorf("resume of finished-ok native log returned ExitOK; want failure")
 	}
-	// A completed native run hits the "already finished" refusal in
-	// resume.go BEFORE the "not resumable" backend check (run.finished is
-	// the first terminal-event check). Both messages correctly reject the
-	// resume; assert the actual observable message.
+	// The finished-ok refusal in resumeAdmission fires first (run.finished is
+	// the first terminal-event check); native admission is now allowed, so the
+	// observable message is the no-op refusal, NOT a native-unresumable error.
 	if !strings.Contains(stderr.String(), "already finished") {
 		t.Errorf("stderr missing 'already finished': %s", stderr.String())
 	}

@@ -424,6 +424,10 @@ func (b *Backend) restoreFail(ctx context.Context, containerID, stage string, ca
 	return container.Handle{}, fmt.Errorf("container/docker: Restore: %s", stage)
 }
 
+// Decision: docker Restore is intentionally UNbounded (no decompression-bomb
+// caps like container/native's). CopyToContainer extracts into the isolated
+// container fs, so a bomb is a container-disk DoS only, never a host-disk one.
+//
 // streamPlainTarFromDiff reads a gzipped diff-tar (in RAM) and writes a
 // plain-tar (no .awf-deletes sidecar, leading-slash stripped) to w. Returns
 // the parsed deletes list separately. Streaming: peak memory bounded to
