@@ -212,14 +212,18 @@ machinery. AWF only validates digest-pinning, brings the project up run-scoped
 Backend selection is a CLI concern, but the workflow determines whether the
 default `--backend auto` can use the native backend. `auto` selects native unless
 Docker-only workflow features are present; static image-backed containers,
-Compose containers, and runtime `map.image` are Docker-only, so they select
-docker. When `auto` records native,
-**awf run** warns that the run cannot be resumed until native resume is supported
-and suggests **--backend docker** for resumable runs. An explicit
-**--backend native** keeps the existing native behavior and does not print that
-auto-selection warning. **awf resume** uses the concrete backend recorded in
-`run.started`; if that backend is native, resume fails with the existing native
-resume limitation and the same **--backend docker** guidance.
+Compose containers, workspace snapshots, and runtime `map.image` route to docker
+for a pinned, reproducible baseline. An explicit
+**--backend native** instead runs static image-mode and `snapshot: workspace`
+workflows directly on the host, ignoring the declared container image (printing a
+no-isolation warning); it still rejects Compose containers, runtime Compose, and
+runtime map images, which have no host equivalent. **awf resume** uses the
+concrete backend recorded in `run.started`. Native runs are resumable: committed
+steps are replayed, `snapshot: workspace` workdirs are restored from their last
+committed diff, and other containers are recreated fresh. Resume preserves
+checkpoint integrity (committed replay plus digest and runtime-version pins) but
+does not pin the host base environment, so shell-step tooling runs against the
+current host; use **--backend docker** for a fully reproducible baseline.
 
 Readiness is re-established on every (re)creation, including resume. The runtime
 guarantees a container is healthy before dispatching a step into it; it does not

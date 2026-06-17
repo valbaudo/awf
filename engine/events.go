@@ -254,8 +254,10 @@ type GateAttemptData struct {
 // cli/resume.go maps "" → BackendDocker so legacy logs resume against
 // the slice-4.5 default. This IS a behavior change for legacy logs
 // (pre-slice-4.5 cli.Run hard-wired fake); documented in the slice-4.5
-// PR body's Migration section. Native runs are NOT resumable — see
-// cli/backend.go:readBackendKindFromLog for the resume-side guard.
+// PR body's Migration section. Native runs ARE resumable — snapshot:
+// workspace workdirs restore from a gzip-tar archive on resume; the host
+// base environment is not pinned (see cli/backend.go readBackendKindFromLog
+// + container/native/snapshot.go).
 const (
 	BackendFake   = "fake"
 	BackendDocker = "docker"
@@ -270,8 +272,10 @@ const (
 // flag (slice 4.5; one of BackendFake / BackendDocker / BackendNative). cli/resume.go reads
 // it back to pick the same Backend on resume — no --backend flag mismatch
 // class. Empty in pre-slice-4.5 logs (omitempty); consumer maps "" →
-// BackendDocker. BackendNative is non-resumable (slice 4.7) — resume of
-// a native log returns a typed error rather than dispatching.
+// BackendDocker. BackendNative is resumable (slice 4.7) — resume of a
+// native log dispatches Restore; snapshot: workspace workdirs restore from
+// a gzip-tar archive while the host base environment is not pinned (see
+// cli/backend.go readBackendKindFromLog + container/native/snapshot.go).
 //
 // Phase 2: Runtimes is always empty (no `uses:` execution). Phase 5
 // populates it with {ref, resolved-version} per agent step, and resume

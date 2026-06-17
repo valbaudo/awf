@@ -20,6 +20,7 @@ import (
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
@@ -1980,36 +1981,65 @@ func TestRunReleasesRunLockOnExit(t *testing.T) {
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
 
-// TestRunRejectsSnapshotWorkspaceOnNativeSelection exercises the run-backend
-// selector: snapshot: workspace is a Docker-only workflow feature, so explicit
-// --backend native fails before backend construction. The diagnostic must still
-// name "snapshot: workspace" for operators.
-func TestRunRejectsSnapshotWorkspaceOnNativeSelection(t *testing.T) {
+// TestSelectRunBackendNativeAcceptsSnapshotWorkspace verifies the relaxed
+// selection (T8.5): explicit --backend native now ACCEPTS a snapshot: workspace
+// (image-mode) workflow instead of rejecting it. Native runs the steps on the
+// host and snapshots the workdir; the declared image is ignored. AUTO is
+// unchanged and still routes the same workflow to Docker for reproducibility.
+func TestSelectRunBackendNativeAcceptsSnapshotWorkspace(t *testing.T) {
+	t.Parallel()
+	snap := &ir.Workflow{Containers: map[string]ir.Container{
+		"lab": {
+			Image:    "oci://example.com/x@sha256:" + strings.Repeat("0", 64),
+			Snapshot: "workspace",
+		},
+	}}
+
+	// Explicit native: accepted, returns native.
+	got, err := cli.SelectRunBackendForTest(engine.BackendNative, snap)
+	if err != nil {
+		t.Fatalf("SelectRunBackend(native, snapshot:workspace) = err %v, want nil", err)
+	}
+	if got != engine.BackendNative {
+		t.Errorf("explicit native selected = %q, want %q", got, engine.BackendNative)
+	}
+
+	// Auto unchanged: still routes snapshot:workspace to Docker.
+	gotAuto, err := cli.SelectRunBackendForTest("auto", snap)
+	if err != nil {
+		t.Fatalf("SelectRunBackend(auto, snapshot:workspace) = err %v, want nil", err)
+	}
+	if gotAuto != engine.BackendDocker {
+		t.Errorf("auto selected = %q, want %q (reproducibility default unchanged)", gotAuto, engine.BackendDocker)
+	}
+}
+
+// TestRunNativeWarnsImageIgnored verifies the non-silent image warning (T8.5):
+// running an image-mode workflow under explicit --backend native prints a single
+// stderr line so the declared image is never silently dropped. The run executes
+// against the injected fake backend.
+func TestRunNativeWarnsImageIgnored(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	wf := filepath.Join(t.TempDir(), "ws.yaml")
-	if err := os.WriteFile(wf, []byte(`workflow: ws
-version: 1
-containers:
-  lab: { image: oci://example.com/x@sha256:`+strings.Repeat("0", 64)+`, snapshot: workspace }
-graph:
-  - id: s
-    container: lab
-    run: "true"
-`), 0o644); err != nil {
-		t.Fatal(err)
+	wfPath := writeMinimalWorkflow(t, t.TempDir())
+	fake := container.NewFake()
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	runner := newTestRunner(t, fake)
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--backend", "native", "--state-dir", stateDir, wfPath},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
 	}
-	var out, errb bytes.Buffer
-	// Backend is left nil; the selector rejects before constructing native.
-	// IDGen is set so the run-id mint step never needs the production generator
-	// if ordering changes.
-	r := &cli.Runner{IDGen: &clock.Fake{IDs: []string{"test-run-1"}}}
-	rc := r.Run([]string{"run", "--backend", "native", "--state-dir", stateDir, wf}, &out, &errb)
-	if rc != cli.ExitUsage {
-		t.Fatalf("rc = %d, want ExitUsage; stderr: %s", rc, errb.String())
+	const want = "ignores declared container image"
+	if got := strings.Count(stderr.String(), want); got != 1 {
+		t.Errorf("image-ignored warning count = %d, want 1; stderr:\n%s", got, stderr.String())
 	}
-	if !strings.Contains(errb.String(), "snapshot: workspace") {
-		t.Errorf("expected selector diagnostic naming snapshot: workspace, got: %s", errb.String())
+	// The auto-native note must NOT fire — this is an explicit-native image run.
+	if strings.Contains(stderr.String(), "auto-selected native backend") {
+		t.Errorf("unexpected auto-native note on explicit native run; stderr:\n%s", stderr.String())
 	}
 }
 

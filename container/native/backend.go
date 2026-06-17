@@ -1,8 +1,9 @@
 // Package native implements container.Backend by running commands
 // directly on the host via os/exec. It ignores the IR's image: field
-// and refuses compose: containers. Native runs are explicitly out-of-spec
-// for digest-pinned reproducibility and are NOT resumable (see
-// cli/backend.go:readBackendKindFromLog for the resume-side guard).
+// and refuses compose: containers. Native runs are resumable —
+// snapshot: workspace workdirs are restored from a full gzip-tar archive
+// on resume; the host base environment is not pinned, so native remains
+// explicitly out-of-spec for digest-pinned reproducibility.
 //
 // Design: docs/superpowers/specs/2026-04-20-awf-phase4-slice-4-7-design.md
 //

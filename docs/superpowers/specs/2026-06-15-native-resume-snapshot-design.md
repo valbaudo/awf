@@ -86,6 +86,15 @@ prints a one-line caveat to stderr on native runs.
 11. **Native self-contained tar code.** Docker's `diffTarWriter`/`cappedWriter` are unexported in
     package `docker`; native writes its own in `container/native/snapshot.go` (extracting a shared
     helper would touch working docker code — out of scope).
+12. **Option A — explicit `--backend native` runs image-mode + `snapshot: workspace` on the host.**
+    The run-time backend *selector* (`selectRunBackendForLoadedDefinition` /
+    `firstNativeIncompatibleFeature` in `cli/backend_features.go`) was relaxed: static image-mode
+    and `snapshot: workspace` no longer abort an explicit native run — they run on the host,
+    ignoring the declared image (a no-isolation warning prints). Native still rejects only
+    compose / runtime-compose / runtime-map-image (no host equivalent). `--backend auto` is
+    unchanged: it still routes image-mode / `snapshot: workspace` / compose / runtime-* to docker
+    for a pinned baseline. (Without this relax, the §6 `snapshotguard` gate alone would never be
+    reached for native image-mode runs — the selector aborted first.)
 
 ## 3. Architecture — what changes, what does not
 
@@ -166,9 +175,14 @@ func (b *Backend) Capabilities() container.Caps {
 }
 ```
 
-`RuntimeImage`/`RuntimeCompose` stay `false` (unchanged). `cli/snapshotguard.go` keys on
-`!= SnapshotNone`, so `snapshot: workspace` passes on native-with-blobs and is still rejected on
-native-without-blobs. Production never sees nil blobs (decision 3).
+`RuntimeImage`/`RuntimeCompose` stay `false` (unchanged). `snapshot: workspace` on native passes
+**two** gates, not one. First the run-time backend *selector*
+(`cli/backend_features.go`, decision 12) must admit it — relaxed so an explicit `--backend native`
+runs image-mode + `snapshot: workspace` on the host instead of aborting (the earlier selector
+blocked this, so the original claim that snapshotguard alone admits it was incomplete). Then
+`cli/snapshotguard.go` keys on `!= SnapshotNone`, so `snapshot: workspace` passes on
+native-with-blobs and is still rejected on native-without-blobs. Production never sees nil blobs
+(decision 3).
 
 ## 7. Resume admission + warnings
 
