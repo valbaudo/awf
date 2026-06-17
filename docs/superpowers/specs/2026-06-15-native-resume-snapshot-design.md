@@ -51,9 +51,12 @@ prints a one-line caveat to stderr on native runs.
    cheaper — the gating cost is the closed allow-list switch + Caps-asserting tests, not the const.
 3. **Blob-contingent capability** (mirrors the fake, `container/fake.go:184`). `native.New` gains
    variadic options; `Capabilities().Snapshot` returns `SnapshotFSArchive` iff blobs were supplied,
-   else `SnapshotNone`. The 38 existing `native.New(...)` callers compile unchanged. **`Snapshot`
-   with nil blobs returns a descriptive `WithBlobs`-naming error (not bare `ErrUnsupported`); the
-   production `newBackend` native arm panics on nil blobs** (it always has them — `OpenBlobs`
+   else `SnapshotNone`. The 38 existing `native.New(...)` callers compile unchanged. **`Snapshot`/
+   `Restore` with nil blobs return a descriptive `WithBlobs`-naming error that WRAPS
+   `container.ErrUnsupported`** (so `errors.Is(_, container.ErrUnsupported)` holds, satisfying
+   `backendtest.RunBasicContract`'s `SnapshotErrUnsupportedIfNotAdvertised`/
+   `RestoreErrUnsupportedIfNotAdvertised` routing contract for a `SnapshotNone` backend). The
+   production `newBackend` native arm panics on nil blobs (it always has them — `OpenBlobs`
    never returns nil-without-error and callers exit on its error first).
 4. **Full archive, self-contained per snapshot.** No base image ⇒ no diff; each snapshot is a
    complete gzip-tar of the workdir.

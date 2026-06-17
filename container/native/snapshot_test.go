@@ -37,11 +37,20 @@ func TestTarHeaderPreservesExecMasksSpecial(t *testing.T) {
 	}
 }
 
-func TestSnapshotWithoutBlobsErrors(t *testing.T) {
+func TestSnapshotWithoutBlobsReturnsErrUnsupported(t *testing.T) {
 	b, _ := New(t.TempDir())
 	h, _ := b.Create(context.Background(), container.ContainerSpec{Name: "ws"})
-	if _, err := b.Snapshot(context.Background(), h); err == nil {
-		t.Fatal("Snapshot without blobs: err = nil, want non-nil")
+	_, err := b.Snapshot(context.Background(), h)
+	if !errors.Is(err, container.ErrUnsupported) {
+		t.Fatalf("Snapshot without blobs: err = %v, want errors.Is(_, container.ErrUnsupported)", err)
+	}
+}
+
+func TestRestoreWithoutBlobsReturnsErrUnsupported(t *testing.T) {
+	b, _ := New(t.TempDir())
+	_, err := b.Restore(context.Background(), container.SnapshotRef("any"), "ws")
+	if !errors.Is(err, container.ErrUnsupported) {
+		t.Fatalf("Restore without blobs: err = %v, want errors.Is(_, container.ErrUnsupported)", err)
 	}
 }
 

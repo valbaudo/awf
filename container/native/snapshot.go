@@ -100,7 +100,7 @@ func (b *Backend) Snapshot(ctx context.Context, h container.Handle) (container.S
 		return "", fmt.Errorf("container/native: Snapshot: unknown handle %q", h.ID)
 	}
 	if b.blobs == nil {
-		return "", fmt.Errorf("container/native: Snapshot: no blob store (construct with native.WithBlobs)")
+		return "", fmt.Errorf("container/native: Snapshot: no blob store (construct with native.WithBlobs): %w", container.ErrUnsupported)
 	}
 
 	var buf bytes.Buffer
@@ -190,7 +190,7 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 		return container.Handle{}, fmt.Errorf("container/native: Restore: name is required")
 	}
 	if b.blobs == nil {
-		return container.Handle{}, fmt.Errorf("container/native: Restore: no blob store (construct with native.WithBlobs)")
+		return container.Handle{}, fmt.Errorf("container/native: Restore: no blob store (construct with native.WithBlobs): %w", container.ErrUnsupported)
 	}
 	if !filepath.IsLocal(name) { // rejects "", "..", "/abs", "a/../../b"; defense-in-depth before OpenRoot
 		return container.Handle{}, fmt.Errorf("container/native: Restore: unsafe container name %q", name)
