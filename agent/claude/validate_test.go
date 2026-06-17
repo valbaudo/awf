@@ -21,6 +21,7 @@ func TestValidateConfig_HappyPath_AllOptionalKeys(t *testing.T) {
 	err := a.ValidateConfig(ir.RawConfig{
 		"prompt":         "p",
 		"model":          "claude-opus-4-7",
+		"effort":         "max",
 		"max_turns":      10,
 		"system_prompt":  "you are X",
 		"allowed_tools":  []any{"Bash", "Read"},
@@ -29,6 +30,21 @@ func TestValidateConfig_HappyPath_AllOptionalKeys(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("ValidateConfig: %v", err)
+	}
+}
+
+func TestValidateConfig_EffortEnum(t *testing.T) {
+	a, _ := New(WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	for _, ok := range []string{"low", "medium", "high", "xhigh", "max"} {
+		if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": ok}); err != nil {
+			t.Errorf("effort=%q should pass: %v", ok, err)
+		}
+	}
+	if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": "ultra"}); err == nil {
+		t.Error("effort=ultra should fail (not in enum)")
+	}
+	if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": 1}); err == nil {
+		t.Error("effort non-string should fail")
 	}
 }
 

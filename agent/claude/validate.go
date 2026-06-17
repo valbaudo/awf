@@ -15,6 +15,7 @@ import (
 const (
 	keyPrompt       = "prompt"
 	keyModel        = "model"
+	keyEffort       = "effort"
 	keyMaxTurns     = "max_turns"
 	keySystemPrompt = "system_prompt"
 	keyAllowedTools = "allowed_tools"
@@ -29,9 +30,11 @@ const defaultBare = true
 
 // Per Phase 5 design decision 9. Strict; unknown keys rejected.
 var allowedKeys = map[string]struct{}{
-	keyPrompt: {}, keyModel: {}, keyMaxTurns: {}, keySystemPrompt: {},
+	keyPrompt: {}, keyModel: {}, keyEffort: {}, keyMaxTurns: {}, keySystemPrompt: {},
 	keyAllowedTools: {}, keyBare: {}, keyMaxBudgetUSD: {},
 }
+
+var effortValues = []string{"low", "medium", "high", "xhigh", "max"}
 
 // sessionKeysList is the literal list of with-keys whose presence would
 // re-use a claude session (Phase 5 design decision 7). Used only for the
@@ -87,6 +90,15 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 	if v, ok := with[keyModel]; ok {
 		if _, ok := v.(string); !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyModel)
+		}
+	}
+	if v, ok := with[keyEffort]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyEffort)
+		}
+		if !slices.Contains(effortValues, s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", effortValues, s), keyEffort)
 		}
 	}
 	if v, ok := with[keyMaxTurns]; ok {

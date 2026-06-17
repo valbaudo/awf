@@ -217,6 +217,9 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	if model, ok := inv.With[keyModel].(string); ok && model != "" {
 		parts = append(parts, "--model", shellQuote(model))
 	}
+	if effort, ok := inv.With[keyEffort].(string); ok && effort != "" {
+		parts = append(parts, "--effort", shellQuote(effort))
+	}
 	if mt, ok := toInt(inv.With[keyMaxTurns]); ok && mt > 0 {
 		parts = append(parts, "--max-turns", fmt.Sprintf("%d", mt))
 	}

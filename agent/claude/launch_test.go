@@ -315,6 +315,7 @@ func TestAssembleCommand_EmitsFlagPerWithKey(t *testing.T) {
 		With: ir.RawConfig{
 			"prompt":         "x",
 			"model":          "claude-opus-4-8",
+			"effort":         "max",
 			"max_turns":      3,
 			"system_prompt":  "be terse",
 			"allowed_tools":  []any{"Bash", "Read"},
@@ -333,6 +334,7 @@ func TestAssembleCommand_EmitsFlagPerWithKey(t *testing.T) {
 	cmd := f.Calls[0].Run
 	for key, flag := range map[string]string{
 		"model":          "--model",
+		"effort":         "--effort",
 		"max_turns":      "--max-turns",
 		"system_prompt":  "--system-prompt",
 		"allowed_tools":  "--allowedTools",
