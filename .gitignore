@@ -6,6 +6,7 @@
 .claude.json
 .codex/
 .cursor/
+.agents/
 .aider*
 CLAUDE.md
 CLAUDE.local.md
@@ -19,6 +20,9 @@ ROADMAP.md
 /bin/
 # A bare `go build` at the repo root drops the binary here; `make` uses /bin/.
 /awf
+# Local AWF run state: the default --state-dir (runs/, blobs/, live/) that `awf`
+# writes when executed in the repo. Per-run output, never an artifact to commit.
+.awf/
 # Generated man pages (built from man/*.md by `make man`); sources are committed.
 man/*.1
 man/*.5
