@@ -212,6 +212,28 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 		Image: spec.Image,
 		Cmd:   spec.Cmd, // nil/empty → image default applies (slice 4.4 Q9)
 	}
+
+	// Default keepalive: a single image with no command of its own (and no
+	// author cmd:) would exit at boot and Exec would fail "not running". Inject
+	// `sleep infinity` ONLY as a last resort so an author cmd: and the image's
+	// own CMD/ENTRYPOINT are both honored (Phase 4 design §A; reverses 76802de
+	// only for the genuinely command-less case).
+	//
+	// Injection fires when the author did not supply a Cmd AND the image has no
+	// ENTRYPOINT. Images with an ENTRYPOINT declare a real service (e.g. a
+	// daemon binary) that is long-running; we must not override them. Images
+	// with no ENTRYPOINT but a shell CMD (e.g. alpine's /bin/sh) exit
+	// immediately when run non-interactively — they need the keepalive.
+	if len(cfg.Cmd) == 0 && !spec.DisableKeepalive {
+		inspect, ierr := b.cli.ImageInspect(ctx, spec.Image)
+		if ierr != nil {
+			return container.Handle{}, fmt.Errorf("container/docker: Create: ImageInspect: %w", ierr)
+		}
+		if inspect.Config == nil || len(inspect.Config.Entrypoint) == 0 {
+			cfg.Cmd = []string{"sleep", "infinity"}
+		}
+	}
+
 	hostCfg := &dockerContainer.HostConfig{}
 	if spec.Resources != nil {
 		if spec.Resources.CPU != "" {
