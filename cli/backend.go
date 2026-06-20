@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	dockerclient "github.com/docker/docker/client"
 
@@ -30,9 +31,12 @@ import (
 // workdirRoot is consumed only by the native arm (path under which
 // per-container workdirs are created). Other arms ignore it.
 //
+// stderr is used only by the native arm to emit the no-sandbox isolation
+// warning (WS-5); other arms ignore it.
+//
 // Private — no exported type, no Runner field, no plugin layer (CLAUDE.md
 // "seams as designed — no more").
-func newBackend(ctx context.Context, kind, runID, workdirRoot string, blobs state.Blobs) (container.Backend, func(), error) {
+func newBackend(ctx context.Context, kind, runID, workdirRoot string, blobs state.Blobs, stderr io.Writer) (container.Backend, func(), error) {
 	_ = ctx // reserved for future hooks (e.g. client.Ping); structural for now per slice-4.5 plan.
 	switch kind {
 	case engine.BackendFake:
@@ -41,9 +45,14 @@ func newBackend(ctx context.Context, kind, runID, workdirRoot string, blobs stat
 		if blobs == nil {
 			panic("cli: newBackend native: blobs must not be nil") // OpenBlobs never returns nil-without-error; callers exit first
 		}
-		b, err := native.New(workdirRoot, native.WithBlobs(blobs))
+		b, err := native.New(workdirRoot, native.WithBlobs(blobs), native.WithSandbox(true))
 		if err != nil {
 			return nil, nil, fmt.Errorf("cli: construct native backend: %w", err)
+		}
+		// Emit the no-sandbox isolation warning when no platform sandbox was
+		// available. Mirrors the no-image warning at cli/run.go:354.
+		if label := b.SandboxWarnLabel(); label != "" {
+			fprintf(stderr, "awf run: --backend native: %s\n", label)
 		}
 		return b, func() {}, nil
 	case engine.BackendDocker:
@@ -77,13 +86,16 @@ func newBackend(ctx context.Context, kind, runID, workdirRoot string, blobs stat
 // unconditionally and the closure-vs-Destroy ordering is the same in both
 // cases (cleanup fires LIFO AFTER the per-handle Destroy loop).
 //
+// stderr is forwarded to newBackend for the native arm's no-sandbox warning
+// (WS-5); it is unused when r.Backend is injected (test path).
+//
 // Centralized here so cli/run.go (kind from --backend flag) and
 // cli/resume.go (kind from run.started.Backend) share one dispatch.
-func (r *Runner) resolveBackend(ctx context.Context, kind, runID, workdirRoot string, blobs state.Blobs) (container.Backend, func(), error) {
+func (r *Runner) resolveBackend(ctx context.Context, kind, runID, workdirRoot string, blobs state.Blobs, stderr io.Writer) (container.Backend, func(), error) {
 	if r.Backend != nil {
 		return r.Backend, func() {}, nil
 	}
-	return newBackend(ctx, kind, runID, workdirRoot, blobs)
+	return newBackend(ctx, kind, runID, workdirRoot, blobs, stderr)
 }
 
 // readBackendKindFromLog extracts the Backend kind from a folded log's

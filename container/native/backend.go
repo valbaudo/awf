@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 
@@ -47,6 +48,12 @@ type Backend struct {
 	snapshotMaxBlobBytes    int64
 	snapshotMaxRestoreBytes int64
 	maxEntries              int
+
+	// sandbox is the resolved launcher for WS-5. nil means sandbox was not
+	// requested (WithSandbox(false) or not supplied); non-nil means sandbox
+	// was requested and detectSandbox resolved a launcher (may be the no-op
+	// fallback if no platform sandbox was available).
+	sandbox sandboxLauncher
 
 	mu      sync.Mutex
 	handles map[string]nativeHandle
@@ -95,6 +102,45 @@ type Option func(*Backend) error
 // advertises SnapshotNone and Snapshot returns a descriptive error.
 func WithBlobs(b state.Blobs) Option {
 	return func(n *Backend) error { n.blobs = b; return nil }
+}
+
+// WithSandbox enables (enabled=true) or disables (enabled=false) OS-level
+// process sandboxing for native backend Exec calls. When enabled, detectSandbox
+// resolves the best available platform launcher (bwrap on Linux, sandbox-exec
+// on macOS). If no platform sandbox is available the backend falls back to a
+// no-op launcher and SandboxWarnLabel returns a non-empty loud warning string
+// that the CLI MUST surface to stderr (mirror of cli/run.go:354 pattern).
+//
+// When disabled (or not supplied), sandbox detection is skipped entirely and
+// SandboxWarnLabel returns "".
+func WithSandbox(enabled bool) Option {
+	return func(b *Backend) error {
+		if !enabled {
+			return nil
+		}
+		l, _ := detectSandbox(exec.LookPath)
+		b.sandbox = l
+		return nil
+	}
+}
+
+// SandboxWarnLabel returns a non-empty warning string when the backend was
+// constructed with WithSandbox(true) but no platform sandbox was available
+// (i.e. the no-op fallback is in use). Returns "" when sandbox is disabled
+// or when a real platform launcher was selected.
+//
+// The CLI MUST print this to stderr immediately after constructing the native
+// backend, in the same style as the no-image warning at cli/run.go:354:
+//
+//	awf run: --backend native: <SandboxWarnLabel()>
+func (b *Backend) SandboxWarnLabel() string {
+	if b.sandbox == nil {
+		return "" // sandbox not enabled
+	}
+	if _, ok := b.sandbox.(noOpLauncher); ok {
+		return noSandboxWarnLabel
+	}
+	return "" // real launcher — no warning
 }
 
 // WithSnapshotMaxBlobBytes overrides the compressed snapshot-blob cap (default

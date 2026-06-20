@@ -160,7 +160,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// The result is held in a LOCAL variable (NEVER assigned to r.Backend)
 	// so sequential runner.Run(...) calls don't leak a constructed Backend.
 	workdirRoot := filepath.Join(*stateDir, "work")
-	backend, cleanup, err := r.resolveBackend(ctx, concreteBackendKind, id, workdirRoot, blobs)
+	backend, cleanup, err := r.resolveBackend(ctx, concreteBackendKind, id, workdirRoot, blobs, stderr)
 	if err != nil {
 		fprintf(stderr, "awf run: construct backend %q: %v\n", concreteBackendKind, err)
 		return ExitInfra
