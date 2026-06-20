@@ -641,6 +641,28 @@ func TestDigestAssetDirectoryOrderingStable(t *testing.T) {
 	}
 }
 
+// TestStructuralDigest_ChangesOnAsset: changing an asset's bytes changes StructuralDigest.
+func TestStructuralDigest_ChangesOnAsset(t *testing.T) {
+	wf := twoCodeStepWorkflow()
+	wf.Assets = map[string]string{"data": "data.json"}
+
+	assetV1 := digestTestAsset("data", "data.json", "data.json", []byte(`{"v":1}`))
+	sd1, err := wf.StructuralDigest(nil, map[string]LoadedAsset{"data": assetV1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assetV2 := digestTestAsset("data", "data.json", "data.json", []byte(`{"v":2}`))
+	sd2, err := wf.StructuralDigest(nil, map[string]LoadedAsset{"data": assetV2})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sd1 == sd2 {
+		t.Fatalf("StructuralDigest unchanged after asset bytes change (got %s for both)", sd1)
+	}
+}
+
 // TestNodeSubtreeDigest_IdenticalNodes verifies that two structurally-identical
 // Node values produce the same digest (case a).
 func TestNodeSubtreeDigest_IdenticalNodes(t *testing.T) {

@@ -249,10 +249,33 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// that hashes differently is a forbidden definition change.
 	// --from bypasses the digest pin: the user is explicitly re-running against
 	// the current definition.
+	// WS-6b: when the change is confined to node bodies (structural guard passes),
+	// engage per-node verifying-trace reuse instead of hard-erroring.
 	if *from == "" && rs.WorkflowDigest != currentDigest {
-		fprintf(stderr, "awf resume: workflow digest mismatch — run %q was started with digest %q, file %q now hashes to %q. Spec §8 forbids resuming against a changed definition.\n",
-			runID, rs.WorkflowDigest, wfPath, currentDigest)
-		return ExitUsage
+		// structural guard: only engage per-node reuse when the change is confined to node bodies
+		importsPresent := len(ld.ImportEdges) > 0
+		currentStructural, err := ld.Workflow.StructuralDigest(ld.ComposeFiles, ld.Assets)
+		if err != nil {
+			fprintf(stderr, "awf resume: compute structural digest: %v\n", err)
+			return ExitUsage
+		}
+		if importsPresent || rs.StructuralDigest == "" || rs.StructuralDigest != currentStructural {
+			// KEEP TODAY'S EXACT HARD-ERROR TEXT — byte-identical:
+			fprintf(stderr, "awf resume: workflow digest mismatch — run %q was started with digest %q, file %q now hashes to %q. Spec §8 forbids resuming against a changed definition.\n",
+				runID, rs.WorkflowDigest, wfPath, currentDigest)
+			return ExitUsage
+		}
+		// delta confined to node bodies → verifying-trace
+		target, err := engine.ComputeVerifyingTraceTarget(ld.Workflow, rs)
+		if err != nil {
+			fprintf(stderr, "awf resume: verifying-trace target: addressing shift detected — %v. Cannot resume; revert the structural change or start a fresh run.\n", err)
+			return ExitUsage
+		}
+		if target != "" {
+			rerunFrom = target
+			fprintf(stderr, "awf resume: definition changed (node bodies only); reusing committed steps before %q and re-running it + downstream. Pins for re-run nodes bypassed.\n", target)
+		}
+		// target=="" → every committed node reusable: fall through, pure replay + run the uncommitted remainder
 	}
 	started, err := engine.RunStartedDataFromEvents(events)
 	if err != nil {
