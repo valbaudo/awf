@@ -105,6 +105,14 @@ func (*Adapter) Capabilities() agent.Caps {
 	}
 }
 
+// RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var
+// name codex-live authenticates with. OPENAI_API_KEY is defined in
+// DefaultEnvAllowlist; CODEX_HOME is a config directory (not a credential) and
+// is intentionally excluded.
+func (*Adapter) RequiredEnv() []string {
+	return []string{"OPENAI_API_KEY"}
+}
+
 func (a *Adapter) Version(ctx context.Context, _ container.Handle) (string, error) {
 	if a.client == nil {
 		return "", errors.New("agent/codexlive: Version: no app-server client wired")

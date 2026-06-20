@@ -94,6 +94,14 @@ func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true}
 }
 
+// RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var
+// names this adapter authenticates with (provider-alternatives: OPENAI_API_KEY
+// for the default OpenAI/compatible endpoint, ANTHROPIC_API_KEY for provider:
+// anthropic). Both names are defined in DefaultEnvAllowlist.
+func (*Adapter) RequiredEnv() []string {
+	return []string{defaultAPIKeyEnv, defaultAnthropicAPIKeyEnv}
+}
+
 // RunToolLoop executes ONE model call with tools attached (P3 A3 — the engine-
 // mediated tool loop). It validates the react with: (prompt-exempt), builds the
 // reqConfig via the shared buildReqConfig, rejects the Ollama-native path (no

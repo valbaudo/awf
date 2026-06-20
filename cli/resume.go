@@ -395,6 +395,12 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
+	// Advisory credential-presence preflight (same as run-start). Warns when
+	// none of an adapter's credential env vars is set; never fails.
+	if err := checkCredentialPresenceForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
 
 	if err := preflightLiveResume(ctx, ld, rs, resolverOrEmpty(resolver)); err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)

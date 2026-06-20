@@ -75,3 +75,9 @@ func (*Adapter) Ref() string { return AdapterRef }
 func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{NativeSchema: false}
 }
+
+// RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var
+// name droid authenticates with. FACTORY_API_KEY is defined in DefaultEnvAllowlist.
+func (*Adapter) RequiredEnv() []string {
+	return DefaultEnvAllowlist
+}

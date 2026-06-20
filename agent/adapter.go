@@ -150,6 +150,15 @@ type ToolLoopRunner interface {
 	RunToolLoop(ctx context.Context, inv ToolLoopInvocation) (ToolLoopResult, error)
 }
 
+// CredentialNamer is an optional Adapter interface: RequiredEnv returns the
+// CREDENTIAL env var names this adapter can authenticate with. The run-start
+// credential-presence preflight WARNS (never fails) when NONE of them is set —
+// surfacing a likely Launch failure before any container boots, while preserving
+// the "missing env is silently omitted; auth fails at Launch" contract (advisory).
+type CredentialNamer interface {
+	RequiredEnv() []string
+}
+
 // Resolver is the read-only subset of Registry. The engine's dispatcher
 // (slice 5.2) takes a Resolver, not a *Registry, so the dispatcher cannot
 // Register new adapters mid-run (CLAUDE.md "interpreter is the only writer

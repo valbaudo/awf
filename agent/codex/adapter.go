@@ -84,3 +84,10 @@ func (*Adapter) Ref() string { return AdapterRef }
 func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{NativeSchema: true}
 }
+
+// RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var
+// name codex authenticates with. OPENAI_API_KEY is defined in DefaultEnvAllowlist;
+// CODEX_HOME is a config directory (not a credential) and is intentionally excluded.
+func (*Adapter) RequiredEnv() []string {
+	return []string{"OPENAI_API_KEY"}
+}

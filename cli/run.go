@@ -262,6 +262,14 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
+	// Advisory credential-presence preflight: warns (never fails) when none of
+	// an adapter's credential env vars is set — surfaces a likely Launch failure
+	// before any container boots, without reversing the "auth fails at Launch"
+	// contract.
+	if err := checkCredentialPresenceForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
 
 	// Step 8: put input into Blobs (after validation, before log creation).
 	var inputRef string

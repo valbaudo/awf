@@ -114,6 +114,15 @@ func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{NativeSchema: true}
 }
 
+// RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var
+// names claude-code authenticates with. All three are defined in
+// DefaultEnvAllowlist. Per errors.go / ErrBareRequiresAPIKey, bare mode needs
+// ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN; CLAUDE_CODE_OAUTH_TOKEN is the
+// OAuth path. At least one being set is sufficient for auth to proceed.
+func (*Adapter) RequiredEnv() []string {
+	return DefaultEnvAllowlist
+}
+
 // envAllowlist returns the adapter's env-passthrough map. Internal — tests
 // use it via the unexported method, callers go through Launch where the
 // adapter merges into the exec environment.
