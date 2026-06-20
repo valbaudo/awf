@@ -50,6 +50,8 @@ type Container struct {
 	Compose   string     `json:"compose,omitempty"`
 	Service   string     `json:"service,omitempty"`
 	Snapshot  string     `json:"snapshot,omitempty"`
+	Cmd       []string   `json:"cmd,omitempty"`
+	Keepalive *bool      `json:"keepalive,omitempty"`
 	Resources *Resources `json:"resources,omitempty"`
 }
 

@@ -76,6 +76,11 @@ func validateStructural(ld *LoadedDefinition, c *collector) {
 		if mapImageTargets[name] && (ctr.Image != "" || ctr.Compose != "") {
 			c.errf(ContainerPath(name, ""), "AWF1025", catalog["AWF1025"])
 		}
+		// AWF1060: cmd: and keepalive: are image-mode fields; per-service command and
+		// lifecycle config live in the compose file for compose-mode containers.
+		if ctr.Compose != "" && (len(ctr.Cmd) > 0 || ctr.Keepalive != nil) {
+			c.errf(ContainerPath(name, ""), "AWF1060", catalog["AWF1060"])
+		}
 	}
 
 	// (c) Workflow-level env: a list of host env-var NAMES forwarded into agent steps

@@ -786,3 +786,52 @@ func TestAWF1059MessageReflectsContainerNamePattern(t *testing.T) {
 		t.Errorf("AWF1059 message %q must contain the enforcing regex %q (derived, not a hand-typed copy)", msg, containerNamePattern.String())
 	}
 }
+
+// TestAWF1060CmdOnComposeContainer checks that a compose-mode container that also
+// declares cmd: or keepalive: is rejected with AWF1060 (those fields are image-mode only;
+// per-service command/lifecycle config lives in the compose file).
+func TestAWF1060CmdOnComposeContainer(t *testing.T) {
+	boolTrue := true
+	cases := []struct {
+		name string
+		ctr  Container
+	}{
+		{
+			"cmd on compose",
+			Container{Compose: "./compose.yml", Service: "web", Cmd: []string{"sleep", "infinity"}},
+		},
+		{
+			"keepalive on compose",
+			Container{Compose: "./compose.yml", Service: "web", Keepalive: &boolTrue},
+		},
+		{
+			"cmd and keepalive on compose",
+			Container{Compose: "./compose.yml", Service: "web", Cmd: []string{"x"}, Keepalive: &boolTrue},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ld := makeLD(&Workflow{
+				ID: "awf1060-test", Version: 1,
+				Containers: map[string]Container{"c": c.ctr},
+				Graph:      NodeList{},
+			})
+			assertErrorAt(t, Validate(ld), "AWF1060", "containers.c")
+		})
+	}
+}
+
+// TestAWF1060CmdOnImageContainerOK checks that cmd:/keepalive: on an image-mode
+// container does NOT trigger AWF1060.
+func TestAWF1060CmdOnImageContainerOK(t *testing.T) {
+	boolFalse := false
+	img := "oci://example.com/x@sha256:" + strings.Repeat("0", 64)
+	ld := makeLD(&Workflow{
+		ID: "awf1060-ok", Version: 1,
+		Containers: map[string]Container{
+			"c": {Image: img, Cmd: []string{"sleep", "infinity"}, Keepalive: &boolFalse},
+		},
+		Graph: NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+	})
+	assertNoCode(t, Validate(ld), "AWF1060")
+}

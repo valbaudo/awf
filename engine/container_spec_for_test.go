@@ -98,3 +98,50 @@ func TestContainerSpecForComposeMissingBytesDefensive(t *testing.T) {
 		t.Errorf("spec.ComposePath = %q, want propagated path", spec.ComposePath)
 	}
 }
+
+// TestContainerSpecForCmdThreaded verifies that an image-mode Container's Cmd is
+// propagated to ContainerSpec.Cmd.
+func TestContainerSpecForCmdThreaded(t *testing.T) {
+	wf := &ir.Workflow{
+		Containers: map[string]ir.Container{
+			"lab": {Image: "alpine@sha256:abc123", Cmd: []string{"sleep", "infinity"}},
+		},
+	}
+	spec := ContainerSpecFor(wf, nil, "lab")
+	if len(spec.Cmd) != 2 || spec.Cmd[0] != "sleep" || spec.Cmd[1] != "infinity" {
+		t.Errorf("spec.Cmd = %v, want [sleep infinity]", spec.Cmd)
+	}
+}
+
+// TestContainerSpecForKeepaliveDisableKeepalive verifies the DisableKeepalive
+// threading from ir.Container.Keepalive.
+//
+//   - keepalive absent (nil)  → DisableKeepalive false  (safe default: inject if needed)
+//   - keepalive: true         → DisableKeepalive false  (explicit opt-in, same as default)
+//   - keepalive: false        → DisableKeepalive true   (explicit opt-out)
+func TestContainerSpecForKeepaliveDisableKeepalive(t *testing.T) {
+	boolTrue := true
+	boolFalse := false
+	cases := []struct {
+		name        string
+		keepalive   *bool
+		wantDisable bool
+	}{
+		{"absent", nil, false},
+		{"explicit true", &boolTrue, false},
+		{"explicit false", &boolFalse, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			wf := &ir.Workflow{
+				Containers: map[string]ir.Container{
+					"lab": {Image: "alpine@sha256:abc123", Keepalive: c.keepalive},
+				},
+			}
+			spec := ContainerSpecFor(wf, nil, "lab")
+			if spec.DisableKeepalive != c.wantDisable {
+				t.Errorf("keepalive=%v: DisableKeepalive = %v, want %v", c.keepalive, spec.DisableKeepalive, c.wantDisable)
+			}
+		})
+	}
+}

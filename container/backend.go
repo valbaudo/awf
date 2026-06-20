@@ -225,10 +225,18 @@ type ContainerSpec struct {
 	// nil or empty, the image's default Cmd applies. Slice 4.4 adds this
 	// field so test fixtures can inject a long-running entrypoint into
 	// short-CMD images (e.g., alpine's /bin/sh → sleep infinity) without
-	// bypassing Backend.Create. Today's engine.ContainerSpecFor never
-	// populates Cmd; a future IR slice adding `cmd: [...]` to Container
-	// declarations would.
+	// bypassing Backend.Create. Populated from ir.Container.Cmd by
+	// engine.ContainerSpecFor (image-mode arm).
 	Cmd []string
+
+	// DisableKeepalive opts out of keepalive injection for this container.
+	// Zero value (false) means "inject keepalive if needed" — the safe
+	// default that preserves existing behaviour for all callers (tests,
+	// map P6a, etc.) that construct ContainerSpec without setting this
+	// field. Set to true only when the IR Container explicitly sets
+	// keepalive: false. The docker backend (Task 3) reads !DisableKeepalive
+	// to decide whether to inject a long-running CMD.
+	DisableKeepalive bool
 
 	// PullIfAbsent requests that Create ensure Image is present in the local
 	// cache before starting it — image-mode only (P6a). The engine sets it
