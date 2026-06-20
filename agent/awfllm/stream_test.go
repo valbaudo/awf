@@ -244,3 +244,30 @@ func TestBuildResult_DerivedCost_Miss(t *testing.T) {
 		t.Errorf("Metrics.Model = %q, want %q (model set even on miss)", res.Metrics.Model, "unknown-model-xyz")
 	}
 }
+
+// TestExtractJSONObject_ThinkingTag verifies that extractJSONObject strips a
+// leading </thinking> block before scanning for JSON. A stray '{' inside the
+// reasoning block must not win over the real JSON object after the tag.
+func TestExtractJSONObject_ThinkingTag(t *testing.T) {
+	full := "<think>I need to return {\"wrong\": true} but let me reconsider</think>\n{\"verified\":true}"
+	got, err := awfllm.ExtractJSONObjectForTest(full)
+	if err != nil {
+		t.Fatalf("ExtractJSONObjectForTest: %v", err)
+	}
+	v, ok := got["verified"].(bool)
+	if !ok || !v {
+		t.Errorf("got[verified] = %v (type %T), want true bool", got["verified"], got["verified"])
+	}
+}
+
+// TestExtractJSONObject_ThinkTag exercises the short </think> form.
+func TestExtractJSONObject_ThinkTag(t *testing.T) {
+	full := "<think>reasoning with a stray { brace</think>\n{\"score\":99}"
+	got, err := awfllm.ExtractJSONObjectForTest(full)
+	if err != nil {
+		t.Fatalf("ExtractJSONObjectForTest: %v", err)
+	}
+	if got["score"].(float64) != 99 {
+		t.Errorf("got[score] = %v, want 99", got["score"])
+	}
+}

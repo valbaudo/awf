@@ -104,7 +104,7 @@ func buildResult(finalText string, complete *streamEvent, inv agent.AgentInvocat
 // wrong-but-valid object becomes a retryable schema failure) and do NOT pull in
 // a json-repair dependency (it could fabricate a valid-but-wrong object).
 func extractJSONObject(s string) (map[string]any, error) {
-	s = stripJSONFence(strings.TrimSpace(s))
+	s = stripJSONFence(agent.StripThinkTags(strings.TrimSpace(s)))
 	var whole map[string]any
 	if err := json.Unmarshal([]byte(s), &whole); err == nil {
 		return whole, nil
