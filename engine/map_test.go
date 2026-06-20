@@ -61,6 +61,9 @@ func newMapRig(t *testing.T, programs ...execProgram) *mapRig {
 	fake := container.NewFake()
 	for _, p := range programs {
 		fake.ProgramExec(p.cmd, p.res, nil)
+		if p.anyFallback {
+			fake.ProgramExecAny(container.ExecResult{ExitCode: 0}, nil)
+		}
 	}
 	baseHandle, err := fake.Create(context.Background(), container.ContainerSpec{Name: testMapContainer})
 	if err != nil {
@@ -79,15 +82,35 @@ func newMapRig(t *testing.T, programs ...execProgram) *mapRig {
 // execProgram pairs a command string with its scripted exec result. Used by
 // newMapRig's variadic argument. Defined locally to avoid leaking a
 // test-helper type into the engine package's public surface.
+//
+// anyFallback, when true, instructs newMapRig to also call ProgramExecAny
+// with a default exit-0 result so any unprogrammed command succeeds (the
+// exact-match entry for cmd still wins, as the Fake consults execTable first).
+// Used by failOn to avoid registering every item's ok command explicitly.
 type execProgram struct {
-	cmd string
-	res container.ExecResult
+	cmd         string
+	res         container.ExecResult
+	anyFallback bool
 }
 
 // ok / fail are convenience constructors for execProgram entries.
 func ok(cmd string) execProgram { return execProgram{cmd: cmd, res: container.ExecResult{ExitCode: 0}} }
 func fail(cmd string) execProgram {
 	return execProgram{cmd: cmd, res: container.ExecResult{ExitCode: 1}}
+}
+
+// failOn programs the fake to exit 1 for "echo <failTok>" and exit 0 for any
+// other command (via ProgramExecAny). The okRun parameter is the expected ok
+// command ("echo ok") — it is documentation only; the any-fallback covers it
+// without an explicit registration (the Fake's exact-match always wins, so
+// explicit ok entries added alongside failOn are unaffected). Mirrors fail/ok
+// but covers a two-item mix without listing every ok command explicitly.
+func failOn(failTok, _ string) execProgram {
+	return execProgram{
+		cmd:         "echo " + failTok,
+		res:         container.ExecResult{ExitCode: 1},
+		anyFallback: true,
+	}
 }
 
 // runOverItems is the standard input map: `{"items": items}`. Used by every
@@ -1676,5 +1699,32 @@ func TestRunMapResumeRetryableItemReRuns(t *testing.T) {
 			t.Errorf("duplicate MapItemRecord for N=%d", mr.N)
 		}
 		seen[mr.N] = true
+	}
+}
+
+// TestMapItemRecordsCause covers WS-2a: a body failure records a non-empty
+// bounded Cause on the folded record; a passing item records none.
+func TestMapItemRecordsCause(t *testing.T) {
+	rig := newMapRig(t, failOn("bad", "echo ok")) // item "bad" exits 1; item "ok" passes
+	input := runOverItems("bad", "ok")
+	seedRunStartedWithInput(t, rig.lg, rig.blobs, input)
+	minSuccess := ir.Ratio("1")
+	wf := staticOverWorkflow("x", echoStep("x", &ir.RetryPolicy{Attempts: 1}), 2, &minSuccess)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, input)
+
+	_, _ = runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+
+	rs2 := foldFromRig(t, rig)
+	items := rs2.LookupMapItems(testMapPath)
+	byN := map[int]MapItemRecord{}
+	for _, it := range items {
+		byN[it.N] = it
+	}
+	if byN[0].Status != ItemFailed || byN[0].Cause == "" {
+		t.Errorf("failed item: Status=%q Cause=%q; want item_failed + non-empty Cause", byN[0].Status, byN[0].Cause)
+	}
+	if byN[1].Cause != "" {
+		t.Errorf("passing item: Cause=%q; want empty", byN[1].Cause)
 	}
 }

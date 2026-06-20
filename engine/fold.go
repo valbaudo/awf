@@ -295,6 +295,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				Outcome:     d.Outcome,
 				ImageDigest: d.ImageDigest,
 				Reason:      d.Reason,
+				Cause:       d.Cause,
 				// ItemValue: nil (zero-value) — re-derived from `over` on re-entry.
 			})
 

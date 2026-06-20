@@ -147,6 +147,12 @@ type MapItemData struct {
 	// for pre-this-change logs. Resume re-run selection (see runMap reconciliation)
 	// re-runs ONLY a retryable item; permanent / rejected / absent replay-as-failed.
 	Outcome string `json:"outcome,omitempty"`
+	// Cause is a bounded, human-readable rendering of the item body's failure
+	// (bodyErr) when Status == item_failed. Forensic only — empty for passed/
+	// pruned and pre-this-change logs (omitempty). Distinct from Outcome (the
+	// mechanical class) and Reason (the infra cause). Not equality-checked by
+	// the fold → determinism-safe.
+	Cause string `json:"cause,omitempty"`
 }
 
 // MapFrontierData is the payload of a map.frontier event (SP5). Items is the

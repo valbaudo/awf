@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"golang.org/x/sync/semaphore"
 
@@ -465,7 +466,7 @@ func dispatchItem(
 				if pr != nil {
 					return ItemFailed, nil
 				}
-				return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable, "")
+				return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable, "", "")
 			}
 			// Any OTHER Create error is a deterministic definition error (an invalid
 			// per-element spec — bad resources, a host config the daemon rejects):
@@ -497,6 +498,7 @@ func dispatchItem(
 
 	status := ItemPassed // default optimistic; revised below
 	itemOutcome := ""    // set only on a body failure (spec §6.1)
+	cause := ""          // bounded bodyErr on a body failure (WS-2a)
 	var su *SkipUnwind
 	if errors.As(bodyErr, &su) {
 		// Skip ends the item as ok (design §E step 5). Record node.skipped
@@ -512,22 +514,44 @@ func dispatchItem(
 		if bodyOC != OutcomeOK {
 			itemOutcome = string(bodyOC) // retryable_failure | permanent_failure | rejected
 		}
+		cause = boundCause(bodyErr)
 	}
 
 	// SP5: defer the map.item commit to runMap's final pass for a prune map.
 	if pr != nil {
-		return status, nil
+		return status, nil // Task 4 threads the cause for prune maps
 	}
-	return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "", itemOutcome)
+	return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "", itemOutcome, cause)
+}
+
+// maxMapItemCauseBytes bounds the forensic Cause so a runaway body error can't
+// bloat the journal.
+const maxMapItemCauseBytes = 1024
+
+// boundCause renders err bounded to a rune boundary (no mid-codepoint cut).
+func boundCause(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if len(s) <= maxMapItemCauseBytes {
+		return s
+	}
+	end := maxMapItemCauseBytes
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end] + "…"
 }
 
 // commitMapItem appends the map.item commit (with the optional captured runtime
-// image digest, failure reason, and body outcome), fsyncs, mirrors the in-memory
-// status, and returns the item's terminal status. Extracted (P6a) so the normal
-// end and the per-item image-failure paths share one commit point and preserve
-// commit-atomicity (digest+reason+outcome are in the payload BEFORE Append+Sync).
-func commitMapItem(log state.Log, runstate *RunState, mapPath string, itemN int, status, imageDigest, reason, outcome string) (string, error) {
-	data, mErr := json.Marshal(MapItemData{N: itemN, Status: status, ImageDigest: imageDigest, Reason: reason, Outcome: outcome})
+// image digest, failure reason, body outcome, and forensic cause), fsyncs,
+// mirrors the in-memory status, and returns the item's terminal status.
+// Extracted (P6a) so the normal end and the per-item image-failure paths share
+// one commit point and preserve commit-atomicity (digest+reason+outcome+cause
+// are in the payload BEFORE Append+Sync).
+func commitMapItem(log state.Log, runstate *RunState, mapPath string, itemN int, status, imageDigest, reason, outcome, cause string) (string, error) {
+	data, mErr := json.Marshal(MapItemData{N: itemN, Status: status, ImageDigest: imageDigest, Reason: reason, Outcome: outcome, Cause: cause})
 	if mErr != nil {
 		return "", fmt.Errorf("marshal map.item for item-%d: %w", itemN, mErr)
 	}

@@ -113,6 +113,8 @@ type MapItemRecord struct {
 	// projection.
 	ImageDigest string
 	Reason      string
+	// Cause mirrors MapItemData.Cause. Forensic; read from the FOLDED record.
+	Cause string
 }
 
 // SignalEntry is one element of RunState.Signals[name]. Records a delivered
