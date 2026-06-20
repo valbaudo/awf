@@ -189,6 +189,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				ExitCode:   d.ExitCode,
 				OutputsRef: d.OutputsRef,
 				Files:      d.Files,
+				NodeKey:    d.NodeKey, // empty for non-code steps + pre-WS6b logs (omitempty)
 			}
 			if d.OutputsRef != "" {
 				raw, err := blobs.Get(d.OutputsRef)

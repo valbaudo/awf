@@ -412,6 +412,12 @@ type NodeCompletedData struct {
 	// assistant} pair (continues: threading). Empty for non-participating steps.
 	// omitempty keeps non-conversation logs byte-identical (additive, like SnapshotRef).
 	TranscriptRef string `json:"transcript_ref,omitempty"`
+	// NodeKey is the content-address cache key for deterministic (code) steps —
+	// H(nodeSubtreeDigest ‖ sorted CAS refs of resolved input_files ‖ ∅ runtime pins).
+	// Empty for non-deterministic steps (agent, react, reduce, signal, etc.).
+	// omitempty keeps pre-WS6b logs byte-identical (additive, no fold breakage).
+	// Task 6 (resume reuse) reads this to skip re-execution when inputs are unchanged.
+	NodeKey string `json:"node_key,omitempty"`
 }
 
 // BranchTakenData is the if-decision marker (spec §5.1). Fold uses Which to know which

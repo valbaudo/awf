@@ -205,6 +205,10 @@ type NodeResult struct {
 	StdoutRef  string            // CAS pointer (validates against Stdout)
 	Files      map[string]string // declared path → CAS ref. READ-ONLY (see NodeResult doc).
 	Transcript agent.ThreadTurn  // materialized from TranscriptRef by Fold (continues: threading). READ-ONLY. Zero value when the step didn't participate.
+	// NodeKey is the content-address cache key folded from NodeCompletedData.NodeKey.
+	// Non-empty only for deterministic (code) steps. Task 6 reads this during resume
+	// to skip re-execution when the key matches the expected key for the current inputs.
+	NodeKey string
 }
 
 // RunState is the in-memory fold of the log: the interpreter consults it to skip

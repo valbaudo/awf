@@ -183,9 +183,16 @@ func (w *Workflow) SetDigest(composeFiles map[string][]byte, assets map[string]L
 	return d, nil
 }
 
-// nodeSubtreeDigest is the content hash of a single node's definition subtree
+// NodeSubtreeDigest is the content hash of a single node's definition subtree
 // (RFC-8785/JCS canonical, scheme-prefixed). Reused as one input to the WS-6b
 // node_key. Node.MarshalJSON already emits the canonical key-presence shape.
+// Exported so engine.Commit can compute the key without reaching into ir internals.
+func NodeSubtreeDigest(n Node) (string, error) {
+	return nodeSubtreeDigest(n)
+}
+
+// nodeSubtreeDigest is the package-internal implementation; keeps the ir-internal
+// callers (digest.go, digest_test.go) on the unexported form.
 func nodeSubtreeDigest(n Node) (string, error) {
 	raw, err := json.Marshal(n)
 	if err != nil {

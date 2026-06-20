@@ -26,14 +26,14 @@ func isDeterministicNode(n ir.Node) bool {
 	return ok
 }
 
-// computeNodeKey derives a stable, collision-resistant cache key for a
+// ComputeNodeKey derives a stable, collision-resistant cache key for a
 // deterministic node from three inputs:
 //
 //  1. subtreeDigest — the scheme-prefixed sha256 of the node's JCS-canonical
-//     definition (produced by ir.nodeSubtreeDigest, supplied by Task 5).
+//     definition (produced by ir.NodeSubtreeDigest, supplied by Task 5).
 //  2. inputRefs — ordered list of artifact refs that feed this node
-//     (e.g. "step.fetch.files.out"). Sorted before hashing so insertion order
-//     in the workflow graph does not affect the key.
+//     (CAS hashes of the resolved input_files). Sorted before hashing so
+//     insertion order in the workflow graph does not affect the key.
 //  3. runtimePins — additional runtime-determined values that affect the node
 //     (e.g. workflow input hash, image digest). Sorted before hashing.
 //
@@ -48,6 +48,15 @@ func isDeterministicNode(n ir.Node) bool {
 //	<uint64 len(runtimePins)> <uint64 len(pin₀)><pin₀> …
 //
 // Returns ir.DigestScheme + hex(sha256(framed stream)).
+//
+// Exported for Task-6 resume verification and tests. Internal callers use the
+// same symbol (no unexported alias needed — the name is the public contract).
+func ComputeNodeKey(subtreeDigest string, inputRefs []string, runtimePins []string) string {
+	return computeNodeKey(subtreeDigest, inputRefs, runtimePins)
+}
+
+// computeNodeKey is the package-internal implementation. External callers
+// (tests, Task 6) use ComputeNodeKey above.
 func computeNodeKey(subtreeDigest string, inputRefs []string, runtimePins []string) string {
 	// Clone and sort to avoid mutating caller slices.
 	refs := append([]string(nil), inputRefs...)

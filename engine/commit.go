@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -110,7 +111,22 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		nr.Transcript = dr.Transcript
 	}
 
-	// 2. Append the node.completed event with all refs. Its existence in the
+	// 2. Compute the node_key for deterministic (code) steps.
+	// dr.Node is set ONLY on the code-step dispatch path (interpreter.go);
+	// all other call sites leave it nil → isDeterministicNode(nil) == false → empty key.
+	// runtimePins is nil for v1 (see WS-6b spec: backend already pinned in
+	// RunStartedData.Backend; per-image-digest pinning is a follow-up).
+	var nodeKey string
+	if isDeterministicNode(dr.Node) {
+		subtreeDigest, sdErr := ir.NodeSubtreeDigest(dr.Node)
+		if sdErr != nil {
+			return NodeResult{}, fmt.Errorf("engine.Commit: node subtree digest at path %q: %w", path, sdErr)
+		}
+		nodeKey = computeNodeKey(subtreeDigest, dr.InputRefs, nil)
+	}
+	nr.NodeKey = nodeKey
+
+	// 3. Append the node.completed event with all refs. Its existence in the
 	// log IS the completion record; the artifacts it references provably
 	// already exist (we just Put them).
 	data := NodeCompletedData{
@@ -125,6 +141,7 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		SnapshotRef:   dr.SnapshotRef,
 		Container:     dr.Container,
 		TranscriptRef: transcriptRef,
+		NodeKey:       nodeKey,
 	}
 	if err := appendNodeCompleted(log, path, data); err != nil {
 		return NodeResult{}, fmt.Errorf("engine.Commit: %w", err)
