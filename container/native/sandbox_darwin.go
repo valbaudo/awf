@@ -27,7 +27,9 @@ func detectPlatformSandbox(lookPath func(string) (string, error)) (sandboxLaunch
 // sandboxExecLauncher with the run-command embedded.
 type sandboxExecFactory struct{}
 
-// prepend is a sentinel no-op. exec.go always calls buildForRun first.
+// prepend is a factory-guard sentinel. exec.go type-asserts to
+// sandboxLauncherFactory and always calls buildForRun first; this path is
+// never reached in normal dispatch, so returning nil is safe here.
 func (f *sandboxExecFactory) prepend(_ string, _ []string) []string { return nil }
 
 func (f *sandboxExecFactory) buildForRun(run string) sandboxLauncher {
@@ -68,6 +70,16 @@ func (f *sandboxExecFactory) buildForRun(run string) sandboxLauncher {
 // return a cleanup func or embed the profile text directly via -p flag).
 type sandboxExecLauncher struct {
 	run string
+	// tmpDirOverride is used in tests to inject an unwritable directory so that
+	// profile-write failure can be forced deterministically. Empty means use os.TempDir().
+	tmpDirOverride string
+}
+
+// failClosedArgv returns a sentinel argv that always exits non-zero (exit 125)
+// with msg on stderr. Used by the sandbox launcher when profile-write fails so
+// the step is loudly refused rather than silently run unsandboxed on the host.
+func failClosedArgv(msg string) []string {
+	return []string{"sh", "-c", "echo '" + msg + "' >&2; exit 125"}
 }
 
 // sbplProfile is the static SBPL sandbox profile. Parameters SCRATCH and TMPDIR
@@ -106,6 +118,9 @@ func (l sandboxExecLauncher) prepend(scratchDir string, _ []string) []string {
 		}
 	}
 	rawTmpdir := os.TempDir()
+	if l.tmpDirOverride != "" {
+		rawTmpdir = l.tmpDirOverride
+	}
 	tmpdir, err := filepath.EvalSymlinks(rawTmpdir)
 	if err != nil {
 		tmpdir = rawTmpdir
@@ -116,19 +131,21 @@ func (l sandboxExecLauncher) prepend(scratchDir string, _ []string) []string {
 	// v1 cleanup: leftover .sb in TMPDIR; acceptable, flagged in report.
 	f, err := os.CreateTemp(tmpdir, "awf-sandbox-*.sb")
 	if err != nil {
-		// Fail closed: return nil so exec.go runs sh directly (no confinement).
-		// This is an OS-level failure (disk full, permission denied on TMPDIR).
-		return nil
+		// Fail CLOSED: returning nil would let exec.go run the step unsandboxed
+		// on the host. Instead, return a sentinel argv that always exits non-zero
+		// with a clear error message — consistent with the Linux trampoline's
+		// fail-closed posture. Exit 125 is used (same sentinel as landlock).
+		return failClosedArgv("awf: macOS sandbox profile could not be written; refusing to run step unsandboxed")
 	}
 	profilePath := f.Name()
 	if _, werr := f.WriteString(sbplProfile); werr != nil {
 		_ = f.Close()
 		os.Remove(profilePath) //nolint:errcheck
-		return nil
+		return failClosedArgv("awf: macOS sandbox profile could not be written; refusing to run step unsandboxed")
 	}
 	if cerr := f.Close(); cerr != nil {
 		os.Remove(profilePath) //nolint:errcheck
-		return nil
+		return failClosedArgv("awf: macOS sandbox profile could not be written; refusing to run step unsandboxed")
 	}
 
 	return []string{
