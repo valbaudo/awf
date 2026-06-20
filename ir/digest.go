@@ -183,6 +183,23 @@ func (w *Workflow) SetDigest(composeFiles map[string][]byte, assets map[string]L
 	return d, nil
 }
 
+// nodeSubtreeDigest is the content hash of a single node's definition subtree
+// (RFC-8785/JCS canonical, scheme-prefixed). Reused as one input to the WS-6b
+// node_key. Node.MarshalJSON already emits the canonical key-presence shape.
+func nodeSubtreeDigest(n Node) (string, error) {
+	raw, err := json.Marshal(n)
+	if err != nil {
+		return "", fmt.Errorf("marshal node: %w", err)
+	}
+	canon, err := jcs.Transform(raw)
+	if err != nil {
+		return "", fmt.Errorf("jcs canonicalize node: %w", err)
+	}
+	h := sha256.New()
+	h.Write(canon)
+	return DigestScheme + hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func writeDigestFrame(h hashWriter, s string) {
 	_, _ = fmt.Fprintf(h, "\x00%d:%s\x00", len(s), s)
 }

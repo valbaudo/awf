@@ -640,3 +640,82 @@ func TestDigestAssetDirectoryOrderingStable(t *testing.T) {
 		t.Fatalf("digest depends on loaded directory order: %s vs %s", da, db)
 	}
 }
+
+// TestNodeSubtreeDigest_IdenticalNodes verifies that two structurally-identical
+// Node values produce the same digest (case a).
+func TestNodeSubtreeDigest_IdenticalNodes(t *testing.T) {
+	a := &AgentStep{ID: "a1", Uses: "awf/llm", With: RawConfig{"model": "opus", "max_tokens": 1024}}
+	b := &AgentStep{ID: "a1", Uses: "awf/llm", With: RawConfig{"model": "opus", "max_tokens": 1024}}
+	da, err := nodeSubtreeDigest(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := nodeSubtreeDigest(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if da != db {
+		t.Fatalf("identical nodes produced different digests: %s vs %s", da, db)
+	}
+}
+
+// TestNodeSubtreeDigest_ChangedField verifies that mutating a meaningful field
+// (Run text) changes the digest (case b).
+func TestNodeSubtreeDigest_ChangedField(t *testing.T) {
+	a := &CodeStep{ID: "step1", Container: "lab", Run: "echo hello"}
+	b := &CodeStep{ID: "step1", Container: "lab", Run: "echo world"}
+	da, err := nodeSubtreeDigest(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := nodeSubtreeDigest(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if da == db {
+		t.Fatalf("changing Run did not change node digest (got %s for both)", da)
+	}
+}
+
+// TestNodeSubtreeDigest_SchemePrefix verifies the digest carries DigestScheme prefix (case c).
+func TestNodeSubtreeDigest_SchemePrefix(t *testing.T) {
+	n := &CodeStep{ID: "s", Container: "lab", Run: "x"}
+	d, err := nodeSubtreeDigest(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(d, DigestScheme) {
+		t.Fatalf("node digest %q lacks scheme prefix %q", d, DigestScheme)
+	}
+	if len(d) != len(DigestScheme)+sha256.Size*2 {
+		t.Fatalf("node digest %q wrong length", d)
+	}
+}
+
+// TestNodeSubtreeDigest_Determinism verifies the same node hashed twice gives the
+// same result, and that a With map built with keys in a different insertion order
+// yields the same digest (JCS canonicalization of map[string]any) (case d).
+func TestNodeSubtreeDigest_Determinism(t *testing.T) {
+	n := &AgentStep{ID: "a1", Uses: "awf/llm", With: RawConfig{"model": "opus", "max_tokens": 1024}}
+	d1, err := nodeSubtreeDigest(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := nodeSubtreeDigest(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 != d2 {
+		t.Fatalf("nodeSubtreeDigest is not deterministic: %s vs %s", d1, d2)
+	}
+
+	// Build the same With map but with keys inserted in reversed order.
+	reversed := &AgentStep{ID: "a1", Uses: "awf/llm", With: RawConfig{"max_tokens": 1024, "model": "opus"}}
+	dRev, err := nodeSubtreeDigest(reversed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 != dRev {
+		t.Fatalf("nodeSubtreeDigest depends on With map insertion order: %s vs %s", d1, dRev)
+	}
+}
