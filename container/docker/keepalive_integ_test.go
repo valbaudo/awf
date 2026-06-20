@@ -84,19 +84,20 @@ func TestKeepalive_AuthorCmdNotOverridden(t *testing.T) {
 		t.Fatalf("pull: %v", err)
 	}
 
-	// Author provides a long-running cmd explicitly.
+	// Author provides a long-running cmd explicitly — use "sleep 30" (not
+	// "sleep infinity") so the assertion can distinguish "injector skipped"
+	// from "injector fired": the injected cmd is always "sleep infinity".
 	h, err := b.Create(ctx, cont.ContainerSpec{
 		Name:  "ka-author",
 		Image: alpineDigest,
-		Cmd:   []string{"sleep", "infinity"}, // author cmd → no injection needed
+		Cmd:   []string{"sleep", "30"}, // author cmd → no injection needed
 	})
 	if err != nil {
 		t.Fatalf("Create (author cmd): %v", err)
 	}
 	t.Cleanup(func() { _ = b.Destroy(ctx, h) })
 
-	// Inspect: confirm the container is running with the author's command, not
-	// the injected one (they're the same here, but the contract is: no override).
+	// Inspect: confirm the container runs exactly the author's command.
 	info, err := cli.ContainerInspect(ctx, h.ID)
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
@@ -105,13 +106,17 @@ func TestKeepalive_AuthorCmdNotOverridden(t *testing.T) {
 		t.Errorf("container with author cmd not running")
 	}
 
-	// The Config.Cmd on the running container should be the author's.
+	// The Config.Cmd must be exactly the author's "sleep 30", NOT the
+	// keepalive-injected "sleep infinity".
 	if info.Config == nil {
 		t.Fatal("ContainerInspect: Config is nil")
 	}
 	cmd := strings.Join(info.Config.Cmd, " ")
-	if !strings.Contains(cmd, "sleep") {
-		t.Errorf("container Cmd = %q; want author's sleep command", cmd)
+	if cmd != "sleep 30" {
+		t.Errorf("container Cmd = %q, want %q (keepalive must not override author's cmd)", cmd, "sleep 30")
+	}
+	if cmd == "sleep infinity" {
+		t.Errorf("container Cmd = %q: keepalive injector overrode the author's cmd (must not)", cmd)
 	}
 }
 
