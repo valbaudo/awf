@@ -85,7 +85,7 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	var skillCorpus *skillroute.Corpus
 	if as.Skills != nil {
 		var oc Outcome
-		selectedSkills, skillCorpus, oc, err = selectAgentStepSkills(as, path, wf, runstate, log, blobs, scope)
+		selectedSkills, skillCorpus, oc, err = selectAgentStepSkills(as, path, wf, ictx.moduleID, runstate, log, blobs, scope)
 		if err != nil {
 			err = fmt.Errorf("engine.runAgentStep: select skills at %q: %w", path, err)
 			if oc == OutcomePermanentFailure {

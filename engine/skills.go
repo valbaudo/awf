@@ -24,12 +24,13 @@ func selectAgentStepSkills(
 	as *ir.AgentStep,
 	path string,
 	wf *ir.Workflow,
+	moduleID string,
 	runstate *RunState,
 	log state.Log,
 	blobs state.Blobs,
 	scope *Scope,
 ) (SkillsSelectedData, *skillroute.Corpus, Outcome, error) {
-	corpus, err := buildSkillCorpus(as.Skills.From, wf, runstate.Assets, blobs)
+	corpus, err := buildSkillCorpus(as.Skills.From, wf, moduleID, runstate.Assets, blobs)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			return SkillsSelectedData{}, nil, "", err
@@ -68,7 +69,7 @@ func selectAgentStepSkills(
 	return data, corpus, OutcomeOK, nil
 }
 
-func buildSkillCorpus(id string, wf *ir.Workflow, assets map[string]RunStartedAsset, blobs state.Blobs) (*skillroute.Corpus, error) {
+func buildSkillCorpus(id string, wf *ir.Workflow, moduleID string, assets map[string]RunStartedAsset, blobs state.Blobs) (*skillroute.Corpus, error) {
 	corpusDef, ok := wf.Skills[id]
 	if !ok {
 		return nil, fmt.Errorf("skill library %q is not declared", id)
@@ -77,12 +78,13 @@ func buildSkillCorpus(id string, wf *ir.Workflow, assets map[string]RunStartedAs
 	if !ok {
 		return nil, fmt.Errorf("skill library %q from %q must be an asset ref", id, corpusDef.From)
 	}
-	asset, ok := assets[assetID]
+	key := QualifiedAssetKey(moduleID, assetID)
+	asset, ok := assets[key]
 	if !ok {
-		return nil, fmt.Errorf("%w: skill library %q asset %q was not recorded in run.started", errArtifactFetch, id, assetID)
+		return nil, fmt.Errorf("%w: skill library %q asset %q was not recorded in run.started", errArtifactFetch, id, key)
 	}
 	if !asset.IsDir {
-		return nil, fmt.Errorf("%w: skill library %q asset %q must be a directory", errArtifactFetch, id, assetID)
+		return nil, fmt.Errorf("%w: skill library %q asset %q must be a directory", errArtifactFetch, id, key)
 	}
 	files := make([]skillroute.File, 0, len(asset.Files))
 	for _, f := range asset.Files {
