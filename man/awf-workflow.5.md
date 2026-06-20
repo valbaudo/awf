@@ -175,7 +175,7 @@ A container is backed by either a single digest-pinned image or a Compose projec
       scratch:                              # a single image
         image: oci://registry.example.com/runner@sha256:abc...   # a digest, not a tag
         resources: { cpu: 2, mem: 4Gi }
-        cmd: [ "/bin/sh", "-c", "sleep infinity" ]   # optional; default keepalive if omitted
+        cmd: [ "/bin/sh", "-c", "sleep infinity" ]   # optional explicit command; omit it and a command-less image gets a default keepalive
 
 **image**
 :   One of `image`/`compose`. A single OCI image, content-addressed by digest. A
@@ -216,7 +216,7 @@ A container is backed by either a single digest-pinned image or a Compose projec
 
     When omitted, the image's own entrypoint/CMD runs; if the image declares no
     long-running command, the runtime injects a keepalive so the container stays
-    up (see READINESS). `cmd` has no meaning with `compose` — a Compose service's
+    up (see CONTAINERS). `cmd` has no meaning with `compose` — a Compose service's
     command is declared in the Compose file.
 
 **keepalive**
