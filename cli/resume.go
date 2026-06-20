@@ -229,7 +229,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// same rs+ld.Workflow so they agree by construction; recompute is cheap.
 	rerunFrom := ""
 	if *from != "" {
-		target, err := engine.ResolveRerunTarget(ld.Workflow, rs, *from)
+		target, err := engine.ResolveRerunTarget(ld.Workflow, rs, events, *from)
 		if err != nil {
 			fprintf(stderr, "awf resume: %v\n", err)
 			return ExitUsage

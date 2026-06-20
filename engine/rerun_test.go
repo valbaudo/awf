@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/state"
 )
 
 // wf: root = [s0(step), parallel[1]{branchA, branchB}, s2(step)]
@@ -100,17 +101,37 @@ func sliceContains(xs []string, x string) bool {
 func TestResolveRerunTarget(t *testing.T) {
 	wf := rerunTestWF()
 	rs := rsWithCompleted("s0", "parallel[1].branchA", "parallel[1].branchB")
-	if got, err := ResolveRerunTarget(wf, rs, "parallel[1].branchA"); err != nil || got != "parallel[1].branchA" {
+	if got, err := ResolveRerunTarget(wf, rs, nil, "parallel[1].branchA"); err != nil || got != "parallel[1].branchA" {
 		t.Fatalf("exact: (%q,%v)", got, err)
 	}
-	if got, err := ResolveRerunTarget(wf, rs, "parallel[1]"); err != nil || got != "parallel[1]" {
+	if got, err := ResolveRerunTarget(wf, rs, nil, "parallel[1]"); err != nil || got != "parallel[1]" {
 		t.Fatalf("container: (%q,%v)", got, err)
 	}
-	if got, err := ResolveRerunTarget(wf, rs, "branchA"); err != nil || got != "parallel[1].branchA" {
+	if got, err := ResolveRerunTarget(wf, rs, nil, "branchA"); err != nil || got != "parallel[1].branchA" {
 		t.Fatalf("bare-id: (%q,%v)", got, err)
 	}
-	if _, err := ResolveRerunTarget(wf, rs, "nope"); err == nil {
+	if _, err := ResolveRerunTarget(wf, rs, nil, "nope"); err == nil {
 		t.Fatal("expected error for absent arg")
+	}
+}
+
+// TestResolveRerunTarget_FailedFrontier verifies that --from can target the
+// trailing node.failed event (uncommitted frontier node). Exact-path and
+// bare-id forms must both resolve.
+func TestResolveRerunTarget_FailedFrontier(t *testing.T) {
+	wf := rerunTestWF()
+	// only "a" is committed; "b" failed (uncommitted frontier)
+	rs := rsWithCompleted("s0")
+	events := []state.Event{
+		{Type: EventNodeFailed, Path: "parallel[1].branchB"},
+	}
+	// exact full path
+	if got, err := ResolveRerunTarget(wf, rs, events, "parallel[1].branchB"); err != nil || got != "parallel[1].branchB" {
+		t.Fatalf("exact-path failed frontier: (%q,%v)", got, err)
+	}
+	// bare trailing id
+	if got, err := ResolveRerunTarget(wf, rs, events, "branchB"); err != nil || got != "parallel[1].branchB" {
+		t.Fatalf("bare-id failed frontier: (%q,%v)", got, err)
 	}
 }
 

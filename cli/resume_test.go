@@ -1313,6 +1313,76 @@ func TestCLIResumeFrom_BypassesDigestPin(t *testing.T) {
 	}
 }
 
+// TestCLIResumeFrom_FailedFrontierNode verifies that --from can target the
+// trailing failed (uncommitted) frontier node. The run has "a" committed and "b"
+// failed; --from b must succeed and re-run b (and only b, since a is already
+// committed and before b).
+func TestCLIResumeFrom_FailedFrontierNode(t *testing.T) {
+	t.Parallel()
+	// Build the two-step workflow file so we have a valid wfPath+digest.
+	tmp := t.TempDir()
+	wfPath := filepath.Join(tmp, "two-step-wf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: two-step-ok
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: a
+    container: lab
+    run: "./a.sh"
+  - id: b
+    container: lab
+    run: "./b.sh"
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID := "test-twostep-failed-frontier"
+	// Build a log: run.started + node.completed(a) + node.failed(b,retryable).
+	exit0 := 0
+	completedData, err := json.Marshal(engine.NodeCompletedData{
+		Outcome:  string(engine.OutcomeOK),
+		ExitCode: &exit0,
+	})
+	if err != nil {
+		t.Fatalf("marshal node.completed: %v", err)
+	}
+	stateDir := buildResumeLog(t, wfPath, runID,
+		state.Event{Type: engine.EventNodeCompleted, Path: "a", Data: completedData},
+		nodeFailedEvent(t, "b", engine.OutcomeRetryableFailure),
+	)
+
+	// Resume with --from b: b is the failed frontier node (uncommitted).
+	fake := container.NewFake()
+	fake.ProgramExec("./b.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, "--from", "b", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	// b must have re-run; a must NOT have re-run (it's committed and before b).
+	var ranA, ranB bool
+	for _, c := range fake.Calls {
+		if c.Run == "./a.sh" {
+			ranA = true
+		}
+		if c.Run == "./b.sh" {
+			ranB = true
+		}
+	}
+	if ranA {
+		t.Fatal("step a must NOT re-run (it is committed and before b)")
+	}
+	if !ranB {
+		t.Fatal("step b must re-run (it is the failed frontier node targeted by --from b)")
+	}
+	if !strings.Contains(stderr.String(), "re-run") {
+		t.Fatalf("expected the re-run set disclosure on stderr; got %q", stderr.String())
+	}
+}
+
 // buildResumeLog writes a hand-crafted log under a fresh stateDir for runID:
 // run.started (digest of wfPath) followed by the given terminal events. Mirrors
 // the inline fixture in TestCLIResumeDigestMismatchHardError (Backend field
