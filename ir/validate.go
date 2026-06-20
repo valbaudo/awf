@@ -23,6 +23,8 @@ package ir
 //   - prune      (AWF1037, AWF5008) — map prune: frontier shape (a `score` field +
 //     exactly one of keep: top(<k>) / stop_when:) and score-field binding (score
 //     names a numeric field in the body's last step's output_schema)
+//   - misplaced_with (AWF1061) — reserved step-level key names nested inside an
+//     agent step's with: block (silently ignored by the engine; advisory warning)
 //   - refs       (AWF3001/2) — output_schema-iff-referenced cross-walk via the template
 //     package (Slots → ParseRef per Template; ParseExpr → References per Expr)
 //   - input_files (AWF3007) — every input_files value is a static step.<id>.files.<name>
@@ -61,6 +63,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 		validateReduce(modLD, c)
 		validatePrune(modLD, c)
 		validateTools(modLD, c)
+		validateMisplacedWithKeys(modLD, c)
 		validateCalls(ld, mod, c)
 		validateRefsModule(ld, mod, c)
 		validateInputFilesModule(ld, mod, c)
