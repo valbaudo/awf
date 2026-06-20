@@ -293,13 +293,16 @@ func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]
 		case *CodeStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkTemplateRefs(v.Run, path+".run", c, producers, maps, referenced, evaluateAllowed, "")
+			checkShellHostInjection(v.Run, path+".run", c, producers)
 			if v.IdempotencyKey != nil {
 				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, maps, referenced, evaluateAllowed, "")
+				checkShellHostInjection(string(*v.IdempotencyKey), path+".idempotency_key", c, producers)
 			}
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
 			if v.IdempotencyKey != nil {
 				checkTemplateRefs(string(*v.IdempotencyKey), path+".idempotency_key", c, producers, maps, referenced, evaluateAllowed, "")
+				checkShellHostInjection(string(*v.IdempotencyKey), path+".idempotency_key", c, producers)
 			}
 			if v.Skills != nil {
 				checkFieldSize(string(v.Skills.Query), path+".skills.query", c)
@@ -792,6 +795,122 @@ func renderRef(r template.Ref) string {
 		}
 	}
 	return b.String()
+}
+
+// checkShellHostInjection emits AWF3013 (Warning) for every `{{ }}` slot in src
+// that resolves to a string-typed field and is not already wrapped in shell quotes.
+//
+// Shell hosts (run: and idempotency_key) substitute slots verbatim before the shell
+// sees the command (template.Substitute → raw string). An attacker-controlled string
+// value is therefore directly injectable (CWE-78 / GitHub Actions ${{ }}-into-run:
+// class). Number/boolean/integer fields are shell-safe (they render via strconv with
+// no shell-special chars) and are skipped. A slot that is already surrounded by `"`
+// or `'` in the host string is also skipped.
+//
+// The quote detection is deliberately surface-level (byte-offset heuristic on the
+// immediately adjacent char, NOT AST analysis) — mirroring validateAwfOutputWrites's
+// "substring match, not AST analysis" stance. A residual false-negative on exotic
+// quoting (e.g. a variable expansion that happens to end in a quote char) is
+// accepted.
+func checkShellHostInjection(src, path string, c *collector, producers map[string]producer) {
+	slots, err := template.Slots(src)
+	if err != nil {
+		return // parse errors are already surfaced by checkTemplateRefs / walkTemplateRefs
+	}
+	for _, sl := range slots {
+		inner := strings.TrimSpace(sl.Inner)
+		ref, err := template.ParseRef(inner)
+		if err != nil || ref == nil {
+			continue // malformed refs are handled by checkTemplateRefs
+		}
+		if !refIsStringTyped(*ref, producers) {
+			continue // non-string (integer, boolean, …) fields are shell-safe
+		}
+		if slotIsShellQuoted(src, sl) {
+			continue // already inside double or single quotes — safe
+		}
+		c.warnf(path, "AWF3013", catalog["AWF3013"])
+	}
+}
+
+// refIsStringTyped reports whether ref resolves to a declared string-typed field.
+// It only returns true for the cases that matter for shell injection:
+//   - step.<id>.<field> where the producer's output_schema declares field with type=="string"
+//   - input.<field> where the workflow input schema declares field with type=="string"
+//
+// exit_code and stdout are integer/string respectively; exit_code short-circuits to
+// false (integer, safe). stdout is string-typed, so it will return true — the author
+// should quote `"{{ step.x.stdout }}"` to avoid injection.
+// Any ref that doesn't match these two forms (run.id, evaluate.*, unknown root) is
+// skipped (returns false) so we never warn on refs the engine itself controls.
+func refIsStringTyped(ref template.Ref, producers map[string]producer) bool {
+	if len(ref.Segments) == 0 {
+		return false
+	}
+	root := ref.Segments[0].Ident
+	switch root {
+	case "step":
+		if len(ref.Segments) < 3 || ref.Segments[1].IsIndex || ref.Segments[2].IsIndex {
+			return false
+		}
+		id := ref.Segments[1].Ident
+		field := ref.Segments[2].Ident
+		// exit_code is integer — shell-safe.
+		if field == "exit_code" {
+			return false
+		}
+		// stdout is string — shell-injectable.
+		if field == "stdout" {
+			return true
+		}
+		p, ok := producers[id]
+		if !ok || p.schema == nil {
+			return false
+		}
+		props, _ := (*p.schema)["properties"].(map[string]any)
+		prop, ok := props[field]
+		if !ok {
+			return false
+		}
+		spec, _ := prop.(map[string]any)
+		t, _ := spec["type"].(string)
+		return t == "string"
+	case "input":
+		if len(ref.Segments) < 2 || ref.Segments[1].IsIndex {
+			return false
+		}
+		field := ref.Segments[1].Ident
+		p, ok := producers["input"]
+		if !ok || p.schema == nil {
+			return false
+		}
+		props, _ := (*p.schema)["properties"].(map[string]any)
+		prop, ok := props[field]
+		if !ok {
+			return false
+		}
+		spec, _ := prop.(map[string]any)
+		t, _ := spec["type"].(string)
+		return t == "string"
+	}
+	return false
+}
+
+// slotIsShellQuoted reports whether sl is immediately surrounded by shell quote chars
+// (`"` or `'`) in the host string. Specifically: the byte at host[sl.Start-1] must
+// equal the byte at host[sl.End] and both must be `"` or `'`.
+//
+// This is a deliberately surface-level heuristic (not a shell AST analysis). It
+// correctly identifies the blessed pattern `"{{ step.x.url }}"` documented in
+// container/backend.go. A residual false-negative on exotic quoting (e.g. a `"`
+// preceded by a variable expansion) is accepted.
+func slotIsShellQuoted(host string, sl template.Slot) bool {
+	if sl.Start == 0 || sl.End >= len(host) {
+		return false
+	}
+	before := host[sl.Start-1]
+	after := host[sl.End]
+	return (before == '"' && after == '"') || (before == '\'' && after == '\'')
 }
 
 // validateAwfOutputWrites emits AWF3006 (Warning) for every CodeStep that declares

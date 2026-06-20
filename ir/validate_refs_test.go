@@ -893,3 +893,163 @@ func TestValidateRefsNestedReactNotDirectlyAddressable(t *testing.T) {
 	// AWF3001 on the same bad field — together they pin the multiplicity boundary.
 	assertNoErrorCode(t, Validate(ld), "AWF3001")
 }
+
+// --- AWF3013: unquoted string ref in run:/idempotency_key shell hosts ---
+
+// stringSchemaWith returns a minimal output_schema with one string-typed field.
+func stringSchemaWith(field string) *JSONSchema {
+	return &JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{field},
+		"properties":           map[string]any{field: map[string]any{"type": "string"}},
+	}
+}
+
+// integerSchemaWith returns a minimal output_schema with one integer-typed field.
+func integerSchemaWith(field string) *JSONSchema {
+	return &JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{field},
+		"properties":           map[string]any{field: map[string]any{"type": "integer"}},
+	}
+}
+
+// TestShellHostInjectionUnquotedStringWarns is the primary AWF3013 case:
+// an unquoted string-typed ref in a run: shell host must produce a Warning.
+func TestShellHostInjectionUnquotedStringWarns(t *testing.T) {
+	ik := Template("check-{{ step.a.url }}")
+	ld := makeLD(&Workflow{
+		ID: "inj", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{
+				ID: "a", Container: "c", Run: "true",
+				OutputSchema: stringSchemaWith("url"),
+			},
+			&CodeStep{
+				ID: "b", Container: "c",
+				Run:            "curl {{ step.a.url }}",
+				IdempotencyKey: &ik,
+			},
+		},
+	})
+	diags := Validate(ld)
+	// run: → warning at b.run
+	assertWarningAt(t, diags, "AWF3013", "b.run")
+	// idempotency_key → warning at b.idempotency_key
+	assertWarningAt(t, diags, "AWF3013", "b.idempotency_key")
+}
+
+// TestShellHostInjectionQuotedStringNoWarn: a double-quoted slot must NOT warn.
+func TestShellHostInjectionQuotedStringNoWarn(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "safe", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{
+				ID: "a", Container: "c", Run: "true",
+				OutputSchema: stringSchemaWith("url"),
+			},
+			&CodeStep{
+				ID: "b", Container: "c",
+				Run: `curl "{{ step.a.url }}"`,
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF3013")
+}
+
+// TestShellHostInjectionQuotedSingleQuoteNoWarn: a single-quoted slot must NOT warn.
+func TestShellHostInjectionQuotedSingleQuoteNoWarn(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "safe2", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{
+				ID: "a", Container: "c", Run: "true",
+				OutputSchema: stringSchemaWith("url"),
+			},
+			&CodeStep{
+				ID: "b", Container: "c",
+				Run: `curl '{{ step.a.url }}'`,
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF3013")
+}
+
+// TestShellHostInjectionIntegerFieldNoWarn: an integer field is shell-safe (renders
+// via strconv) — must NOT warn even when unquoted.
+func TestShellHostInjectionIntegerFieldNoWarn(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "num", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{
+				ID: "a", Container: "c", Run: "true",
+				OutputSchema: integerSchemaWith("n"),
+			},
+			&CodeStep{
+				ID: "b", Container: "c",
+				Run: "sleep {{ step.a.n }}",
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF3013")
+}
+
+// TestShellHostInjectionExitCodeNoWarn: exit_code is integer — must NOT warn.
+func TestShellHostInjectionExitCodeNoWarn(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "ec2", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{ID: "a", Container: "c", Run: "true"},
+			&CodeStep{ID: "b", Container: "c", Run: "echo {{ step.a.exit_code }}"},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF3013")
+}
+
+// TestShellHostInjectionWithKeyNoWarn: with.<k> is NOT a shell host — no AWF3013.
+func TestShellHostInjectionWithKeyNoWarn(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "with", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{
+				ID: "a", Container: "c", Run: "true",
+				OutputSchema: stringSchemaWith("url"),
+			},
+			&AgentStep{
+				ID: "b", Container: "c", Uses: "anthropic/claude-code",
+				With: RawConfig{"target": "{{ step.a.url }}"},
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF3013")
+}
+
+// TestShellHostInjectionAgentIdempotencyKeyWarns: AgentStep.idempotency_key is a
+// shell host — an unquoted string ref must warn.
+func TestShellHostInjectionAgentIdempotencyKeyWarns(t *testing.T) {
+	ik := Template("agent-{{ step.a.url }}")
+	ld := makeLD(&Workflow{
+		ID: "agik", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{
+				ID: "a", Container: "c", Run: "true",
+				OutputSchema: stringSchemaWith("url"),
+			},
+			&AgentStep{
+				ID: "b", Container: "c", Uses: "anthropic/claude-code",
+				With:           RawConfig{},
+				IdempotencyKey: &ik,
+			},
+		},
+	})
+	assertWarningAt(t, Validate(ld), "AWF3013", "b.idempotency_key")
+}
