@@ -337,7 +337,7 @@ func buildOpenAIMessages(systemPrompt string, turns []agent.ReactTurn) []openai.
 func classifyOpenAIErr(err error) error {
 	var oe *openai.Error
 	if errors.As(err, &oe) {
-		return &apiError{Status: oe.StatusCode, Type: oe.Type, Body: oe.Error()}
+		return &apiError{Status: oe.StatusCode, Type: oe.Type, Code: oe.Code, Body: oe.Error()}
 	}
 	return err
 }

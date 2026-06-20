@@ -156,11 +156,28 @@ func TestMetricsFrom_PerProviderCacheNormalization(t *testing.T) {
 }
 
 func TestIsPermanentLLMError(t *testing.T) {
-	if !awfllm.IsPermanentLLMErrorForTest(awfllm.NewAPIErrorForTest(400, "invalid_request_error", "bad model")) {
+	perm := func(status int, typ, code, body string) bool {
+		return awfllm.IsPermanentLLMErrorForTest(awfllm.NewAPIErrorForTest(status, typ, code, body))
+	}
+	// 400 invalid_request (existing) → permanent
+	if !perm(400, "invalid_request_error", "", "bad model") {
 		t.Error("400 + invalid_request_error should be permanent")
 	}
-	if awfllm.IsPermanentLLMErrorForTest(awfllm.NewAPIErrorForTest(429, "rate_limit_error", "slow down")) {
-		t.Error("429 must be retryable")
+	// raw OpenAI quota: 429, type==code==insufficient_quota → permanent
+	if !perm(429, "insufficient_quota", "insufficient_quota", "You exceeded your current quota") {
+		t.Error("insufficient_quota must be permanent")
+	}
+	// LiteLLM-wrapped: type lost, token buried in body → permanent via substring
+	if !perm(429, "rate_limit_error", "", "litellm.RateLimitError: OpenAIException - exceeded your current quota, please check your plan and billing") {
+		t.Error("LiteLLM-wrapped insufficient_quota (substring) must be permanent")
+	}
+	// LiteLLM budget exhaustion message → permanent
+	if !perm(429, "rate_limit_error", "", "litellm.BudgetExceededError: Budget has been exceeded!") {
+		t.Error("LiteLLM budget exceeded must be permanent")
+	}
+	// plain transient rate limit → retryable
+	if perm(429, "rate_limit_exceeded", "rate_limit_exceeded", "Rate limit reached, slow down") {
+		t.Error("plain rate_limit must be retryable")
 	}
 	if awfllm.IsPermanentLLMErrorForTest(errors.New("transport reset")) {
 		t.Error("plain transport error must be retryable")

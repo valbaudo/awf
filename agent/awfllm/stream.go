@@ -26,6 +26,7 @@ type usageRec struct {
 type apiError struct {
 	Status int
 	Type   string
+	Code   string // provider error.code (OpenAI); "" for synthesized non-OpenAI types
 	Body   string
 }
 
@@ -37,14 +38,39 @@ func (e *apiError) Error() string {
 // client-side request fault (bad model, unsupported parameter, schema rejection).
 const errTypeInvalidRequest = "invalid_request_error"
 
-// isPermanentLLMError reports a permanent client-side config fault: HTTP 400 AND
-// type invalid_request_error (bad model, or a schema the backend rejects under
-// strict mode). Everything else — including non-apiError transport failures —
-// is retryable (the safe default; the gate/retry budget bounds attempts).
+// isPermanentLLMError reports a permanent client-side fault: 400 +
+// invalid_request_error, OR a quota/budget-exhausted response (which retry can
+// never clear). Quota is matched by structured type/code where available (raw
+// OpenAI: insufficient_quota) and by a message-substring fallback that is
+// REQUIRED for the LiteLLM-wrapped case (LiteLLM re-wraps OpenAI's
+// insufficient_quota into a RateLimitError whose body buries the token). NOT
+// gated on status (OpenAI quota is 429; LiteLLM budget is 400-or-429). Plain
+// rate-limit (rate_limit_exceeded), 5xx, and transport faults stay retryable.
 func isPermanentLLMError(err error) bool {
 	var ae *apiError
-	if errors.As(err, &ae) {
-		return ae.Status == 400 && ae.Type == errTypeInvalidRequest
+	if !errors.As(err, &ae) {
+		return false
+	}
+	if ae.Status == 400 && ae.Type == errTypeInvalidRequest {
+		return true
+	}
+	return isQuotaOrBudget(ae)
+}
+
+func isQuotaOrBudget(ae *apiError) bool {
+	if ae.Type == "insufficient_quota" || ae.Code == "insufficient_quota" {
+		return true
+	}
+	for _, s := range []string{
+		"insufficient_quota",
+		"exceeded your current quota",
+		"Budget has been exceeded",
+		"ExceededBudget",
+		"BudgetExceededError",
+	} {
+		if strings.Contains(ae.Body, s) {
+			return true
+		}
 	}
 	return false
 }

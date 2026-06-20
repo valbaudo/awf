@@ -24,8 +24,8 @@ func NewUsageForTest(in, out, cached int) usageRec {
 	return usageRec{Input: in, Output: out, CacheRead: cached}
 }
 
-func NewAPIErrorForTest(status int, typ, body string) *apiError {
-	return &apiError{Status: status, Type: typ, Body: body}
+func NewAPIErrorForTest(status int, typ, code, body string) *apiError {
+	return &apiError{Status: status, Type: typ, Code: code, Body: body}
 }
 
 func (a *Adapter) StreamForTest(ctx context.Context, cfg ReqConfigForTest, prompt string, schema *ir.JSONSchema, thread []agent.ThreadTurn, emit func(string, []byte)) (string, usageRec, string, string, error) {
