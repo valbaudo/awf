@@ -281,7 +281,7 @@ agents can authenticate. The sandbox tool is selected by availability, in order:
     exits 125 and the step fails.
 
 When no sandbox tool is detected at all, the native backend runs the step on the
-host without confinement and emits a loud durable warning (`cli/backend.go`).
+host without confinement and prints a loud warning on stderr (`cli/backend.go`).
 This is **process isolation, not a hardware boundary**: the sandbox stops a
 misbehaving step from writing to host paths, but it is not a VM or a seccomp
 jail. Undeclared inputs a step reads from the host are not restricted. Linux
@@ -1561,9 +1561,9 @@ content-addressed artifact, never a live container's process state.
     reuse trusts that a code step's declared inputs have not changed. A step
     that reads undeclared host or container inputs can still receive a stale
     reuse — undeclared inputs are outside the trust boundary. Per-node reuse
-    does not detect container image-digest or engine-version drift; that is the
-    same blind spot the existing whole-run fast-path already has (runtime pins
-    in v1 are at the whole-run level, not per node).
+    does not detect container image-digest or host-tooling drift: in v1 the
+    runtime-pins input to the per-node key is always empty (`engine/commit.go`
+    line 125), so image digests are not tracked at any granularity.
 
     A `map`'s runtime-resolved element image is recorded not at run start but at
     each element's first boot (the earliest point it is known) and folded into
