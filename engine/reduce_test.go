@@ -263,9 +263,10 @@ func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
 	}
 
 	// The reducer's container received the manifest + each branch's artifact.
+	// The Fake backend returns StagingRoot: "/work/.awf" (docker-equivalent).
 	h := rig.ld.Handles[reduceContainer]
 	captured, cerr := rig.fake.CaptureFiles(context.Background(), h, []string{
-		reduceManifestPath,
+		"/work/.awf/aggregate.json",
 		"/work/.awf/branch-0/row",
 		"/work/.awf/branch-1/row",
 	})
@@ -409,5 +410,127 @@ func TestRunCommandReduceTemplatesRun(t *testing.T) {
 	}
 	if !sawSubstituted {
 		t.Errorf("reduce run not templated to 'echo CVE-2025-0001'; Calls=%+v", rig.fake.Calls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WS-5: per-backend staging root + AWF_STAGING_ROOT env injection
+// ---------------------------------------------------------------------------
+
+// stagingRootBackend wraps container.Fake and overrides Capabilities to return
+// a given StagingRoot — letting us simulate native (StagingRoot: ".awf") vs.
+// docker (StagingRoot: "/work/.awf") without touching the Fake itself.
+type stagingRootBackend struct {
+	*container.Fake
+	stagingRoot string
+}
+
+func (b *stagingRootBackend) Capabilities() container.Caps {
+	caps := b.Fake.Capabilities()
+	caps.StagingRoot = b.stagingRoot
+	return caps
+}
+
+// newReduceRigWithStagingRoot builds a rig whose backend reports the given
+// StagingRoot, letting us assert native-vs-docker staging paths.
+func newReduceRigWithStagingRoot(t *testing.T, stagingRoot string) *reduceRig {
+	t.Helper()
+	fake := container.NewFake()
+	h, err := fake.Create(context.Background(), container.ContainerSpec{Name: reduceContainer})
+	if err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+	wrapped := &stagingRootBackend{Fake: fake, stagingRoot: stagingRoot}
+	clk := &clock.Fake{T: testClockEpoch}
+	return &reduceRig{
+		ld:    &LocalDispatcher{Backend: wrapped, Handles: map[string]container.Handle{reduceContainer: h}},
+		fake:  fake,
+		clk:   clk,
+		lg:    state.NewInMemoryLog(clk),
+		blobs: state.NewInMemoryBlobs(),
+		rs:    NewRunState(testRunID, testDigest, nil),
+	}
+}
+
+// TestRunReduceNativeStagingRoot asserts that on a backend with StagingRoot:
+// ".awf" (native), the reducer's manifest lands at ".awf/aggregate.json" (NOT
+// "/work/.awf/aggregate.json") and AWF_STAGING_ROOT is in the reducer env.
+// This is the RED test — it fails before WS-5 is implemented.
+func TestRunReduceNativeStagingRoot(t *testing.T) {
+	rig := newReduceRigWithStagingRoot(t, ".awf")
+	mapPath := testMapPath
+
+	ref0, err := rig.blobs.Put([]byte("data-0"))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	branches := []reduceBranch{
+		{N: 0, Outputs: map[string]any{"k": "v"}, Files: map[string]string{"f": ref0}},
+	}
+
+	rig.fake.ProgramExec("./merge.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	r := &ir.Reduce{Run: "./merge.sh", Container: reduceContainer}
+	_, err = runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
+	}
+
+	// Assert manifest staged under ".awf/aggregate.json" (not "/work/.awf/...").
+	h := rig.ld.Handles[reduceContainer]
+	if _, cerr := rig.fake.CaptureFiles(context.Background(), h, []string{".awf/aggregate.json"}); cerr != nil {
+		t.Errorf("native staging: manifest NOT staged at .awf/aggregate.json: %v", cerr)
+	}
+	if _, cerr := rig.fake.CaptureFiles(context.Background(), h, []string{"/work/.awf/aggregate.json"}); cerr == nil {
+		t.Errorf("native staging: manifest ALSO staged at /work/.awf/aggregate.json (should only be at .awf/)")
+	}
+
+	// Assert AWF_STAGING_ROOT is in the reducer step env.
+	gotRoot := ""
+	for _, c := range rig.fake.Calls {
+		if c.Run == "./merge.sh" {
+			gotRoot = c.Env["AWF_STAGING_ROOT"]
+		}
+	}
+	if gotRoot != ".awf" {
+		t.Errorf("AWF_STAGING_ROOT = %q, want %q", gotRoot, ".awf")
+	}
+}
+
+// TestRunReduceDockerStagingRoot asserts that on a backend with StagingRoot:
+// "/work/.awf" (docker), the reducer's manifest lands at "/work/.awf/aggregate.json"
+// and AWF_STAGING_ROOT is "/work/.awf". Docker behavior must remain byte-identical.
+func TestRunReduceDockerStagingRoot(t *testing.T) {
+	// Docker rig uses the normal fake (which will return "/work/.awf" after WS-5).
+	rig := newReduceRig(t)
+	mapPath := testMapPath
+
+	branches := []reduceBranch{
+		{N: 0, Outputs: map[string]any{"k": "v"}, Files: map[string]string{}},
+	}
+
+	rig.fake.ProgramExec("./merge.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	r := &ir.Reduce{Run: "./merge.sh", Container: reduceContainer}
+	_, err := runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
+	}
+
+	// Assert manifest staged at "/work/.awf/aggregate.json".
+	h := rig.ld.Handles[reduceContainer]
+	if _, cerr := rig.fake.CaptureFiles(context.Background(), h, []string{"/work/.awf/aggregate.json"}); cerr != nil {
+		t.Errorf("docker staging: manifest NOT staged at /work/.awf/aggregate.json: %v", cerr)
+	}
+
+	// Assert AWF_STAGING_ROOT is "/work/.awf".
+	gotRoot := ""
+	for _, c := range rig.fake.Calls {
+		if c.Run == "./merge.sh" {
+			gotRoot = c.Env["AWF_STAGING_ROOT"]
+		}
+	}
+	if gotRoot != "/work/.awf" {
+		t.Errorf("AWF_STAGING_ROOT = %q, want %q", gotRoot, "/work/.awf")
 	}
 }

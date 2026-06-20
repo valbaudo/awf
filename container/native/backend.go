@@ -133,7 +133,12 @@ func (b *Backend) Capabilities() container.Caps {
 	// RuntimeImage is false: native ignores spec.Image and runs on the host, so
 	// a map's runtime image cannot be honored. The CLI guard rejects such a
 	// workflow on native (P6a) — fail closed.
-	return container.Caps{Snapshot: snap, RuntimeImage: false, RuntimeCompose: false}
+	//
+	// StagingRoot is ".awf" (workdir-relative). native.CopyTo joins relative
+	// paths to the container's workdir (r.workdir), so a relative root lands
+	// under the per-container workdir instead of the literal host path
+	// "/work/.awf" (which does not exist on the host).
+	return container.Caps{Snapshot: snap, RuntimeImage: false, RuntimeCompose: false, StagingRoot: ".awf"}
 }
 
 // Create rejects compose-mode (no service-routing on host), ignores

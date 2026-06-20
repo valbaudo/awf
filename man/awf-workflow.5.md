@@ -1016,15 +1016,24 @@ its **required `container:`** — a `run:` reducer with no `container:` is rejec
 `run:` example omits `container:` for brevity; that is shorthand, not the format
 contract — a `run:` reducer always declares one.) Before it runs, the engine
 stages into that container every branch's named `output_files` artifact (under
-`/work/.awf/branch-<N>/<name>`) plus a canonical-JSON manifest of all branches'
-typed outputs at `/work/.awf/aggregate.json` — deterministic, index-ordered, and
-committed-branches-only — via the same content-addressed delivery the artifact
-channel uses (see *Artifact channel*). The reducer reads them and writes its
-declared `output_files` and `$AWF_OUTPUT`, which become the reduced node's
-artifacts and typed output. If a reducer `output_files` path templates a body
-aggregate such as `{{ step.collect.name }}`, the aggregate renders as canonical
-JSON; the resulting container path is literal JSON text, not a sanitized file
-name. Prefer scalar fields or a fixed output path for reducer artifacts.
+`$AWF_STAGING_ROOT/branch-<N>/<name>`) plus a canonical-JSON manifest of all
+branches' typed outputs at `$AWF_STAGING_ROOT/aggregate.json` — deterministic,
+index-ordered, and committed-branches-only — via the same content-addressed
+delivery the artifact channel uses (see *Artifact channel*).
+
+The engine injects `AWF_STAGING_ROOT` into the reducer's environment. Its value
+is backend-dependent: **docker** uses `/work/.awf` (an absolute in-container
+path, the historical value); **native** uses `.awf` (workdir-relative, resolved
+by the runtime to the container's per-run workdir). Author `run:` reducers MUST
+reference staged files via `$AWF_STAGING_ROOT` rather than the literal
+`/work/.awf` path to remain portable across backends.
+
+The reducer reads the staged files and writes its declared `output_files` and
+`$AWF_OUTPUT`, which become the reduced node's artifacts and typed output. If a
+reducer `output_files` path templates a body aggregate such as
+`{{ step.collect.name }}`, the aggregate renders as canonical JSON; the resulting
+container path is literal JSON text, not a sanitized file name. Prefer scalar
+fields or a fixed output path for reducer artifacts.
 
 Example named aggregate with reducer artifacts:
 

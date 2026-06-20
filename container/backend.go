@@ -183,6 +183,16 @@ type Caps struct {
 	// lifecycle ownership. Zero-value false FAILS CLOSED: native cannot honor
 	// compose projects and must be rejected before execution.
 	RuntimeCompose bool
+
+	// StagingRoot is the directory under which the engine stages reduce
+	// manifests, branch artifacts, and react tool-call args files inside
+	// the step's container (or workdir, for native). Docker value:
+	// "/work/.awf" (an absolute in-container path). Native value: ".awf"
+	// (workdir-relative — native.CopyTo joins relative paths to the
+	// container's workdir). The engine exposes this to the reducer's shell
+	// via the AWF_STAGING_ROOT env var so the author's run: can reference
+	// staged files portably.
+	StagingRoot string
 }
 
 // SnapshotMode is the snapshot capability a backend supports.

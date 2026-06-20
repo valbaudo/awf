@@ -396,7 +396,7 @@ func toolByName(r *ir.React, wf *ir.Workflow, name string) (ir.Tool, bool) {
 // content} and fed back; an infra failure (dr.ExitCode == nil) is a hard error.
 // Returns the model-facing (bounded) tool result content.
 func dispatchOneTool(ctx context.Context, tool ir.Tool, toolPath string, tc agent.ToolCall, ictx interpreterContext) (string, error) {
-	argsPath := argsFilePath(toolPath)
+	argsPath := argsFilePath(toolPath, dispatcherStagingRoot(ictx.dispatcher))
 	scope := newToolImplScope(ictx.runstate, ictx.wf, toolPath, argsPath, parseArgsBestEffort(tc.Arguments))
 	cmd, err := template.Substitute(tool.Impl.Run, scope)
 	if err != nil {
@@ -570,8 +570,22 @@ func boundToolResult(res container.ExecResult) string {
 
 // argsFilePath derives a per-call container path for the staged verbatim
 // arguments from the tool leaf path (resume-stable: same toolPath → same file).
-func argsFilePath(toolPath string) string {
-	return "/work/.awf/" + sanitizePathSegment(toolPath) + ".args.json"
+// root is the backend's staging root (Caps.StagingRoot); callers derive it
+// via dispatcherStagingRoot so native runs land under the workdir.
+func argsFilePath(toolPath, root string) string {
+	return root + "/" + sanitizePathSegment(toolPath) + ".args.json"
+}
+
+// dispatcherStagingRoot extracts the backend's StagingRoot from the dispatcher.
+// Returns "/work/.awf" as a safe default when the dispatcher is not a
+// *LocalDispatcher (e.g. a test stub that doesn't embed a real backend).
+func dispatcherStagingRoot(d Dispatcher) string {
+	if ld, ok := d.(*LocalDispatcher); ok {
+		if root := ld.Backend.Capabilities().StagingRoot; root != "" {
+			return root
+		}
+	}
+	return "/work/.awf"
 }
 
 // sanitizePathSegment turns a runtime path (containing '.', '[', ']') into a
