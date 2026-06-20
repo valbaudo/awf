@@ -1728,3 +1728,71 @@ func TestMapItemRecordsCause(t *testing.T) {
 		t.Errorf("passing item: Cause=%q; want empty", byN[1].Cause)
 	}
 }
+
+// TestPruneFrontierRecordsCause covers WS-2a (prune completeness): a prune map
+// whose body fails mechanically for one item must record a non-empty Cause on
+// the folded map.frontier record for that item_failed item. item_pruned and
+// item_passed items get no cause (by design — only body failures produce one).
+//
+// Setup: keep top(1) over 3 items; item 0 ("bad") exits nonzero → ItemFailed;
+// items 1 ("b") and 2 ("c") produce a score, and the top-1 winner is passed
+// while the loser is pruned. The failed item's body error must appear as a
+// non-empty Cause in the folded frontier record; the passed and pruned items
+// must have an empty Cause.
+func TestPruneFrontierRecordsCause(t *testing.T) {
+	// item 0: body fails (exit 1, no score) → ItemFailed with cause
+	// item 1: scores 0.5 → passes or is pruned (keep top(1))
+	// item 2: scores 0.9 → passes (top scorer wins)
+	rig := newMapRig(t,
+		fail("./hyp bad"),   // item 0 body fails
+		scoreProg("b", 0.5), // item 1
+		scoreProg("c", 0.9), // item 2 — highest score, survives keep top(1)
+	)
+	// pruneWorkflow uses pruneBody which requires items have an "x" binding
+	// and runs "./hyp {{ x }}". The failed item returns exit code 1 (no score).
+	// keep: top(1) ⇒ item 2 passes, items 0 and 1 are frontier-discarded:
+	//   item 0 → ItemFailed (body failed, never reported a score)
+	//   item 1 → ItemPruned (scored but lost to item 2)
+	//   item 2 → ItemPassed (top scorer)
+	seedRunStartedWithInput(t, rig.lg, rig.blobs, runOverItems("bad", "b", "c"))
+	wf := pruneWorkflow(1, &ir.Prune{Score: "score", Keep: &ir.PruneKeep{K: 1}})
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, runOverItems("bad", "b", "c"))
+
+	// min_success defaults to all (3), but with concurrency 1 the failed item
+	// (exit 1) lands as ItemFailed; we tolerate the overall map failing.
+	_, _ = runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+
+	// Fold the log: the prune map commits one atomic map.frontier event.
+	// Assert Cause is threaded through correctly.
+	rs2 := foldFromRig(t, rig)
+	items := rs2.LookupMapItems(testMapPath)
+	if len(items) == 0 {
+		t.Fatal("no MapItemRecords after fold — prune frontier not committed")
+	}
+	byN := map[int]MapItemRecord{}
+	for _, it := range items {
+		byN[it.N] = it
+	}
+	// item 0: body failed → ItemFailed, Cause must be non-empty
+	if byN[0].Status != ItemFailed {
+		t.Errorf("item 0 status = %q, want %q", byN[0].Status, ItemFailed)
+	}
+	if byN[0].Cause == "" {
+		t.Errorf("item 0 (ItemFailed in prune map): Cause is empty; want non-empty (WS-2a prune completeness)")
+	}
+	// item 1: scored but pruned → ItemPruned, Cause must be empty
+	if byN[1].Status != ItemPruned {
+		t.Errorf("item 1 status = %q, want %q", byN[1].Status, ItemPruned)
+	}
+	if byN[1].Cause != "" {
+		t.Errorf("item 1 (ItemPruned): Cause = %q, want empty (pruned items have no cause)", byN[1].Cause)
+	}
+	// item 2: top scorer → ItemPassed, Cause must be empty
+	if byN[2].Status != ItemPassed {
+		t.Errorf("item 2 status = %q, want %q", byN[2].Status, ItemPassed)
+	}
+	if byN[2].Cause != "" {
+		t.Errorf("item 2 (ItemPassed): Cause = %q, want empty (passed items have no cause)", byN[2].Cause)
+	}
+}

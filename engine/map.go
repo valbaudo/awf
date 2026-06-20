@@ -148,6 +148,7 @@ func runMapWithContext(
 	}
 
 	statuses := make([]string, len(overArr)) // per-item terminal Status; pre-filled for already-committed items
+	causes := make([]string, len(overArr))   // per-item bounded Cause (non-empty only on body failure; WS-2a)
 	var statusErr error
 	var statusErrMu sync.Mutex // protects statusErr
 	var wg sync.WaitGroup
@@ -223,8 +224,9 @@ func runMapWithContext(
 			itemIctx := ictx
 			itemIctx.log = wrappedLog
 			itemIctx.tap = wrappedTap
-			status, dispatchErr := dispatchItem(itemCtx, n, mapPath, i, pr, ld, itemIctx)
+			status, cause, dispatchErr := dispatchItem(itemCtx, n, mapPath, i, pr, ld, itemIctx)
 			statuses[i] = status
+			causes[i] = cause
 			if dispatchErr != nil {
 				// A prune cancel unwinds the body via ctx; that is not an internal
 				// error — the loser is already in the pruned set and the final pass
@@ -285,7 +287,11 @@ func runMapWithContext(
 				final = ItemPruned
 			}
 			statuses[i] = final
-			fresh = append(fresh, MapItemData{N: i, Status: final})
+			data := MapItemData{N: i, Status: final}
+			if final == ItemFailed {
+				data.Cause = causes[i]
+			}
+			fresh = append(fresh, data)
 		}
 		if len(fresh) > 0 {
 			if cErr := commitMapFrontier(ictx.log, ictx.runstate, mapPath, fresh); cErr != nil {
@@ -386,10 +392,10 @@ func (e *createConfigError) Unwrap() error { return e.err }
 // builds a per-item dispatcher, recursively walks body, commits the map.item
 // event, and Destroys the container.
 //
-// Returns the per-item terminal status (ItemPassed / ItemFailed) AND a
-// separate error for INTERNAL failures (Backend.Create / Destroy / log
-// append) — those propagate to runMap which returns ("", err) to the
-// interpreter.
+// Returns the per-item terminal status (ItemPassed / ItemFailed), the bounded
+// forensic cause (non-empty only on a body failure), AND a separate error for
+// INTERNAL failures (Backend.Create / Destroy / log append) — those propagate
+// to runMap which returns ("", "", err) to the interpreter.
 //
 // SP5: when pr != nil (a prune map) the map.item commit is DEFERRED to runMap's
 // final pass — dispatchItem returns the body status without committing, so the
@@ -404,7 +410,7 @@ func dispatchItem(
 	pr *pruneRun,
 	ld *LocalDispatcher,
 	ictx interpreterContext,
-) (string, error) {
+) (string, string, error) {
 	itemPath := ItemPath(mapPath, itemN) // "map[0].item-3"
 
 	spec := ContainerSpecFor(ictx.wf, ld.ComposeFiles, n.Container)
@@ -431,10 +437,10 @@ func dispatchItem(
 		if rErr != nil {
 			// A render fault is a deterministic definition/data error → fail the
 			// whole map (runMap converts this sentinel to permanent_failure).
-			return "", &renderImageError{itemN: itemN, err: rErr}
+			return "", "", &renderImageError{itemN: itemN, err: rErr}
 		}
 		if strings.TrimSpace(rendered) == "" {
-			return "", &renderImageError{itemN: itemN, err: fmt.Errorf("map.image %q rendered to an empty string", n.Image)}
+			return "", "", &renderImageError{itemN: itemN, err: fmt.Errorf("map.image %q rendered to an empty string", n.Image)}
 		}
 		spec.Image = rendered
 		// Runtime-resolved image: it was learned just now, so it cannot have
@@ -454,7 +460,7 @@ func dispatchItem(
 			// (its frontier uncommitted) instead of committing the map as a
 			// permanent_failure that resume would never retry.
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return "", err
+				return "", "", err
 			}
 			// ONLY a container.ImageUnavailableError — a valid image that couldn't be
 			// pulled/booted, or an untrusted non-pinned rendered ref — is a tolerated
@@ -464,9 +470,10 @@ func dispatchItem(
 			var iu *container.ImageUnavailableError
 			if errors.As(err, &iu) {
 				if pr != nil {
-					return ItemFailed, nil
+					return ItemFailed, "", nil
 				}
-				return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable, "", "")
+				s, commitErr := commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, ItemFailed, "", ReasonImageUnavailable, "", "")
+				return s, "", commitErr
 			}
 			// Any OTHER Create error is a deterministic definition error (an invalid
 			// per-element spec — bad resources, a host config the daemon rejects):
@@ -474,9 +481,9 @@ func dispatchItem(
 			// never laundered into a tolerated item_failed under min_success. This
 			// return is intentionally pr-agnostic — a prune map fails just as loud;
 			// only the TOLERATED path above is prune-gated.
-			return "", &createConfigError{itemN: itemN, err: err}
+			return "", "", &createConfigError{itemN: itemN, err: err}
 		}
-		return "", fmt.Errorf("create item-%d container: %w", itemN, err)
+		return "", "", fmt.Errorf("create item-%d container: %w", itemN, err)
 	}
 	imageDigest := itemHandle.ResolvedImageDigest
 	defer func() {
@@ -504,7 +511,7 @@ func dispatchItem(
 		// Skip ends the item as ok (design §E step 5). Record node.skipped
 		// for trace; status stays ItemPassed.
 		if appErr := appendNodeSkipped(ictx.log, itemPath, su.Reason); appErr != nil {
-			return "", fmt.Errorf("append node.skipped for item-%d: %w", itemN, appErr)
+			return "", "", fmt.Errorf("append node.skipped for item-%d: %w", itemN, appErr)
 		}
 	} else if bodyErr != nil || bodyOC != OutcomeOK {
 		// Body failed mechanically (any non-skip error) → item_failed. For a prune
@@ -519,9 +526,10 @@ func dispatchItem(
 
 	// SP5: defer the map.item commit to runMap's final pass for a prune map.
 	if pr != nil {
-		return status, nil // Task 4 threads the cause for prune maps
+		return status, cause, nil
 	}
-	return commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "", itemOutcome, cause)
+	s, err := commitMapItem(ictx.log, ictx.runstate, mapPath, itemN, status, imageDigest, "", itemOutcome, cause)
+	return s, cause, err
 }
 
 // maxMapItemCauseBytes bounds the forensic Cause so a runaway body error can't

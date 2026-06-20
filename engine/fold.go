@@ -316,6 +316,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 					Status:      it.Status,
 					ImageDigest: it.ImageDigest,
 					Reason:      it.Reason,
+					Cause:       it.Cause,
 				})
 			}
 
