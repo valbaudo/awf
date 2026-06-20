@@ -1260,3 +1260,50 @@ func TestFoldNodeInvalidatedThenRecommitLastWins(t *testing.T) {
 		t.Fatal("re-committed b should be present (last event per path wins)")
 	}
 }
+
+// TestFold_StructuralDigestFolded: a run.started event with structural_digest
+// populates RunState.StructuralDigest.
+func TestFold_StructuralDigestFolded(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	want := "awf-d1:sha256:" + strings.Repeat("a", 64)
+	events := []state.Event{
+		{
+			Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{
+				RunID:            "run1",
+				WorkflowDigest:   "awf-d1:sha256:" + strings.Repeat("b", 64),
+				StructuralDigest: want,
+			}),
+		},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if rs.StructuralDigest != want {
+		t.Fatalf("StructuralDigest = %q, want %q", rs.StructuralDigest, want)
+	}
+}
+
+// TestFold_StructuralDigestLegacyEmpty: a run.started event without the
+// structural_digest field leaves RunState.StructuralDigest as "".
+func TestFold_StructuralDigestLegacyEmpty(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{
+			Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			// Deliberately omit StructuralDigest — simulates a pre-WS6 log.
+			Data: marshalOrFatal(t, RunStartedData{
+				RunID:          "run2",
+				WorkflowDigest: "awf-d1:sha256:" + strings.Repeat("c", 64),
+			}),
+		},
+	}
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if rs.StructuralDigest != "" {
+		t.Fatalf("StructuralDigest = %q, want empty for legacy log", rs.StructuralDigest)
+	}
+}

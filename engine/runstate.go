@@ -222,9 +222,10 @@ type NodeResult struct {
 // (slice 3.5).
 // RunState.Epoch ≠ state.Event.Epoch — see comment on the Epoch field below.
 type RunState struct {
-	RunID          string
-	WorkflowDigest string
-	Input          map[string]any // resolved from run.started.Data.input_ref via Blobs.Get
+	RunID            string
+	WorkflowDigest   string
+	StructuralDigest string         // WS-6a; "" for pre-WS6 logs (field absent in legacy run.started)
+	Input            map[string]any // resolved from run.started.Data.input_ref via Blobs.Get
 	// Assets is the recorded run-start asset manifest. Fold restores it from
 	// run.started without dereferencing refs; engine.Run may also seed it from
 	// RunOptions for first-run execution before any resume fold exists.

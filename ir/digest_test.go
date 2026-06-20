@@ -719,3 +719,188 @@ func TestNodeSubtreeDigest_Determinism(t *testing.T) {
 		t.Fatalf("nodeSubtreeDigest depends on With map insertion order: %s vs %s", d1, dRev)
 	}
 }
+
+// --- StructuralDigest tests (WS-6 Task 6a) ---
+
+// twoCodeStepWorkflow builds a minimal workflow with two named code steps.
+func twoCodeStepWorkflow() *Workflow {
+	return &Workflow{
+		ID:      "sd-test",
+		Version: 1,
+		Graph: NodeList{
+			&CodeStep{ID: "s1", Run: "echo hello"},
+			&CodeStep{ID: "s2", Run: "echo world"},
+		},
+	}
+}
+
+// TestStructuralDigest_BodyEditInvariant: editing a node's Run body changes
+// ComputeDigest but must NOT change StructuralDigest (only skeleton: path+type).
+func TestStructuralDigest_BodyEditInvariant(t *testing.T) {
+	orig := twoCodeStepWorkflow()
+	sd1, err := orig.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cd1, err := orig.ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutate the Run body of the first step.
+	edited := twoCodeStepWorkflow()
+	edited.Graph[0].(*CodeStep).Run = "rm -rf /"
+	sd2, err := edited.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cd2, err := edited.ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ComputeDigest must change.
+	if cd1 == cd2 {
+		t.Fatal("ComputeDigest did not change after body edit (test setup bug)")
+	}
+	// StructuralDigest must be invariant.
+	if sd1 != sd2 {
+		t.Fatalf("StructuralDigest changed after body edit: %s vs %s", sd1, sd2)
+	}
+}
+
+// TestStructuralDigest_ChangesOnAddNode: adding a node changes StructuralDigest.
+func TestStructuralDigest_ChangesOnAddNode(t *testing.T) {
+	base := twoCodeStepWorkflow()
+	sd1, err := base.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	added := twoCodeStepWorkflow()
+	added.Graph = append(added.Graph, &CodeStep{ID: "s3", Run: "echo extra"})
+	sd2, err := added.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sd1 == sd2 {
+		t.Fatalf("StructuralDigest unchanged after adding node (got %s for both)", sd1)
+	}
+}
+
+// TestStructuralDigest_ChangesOnRemoveNode: removing a node changes StructuralDigest.
+func TestStructuralDigest_ChangesOnRemoveNode(t *testing.T) {
+	base := twoCodeStepWorkflow()
+	sd1, err := base.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	removed := twoCodeStepWorkflow()
+	removed.Graph = removed.Graph[:1] // drop s2
+	sd2, err := removed.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sd1 == sd2 {
+		t.Fatalf("StructuralDigest unchanged after removing node (got %s for both)", sd1)
+	}
+}
+
+// TestStructuralDigest_ChangesOnReorder: reordering top-level nodes changes StructuralDigest.
+func TestStructuralDigest_ChangesOnReorder(t *testing.T) {
+	base := twoCodeStepWorkflow()
+	sd1, err := base.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reordered := twoCodeStepWorkflow()
+	reordered.Graph = NodeList{base.Graph[1], base.Graph[0]} // swap s1 and s2
+	sd2, err := reordered.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sd1 == sd2 {
+		t.Fatalf("StructuralDigest unchanged after reorder (got %s for both)", sd1)
+	}
+}
+
+// TestStructuralDigest_ChangesOnRetype: changing a node's concrete type at the
+// same position changes StructuralDigest.
+func TestStructuralDigest_ChangesOnRetype(t *testing.T) {
+	base := twoCodeStepWorkflow()
+	sd1, err := base.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retyped := twoCodeStepWorkflow()
+	// Replace s1 (CodeStep) with an AgentStep at the same position.
+	retyped.Graph[0] = &AgentStep{ID: "s1", Uses: "awf/llm"}
+	sd2, err := retyped.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sd1 == sd2 {
+		t.Fatalf("StructuralDigest unchanged after retype (got %s for both)", sd1)
+	}
+}
+
+// TestStructuralDigest_ChangesOnEnv: editing the Env declaration changes StructuralDigest.
+func TestStructuralDigest_ChangesOnEnv(t *testing.T) {
+	base := twoCodeStepWorkflow()
+	sd1, err := base.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withEnv := twoCodeStepWorkflow()
+	withEnv.Env = []string{"OPENAI_API_KEY"}
+	sd2, err := withEnv.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sd1 == sd2 {
+		t.Fatalf("StructuralDigest unchanged after adding Env (got %s for both)", sd1)
+	}
+}
+
+// TestStructuralDigest_ChangesOnContainers: editing a Containers entry changes StructuralDigest.
+func TestStructuralDigest_ChangesOnContainers(t *testing.T) {
+	base := twoCodeStepWorkflow()
+	sd1, err := base.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withContainer := twoCodeStepWorkflow()
+	withContainer.Containers = map[string]Container{"lab": {Image: "oci://x@sha256:abc"}}
+	sd2, err := withContainer.StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sd1 == sd2 {
+		t.Fatalf("StructuralDigest unchanged after adding Containers (got %s for both)", sd1)
+	}
+}
+
+// TestStructuralDigest_SchemePrefix: result carries the DigestScheme prefix.
+func TestStructuralDigest_SchemePrefix(t *testing.T) {
+	d, err := twoCodeStepWorkflow().StructuralDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(d, DigestScheme) {
+		t.Fatalf("StructuralDigest %q lacks scheme prefix %q", d, DigestScheme)
+	}
+	if len(d) != len(DigestScheme)+sha256.Size*2 {
+		t.Fatalf("StructuralDigest %q wrong length", d)
+	}
+}

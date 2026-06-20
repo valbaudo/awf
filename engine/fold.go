@@ -108,6 +108,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			}
 			rs.RunID = d.RunID
 			rs.WorkflowDigest = d.WorkflowDigest
+			rs.StructuralDigest = d.StructuralDigest // "" for pre-WS6 logs (omitempty; zero value)
 			rs.Assets = d.Assets
 			rs.InputFiles = cloneStringMap(d.InputFiles)
 			rs.Epoch = 1
