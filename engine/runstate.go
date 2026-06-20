@@ -209,6 +209,11 @@ type NodeResult struct {
 	// Non-empty only for deterministic (code) steps. Task 6 reads this during resume
 	// to skip re-execution when the key matches the expected key for the current inputs.
 	NodeKey string
+	// NodeSubtreeDigest is the structural hash of the node definition folded from
+	// NodeCompletedData.NodeSubtreeDigest. Non-empty only for deterministic (code) steps.
+	// Task 6b2 (resume verifying-trace) compares this against the current node's
+	// ir.NodeSubtreeDigest to decide per-node reuse.
+	NodeSubtreeDigest string
 }
 
 // RunState is the in-memory fold of the log: the interpreter consults it to skip

@@ -116,15 +116,17 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 	// all other call sites leave it nil → isDeterministicNode(nil) == false → empty key.
 	// runtimePins is nil for v1 (see WS-6b spec: backend already pinned in
 	// RunStartedData.Backend; per-image-digest pinning is a follow-up).
-	var nodeKey string
+	var nodeKey, nodeSubtreeDigest string
 	if isDeterministicNode(dr.Node) {
 		subtreeDigest, sdErr := ir.NodeSubtreeDigest(dr.Node)
 		if sdErr != nil {
 			return NodeResult{}, fmt.Errorf("engine.Commit: node subtree digest at path %q: %w", path, sdErr)
 		}
 		nodeKey = computeNodeKey(subtreeDigest, dr.InputRefs, nil)
+		nodeSubtreeDigest = subtreeDigest // reuse the already-computed value; no second call
 	}
 	nr.NodeKey = nodeKey
+	nr.NodeSubtreeDigest = nodeSubtreeDigest
 
 	// 3. Append the node.completed event with all refs. Its existence in the
 	// log IS the completion record; the artifacts it references provably
@@ -138,10 +140,11 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		Metrics:    dr.Metrics,
 		// Slice 7.1 — the snapshot blob was already Put to Blobs by the
 		// dispatcher (Backend.Snapshot); Commit records the ref ONLY. No re-Put.
-		SnapshotRef:   dr.SnapshotRef,
-		Container:     dr.Container,
-		TranscriptRef: transcriptRef,
-		NodeKey:       nodeKey,
+		SnapshotRef:       dr.SnapshotRef,
+		Container:         dr.Container,
+		TranscriptRef:     transcriptRef,
+		NodeKey:           nodeKey,
+		NodeSubtreeDigest: nodeSubtreeDigest, // reuses the same subtree value as NodeKey's input; no drift
 	}
 	if err := appendNodeCompleted(log, path, data); err != nil {
 		return NodeResult{}, fmt.Errorf("engine.Commit: %w", err)

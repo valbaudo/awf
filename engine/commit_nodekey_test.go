@@ -7,6 +7,9 @@ package engine_test
 //  2. A code step with no input_files also gets a non-empty NodeKey.
 //  3. engine.Commit called without Node (the non-code case) produces empty NodeKey.
 //  4. A legacy node.completed event (no node_key field) folds to NodeKey=="" (backward compat).
+//  5. A deterministic code step gets a non-empty NodeSubtreeDigest equal to ir.NodeSubtreeDigest(node).
+//  6. engine.Commit without Node (agent) produces empty NodeSubtreeDigest.
+//  7. A legacy node.completed without node_subtree_digest folds to NodeSubtreeDigest=="".
 
 import (
 	"context"
@@ -261,6 +264,144 @@ func TestNodeKeyLegacyLog_FoldsClean(t *testing.T) {
 	}
 	if nr.NodeKey != "" {
 		t.Errorf("legacy log NodeKey = %q, want empty (backward-compatible)", nr.NodeKey)
+	}
+}
+
+// TestNodeSubtreeDigestCodeStep verifies that a deterministic code step, after
+// commit+fold, has NodeResult.NodeSubtreeDigest non-empty and equal to an
+// independently computed ir.NodeSubtreeDigest(node). Also confirms the same
+// value is embedded in the node.completed JSON event.
+func TestNodeSubtreeDigestCodeStep(t *testing.T) {
+	t.Parallel()
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	fake := container.NewFake()
+	h, err := fake.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	disp := &engine.LocalDispatcher{Backend: fake, Handles: map[string]container.Handle{"lab": h}}
+	log := state.NewInMemoryLog(clk)
+	blobs := state.NewInMemoryBlobs()
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: []byte(`{"run_id":"r1","workflow_digest":"d1"}`)}); err != nil {
+		t.Fatalf("seed run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d1", nil)
+
+	cs := &ir.CodeStep{ID: "digest-step", Container: "lab", Run: "./run.sh"}
+	wf := &ir.Workflow{
+		ID:         "w",
+		Version:    1,
+		Containers: map[string]ir.Container{"lab": {}},
+		Graph:      ir.NodeList{cs},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+	fake.ProgramExec("./run.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok", oc)
+	}
+
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("log.Fold: %v", err)
+	}
+	folded, err := engine.Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("engine.Fold: %v", err)
+	}
+
+	nr, ok := folded.Completed["digest-step"]
+	if !ok {
+		t.Fatalf("no completed entry for digest-step; completed=%v", folded.Completed)
+	}
+	if nr.NodeSubtreeDigest == "" {
+		t.Fatal("NodeSubtreeDigest is empty for deterministic code step — expected non-empty")
+	}
+
+	// Independently compute the expected digest.
+	wantDigest, err := ir.NodeSubtreeDigest(cs)
+	if err != nil {
+		t.Fatalf("ir.NodeSubtreeDigest: %v", err)
+	}
+	if nr.NodeSubtreeDigest != wantDigest {
+		t.Errorf("NodeSubtreeDigest = %q, want %q", nr.NodeSubtreeDigest, wantDigest)
+	}
+
+	// Confirm node.completed JSON embeds node_subtree_digest.
+	for _, e := range events {
+		if e.Type != engine.EventNodeCompleted {
+			continue
+		}
+		var d engine.NodeCompletedData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatalf("unmarshal node.completed: %v", err)
+		}
+		if d.NodeSubtreeDigest == "" {
+			t.Error("NodeCompletedData.NodeSubtreeDigest is empty in committed event for code step")
+		}
+		if d.NodeSubtreeDigest != wantDigest {
+			t.Errorf("NodeCompletedData.NodeSubtreeDigest = %q, want %q", d.NodeSubtreeDigest, wantDigest)
+		}
+	}
+}
+
+// TestNodeSubtreeDigestNonCodeCommit_IsEmpty verifies that a Commit call without
+// a Node (the pattern for agent/react/reduce call sites) produces empty
+// NodeSubtreeDigest, and the JSON event omits node_subtree_digest.
+func TestNodeSubtreeDigestNonCodeCommit_IsEmpty(t *testing.T) {
+	t.Parallel()
+	log := state.NewInMemoryLog(clock.System{})
+	blobs := state.NewInMemoryBlobs()
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: []byte(`{"run_id":"r1","workflow_digest":"d"}`)}); err != nil {
+		t.Fatalf("seed run.started: %v", err)
+	}
+	dr := engine.DispatchResult{
+		Outcome: engine.OutcomeOK,
+		Outputs: map[string]any{"k": "v"},
+	}
+	nr, err := engine.Commit(log, blobs, "agent-step", dr, false)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if nr.NodeSubtreeDigest != "" {
+		t.Errorf("NodeSubtreeDigest = %q, want empty for non-code Commit", nr.NodeSubtreeDigest)
+	}
+
+	// JSON event must omit node_subtree_digest (omitempty).
+	events, _ := log.Fold()
+	for _, e := range events {
+		if e.Type == engine.EventNodeCompleted {
+			if jsonContains(e.Data, "node_subtree_digest") {
+				t.Errorf("non-code node.completed must omit node_subtree_digest; got %s", e.Data)
+			}
+		}
+	}
+}
+
+// TestNodeSubtreeDigestLegacyLog_FoldsClean verifies that a hand-crafted
+// node.completed event WITHOUT node_subtree_digest folds to NodeSubtreeDigest==""
+// (backward compatibility — pre-WS6b2 logs are byte-identical).
+func TestNodeSubtreeDigestLegacyLog_FoldsClean(t *testing.T) {
+	t.Parallel()
+	blobs := state.NewInMemoryBlobs()
+	events := []state.Event{
+		{Seq: 1, Type: engine.EventRunStarted, Path: "", Data: []byte(`{"run_id":"r1","workflow_digest":"d"}`)},
+		{Seq: 2, Type: engine.EventNodeCompleted, Path: "step1", Data: []byte(`{"outcome":"ok"}`)},
+	}
+	folded, err := engine.Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	nr, ok := folded.Completed["step1"]
+	if !ok {
+		t.Fatalf("step1 not in Completed")
+	}
+	if nr.NodeSubtreeDigest != "" {
+		t.Errorf("legacy log NodeSubtreeDigest = %q, want empty (backward-compatible)", nr.NodeSubtreeDigest)
 	}
 }
 

@@ -419,6 +419,12 @@ type NodeCompletedData struct {
 	// omitempty keeps pre-WS6b logs byte-identical (additive, no fold breakage).
 	// Task 6 (resume reuse) reads this to skip re-execution when inputs are unchanged.
 	NodeKey string `json:"node_key,omitempty"`
+	// NodeSubtreeDigest is the structural hash of the node definition (ir.NodeSubtreeDigest)
+	// for deterministic (code) steps — the subtree component of NodeKey, recorded separately
+	// so Task 6b2 (resume verifying-trace) can compare it against the current node definition
+	// without recomputing NodeKey. Empty for non-deterministic steps (agent, react, reduce,
+	// signal, etc.). omitempty keeps pre-WS6b2 logs byte-identical (additive, no fold breakage).
+	NodeSubtreeDigest string `json:"node_subtree_digest,omitempty"`
 }
 
 // BranchTakenData is the if-decision marker (spec §5.1). Fold uses Which to know which
