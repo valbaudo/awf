@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"sync"
@@ -46,7 +47,32 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 		return nil, nil, errors.New("container/native: Exec: unknown handle (not Created or already Destroyed)")
 	}
 
-	c := exec.CommandContext(ctx, "sh", "-c", cmd.Run)
+	// Resolve the per-dispatch launcher. When a sandbox is configured and it
+	// is a factory (bwrap or trampoline), buildForRun produces a launcher with
+	// the run-command baked in. When no sandbox is configured (nil) or the
+	// launcher is the no-op, argv is nil and we fall through to the plain sh
+	// invocation below — identical behaviour to pre-sandbox code.
+	var c *exec.Cmd
+	if launcher := b.resolvedSandbox(); launcher != nil {
+		var argv []string
+		if factory, ok := launcher.(sandboxLauncherFactory); ok {
+			// Per-dispatch factory: bwrap and landlock-trampoline launchers.
+			// runHome is the process's HOME so credDirs resolves user config dirs.
+			runHome := os.Getenv("HOME")
+			perRunLauncher := factory.buildForRun(cmd.Run)
+			argv = perRunLauncher.prepend(r.workdir, credDirs(runHome))
+		} else {
+			// Non-factory launcher (e.g. noOpLauncher) returns nil from prepend.
+			argv = launcher.prepend(r.workdir, nil)
+		}
+		if argv != nil {
+			c = exec.CommandContext(ctx, argv[0], argv[1:]...)
+		}
+	}
+	if c == nil {
+		// No sandbox or no-op launcher: run sh directly (pre-sandbox behaviour).
+		c = exec.CommandContext(ctx, "sh", "-c", cmd.Run)
+	}
 	c.Dir = r.workdir
 	c.Env = append(c.Environ(), envMapToSlice(cmd.Env)...)
 
@@ -119,6 +145,14 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 	}()
 
 	return chunks, result, nil
+}
+
+// resolvedSandbox returns the configured sandboxLauncher or nil.
+// nil means no sandbox was requested (WithSandbox(false) or not supplied);
+// non-nil means sandbox was requested (may be noOpLauncher or a real launcher).
+// Re-added here after the golangci unused-removal in Task 2.
+func (b *Backend) resolvedSandbox() sandboxLauncher {
+	return b.sandbox
 }
 
 // envMapToSlice converts cmd.Env map into the "KEY=value" []string

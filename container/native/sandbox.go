@@ -55,6 +55,23 @@ func detectSandbox(lookPath func(string) (string, error)) (sandboxLauncher, stri
 // can surface it on the same stderr path as the existing no-image warning.
 const noSandboxWarnLabel = "no-sandbox (WARNING: steps run on host without OS-level isolation)"
 
+// sandboxLauncherFactory is implemented by per-OS launcher types that need
+// the run-command string at dispatch time (bubblewrap, landlock-trampoline).
+// exec.go type-asserts b.sandbox to sandboxLauncherFactory to get a
+// per-dispatch sandboxLauncher with the run string baked in.
+//
+// Motivation: the sandboxLauncher.prepend interface is a pure function of
+// (scratchDir, roDirs) — it cannot carry per-dispatch state like the shell
+// command to run. Factories bridge the gap: constructed at detect-time with
+// the binary path and host config, they produce a fresh sandboxLauncher per
+// dispatch with the run command embedded.
+//
+// noOpLauncher does NOT implement this interface — it returns nil from prepend
+// unconditionally, which exec.go interprets as "run sh directly."
+type sandboxLauncherFactory interface {
+	buildForRun(run string) sandboxLauncher
+}
+
 // noOpLauncher is the fallback sandboxLauncher. It signals "no confinement"
 // by returning nil from prepend, which the caller interprets as "no argv
 // prefix — run sh directly."
@@ -95,7 +112,10 @@ func credDirs(runHome string) []string {
 	seen := make(map[string]bool, len(candidates))
 	out := make([]string, 0, len(candidates))
 	for _, d := range candidates {
-		if d == "" || seen[d] {
+		// Skip empty or non-absolute paths (e.g. filepath.Join("", ".claude")
+		// produces ".claude" which is relative and could resolve to an
+		// unintended host path when used as a bind mount or Landlock path).
+		if d == "" || !filepath.IsAbs(d) || seen[d] {
 			continue
 		}
 		seen[d] = true
