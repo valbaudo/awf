@@ -140,6 +140,28 @@ func mapsByPath(nodes NodeList) map[string]*Map {
 	return out
 }
 
+// lastEvaluatorProducerID returns the step id of the terminal producer of a
+// gate's evaluate list — the node {{ evaluate.<field> }} resolves to. AWF1014
+// (validate_structural.go) guarantees that terminal is a Code/Agent/Signal step
+// with output_schema, so the default arm is unreachable for a valid gate (it
+// mirrors engine/gate.go lastEvaluatorPath). Do NOT add *React/*Call/*Map arms:
+// nodeHasOutputSchema rejects them as evaluate terminals.
+func lastEvaluatorProducerID(nodes NodeList) string {
+	if len(nodes) == 0 {
+		return ""
+	}
+	switch v := nodes[len(nodes)-1].(type) {
+	case *CodeStep:
+		return v.ID
+	case *AgentStep:
+		return v.ID
+	case *SignalStep:
+		return v.ID
+	default:
+		return "" // AWF1014-unreachable for a valid gate
+	}
+}
+
 func indexModuleProducers(ld *LoadedDefinition, moduleID string, nodes NodeList, producers map[string]producer) {
 	ord := 0
 	WalkNodes(nodes, "", func(n Node, path string) {
@@ -328,6 +350,12 @@ func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]
 			walkRefs(v.Generate, ChildPath(parent, "gate", i, "generate"), c, producers, maps, referenced, true, "")
 			// gate.evaluate: evaluate.* REJECTED (the evaluator can't reference its own in-flight output).
 			walkRefs(v.Evaluate, ChildPath(parent, "gate", i, "evaluate"), c, producers, maps, referenced, false, "")
+			// The evaluator's terminal typed output is consumed via
+			// evaluate.<field> (no step id); mark it referenced so AWF3002 does
+			// not flag it. Terminal is always a producer step (AWF1014). P12.
+			if id := lastEvaluatorProducerID(v.Evaluate); id != "" {
+				referenced[id] = true
+			}
 		case *Map:
 			path := PathFor(parent, "map", "", i)
 			// over: is the one array-native sink — an aggregate ref is legal here (overSink=true).

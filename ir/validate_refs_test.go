@@ -443,6 +443,31 @@ func TestRefsAgentSchemaReferencedInCallInputNoAWF3002(t *testing.T) {
 	assertNoCode(t, Validate(ld), "AWF3002")
 }
 
+// TestRefsAgentGateEvaluatorNoAWF3002 covers P12: an agent-step gate evaluator
+// whose typed output is consumed only via {{ evaluate.verified }} must NOT trip
+// AWF3002. Code-step evaluators never fire it (kind != "agent"), which is why
+// this went unnoticed — no existing test uses an *AgentStep evaluator.
+func TestRefsAgentGateEvaluatorNoAWF3002(t *testing.T) {
+	verifySchema := &JSONSchema{
+		"type": "object", "additionalProperties": false,
+		"required":   []any{"verified"},
+		"properties": map[string]any{"verified": map[string]any{"type": "boolean"}},
+	}
+	ld := makeLD(&Workflow{
+		ID: "gate-eval", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate:    NodeList{&CodeStep{ID: "gen1", Container: "c", Run: "gen"}},
+				Evaluate:    NodeList{&AgentStep{ID: "judge", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "judge it"}, OutputSchema: verifySchema}},
+				Until:       "{{ evaluate.verified }}",
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF3002")
+}
+
 // TestRefsBrokenRefInWithPromptReportsAWF3001 asserts that a broken reference
 // inside a with: string value emits AWF3001 at the path "<step-id>.with.<key>".
 func TestRefsBrokenRefInWithPromptReportsAWF3001(t *testing.T) {
