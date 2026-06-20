@@ -175,7 +175,7 @@ A container is backed by either a single digest-pinned image or a Compose projec
       scratch:                              # a single image
         image: oci://registry.example.com/runner@sha256:abc...   # a digest, not a tag
         resources: { cpu: 2, mem: 4Gi }
-        cmd: [ "/bin/sh", "-c", "sleep infinity" ]   # optional explicit command; omit it and a command-less image gets a default keepalive
+        cmd: [ "/bin/sh", "-c", "sleep infinity" ]   # optional explicit command; omit it and the image gets a default keepalive
 
 **image**
 :   One of `image`/`compose`. A single OCI image, content-addressed by digest. A
@@ -207,23 +207,24 @@ A container is backed by either a single digest-pinned image or a Compose projec
 
 **cmd**
 :   Optional, image-mode only. The command run inside a single-image container,
-    overriding the image's CMD. Given as a list of arguments:
+    overriding the image's CMD and the default keepalive. Given as a list of
+    arguments:
 
         containers:
           api:
             image: oci://registry.example.com/api@sha256:abc...
             cmd: [ "/usr/bin/api", "--serve" ]   # the server the steps exec against
 
-    When omitted, the image's own entrypoint/CMD runs; if the image declares no
-    long-running command, the runtime injects a keepalive so the container stays
-    up (see CONTAINERS). `cmd` has no meaning with `compose` — a Compose service's
-    command is declared in the Compose file.
+    When omitted, the runtime injects a keepalive so the container stays up
+    (see CONTAINERS, readiness). `cmd` has no meaning with `compose` — a Compose
+    service's command is declared in the Compose file.
 
 **keepalive**
-:   Optional, image-mode only, default `true`. When the runtime would otherwise
-    inject a keepalive into a command-less single image, **keepalive: false**
-    suppresses it. Ignored when `cmd` or an image entrypoint/CMD is present, and
-    meaningless with `compose`.
+:   Optional, image-mode only, default `true`. By default the runtime injects a
+    keepalive into a single image, overriding its CMD so it stays up. Set
+    **keepalive: false** to suppress the injection and run the image's own
+    entrypoint/CMD unchanged. Ignored when `cmd` is present, and meaningless
+    with `compose`.
 
 Compose is Docker's job, not AWF's. Networks, `depends_on`, `healthcheck`, and
 multi-service wiring are expressed in the Compose file using Docker's own
@@ -248,17 +249,13 @@ current host; use **--backend docker** for a fully reproducible baseline.
 
 Readiness is re-established on every (re)creation, including resume. The runtime
 guarantees a container is healthy before dispatching a step into it. A Compose
-project becomes ready via its services' healthchecks and `up --wait`. A
-single-image container becomes ready via its own command when it declares one
-(an entrypoint/CMD baked into the image, or an author **cmd**); a single image
-with no long-running command of its own would exit the instant it boots, so the
-runtime injects a default **keepalive** (a `sleep`-forever command) to hold it
-open for steps to exec into — the standard devcontainer `overrideCommand`
-behavior. The keepalive applies only to a command-less single image: declare
-**cmd** to run the image's own command instead (e.g. a server the steps talk
-to), or **keepalive: false** to inject nothing and let a self-exiting image
-exit. There is deliberately no `setup` step and no per-step "re-run on resume"
-flag.
+project becomes ready via its services' healthchecks and `up --wait`. For a
+single image, the runtime injects a default **keepalive** (a `sleep`-forever
+command) so the container stays open for steps to exec into — the standard
+devcontainer `overrideCommand` behavior, which overrides the image's own CMD.
+Declare **cmd** to run a specific command instead (e.g. a server the steps talk
+to), or **keepalive: false** to run the image's own entrypoint/CMD unchanged.
+There is deliberately no `setup` step and no per-step "re-run on resume" flag.
 
 State lives in three places, handled three ways:
 

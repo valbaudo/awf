@@ -13,16 +13,18 @@ import (
 	cont "github.com/valbaudo/awf/container"
 )
 
-// TestKeepalive_CommandlessImageStaysRunning verifies that Backend.Create with
-// a command-less image (no spec.Cmd, DisableKeepalive false) injects
-// `sleep infinity` and the container stays running so a subsequent Exec
-// succeeds. Alpine's default CMD is /bin/sh which exits immediately; without
-// the injection Exec would fail "not running".
+// TestKeepalive_CommandlessImageStaysRunning verifies that Backend.Create
+// with no spec.Cmd and DisableKeepalive false injects `sleep infinity` and
+// the container stays running so a subsequent Exec succeeds. This is the
+// devcontainer overrideCommand default: the runtime overrides the image's own
+// CMD (alpine's /bin/sh) unconditionally — no inspect needed. Without the
+// injection alpine's /bin/sh would exit immediately and Exec would fail
+// "not running".
 //
 // Negative cases:
 //
-//	(a) spec.Cmd set → keepalive NOT injected, the author's cmd is used.
-//	(b) DisableKeepalive=true → NOT injected, container exits, Exec fails.
+//	(a) spec.Cmd set → keepalive NOT injected; the author's cmd runs.
+//	(b) DisableKeepalive=true → NOT injected; image's own CMD runs and exits.
 func TestKeepalive_CommandlessImageStaysRunning(t *testing.T) {
 	cli, b := newTestBackend(t, "keepalive-inject")
 	ctx := context.Background()
@@ -165,17 +167,11 @@ func TestKeepalive_DisabledDoesNotInject(t *testing.T) {
 	}
 }
 
-// TestKeepalive_ImageWithOwnCmdNotOverridden verifies that an image that
-// already declares its own CMD in the image manifest is NOT given a keepalive
-// injection (the image's CMD is not command-less).
-//
-// We test this via spec.Cmd="sleep 30" — the author sets a long-lived cmd
-// explicitly, so cfg.Cmd is non-empty and the injection guard (len(cfg.Cmd)==0)
-// skips the ImageInspect path entirely.
-//
-// The structural property we're testing: injection only fires when BOTH
-// cfg.Cmd is empty AND the image has no CMD/ENTRYPOINT. When the author sets
-// Cmd, cfg.Cmd is non-empty — no inject regardless of image defaults.
+// TestKeepalive_ImageWithOwnCmdNotOverridden_AuthorOverride verifies that
+// when spec.Cmd is set the keepalive injection is skipped and the container
+// runs the author's command verbatim. The override-default model only applies
+// when BOTH spec.Cmd is absent AND DisableKeepalive is false; setting Cmd is
+// the author's explicit signal that the image runs its own process.
 func TestKeepalive_ImageWithOwnCmdNotOverridden_AuthorOverride(t *testing.T) {
 	cli, b := newTestBackend(t, "keepalive-own-cmd")
 	ctx := context.Background()
