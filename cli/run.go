@@ -351,7 +351,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// never lands here with an image — image-mode routes to docker above), so
 	// native never silently drops a declared image.
 	if concreteBackendKind == engine.BackendNative && workflowHasStaticImage(ld) {
-		fprintf(stderr, "awf run: --backend native ignores declared container image(s); steps run on the host with no isolation.\n")
+		fprintf(stderr, "awf run: --backend native ignores declared container image(s); steps run on the host.\n")
 	}
 	// WS-6a: compute the root workflow's structural digest (topology-only,
 	// body-invariant). Root-only: imported modules are not folded in (T6b).
