@@ -7,6 +7,7 @@
 .codex/
 .cursor/
 .agents/
+.superpowers/
 .aider*
 CLAUDE.md
 CLAUDE.local.md
@@ -31,6 +32,8 @@ man/*.5
 # It lives in the separate PRIVATE repo ~/Documents/GitHub/cve-feasibility-awf.
 examples/cve-feasibility*
 *attackerview*
+# Private customer-reproduction material (the "prestige" incident); local only.
+Customer's issue/
 *.code-workspace
 .DS_Store
 
