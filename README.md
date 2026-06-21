@@ -50,8 +50,10 @@ its own homework. A crash is not a verdict; only a real evaluation with a false
   not fragile free text.
 - **Checkpoint/resume**: step outputs and declared files commit to a
   content-addressed artifact store before the journal pointer moves.
-- **Pinned replay**: resume hard-fails if the workflow definition, imported
-  files, assets, container digests, or resolved runtime versions drift.
+- **Pinned replay**: a structural change — topology, imported files, assets,
+  container digests, or resolved runtime versions — hard-fails the resume; an edit
+  confined to step bodies instead reuses the unchanged committed steps and re-runs
+  from the first change.
 - **Real workspaces**: run against long-lived native processes, digest-pinned
   containers, or Compose labs; Docker handles networking, healthchecks, and
   multi-service wiring.
@@ -190,8 +192,10 @@ independent check before the workflow can move on.
   files, and optional workspace snapshots to the blob store first; only then
   does it append the completed journal event.
 - **Resume**: a fold over the journal. Completed steps are replayed from
-  committed artifacts; only the uncommitted frontier re-executes. Changed
-  definitions or runtime versions stop the resume instead of silently adapting.
+  committed artifacts; only the uncommitted frontier re-executes. A structural or
+  runtime-version change stops the resume instead of silently adapting; an edit
+  confined to step bodies reuses unchanged committed steps and re-runs from the
+  first change (per-node verifying-trace reuse).
 
 ## Adapters and Backends
 
@@ -217,7 +221,7 @@ spike.
 
 Execution backends:
 
-- `native`: host processes, fastest path, no isolation; resumable (`snapshot: workspace` workdirs are restored on resume). Explicit `--backend native` runs image-mode workflows on the host, ignoring the declared image; the host base environment is not pinned — use `--backend docker` for a fully reproducible baseline
+- `native`: host processes, fastest path; no container boundary, but each step is write-confined by an OS sandbox (bubblewrap or Landlock on Linux, `sandbox-exec` on macOS) so it can write only to its per-run workspace and `TMPDIR` — fail-closed, with a loud stderr warning if no sandbox tool is present; resumable (`snapshot: workspace` workdirs are restored on resume). Explicit `--backend native` runs image-mode workflows on the host, ignoring the declared image; the host base environment is not pinned — use `--backend docker` for a fully reproducible baseline
 - `docker`: digest-pinned images and Compose projects, resumable
 - `fake`: in-memory backend for conformance tests
 

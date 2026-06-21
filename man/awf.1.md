@@ -140,7 +140,9 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 **--backend** _auto_|_fake_|_docker_|_native_
 :   Where steps execute (default _auto_). _docker_ runs them in real containers
     and Compose projects with full isolation; _native_ runs them as host
-    processes with no isolation; _fake_ is an in-memory backend for tests.
+    processes with no container boundary, write-confined by an OS sandbox (see
+    **CONTAINERS** in **awf-workflow**(5)); _fake_ is an in-memory backend for
+    tests.
     _auto_ selects _native_ unless the workflow uses Docker-only features such as
     static image-backed containers, Compose-mode containers, or runtime map
     images, in which case it selects _docker_ for a pinned, reproducible
@@ -154,10 +156,11 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 
     An explicit **--backend native** runs static image-mode and
     `snapshot: workspace` workflows directly on the host, *ignoring* the declared
-    container image — there is no isolation and the image is not pulled. When a
-    workflow declares an image, native prints:
+    container image — the image is not pulled and there is no container boundary,
+    though each step is still write-confined by an OS sandbox (see **CONTAINERS**
+    in **awf-workflow**(5)). When a workflow declares an image, native prints:
 
-        awf run: --backend native ignores declared container image(s); steps run on the host with no isolation.
+        awf run: --backend native ignores declared container image(s); steps run on the host.
 
     Explicit native still **rejects** Compose-mode containers, runtime Compose,
     and runtime map images — those have no host equivalent — with guidance to use
@@ -174,7 +177,10 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     Names not on the list are not passed through. A workflow can extend this
     allowlist from inside its definition with the top-level `env:` field (see
     **awf-workflow**(5)); names declared there are forwarded in addition to this
-    flag, on both **run** and **resume**. See **ENVIRONMENT**.
+    flag, on both **run** and **resume**. See **ENVIRONMENT**. Before dispatch,
+    **awf run** also prints a non-fatal stderr warning when an agent step's adapter
+    has *none* of its known credential environment variables set — an early hint
+    that the step will otherwise fail at launch.
 
     The `uses: openai/codex-live` adapter is registered as a built-in live
     adapter. It uses Codex app-server sessions, the same runtime-resolution,
@@ -190,10 +196,10 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 
 Re-enter an interrupted run, or any run whose last outcome is not `ok`,
 re-running the uncommitted frontier. **awf** folds
-the run's journal, then verifies that
-the on-disk _path_ still hashes to the recorded definition digest *and* that
-every resolved agent-runtime version still matches — any drift is a hard error,
-never silently adapted. It recreates containers from their recipe and continues
+the run's journal, then checks the on-disk _path_ against the recorded digests
+*and* every resolved agent-runtime version. A changed structural digest or
+runtime version is a hard error, never silently adapted; an edit confined to step
+bodies instead engages per-node reuse (below). It recreates containers from their recipe and continues
 in a new epoch. Committed steps are replayed from the journal (their recorded
 outputs reused, not recomputed); only the uncommitted frontier re-executes. The
 backend is read back from the journal, so no **--backend** flag is given and
@@ -201,9 +207,14 @@ _auto_ is not re-evaluated on resume. Any run whose last
 outcome is not `ok` (`permanent_failure`, `rejected`, `retryable_failure`, or
 `cancelled`) is resumed with no flag; a one-line non-fatal note prints to
 stderr because the uncommitted frontier — and its side effects — re-runs.
-Pinning is not relaxed: a changed definition digest or resolved runtime
-version is still a hard error (use **resume --from** for the fenced bypass). A
-run that finished `ok` is a no-op.
+Pinning is relaxed only for an edit confined to step bodies: with an unchanged
+structural digest (topology, env, containers, assets, agents, imports, Compose
+files, node set), AWF reuses unchanged committed code steps and re-runs from the
+first changed node — per-node verifying-trace reuse; agent, react, map, signal,
+and call steps always re-run (see **awf-workflow**(5)). A changed structural
+digest, runtime-version drift, an addressing shift, or a pre-per-node log is
+still a hard error — use **resume --from** for the explicit fenced bypass. A run
+that finished `ok` is a no-op.
 
 **Native backend resume** mirrors Docker: committed steps are replayed from the
 journal, `snapshot: workspace` workdirs are restored from their last committed
@@ -222,8 +233,10 @@ baseline.
 :   Base directory holding the run (default `./.awf`).
 
 **--from** _step_
-:   Re-run from a committed node (named by a runtime-path prefix, e.g. a
-    top-level step id or `parallel[0].<step>`). Invalidates that node plus every
+:   Re-run from a committed node, or from the trailing **failed** node of a run
+    that stopped on a failure (named by a runtime-path prefix, e.g. a top-level
+    step id or `parallel[0].<step>`; the failed frontier node may be named by its
+    exact path or its bare trailing id). Invalidates that node plus every
     node after its top-level ancestor and re-runs them against the *current*
     definition; everything before is replayed. **Bypasses pinning** (digest +
     runtime drift) — a debug-mode exception; the operator owns the correctness
@@ -497,6 +510,13 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     supplies the default. Honored by every subcommand that takes **--state-dir**
     (run, resume, signal, pause, cancel, ls, inspect, trace, outputs, graph, ui).
 
+**AWF_STAGING_ROOT**
+:   Set by the engine (not by the operator) inside a `reduce:` step's container so
+    a `run:` reducer can locate the staged per-item manifests and branch
+    artifacts. Backend-dependent: `/work/.awf` on _docker_, `.awf`
+    (workdir-relative) on _native_. Reference it as `$AWF_STAGING_ROOT` rather than
+    a literal path to stay portable across backends (see **awf-workflow**(5)).
+
 **ANTHROPIC_API_KEY**, **ANTHROPIC_AUTH_TOKEN**, **CLAUDE_CODE_OAUTH_TOKEN**
 :   Authentication for the `anthropic/claude-code` agent runtime. **awf** does not
     read these itself; it forwards those named in **--agent-env** (all three by
@@ -648,7 +668,10 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     **with: api_key_env** (optional)
     :   Name of the env var holding the API key (default `OPENAI_API_KEY`). The
         named var must be present in **--agent-env**; an absent key is a
-        a permanent config error.
+        permanent config error. Quota or budget exhaustion at call time
+        (`insufficient_quota`, "budget exceeded") is likewise classified
+        **permanent** — the step fails fast instead of burning the retry budget,
+        while an ordinary rate-limit stays retryable.
 
     **with: system_prompt** (optional)
     :   Text prepended as a system message before the user prompt.

@@ -495,7 +495,10 @@ format never hard-codes one harness's options.
 **with**
 :   Required. Opaque runtime config (one runtime takes `{model, prompt, tools,
     max_turns}`; another takes `{models, budget}`). The core never reads its
-    keys.
+    keys. The reserved step-level keys (`output_schema`, `output_files`,
+    `input_files`, `skills`, `timeout`, `idempotency_key`, `retry`, …) belong
+    **beside** `with:`, not inside it; one nested under `with:` is ignored by the
+    engine and draws a validate warning (**AWF1061**).
 
 **continues**
 :   Optional (`continues:` field). The `id` of an agent step that **dominates** this turn (an earlier
@@ -1443,7 +1446,11 @@ or `$(...)` in agent-written text are then executed by the shell. Route free-tex
 or untrusted data through an `output_files` artifact and read it from a file
 inside the command. (Composites are rejected mechanically; a free-text `string`
 passes both validation and resolution, so keeping it out of shell hosts is the
-author's contract. Agent `with:` prompts are not shell hosts.)
+author's contract. Agent `with:` prompts are not shell hosts.) **validate** emits
+**AWF3013** (a warning) when a `string`-typed reference is substituted unquoted
+into a `run:`/`idempotency_key:` shell host — the CWE-78 script-injection class;
+wrap the slot in double quotes or route the value through an `output_files`
+artifact.
 
 Condition evaluation, for `if.cond`, `loop.until`, and `gate.until`, is a bounded
 evaluator over references, literals, comparisons (`== != < <= > >=`), and boolean
