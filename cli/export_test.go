@@ -20,7 +20,7 @@ import (
 // plan §Major #3).
 
 func NewBackendForTest(ctx context.Context, kind, runID, workdirRoot string, blobs state.Blobs) (container.Backend, func(), error) {
-	return newBackend(ctx, kind, runID, workdirRoot, blobs)
+	return newBackend(ctx, kind, runID, workdirRoot, blobs, io.Discard)
 }
 
 func ReadBackendKindFromLogForTest(events []state.Event) (string, error) {

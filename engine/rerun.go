@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/state"
 )
 
 // rerunFirstSegment returns the first '.'-delimited segment of a runtime path
@@ -89,13 +90,28 @@ func allCommittedPaths(rs *RunState) []string {
 	return out
 }
 
+// lastFailedPath returns the Path of the trailing node.failed event, or "".
+// node.failed carries the failed frontier node's runtime path on the EVENT
+// (e.Path), not its payload, and Fold ignores it — recoverable only from events.
+func lastFailedPath(events []state.Event) string {
+	last := ""
+	for _, e := range events {
+		if e.Type == EventNodeFailed && e.Path != "" {
+			last = e.Path
+		}
+	}
+	return last
+}
+
 // ResolveRerunTarget resolves a --from argument to one node path, in priority:
 // (1) an exact committed path; (2) a top-level graph node segment — a CONTAINER
 // like "parallel[1]"/"map[3]" has no committed key of its own (only children), so
-// it is matched against rerunRootSlots; (3) a unique TRAILING segment (a bare step
-// id, e.g. "merge" -> "parallel[0].merge"). A bare id shared by two committed paths
-// (ids are unique only within a sibling list) is an error listing candidates.
-func ResolveRerunTarget(wf *ir.Workflow, rs *RunState, arg string) (string, error) {
+// it is matched against rerunRootSlots; (3) the trailing node.failed event path
+// (a failed uncommitted frontier node, matched by exact path or bare trailing id);
+// (4) a unique TRAILING segment (a bare step id, e.g. "merge" ->
+// "parallel[0].merge"). A bare id shared by two committed paths (ids are unique
+// only within a sibling list) is an error listing candidates.
+func ResolveRerunTarget(wf *ir.Workflow, rs *RunState, events []state.Event, arg string) (string, error) {
 	paths := allCommittedPaths(rs)
 	for _, p := range paths {
 		if p == arg {
@@ -104,6 +120,13 @@ func ResolveRerunTarget(wf *ir.Workflow, rs *RunState, arg string) (string, erro
 	}
 	if _, ok := rerunRootSlots(wf)[arg]; ok {
 		return arg, nil
+	}
+	// WS-6a: a failed (uncommitted) frontier node has no committed key; accept it
+	// if arg names the trailing node.failed path exactly or by its bare trailing id.
+	if fp := lastFailedPath(events); fp != "" {
+		if arg == fp || arg == fp[strings.LastIndexByte(fp, '.')+1:] {
+			return fp, nil
+		}
 	}
 	var matches []string
 	for _, p := range paths {

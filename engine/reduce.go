@@ -19,14 +19,20 @@ import (
 	"github.com/valbaudo/awf/template"
 )
 
-// reduceStagingDir is the in-container directory a run: reducer's manifest and
-// per-branch artifacts are staged under (spec §3.2a). Single source of truth so
-// the manifest path and the branch-artifact dst can never desync.
-const reduceStagingDir = "/work/.awf"
+// reduceDefaultStagingDir is the fallback staging root for backends that
+// predate StagingRoot (zero value). All current backends set it explicitly.
+const reduceDefaultStagingDir = "/work/.awf"
 
-// reduceManifestPath is where the canonical-JSON aggregate of branch typed
-// outputs is staged in a run: reducer's container (spec §3.2a).
-const reduceManifestPath = reduceStagingDir + "/aggregate.json"
+// reduceStagingRoot returns the staging root for the given backend.
+// On docker (StagingRoot: "/work/.awf") it is the in-container absolute path.
+// On native (StagingRoot: ".awf") it is workdir-relative: native.CopyTo joins
+// relative paths to the container workdir so no literal "/work/.awf" is created.
+func reduceStagingRoot(b container.Backend) string {
+	if root := b.Capabilities().StagingRoot; root != "" {
+		return root
+	}
+	return reduceDefaultStagingDir
+}
 
 // reduceBranch is one committed branch's contribution: its typed outputs + its
 // named artifacts (artifact name → CAS ref), index-ordered by the caller
@@ -221,6 +227,10 @@ func runCommandReduce(
 	wf *ir.Workflow, moduleID string, rs *RunState, ld *LocalDispatcher, log state.Log, blobs state.Blobs, clk clock.Clock, tap io.Writer,
 	cc reduceCallContext,
 ) (Outcome, error) {
+	// Derive the per-backend staging root (docker: "/work/.awf", native: ".awf").
+	stagingRoot := reduceStagingRoot(ld.Backend)
+	manifestPath := stagingRoot + "/aggregate.json"
+
 	// 1. Canonical-JSON manifest of branch typed outputs (index-ordered).
 	manifest := make([]map[string]any, 0, len(branches))
 	for _, b := range branches {
@@ -234,7 +244,7 @@ func runCommandReduce(
 	if err != nil {
 		return failStep(log, nodePath, OutcomePermanentFailure, fmt.Errorf("canonicalize reduce manifest: %w", err))
 	}
-	inputs := []container.InputFile{{Path: reduceManifestPath, Content: canon}}
+	inputs := []container.InputFile{{Path: manifestPath, Content: canon}}
 
 	// 2. Stage each branch's named artifacts (sorted dst for determinism).
 	dsts := map[string][]byte{}
@@ -250,7 +260,7 @@ func runCommandReduce(
 				// Committed artifact unreadable — internal halt (SP1 errArtifactFetch precedent).
 				return "", fmt.Errorf("engine.runReduce: %w: branch %d file %q: %v", errArtifactFetch, b.N, name, gerr)
 			}
-			dst := fmt.Sprintf("%s/branch-%d/%s", reduceStagingDir, b.N, name)
+			dst := fmt.Sprintf("%s/branch-%d/%s", stagingRoot, b.N, name)
 			dsts[dst] = content
 		}
 	}
@@ -285,7 +295,7 @@ func runCommandReduce(
 	synth := &ir.CodeStep{Run: cmd, Container: r.Container, OutputSchema: r.OutputSchema, OutputFiles: r.OutputFiles}
 	resolved := ResolvedInputs{
 		Command:             cmd,
-		Env:                 map[string]string{},
+		Env:                 map[string]string{"AWF_STAGING_ROOT": stagingRoot},
 		OutputFiles:         outputFiles,
 		OutputFileContracts: outputFileContracts,
 		OutputSchema:        r.OutputSchema,
@@ -324,7 +334,7 @@ func runCommandReduce(
 // The supported (single-producing-step) body shape yields one body NodeResult
 // per item; if a body has multiple producing steps, their Outputs/Files are
 // shallow-merged into the branch. Files are keyed by declared output_files name,
-// matching the reducer staging contract (/work/.awf/branch-N/<name>).
+// matching the reducer staging contract ($AWF_STAGING_ROOT/branch-N/<name>).
 func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string, wf *ir.Workflow) ([]reduceBranch, error) {
 	// Body step suffixes (the path tail after ".body."), in walk order.
 	var producers []reduceBodyProducer

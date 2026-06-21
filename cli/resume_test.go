@@ -1313,6 +1313,76 @@ func TestCLIResumeFrom_BypassesDigestPin(t *testing.T) {
 	}
 }
 
+// TestCLIResumeFrom_FailedFrontierNode verifies that --from can target the
+// trailing failed (uncommitted) frontier node. The run has "a" committed and "b"
+// failed; --from b must succeed and re-run b (and only b, since a is already
+// committed and before b).
+func TestCLIResumeFrom_FailedFrontierNode(t *testing.T) {
+	t.Parallel()
+	// Build the two-step workflow file so we have a valid wfPath+digest.
+	tmp := t.TempDir()
+	wfPath := filepath.Join(tmp, "two-step-wf.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: two-step-ok
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: a
+    container: lab
+    run: "./a.sh"
+  - id: b
+    container: lab
+    run: "./b.sh"
+`), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	runID := "test-twostep-failed-frontier"
+	// Build a log: run.started + node.completed(a) + node.failed(b,retryable).
+	exit0 := 0
+	completedData, err := json.Marshal(engine.NodeCompletedData{
+		Outcome:  string(engine.OutcomeOK),
+		ExitCode: &exit0,
+	})
+	if err != nil {
+		t.Fatalf("marshal node.completed: %v", err)
+	}
+	stateDir := buildResumeLog(t, wfPath, runID,
+		state.Event{Type: engine.EventNodeCompleted, Path: "a", Data: completedData},
+		nodeFailedEvent(t, "b", engine.OutcomeRetryableFailure),
+	)
+
+	// Resume with --from b: b is the failed frontier node (uncommitted).
+	fake := container.NewFake()
+	fake.ProgramExec("./b.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, "--from", "b", runID, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	// b must have re-run; a must NOT have re-run (it's committed and before b).
+	var ranA, ranB bool
+	for _, c := range fake.Calls {
+		if c.Run == "./a.sh" {
+			ranA = true
+		}
+		if c.Run == "./b.sh" {
+			ranB = true
+		}
+	}
+	if ranA {
+		t.Fatal("step a must NOT re-run (it is committed and before b)")
+	}
+	if !ranB {
+		t.Fatal("step b must re-run (it is the failed frontier node targeted by --from b)")
+	}
+	if !strings.Contains(stderr.String(), "re-run") {
+		t.Fatalf("expected the re-run set disclosure on stderr; got %q", stderr.String())
+	}
+}
+
 // buildResumeLog writes a hand-crafted log under a fresh stateDir for runID:
 // run.started (digest of wfPath) followed by the given terminal events. Mirrors
 // the inline fixture in TestCLIResumeDigestMismatchHardError (Backend field
@@ -1673,5 +1743,217 @@ func TestCLIResumeTerminalRunResumesWithoutFlag(t *testing.T) {
 	got := stderr.String()
 	if !strings.Contains(got, "ended in permanent_failure") || !strings.Contains(got, "side effects may repeat") {
 		t.Errorf("stderr missing the terminal-resume note: %q", got)
+	}
+}
+
+// TestCLIResumeVerifyingTraceSuccess is the CLI-level test for the WS-6b
+// verifying-trace SUCCESS path (cli/resume.go ~line 254–278). This path is
+// not exercised by TestCLIResumeDigestMismatchHardError (that test omits
+// StructuralDigest in run.started, so it hits the legacy hard-error arm).
+//
+// Setup: a two-step (a → b) workflow in one container. The log is hand-crafted
+// (real run.started with StructuralDigest + NodeSubtreeDigest computed from ir)
+// to model a SIGKILL after both steps committed but before run.finished. Both
+// steps are in RunState.Completed, so the run is admitted by resumeAdmission
+// (no run.finished → interrupted run).
+//
+// Then ONLY step b's run body is changed (./b.sh → ./b-CHANGED.sh). The
+// structural digest is unchanged (same node ids, types, container, no shape
+// change). The overall content digest changes. This is the exact condition that
+// triggers verifying-trace:
+//
+//	rs.StructuralDigest != "" && rs.StructuralDigest == currentStructural
+//
+// ComputeVerifyingTraceTarget compares per-node NodeSubtreeDigests: a's matches
+// (body unchanged), b's does not (body changed) → target="b".
+//
+// Assertions:
+//  1. rc == ExitOK (verifying-trace SUCCESS — NOT the hard-error arm).
+//  2. Step a NOT dispatched (fake.Calls has no "./a.sh" — committed result reused).
+//  3. Step b-CHANGED WAS dispatched (re-run from target).
+//
+// Falsifiability: if the hard-error arm were taken instead of verifying-trace,
+// resume would return ExitUsage and assertion 1 would fail. If step a were
+// re-dispatched (no reuse), assertion 2 would fail. If step b-CHANGED were
+// not dispatched, assertion 3 would fail.
+func TestCLIResumeVerifyingTraceSuccess(t *testing.T) {
+	t.Parallel()
+
+	// ── Step 1: write the two-step fixture ───────────────────────────────────
+	tmp := t.TempDir()
+	wfPath := filepath.Join(tmp, "vt-wf.yaml")
+	origYAML := `workflow: vt-two-step
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: a
+    container: lab
+    run: "./a.sh"
+  - id: b
+    container: lab
+    run: "./b.sh"
+`
+	if err := os.WriteFile(wfPath, []byte(origYAML), 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	// ── Step 2: load the fixture and compute real digests ─────────────────────
+	ld, err := loader.Load(wfPath)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	if diags := ir.Validate(ld); ir.HasErrors(diags) {
+		t.Fatalf("fixture invalid: %v", diags)
+	}
+	origDigest, err := ld.ComputeDigest()
+	if err != nil {
+		t.Fatalf("ComputeDigest: %v", err)
+	}
+	structuralDigest, err := ld.Workflow.StructuralDigest(ld.ComposeFiles, ld.Assets)
+	if err != nil {
+		t.Fatalf("StructuralDigest: %v", err)
+	}
+
+	// Compute NodeSubtreeDigest for each code step using ir.NodeSubtreeDigest
+	// (same function engine.Commit calls). These are the values that would be
+	// in node.completed events after a real first run.
+	nodeA := ld.Workflow.Graph[0]
+	nodeB := ld.Workflow.Graph[1]
+	digestA, err := ir.NodeSubtreeDigest(nodeA)
+	if err != nil {
+		t.Fatalf("NodeSubtreeDigest(a): %v", err)
+	}
+	digestB, err := ir.NodeSubtreeDigest(nodeB)
+	if err != nil {
+		t.Fatalf("NodeSubtreeDigest(b): %v", err)
+	}
+
+	// ── Step 3: build the in-flight log (run.started + both node.completed,
+	//           no run.finished — models SIGKILL after both steps committed) ──
+	runID := "test-vt-success"
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "runs", runID), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
+	if err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	lg, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+
+	rsd, err := json.Marshal(engine.RunStartedData{
+		RunID:            runID,
+		WorkflowDigest:   origDigest,
+		StructuralDigest: structuralDigest,
+		Backend:          "fake",
+	})
+	if err != nil {
+		t.Fatalf("Marshal run.started: %v", err)
+	}
+	if err := lg.Append(state.Event{Type: engine.EventRunStarted, Data: rsd}); err != nil {
+		t.Fatalf("Append run.started: %v", err)
+	}
+
+	// node.completed for step a (./a.sh) — with real NodeSubtreeDigest.
+	stdoutRef, err := blobs.Put([]byte("a output\n"))
+	if err != nil {
+		t.Fatalf("Put blob(a): %v", err)
+	}
+	exit0 := 0
+	compA, err := json.Marshal(engine.NodeCompletedData{
+		Outcome:           string(engine.OutcomeOK),
+		ExitCode:          &exit0,
+		StdoutRef:         stdoutRef,
+		NodeSubtreeDigest: digestA,
+	})
+	if err != nil {
+		t.Fatalf("Marshal node.completed(a): %v", err)
+	}
+	if err := lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a", Data: compA}); err != nil {
+		t.Fatalf("Append node.completed(a): %v", err)
+	}
+
+	// node.completed for step b (./b.sh) — with real NodeSubtreeDigest.
+	stdoutRefB, err := blobs.Put([]byte("b output\n"))
+	if err != nil {
+		t.Fatalf("Put blob(b): %v", err)
+	}
+	compB, err := json.Marshal(engine.NodeCompletedData{
+		Outcome:           string(engine.OutcomeOK),
+		ExitCode:          &exit0,
+		StdoutRef:         stdoutRefB,
+		NodeSubtreeDigest: digestB,
+	})
+	if err != nil {
+		t.Fatalf("Marshal node.completed(b): %v", err)
+	}
+	if err := lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "b", Data: compB}); err != nil {
+		t.Fatalf("Append node.completed(b): %v", err)
+	}
+
+	// NO run.finished — simulates SIGKILL crash after both steps committed.
+	if err := lg.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := lg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// ── Step 4: mutate ONLY step b's body ──────────────────────────────────
+	// ./b.sh → ./b-CHANGED.sh. Step a is unchanged. The structural digest
+	// (node IDs, types, container shape) must remain the same; only NodeSubtreeDigest(b)
+	// changes. This is the verifying-trace trigger condition.
+	mutatedYAML := strings.Replace(origYAML, `run: "./b.sh"`, `run: "./b-CHANGED.sh"`, 1)
+	if mutatedYAML == origYAML {
+		t.Fatal("mutation no-op; YAML not modified")
+	}
+	if err := os.WriteFile(wfPath, []byte(mutatedYAML), 0o600); err != nil {
+		t.Fatalf("write mutated workflow: %v", err)
+	}
+
+	// ── Step 5: resume against the mutated definition ──────────────────────
+	// Program ONLY b-CHANGED (not a — if a is dispatched, the fake has no
+	// program for it and the test would fail at dispatch, catching the reuse bug).
+	fake := container.NewFake()
+	fake.ProgramExec("./b-CHANGED.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{}`)}, nil)
+	runner := &cli.Runner{Backend: fake, IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, wfPath}, &stdout, &stderr)
+
+	// Assertion 1: verifying-trace SUCCESS — rc must be ExitOK, NOT ExitUsage
+	// (the hard-error arm). If the structural guard were wrong or StructuralDigest
+	// were not matched, the hard-error would fire and rc = ExitUsage.
+	if rc != cli.ExitOK {
+		t.Fatalf("verifying-trace resume: rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+
+	// Confirm the "node bodies only" caveat appeared on stderr (the verifying-trace
+	// disclosure message). This pins the specific code path taken.
+	if !strings.Contains(stderr.String(), "node bodies only") {
+		t.Errorf("stderr missing verifying-trace disclosure 'node bodies only': %q", stderr.String())
+	}
+
+	// Assertion 2: step a NOT dispatched (committed result reused).
+	for _, c := range fake.Calls {
+		if c.Run == "./a.sh" {
+			t.Errorf("step a was re-dispatched on resume — expected reuse (NodeSubtreeDigest unchanged); calls=%+v", fake.Calls)
+		}
+	}
+
+	// Assertion 3: step b-CHANGED WAS dispatched (re-run from target=b).
+	var sawBChanged bool
+	for _, c := range fake.Calls {
+		if c.Run == "./b-CHANGED.sh" {
+			sawBChanged = true
+		}
+	}
+	if !sawBChanged {
+		t.Errorf("step b-CHANGED was NOT dispatched — expected re-execution; calls=%+v", fake.Calls)
 	}
 }

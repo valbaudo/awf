@@ -185,6 +185,14 @@ type DispatchResult struct {
 	// Container is the step's bare container name (for node.completed.container —
 	// resume's snapshot→container mapping + obs's awf.container.name).
 	Container string
+
+	// Node and InputRefs are populated ONLY on the code-step dispatch path
+	// (engine/interpreter.go) so Commit can compute the NodeKey for deterministic
+	// nodes. All other Commit call sites (agent_step, react, reduce) leave these
+	// zero (nil Node → isDeterministicNode returns false → empty key). Do NOT
+	// populate these from non-code paths.
+	Node      ir.Node  // the ir.CodeStep node; nil for all non-code paths
+	InputRefs []string // sorted CAS refs of the resolved input_files blobs; nil if no input_files
 }
 
 // ErrUnsupportedKind is returned by LocalDispatcher for kinds it doesn't

@@ -27,20 +27,6 @@ import (
 // fault, not a step outcome; we do not invent a new outcome class for it.
 var errArtifactFetch = errors.New("engine: input_files artifact fetch failed")
 
-// resolveInputFiles maps a step's input_files (container-path → artifact/asset ref)
-// to staged bytes. Destination container paths are template-substituted against
-// the consumer's scope before staging, matching output_files path templating.
-// Ref errors (parse/undeclared/not-committed) return a plain error (caller →
-// permanent_failure); a Blobs.Get failure is wrapped with errArtifactFetch
-// (caller → internal halt). Sorted by dst for determinism.
-func resolveInputFiles(in map[string]string, scope *Scope, wf *ir.Workflow, moduleID string, blobs state.Blobs, assets map[string]RunStartedAsset) ([]container.InputFile, error) {
-	expanded, err := resolveInputFileEntries(in, scope, wf, moduleID, blobs, assets)
-	if err != nil {
-		return nil, err
-	}
-	return inputFilesFromResolvedEntries(expanded)
-}
-
 func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow, moduleID string, blobs state.Blobs, assets map[string]RunStartedAsset) ([]resolvedInputFile, error) {
 	if len(in) == 0 {
 		return nil, nil
@@ -61,13 +47,14 @@ func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow
 		}
 		rawRef := in[dst]
 		if _, ok := template.ParseWorkflowInputFileRef(rawRef); ok {
-			_, b, err := resolveSingleRefBytes(rawRef, scope, wf, moduleID, blobs, assets)
+			casRef, b, err := resolveSingleRefBytes(rawRef, scope, wf, moduleID, blobs, assets)
 			if err != nil {
 				return nil, fmt.Errorf("input_files[%s]: %w", dst, err)
 			}
 			expanded = append(expanded, resolvedInputFile{
 				file:   container.InputFile{Path: resolvedDst, Content: b},
 				source: rawRef,
+				ref:    casRef,
 			})
 			continue
 		}
@@ -79,7 +66,7 @@ func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow
 			expanded = append(expanded, files...)
 			continue
 		}
-		_, b, err := resolveSingleInputFileRef(rawRef, scope, wf, moduleID, blobs, assets)
+		casRef, b, err := resolveSingleInputFileRef(rawRef, scope, wf, moduleID, blobs, assets)
 		if err != nil {
 			if _, _, ok := template.ParseArtifactRef(rawRef); !ok {
 				return nil, fmt.Errorf("input_files[%s]=%q: expected step.<id>.files.<name>, input.files.<name>, or asset.<id>", dst, rawRef)
@@ -89,6 +76,7 @@ func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow
 		expanded = append(expanded, resolvedInputFile{
 			file:   container.InputFile{Path: resolvedDst, Content: b},
 			source: rawRef,
+			ref:    casRef,
 		})
 	}
 	return expanded, nil
@@ -96,7 +84,8 @@ func resolveInputFileEntries(in map[string]string, scope *Scope, wf *ir.Workflow
 
 type resolvedInputFile struct {
 	file   container.InputFile
-	source string
+	source string // raw template ref (e.g. "input.files.data", "step.fetch.files.out")
+	ref    string // CAS blob hash resolved from source; empty for assets pre-resolved inline
 }
 
 func inputFilesFromResolvedEntries(expanded []resolvedInputFile) ([]container.InputFile, error) {
@@ -108,6 +97,26 @@ func inputFilesFromResolvedEntries(expanded []resolvedInputFile) ([]container.In
 		out = append(out, e.file)
 	}
 	return out, nil
+}
+
+// inputFileRefsFromResolvedEntries extracts the CAS blob refs from resolved
+// input file entries. Entries without a ref (empty string) are skipped.
+// The caller (Commit via DispatchResult.InputRefs) uses these as the
+// consumed-input ref set for computeNodeKey — the Task-6 contract.
+func inputFileRefsFromResolvedEntries(expanded []resolvedInputFile) []string {
+	if len(expanded) == 0 {
+		return nil
+	}
+	refs := make([]string, 0, len(expanded))
+	for _, e := range expanded {
+		if e.ref != "" {
+			refs = append(refs, e.ref)
+		}
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return refs
 }
 
 func resolveSingleInputFileRef(rawRef string, scope *Scope, wf *ir.Workflow, moduleID string, blobs state.Blobs, assets map[string]RunStartedAsset) (ref string, content []byte, err error) {
@@ -214,6 +223,7 @@ func resolveAssetInputFiles(dst, rawRef, moduleID, id string, assets map[string]
 		return []resolvedInputFile{{
 			file:   container.InputFile{Path: dst, Content: b},
 			source: rawRef,
+			ref:    asset.Files[0].Ref,
 		}}, nil
 	}
 	files := append([]RunStartedAssetFile(nil), asset.Files...)
@@ -233,6 +243,7 @@ func resolveAssetInputFiles(dst, rawRef, moduleID, id string, assets map[string]
 		out = append(out, resolvedInputFile{
 			file:   container.InputFile{Path: path.Join(dst, f.Path), Content: b},
 			source: rawRef,
+			ref:    f.Ref,
 		})
 	}
 	return out, nil

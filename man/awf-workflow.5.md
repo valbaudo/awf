@@ -247,6 +247,47 @@ checkpoint integrity (committed replay plus digest and runtime-version pins) but
 does not pin the host base environment, so shell-step tooling runs against the
 current host; use **--backend docker** for a fully reproducible baseline.
 
+The native backend write-confines each step via an OS sandbox. Each step runs
+directly on the host but may only write to the per-run scratch directory and
+**TMPDIR**; all other host paths are read-only or inaccessible for writes.
+Credential directories — **~/.claude**, **$CODEX\_HOME** (or **~/.codex**),
+**~/.factory**, **~/.config/goose**, and **~/.config** — are readable so
+agents can authenticate. The sandbox tool is selected by availability, in order:
+
+**bwrap** (bubblewrap)
+:   Default on Linux when **bwrap**(1) is on `PATH`. Wraps the step in a new
+    mount namespace: `$HOME` is overlaid with a tmpfs (blocking host credential
+    reads outside the explicit ro-bind list), the scratch dir is bind-mounted
+    read-write, system directories are bound read-only, and `/tmp` becomes a
+    fresh tmpfs. Detection: `exec.LookPath("bwrap")` (`container/native/sandbox_linux.go`).
+
+**landlock-trampoline**
+:   Fallback on Linux when **bwrap** is absent and the kernel reports Landlock
+    ABI version ≥ 1 (Linux 5.13+). The runtime re-execs the **awf** binary as a
+    trampoline (`awf __sandbox <policy-json> -- sh -c <cmd>`); the trampoline
+    applies Landlock FS rules then `exec`s `/bin/sh`. Fail-closed: if
+    `landlock.RestrictPaths` fails, the trampoline exits 2 and the step fails
+    loudly — it never falls through to an unrestricted host (`cmd/awf/sandbox_linux.go`).
+
+**sandbox-exec** (SBPL)
+:   macOS only. **sandbox-exec**(1) ships with every macOS installation. The
+    SBPL profile uses `(allow default)` plus `(deny file-write*)`, permitting
+    writes only to the scratch dir and TMPDIR. This is **write-isolation only**:
+    `(allow default)` permits reads of the entire host filesystem, including
+    credentials. **sandbox-exec** is Apple-deprecated; it is functional and the
+    only practical macOS option, but its long-term availability is not guaranteed
+    (`container/native/sandbox_darwin.go`). Fail-closed: if the SBPL profile
+    cannot be written to a temp file, the launcher returns a sentinel argv that
+    exits 125 and the step fails.
+
+When no sandbox tool is detected at all, the native backend runs the step on the
+host without confinement and prints a loud warning on stderr (`cli/backend.go`).
+This is **process isolation, not a hardware boundary**: the sandbox stops a
+misbehaving step from writing to host paths, but it is not a VM or a seccomp
+jail. Undeclared inputs a step reads from the host are not restricted. Linux
+sandbox enforcement is covered by integration tests run in CI (cve-runner);
+macOS sandbox-exec enforcement is host-verified.
+
 Readiness is re-established on every (re)creation, including resume. The runtime
 guarantees a container is healthy before dispatching a step into it. A Compose
 project becomes ready via its services' healthchecks and `up --wait`. For a
@@ -1016,15 +1057,24 @@ its **required `container:`** — a `run:` reducer with no `container:` is rejec
 `run:` example omits `container:` for brevity; that is shorthand, not the format
 contract — a `run:` reducer always declares one.) Before it runs, the engine
 stages into that container every branch's named `output_files` artifact (under
-`/work/.awf/branch-<N>/<name>`) plus a canonical-JSON manifest of all branches'
-typed outputs at `/work/.awf/aggregate.json` — deterministic, index-ordered, and
-committed-branches-only — via the same content-addressed delivery the artifact
-channel uses (see *Artifact channel*). The reducer reads them and writes its
-declared `output_files` and `$AWF_OUTPUT`, which become the reduced node's
-artifacts and typed output. If a reducer `output_files` path templates a body
-aggregate such as `{{ step.collect.name }}`, the aggregate renders as canonical
-JSON; the resulting container path is literal JSON text, not a sanitized file
-name. Prefer scalar fields or a fixed output path for reducer artifacts.
+`$AWF_STAGING_ROOT/branch-<N>/<name>`) plus a canonical-JSON manifest of all
+branches' typed outputs at `$AWF_STAGING_ROOT/aggregate.json` — deterministic,
+index-ordered, and committed-branches-only — via the same content-addressed
+delivery the artifact channel uses (see *Artifact channel*).
+
+The engine injects `AWF_STAGING_ROOT` into the reducer's environment. Its value
+is backend-dependent: **docker** uses `/work/.awf` (an absolute in-container
+path, the historical value); **native** uses `.awf` (workdir-relative, resolved
+by the runtime to the container's per-run workdir). Author `run:` reducers MUST
+reference staged files via `$AWF_STAGING_ROOT` rather than the literal
+`/work/.awf` path to remain portable across backends.
+
+The reducer reads the staged files and writes its declared `output_files` and
+`$AWF_OUTPUT`, which become the reduced node's artifacts and typed output. If a
+reducer `output_files` path templates a body aggregate such as
+`{{ step.collect.name }}`, the aggregate renders as canonical JSON; the resulting
+container path is literal JSON text, not a sanitized file name. Prefer scalar
+fields or a fixed output path for reducer artifacts.
 
 Example named aggregate with reducer artifacts:
 
@@ -1454,25 +1504,67 @@ content-addressed artifact, never a live container's process state.
     `output_files` are reused, not recomputed; and re-executes only the
     *uncommitted frontier* — the in-flight step on each active branch. A
     deterministic (code) replay is exact; an interrupted agent step may differ on
-    re-run, which is correct — its work was never committed. A run is resumable
-    iff its last outcome is *not* `ok` — that is, `retryable_failure`,
-    `permanent_failure`, `rejected`, or `cancelled` — or it was interrupted
-    (the process died with no terminal event, leaving an uncommitted frontier).
-    A run that finished `ok` is the only refusal: resume reports nothing to do
-    and exits. Note that this admission rule is broader than the `resumable`
-    *label* shown by `awf ls`: that label marks only a `retryable_failure`
-    terminal outcome (the case automated retry can drive forward without
-    operator judgment), whereas `awf resume` will re-enter any non-`ok`
-    terminal run — including `permanent_failure`, `rejected`, and `cancelled` —
-    so an operator can resume after correcting whatever caused the failure.
+    re-run, which is correct — its work was never committed. When the definition
+    has changed in a way confined to node bodies, AWF engages per-node
+    verifying-trace reuse: it replays committed code steps whose node subtree
+    digest still matches and re-runs from the earliest non-matching node (see
+    **Pinning** below). A run is resumable iff its last outcome is *not* `ok`
+    — that is, `retryable_failure`, `permanent_failure`, `rejected`, or
+    `cancelled` — or it was interrupted (the process died with no terminal
+    event, leaving an uncommitted frontier). A run that finished `ok` is the
+    only refusal: resume reports nothing to do and exits. Note that this
+    admission rule is broader than the `resumable` *label* shown by `awf ls`:
+    that label marks only a `retryable_failure` terminal outcome (the case
+    automated retry can drive forward without operator judgment), whereas
+    `awf resume` will re-enter any non-`ok` terminal run — including
+    `permanent_failure`, `rejected`, and `cancelled` — so an operator can
+    resume after correcting whatever caused the failure.
 
 **Pinning**
-:   The workflow definition (by digest, including the resolved import graph,
-    assets, and any Compose files) and each resolved agent-runtime identity and
-    version are recorded at run start. Resume against a changed definition or
-    runtime is a hard error: a changed definition shifts step addressing; a
-    changed runtime changes behavior. Imported workflow drift is definition
-    drift and hard-errors on resume.
+:   At run start AWF records two digests and the resolved agent-runtime set.
+    The **definition digest** covers the full workflow definition: fields,
+    imports, assets, and any Compose files. The **structural digest**
+    (`StructuralDigest`) covers the definition envelope — `env:`, `containers:`,
+    `assets:`, `agents:`, `imports:`, `tools:`, Compose file bytes, asset bytes,
+    and the node skeleton (each node's path and type) — but not individual node
+    bodies such as `run:` commands or `with:` parameters. The structural digest
+    is stable under node-body-only edits (`ir/digest.go`). Each committed
+    deterministic (code) step also records a **node subtree digest**
+    (`NodeSubtreeDigest`) — the RFC 8785 / JCS canonical hash of that node's
+    own definition (`ir/digest.go`, `engine/commit.go`). Each resolved
+    agent-runtime identity and version is recorded at run start.
+
+    Resume against an **unchanged** definition digest replays committed steps as
+    before. Resume against a **changed** definition without **--from**:
+
+    - A changed **structural digest** (topology, env, containers, assets,
+      agents, imports, Compose files, or node set) is a **hard error**. A
+      changed runtime version is a **hard error** (`CheckRuntimesDrift`,
+      `engine/runtime_resolution.go`). A definition with **imports** is a
+      **hard error** even on a node-body change (imports are not yet covered by
+      the per-node verifying trace). A **legacy log** with no recorded
+      structural digest is a **hard error**. An **addressing shift** — a
+      committed node whose top-level segment is absent from the current workflow
+      — is a **hard error** (`engine/verifytrace.go`).
+
+    - When the structural digest is **unchanged** and none of the above hard
+      errors apply, AWF engages per-node verifying-trace reuse: it finds the
+      earliest committed node that cannot be reused and re-runs from that node
+      onward. A committed deterministic (code) step at a top-level or
+      parallel-nested path is **reused** when its recorded node subtree digest
+      matches the current definition; it is **re-run** when the digest
+      differs. Agent, react, map, signal, and call nodes are never reused —
+      they always re-run. Nodes nested inside a loop, gate, call, try, map, or
+      if body are never reused (`engine/verifytrace.go`).
+
+    The verifying-trace trust boundary is the step's declared `input_files`:
+    reuse trusts that a code step's declared inputs have not changed. A step
+    that reads undeclared host or container inputs can still receive a stale
+    reuse — undeclared inputs are outside the trust boundary. Per-node reuse
+    does not detect container image-digest or host-tooling drift: in v1 the
+    runtime-pins input to the per-node key is always empty (`engine/commit.go`
+    line 125), so image digests are not tracked at any granularity.
+
     A `map`'s runtime-resolved element image is recorded not at run start but at
     each element's first boot (the earliest point it is known) and folded into
     that element's journal entry; the definition still pins the template *text*,

@@ -60,6 +60,17 @@ type harness struct {
 	// buckets the registry is empty and runAgent.Lookup misses cleanly;
 	// agent buckets overwrite it via newHarnessWithAgentRegistry.
 	agentRegistry *agent.Registry
+
+	// recordStructuralDigest, when true, includes the workflow's StructuralDigest
+	// in the run.started event. Required for verifying-trace resume tests (WS-6b):
+	// the resume path checks rs.StructuralDigest != "" before engaging per-node reuse.
+	recordStructuralDigest bool
+
+	// bypassDigestCheck, when true, skips the WorkflowDigest == foldedDigest guard
+	// in runOrResume's resume branch. Used by resumeWorkflowVerifyingTrace so the
+	// verifying-trace path (which intentionally changes the workflow) can proceed
+	// past the standard digest mismatch check.
+	bypassDigestCheck bool
 }
 
 func newHarness(t *testing.T, factory BackendFactory, workflowYAML string) *harness {
@@ -147,6 +158,66 @@ func (h *harness) resumeWorkflowFrom(t *testing.T, target string) (engine.Outcom
 	return h.runOrResume(t, true, target)
 }
 
+// resumeWorkflowVerifyingTrace simulates the CLI's WS-6b verifying-trace resume
+// path. It:
+//  1. Loads the updated workflow already written to h.wfPath.
+//  2. Folds the log to get the committed RunState.
+//  3. Checks the structural guard (structural digests must match and StructuralDigest
+//     must be non-empty, and there must be no import edges).
+//  4. Calls engine.ComputeVerifyingTraceTarget to find the re-run target.
+//  5. Calls runOrResume(t, true, target) with bypassDigestCheck=true so the
+//     changed content digest doesn't abort the resume.
+//
+// The caller is responsible for writing the updated workflow to h.wfPath before
+// calling this. The harness must have been constructed with recordStructuralDigest=true
+// (so the first run's run.started carries a StructuralDigest).
+func (h *harness) resumeWorkflowVerifyingTrace(t *testing.T) (engine.Outcome, error) {
+	t.Helper()
+
+	// Fold the committed log to get RunState with StructuralDigest.
+	events, err := h.log.Fold()
+	if err != nil {
+		return "", err
+	}
+	rs, err := engine.Fold(events, h.blobs)
+	if err != nil {
+		return "", err
+	}
+
+	// Load the (updated) workflow.
+	ld, err := loader.Load(h.wfPath)
+	if err != nil {
+		return "", fmt.Errorf("resumeWorkflowVerifyingTrace: load: %w", err)
+	}
+
+	// Structural guard: imports not allowed, StructuralDigest must be recorded and match.
+	if len(ld.ImportEdges) > 0 {
+		return "", &digestMismatchError{original: rs.WorkflowDigest, current: "has-imports"}
+	}
+	if rs.StructuralDigest == "" {
+		return "", &digestMismatchError{original: rs.WorkflowDigest, current: "no-structural-digest"}
+	}
+	currentStructural, err := ld.Workflow.StructuralDigest(ld.ComposeFiles, ld.Assets)
+	if err != nil {
+		return "", fmt.Errorf("resumeWorkflowVerifyingTrace: structural digest: %w", err)
+	}
+	if rs.StructuralDigest != currentStructural {
+		return "", &digestMismatchError{original: rs.StructuralDigest, current: currentStructural}
+	}
+
+	// Compute verifying-trace target.
+	target, err := engine.ComputeVerifyingTraceTarget(ld.Workflow, rs)
+	if err != nil {
+		return "", fmt.Errorf("resumeWorkflowVerifyingTrace: verifying-trace target: %w", err)
+	}
+
+	// Set bypass so the content digest mismatch doesn't abort runOrResume.
+	h.bypassDigestCheck = true
+	defer func() { h.bypassDigestCheck = false }()
+
+	return h.runOrResume(t, true, target)
+}
+
 func (h *harness) runOrResume(t *testing.T, isResume bool, rerunFrom string) (engine.Outcome, error) {
 	t.Helper()
 
@@ -173,7 +244,7 @@ func (h *harness) runOrResume(t *testing.T, isResume bool, rerunFrom string) (en
 		if ferr != nil {
 			return "", ferr
 		}
-		if foldedRS.WorkflowDigest != digest {
+		if !h.bypassDigestCheck && foldedRS.WorkflowDigest != digest {
 			return "", &digestMismatchError{
 				original: foldedRS.WorkflowDigest,
 				current:  digest,
@@ -215,10 +286,18 @@ func (h *harness) runOrResume(t *testing.T, isResume bool, rerunFrom string) (en
 			return "", err
 		}
 		recordedAssets = assetSnapshots
+		var structuralDigest string
+		if h.recordStructuralDigest {
+			structuralDigest, err = ld.Workflow.StructuralDigest(ld.ComposeFiles, ld.Assets)
+			if err != nil {
+				return "", err
+			}
+		}
 		runStartedData, _ := json.Marshal(engine.RunStartedData{
 			RunID: h.runID, WorkflowDigest: digest, InputRef: inputRef,
-			Assets:   assetSnapshots,
-			Runtimes: h.runtimes, // nil for non-role buckets (omitempty → byte-identical)
+			StructuralDigest: structuralDigest, // "" unless recordStructuralDigest (omitempty)
+			Assets:           assetSnapshots,
+			Runtimes:         h.runtimes, // nil for non-role buckets (omitempty → byte-identical)
 		})
 		if err := h.log.Append(state.Event{
 			Type: engine.EventRunStarted, Data: runStartedData,

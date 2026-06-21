@@ -283,8 +283,8 @@ func TestRunReactDispatchesToolThenAnswers(t *testing.T) {
 		{Text: "done", FinishReason: "stop"},
 	}}
 	h := newReactTestHarness(t, r, wf, runner)
-	// argsFilePath("react[0].round-1.tool-0") → /work/.awf/react_0__round-1_tool-0.args.json
-	wantArgs := argsFilePath("react[0].round-1.tool-0")
+	// argsFilePath("react[0].round-1.tool-0", "/work/.awf") → /work/.awf/react_0__round-1_tool-0.args.json
+	wantArgs := argsFilePath("react[0].round-1.tool-0", "/work/.awf")
 	h.programTool("./check "+wantArgs, container.ExecResult{ExitCode: 0, Stdout: []byte("RESULT-OK")})
 
 	oc, err := h.run(t)
@@ -327,7 +327,7 @@ func TestRunReactToolNonZeroExitFedBack(t *testing.T) {
 		{Text: "recovered", FinishReason: "stop"},
 	}}
 	h := newReactTestHarness(t, r, wf, runner)
-	wantArgs := argsFilePath("react[0].round-1.tool-0")
+	wantArgs := argsFilePath("react[0].round-1.tool-0", "/work/.awf")
 	h.programTool("./check "+wantArgs, container.ExecResult{ExitCode: 3, Stdout: []byte("boom")})
 
 	oc, err := h.run(t)
@@ -663,7 +663,7 @@ func TestRunReactResumesTornFrontierModelCommittedToolNot(t *testing.T) {
 	}
 
 	// Program the (only) uncommitted tool dispatch.
-	wantArgs := argsFilePath("react[0].round-1.tool-0")
+	wantArgs := argsFilePath("react[0].round-1.tool-0", "/work/.awf")
 	h.programTool("./check "+wantArgs, container.ExecResult{ExitCode: 0, Stdout: []byte("FRESH")})
 
 	oc, err := h.run(t)
@@ -863,7 +863,7 @@ func TestRunReactToolImplInputFileCollidesWithArgsFile(t *testing.T) {
 	wf.Assets = map[string]string{"fixture": "fixtures/fixture.json"}
 	tool := wf.Tools["check"]
 	// Stage the asset to the EXACT args-file path for this tool call → collision.
-	collidePath := argsFilePath("react[0].round-1.tool-0")
+	collidePath := argsFilePath("react[0].round-1.tool-0", "/work/.awf")
 	tool.Impl.InputFiles = map[string]string{collidePath: "asset.fixture"}
 	wf.Tools["check"] = tool
 

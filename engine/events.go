@@ -291,13 +291,14 @@ const (
 // vs `"runtimes":[]` wire drift a Phase 5 writer would otherwise create
 // by forgetting to initialize an empty slice.
 type RunStartedData struct {
-	RunID           string                     `json:"run_id"`
-	WorkflowDigest  string                     `json:"workflow_digest"`
-	WorkflowID      string                     `json:"workflow_id,omitempty"`      // slice 6.1 — obs awf.workflow.id (standard §9); empty in pre-6.1 logs
-	WorkflowVersion int                        `json:"workflow_version,omitempty"` // slice 6.1 — obs awf.workflow.version; 0 in pre-6.1 logs
-	InputRef        string                     `json:"input_ref,omitempty"`        // empty if Workflow.Input is nil
-	Backend         string                     `json:"backend,omitempty"`          // slice 4.5; "" → BackendDocker on resume
-	Assets          map[string]RunStartedAsset `json:"assets,omitempty"`
+	RunID            string                     `json:"run_id"`
+	WorkflowDigest   string                     `json:"workflow_digest"`
+	StructuralDigest string                     `json:"structural_digest,omitempty"` // WS-6a; "" in pre-WS6 logs (omitempty)
+	WorkflowID       string                     `json:"workflow_id,omitempty"`       // slice 6.1 — obs awf.workflow.id (standard §9); empty in pre-6.1 logs
+	WorkflowVersion  int                        `json:"workflow_version,omitempty"`  // slice 6.1 — obs awf.workflow.version; 0 in pre-6.1 logs
+	InputRef         string                     `json:"input_ref,omitempty"`         // empty if Workflow.Input is nil
+	Backend          string                     `json:"backend,omitempty"`           // slice 4.5; "" → BackendDocker on resume
+	Assets           map[string]RunStartedAsset `json:"assets,omitempty"`
 	// InputFiles records the supplied top-level workflow input-file manifest:
 	// input-file name → CAS blob ref of the bytes supplied at run start. Folded
 	// back into RunState.InputFiles on resume (mirrors Assets) so input.files.<name>
@@ -412,6 +413,18 @@ type NodeCompletedData struct {
 	// assistant} pair (continues: threading). Empty for non-participating steps.
 	// omitempty keeps non-conversation logs byte-identical (additive, like SnapshotRef).
 	TranscriptRef string `json:"transcript_ref,omitempty"`
+	// NodeKey is the content-address cache key for deterministic (code) steps —
+	// H(nodeSubtreeDigest ‖ sorted CAS refs of resolved input_files ‖ ∅ runtime pins).
+	// Empty for non-deterministic steps (agent, react, reduce, signal, etc.).
+	// omitempty keeps pre-WS6b logs byte-identical (additive, no fold breakage).
+	// Task 6 (resume reuse) reads this to skip re-execution when inputs are unchanged.
+	NodeKey string `json:"node_key,omitempty"`
+	// NodeSubtreeDigest is the structural hash of the node definition (ir.NodeSubtreeDigest)
+	// for deterministic (code) steps — the subtree component of NodeKey, recorded separately
+	// so Task 6b2 (resume verifying-trace) can compare it against the current node definition
+	// without recomputing NodeKey. Empty for non-deterministic steps (agent, react, reduce,
+	// signal, etc.). omitempty keeps pre-WS6b2 logs byte-identical (additive, no fold breakage).
+	NodeSubtreeDigest string `json:"node_subtree_digest,omitempty"`
 }
 
 // BranchTakenData is the if-decision marker (spec §5.1). Fold uses Which to know which

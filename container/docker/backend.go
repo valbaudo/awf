@@ -154,7 +154,7 @@ func New(cli *client.Client, runID string, blobs state.Blobs, opts ...Option) (*
 // pulling the digest-pinned ref at dispatch and reporting it on
 // Handle.ResolvedImageDigest (the PullIfAbsent path below).
 func (*Backend) Capabilities() container.Caps {
-	return container.Caps{Snapshot: container.SnapshotFSCoW, RuntimeImage: true, RuntimeCompose: true}
+	return container.Caps{Snapshot: container.SnapshotFSCoW, RuntimeImage: true, RuntimeCompose: true, StagingRoot: "/work/.awf"}
 }
 
 // Create materialises a container from the digest-pinned image in spec.Image,

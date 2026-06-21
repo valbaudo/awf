@@ -108,6 +108,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			}
 			rs.RunID = d.RunID
 			rs.WorkflowDigest = d.WorkflowDigest
+			rs.StructuralDigest = d.StructuralDigest // "" for pre-WS6 logs (omitempty; zero value)
 			rs.Assets = d.Assets
 			rs.InputFiles = cloneStringMap(d.InputFiles)
 			rs.Epoch = 1
@@ -185,10 +186,12 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 					EventNodeCompleted, e.Path, e.Seq, oc, OutcomeOK)
 			}
 			nr := NodeResult{
-				Outcome:    oc,
-				ExitCode:   d.ExitCode,
-				OutputsRef: d.OutputsRef,
-				Files:      d.Files,
+				Outcome:           oc,
+				ExitCode:          d.ExitCode,
+				OutputsRef:        d.OutputsRef,
+				Files:             d.Files,
+				NodeKey:           d.NodeKey,           // empty for non-code steps + pre-WS6b logs (omitempty)
+				NodeSubtreeDigest: d.NodeSubtreeDigest, // empty for non-code steps + pre-WS6b2 logs (omitempty)
 			}
 			if d.OutputsRef != "" {
 				raw, err := blobs.Get(d.OutputsRef)

@@ -168,4 +168,5 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("prune", func(t *testing.T) { testPrune(t, factory) })
 	t.Run("react", func(t *testing.T) { testReact(t, factory) })
 	t.Run("resume_from", func(t *testing.T) { testResumeFrom(t, factory) })
+	t.Run("resume_pernode", func(t *testing.T) { testResumePerNode(t, factory) })
 }

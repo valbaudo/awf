@@ -205,6 +205,15 @@ type NodeResult struct {
 	StdoutRef  string            // CAS pointer (validates against Stdout)
 	Files      map[string]string // declared path → CAS ref. READ-ONLY (see NodeResult doc).
 	Transcript agent.ThreadTurn  // materialized from TranscriptRef by Fold (continues: threading). READ-ONLY. Zero value when the step didn't participate.
+	// NodeKey is the content-address cache key folded from NodeCompletedData.NodeKey.
+	// Non-empty only for deterministic (code) steps. Task 6 reads this during resume
+	// to skip re-execution when the key matches the expected key for the current inputs.
+	NodeKey string
+	// NodeSubtreeDigest is the structural hash of the node definition folded from
+	// NodeCompletedData.NodeSubtreeDigest. Non-empty only for deterministic (code) steps.
+	// Task 6b2 (resume verifying-trace) compares this against the current node's
+	// ir.NodeSubtreeDigest to decide per-node reuse.
+	NodeSubtreeDigest string
 }
 
 // RunState is the in-memory fold of the log: the interpreter consults it to skip
@@ -218,9 +227,10 @@ type NodeResult struct {
 // (slice 3.5).
 // RunState.Epoch ≠ state.Event.Epoch — see comment on the Epoch field below.
 type RunState struct {
-	RunID          string
-	WorkflowDigest string
-	Input          map[string]any // resolved from run.started.Data.input_ref via Blobs.Get
+	RunID            string
+	WorkflowDigest   string
+	StructuralDigest string         // WS-6a; "" for pre-WS6 logs (field absent in legacy run.started)
+	Input            map[string]any // resolved from run.started.Data.input_ref via Blobs.Get
 	// Assets is the recorded run-start asset manifest. Fold restores it from
 	// run.started without dereferencing refs; engine.Run may also seed it from
 	// RunOptions for first-run execution before any resume fold exists.

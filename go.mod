@@ -14,6 +14,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-units v0.5.0
 	github.com/goccy/go-yaml v1.19.2
+	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/openai/openai-go/v3 v3.39.0
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
@@ -49,7 +50,6 @@ require (
 	github.com/aws/smithy-go v1.20.3 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/buger/goterm v1.0.4 // indirect
-	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc // indirect
@@ -201,6 +201,7 @@ require (
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20241105132330-32ad38e42d3f // indirect
 	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738 // indirect
+	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.2 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect

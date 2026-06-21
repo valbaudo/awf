@@ -160,7 +160,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// The result is held in a LOCAL variable (NEVER assigned to r.Backend)
 	// so sequential runner.Run(...) calls don't leak a constructed Backend.
 	workdirRoot := filepath.Join(*stateDir, "work")
-	backend, cleanup, err := r.resolveBackend(ctx, concreteBackendKind, id, workdirRoot, blobs)
+	backend, cleanup, err := r.resolveBackend(ctx, concreteBackendKind, id, workdirRoot, blobs, stderr)
 	if err != nil {
 		fprintf(stderr, "awf run: construct backend %q: %v\n", concreteBackendKind, err)
 		return ExitInfra
@@ -353,17 +353,25 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	if concreteBackendKind == engine.BackendNative && workflowHasStaticImage(ld) {
 		fprintf(stderr, "awf run: --backend native ignores declared container image(s); steps run on the host with no isolation.\n")
 	}
+	// WS-6a: compute the root workflow's structural digest (topology-only,
+	// body-invariant). Root-only: imported modules are not folded in (T6b).
+	structuralDigest, err := ld.Workflow.StructuralDigest(ld.ComposeFiles, ld.Assets)
+	if err != nil {
+		fprintf(stderr, "awf run: compute structural digest: %v\n", err)
+		return ExitUsage
+	}
 	runStartedData, err := json.Marshal(engine.RunStartedData{
-		RunID:           id,
-		WorkflowDigest:  digest,
-		WorkflowID:      ld.Workflow.ID,      // slice 6.1 — obs awf.workflow.id (standard §9)
-		WorkflowVersion: ld.Workflow.Version, // slice 6.1 — obs awf.workflow.version
-		InputRef:        inputRef,
-		Backend:         concreteBackendKind,
-		Assets:          assetSnapshots,
-		InputFiles:      inputFileRefs,
-		LiveHome:        engineLiveHomePin(liveRoot.Pin),
-		Runtimes:        resolvedRuntimes, // Phase 5 slice 5.1
+		RunID:            id,
+		WorkflowDigest:   digest,
+		StructuralDigest: structuralDigest,
+		WorkflowID:       ld.Workflow.ID,      // slice 6.1 — obs awf.workflow.id (standard §9)
+		WorkflowVersion:  ld.Workflow.Version, // slice 6.1 — obs awf.workflow.version
+		InputRef:         inputRef,
+		Backend:          concreteBackendKind,
+		Assets:           assetSnapshots,
+		InputFiles:       inputFileRefs,
+		LiveHome:         engineLiveHomePin(liveRoot.Pin),
+		Runtimes:         resolvedRuntimes, // Phase 5 slice 5.1
 	})
 	if err != nil {
 		fprintf(stderr, "awf run: marshal run.started: %v\n", err)

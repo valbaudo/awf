@@ -309,7 +309,9 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		return "", fmt.Errorf("engine.Run: build retry policy at path %q: %w", path, err)
 	}
 
-	inputFiles, err := resolveInputFiles(cs.InputFiles, scope, ictx.wf, ictx.moduleID, ictx.blobs, ictx.runstate.Assets)
+	// Resolve input_files via resolveInputFileEntries (instead of resolveInputFiles)
+	// so we can also capture the per-file CAS refs for the node_key InputRefs set.
+	resolvedEntries, err := resolveInputFileEntries(cs.InputFiles, scope, ictx.wf, ictx.moduleID, ictx.blobs, ictx.runstate.Assets)
 	if err != nil {
 		if errors.Is(err, errArtifactFetch) {
 			// Committed artifact unreadable — internal error (content-address
@@ -318,6 +320,13 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		}
 		return failStep(ictx.log, path, OutcomePermanentFailure, err)
 	}
+	inputFiles, err := inputFilesFromResolvedEntries(resolvedEntries)
+	if err != nil {
+		return failStep(ictx.log, path, OutcomePermanentFailure, err)
+	}
+	// Collect CAS refs for node_key (Task-6 contract: the set of CAS hashes of
+	// every resolved input_files blob consumed by this code step).
+	codeStepInputRefs := inputFileRefsFromResolvedEntries(resolvedEntries)
 
 	outputFiles, outputFileContracts, err := resolveOutputFiles(cs.OutputFiles, scope, ictx.moduleID, ictx.runstate.Assets, ictx.blobs)
 	if err != nil {
@@ -376,6 +385,12 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		// Defensive — RunWithRetry should always return non-nil err on non-ok.
 		return failStep(ictx.log, path, dr.Outcome, errors.New("step did not commit (no underlying error reported)"))
 	}
+
+	// Thread the node + input refs into the DispatchResult so Commit can compute
+	// the node_key for this deterministic code step (WS-6b). Only the code-step
+	// path sets these; all other Commit call sites leave them nil (empty key).
+	dr.Node = cs
+	dr.InputRefs = codeStepInputRefs
 
 	nr, err := Commit(ictx.log, ictx.blobs, path, dr, false) // code steps never participate in conversations
 	if err != nil {
