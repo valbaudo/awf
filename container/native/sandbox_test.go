@@ -177,11 +177,17 @@ func TestWithSandbox_CapabilitiesUnchanged(t *testing.T) {
 }
 
 // TestSandboxLauncherLabel_WarnSubstring checks that the no-op fallback label
-// contains a human-recognisable isolation-absent indicator.
+// loudly signals the absence of OS-level isolation.
+//
+// It asserts on the noSandboxWarnLabel constant directly rather than driving
+// detectSandbox(mockNotFound()): mockNotFound only defeats PATH lookups, but on
+// Linux detectPlatformSandbox also probes the kernel for Landlock (a syscall,
+// not a PATH binary), so a sandbox-capable host returns the real
+// "landlock-trampoline" launcher and never reaches the no-op fallback. The
+// loud-label invariant lives on the constant that fallback returns.
 func TestSandboxLauncherLabel_WarnSubstring(t *testing.T) {
-	_, label := detectSandbox(mockNotFound())
-	lower := strings.ToLower(label)
+	lower := strings.ToLower(noSandboxWarnLabel)
 	if !strings.Contains(lower, "no") && !strings.Contains(lower, "warn") {
-		t.Errorf("fallback label %q: expected \"no\" or \"warn\" substring", label)
+		t.Errorf("noSandboxWarnLabel %q: expected \"no\" or \"warn\" substring", noSandboxWarnLabel)
 	}
 }

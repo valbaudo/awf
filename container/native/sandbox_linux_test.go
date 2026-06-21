@@ -318,9 +318,16 @@ func TestDetectPlatformSandbox_BwrapWins(t *testing.T) {
 		t.Errorf("label = %q, want to contain \"bwrap\"", label)
 	}
 
-	// And the returned launcher must build a non-nil argv.
-	argv := l.prepend("/tmp/s", nil)
+	// detectPlatformSandbox returns a per-dispatch *factory*, not a ready
+	// launcher: the factory's own prepend is a sentinel that returns nil. The
+	// real bwrap argv comes from buildForRun(run).prepend(...), exactly as the
+	// dispatch path drives it (container/native/exec.go:58-63). Mirror that here.
+	factory, ok := l.(sandboxLauncherFactory)
+	if !ok {
+		t.Fatalf("bwrap launcher %T does not implement sandboxLauncherFactory", l)
+	}
+	argv := factory.buildForRun("echo hi").prepend("/tmp/s", nil)
 	if argv == nil {
-		t.Error("bwrap launcher.prepend returned nil")
+		t.Error("bwrap buildForRun(...).prepend returned nil")
 	}
 }
