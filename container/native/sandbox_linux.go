@@ -146,7 +146,6 @@ type SandboxPolicy struct {
 	RODirs []string `json:"ro_dirs"`
 	RWDirs []string `json:"rw_dirs"`
 	Run    string   `json:"run"`
-	Env    []string `json:"env,omitempty"`
 }
 
 // systemRODirs are the fixed OS directories the trampoline always grants

@@ -6,7 +6,7 @@ import (
 	"github.com/landlock-lsm/go-landlock/landlock"
 )
 
-// applyLandlock enforces a Landlock FS policy in the current process.
+// ApplyLandlock enforces a Landlock FS policy in the current process.
 // Called by the __sandbox trampoline in cmd/awf/main.go BEFORE syscall.Exec.
 //
 // Policy:
