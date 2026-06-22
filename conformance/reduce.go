@@ -181,6 +181,7 @@ func testReduce(t *testing.T, factory BackendFactory) {
 	t.Run("named_run_reduce_resume_artifact", func(t *testing.T) {
 		testReduceNamedRunResumeArtifact(t, factory)
 	})
+	t.Run("map_gate_reduce", func(t *testing.T) { testMapGateReduce(t, factory) }) // NEW
 }
 
 func testReduceQuorumPass(t *testing.T, factory BackendFactory) {
@@ -501,4 +502,91 @@ func countNodeCompleted(events []state.Event, path string) int {
 		}
 	}
 	return n
+}
+
+// mapGateReduceWorkflow — P1 forwarding. A map whose body is a single gate:
+// generate writes a NAMED output_files artifact (leaf → /out/leaf.csv) and
+// evaluate passes; reduce: { run: ./merge.sh } must receive every branch's
+// accepted-attempt leaf at $AWF_STAGING_ROOT/branch-<N>/leaf. Proves a gate
+// body's accepted attempt forwards its file into the fan-in (the prestige gap).
+// concurrency:1 — the in-mem fake's shared Blobs race on concurrent
+// output_schema commits.
+var mapGateReduceWorkflow = fmt.Sprintf(`workflow: conformance-map-gate-reduce
+version: 1
+input:
+  type: object
+  required: [items]
+  additionalProperties: false
+  properties:
+    items: { type: array, items: { type: string } }
+containers:
+  c0: { image: %[1]s }
+  agg: { image: %[1]s }
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: x
+      container: c0
+      concurrency: 1
+      body:
+        - gate:
+            generate:
+              - id: gen
+                container: c0
+                run: "./gen.sh {{ x }}"
+                retry: { attempts: 1 }
+                output_files: { leaf: /out/leaf.csv }
+            evaluate:
+              - id: check
+                container: c0
+                run: "./check.sh"
+                retry: { attempts: 1 }
+                output_schema:
+                  type: object
+                  additionalProperties: false
+                  required: [passed]
+                  properties: { passed: { type: boolean } }
+            until: "{{ evaluate.passed }}"
+            max_attempts: 1
+      reduce:
+        run: "./merge.sh"
+        container: agg
+        output_schema:
+          type: object
+          additionalProperties: false
+          required: [rows]
+          properties: { rows: { type: integer } }
+        output_files: { merged: /out/merged.csv }
+`, fakeImageDigest)
+
+// testMapGateReduce proves each gate branch's accepted-attempt leaf is staged
+// into the reducer. A faked merge.sh return alone would not distinguish 0 vs 2
+// collected branches, so we wrap the fake in assetCopyToSpy (assets_stage.go:258)
+// and assert on what the reducer received.
+func testMapGateReduce(t *testing.T, _ BackendFactory) {
+	t.Helper()
+	var spy *assetCopyToSpy
+	h := newHarnessWithInput(t, func() container.Backend {
+		f := container.NewFake()
+		f.ProgramExecWithFiles("./gen.sh a", container.ExecResult{ExitCode: 0}, nil,
+			map[string][]byte{"/out/leaf.csv": []byte("a-leaf")})
+		f.ProgramExecWithFiles("./gen.sh b", container.ExecResult{ExitCode: 0}, nil,
+			map[string][]byte{"/out/leaf.csv": []byte("b-leaf")})
+		f.ProgramExec("./check.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"passed":true}`)}, nil)
+		f.ProgramExecWithFiles("./merge.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"rows":2}`)}, nil,
+			map[string][]byte{"/out/merged.csv": []byte("a-leaf\nb-leaf\n")})
+		spy = newAssetCopyToSpy(f)
+		return spy
+	}, mapGateReduceWorkflow, map[string]any{"items": []any{"a", "b"}})
+
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("map_gate_reduce: runWorkflow: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("map_gate_reduce: outcome = %q, want ok", oc)
+	}
+	// Fake StagingRoot mirrors Docker: "/work/.awf". branch-<N> uses the item index.
+	assertExactlyOneStagedPath(t, spy, "/work/.awf/branch-0/leaf", []byte("a-leaf"))
+	assertExactlyOneStagedPath(t, spy, "/work/.awf/branch-1/leaf", []byte("b-leaf"))
 }

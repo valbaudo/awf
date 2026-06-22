@@ -366,14 +366,20 @@ func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string, wf *ir.Workf
 		b := reduceBranch{N: mr.N, Outputs: map[string]any{}, Files: map[string]string{}}
 		committed := false
 		for _, producer := range producers {
-			itemStepPath := ItemStepPath(mapPath, mr.N, producer.suffix)
+			itemStepPath, gateForwarded, resolved := itemBodyStepPath(rs, mapPath, mr.N, producer.suffix)
+			if !resolved {
+				continue // gate-nested producer with no passed attempt for this item
+			}
 			nr, ok := rs.LookupCompleted(itemStepPath)
 			if !ok {
 				continue
 			}
 			committed = true
-			for k, v := range nr.Outputs {
-				b.Outputs[k] = v
+			if !gateForwarded {
+				// Gate SCALARS stay gate-scoped (man:744-747); only files forward.
+				for k, v := range nr.Outputs {
+					b.Outputs[k] = v
+				}
 			}
 			stepScope := NewScope(rs, wf, itemStepPath)
 			for _, of := range producer.outputFiles {
