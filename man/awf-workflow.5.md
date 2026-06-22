@@ -3,11 +3,11 @@ AWF-WORKFLOW 5 "May 2026" "AWF" "AWF Manual"
 
 # NAME
 
-awf-workflow - the Agentic Workflow Format (AWF)
+awf-workflow - the awf workflow format
 
 # DESCRIPTION
 
-The Agentic Workflow Format (AWF) is a declarative format for *agentic pipelines*:
+The awf workflow format (formerly the Agentic Workflow Format) is a declarative format for *agentic pipelines*:
 author-defined control flow whose steps are black-box agent CLIs (such as Claude
 Code), shell commands, and external-signal waits, run against long-lived
 containers, with an independent judge gating each stage. A workflow is a single

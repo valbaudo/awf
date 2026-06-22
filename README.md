@@ -1,8 +1,10 @@
-# AWF
+# awf
 
 [![CI](https://github.com/valbaudo/awf/actions/workflows/ci.yml/badge.svg)](https://github.com/valbaudo/awf/actions/workflows/ci.yml) [![Go Report Card](https://goreportcard.com/badge/github.com/valbaudo/awf)](https://goreportcard.com/report/github.com/valbaudo/awf) [![Go Reference](https://pkg.go.dev/badge/github.com/valbaudo/awf.svg)](https://pkg.go.dev/github.com/valbaudo/awf) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-AWF is a single-binary runtime for agentic workflows that need a real acceptance
+**Run agents you don't babysit, and trust the result.**
+
+awf is a single-binary runtime for agentic workflows that need a real acceptance
 gate: run the agent, check the result independently, repair from the critique,
 and resume safely after crashes without redoing committed work.
 
