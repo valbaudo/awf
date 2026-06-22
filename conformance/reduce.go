@@ -182,6 +182,7 @@ func testReduce(t *testing.T, factory BackendFactory) {
 		testReduceNamedRunResumeArtifact(t, factory)
 	})
 	t.Run("map_gate_reduce", func(t *testing.T) { testMapGateReduce(t, factory) }) // NEW
+	t.Run("map_gate_reduce_loud_missing", func(t *testing.T) { testMapGateReduceLoudMissing(t, factory) })
 }
 
 func testReduceQuorumPass(t *testing.T, factory BackendFactory) {
@@ -558,6 +559,52 @@ graph:
           properties: { rows: { type: integer } }
         output_files: { merged: /out/merged.csv }
 `, fakeImageDigest)
+
+// testMapGateReduceLoudMissing — item "a" produces its leaf and passes; item
+// "b"'s gen exits 0 but never writes /out/leaf.csv, so output_files capture
+// fails → the gate's generate is retryable→terminal → item b is a VISIBLE
+// ItemFailed. The map (run: reducer) reduces over the survivor and returns ok;
+// b's leaf is NOT staged and b is recorded failed — the opposite of the
+// prestige glob that silently merged fewer files.
+func testMapGateReduceLoudMissing(t *testing.T, _ BackendFactory) {
+	t.Helper()
+	var spy *assetCopyToSpy
+	h := newHarnessWithInput(t, func() container.Backend {
+		f := container.NewFake()
+		f.ProgramExecWithFiles("./gen.sh a", container.ExecResult{ExitCode: 0}, nil,
+			map[string][]byte{"/out/leaf.csv": []byte("a-leaf")})
+		f.ProgramExec("./gen.sh b", container.ExecResult{ExitCode: 0}, nil) // exits 0, writes NO leaf
+		f.ProgramExec("./check.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"passed":true}`)}, nil)
+		f.ProgramExecWithFiles("./merge.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"rows":1}`)}, nil,
+			map[string][]byte{"/out/merged.csv": []byte("a-leaf\n")})
+		spy = newAssetCopyToSpy(f)
+		return spy
+	}, mapGateReduceWorkflow, map[string]any{"items": []any{"a", "b"}})
+
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("loud_missing: runWorkflow: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("loud_missing: outcome = %q, want ok (reducer succeeds over survivor a)", oc)
+	}
+	assertExactlyOneStagedPath(t, spy, "/work/.awf/branch-0/leaf", []byte("a-leaf"))
+	assertNoStagedPath(t, spy, "/work/.awf/branch-1/leaf")
+
+	rs, ferr := engine.Fold(mustFoldEvents(t, h), h.blobs)
+	if ferr != nil {
+		t.Fatalf("loud_missing: Fold: %v", ferr)
+	}
+	var bStatus string
+	for _, it := range rs.LookupMapItems("map[0]") {
+		if it.N == 1 {
+			bStatus = it.Status
+		}
+	}
+	if bStatus != engine.ItemFailed {
+		t.Fatalf("loud_missing: item b status = %q, want %q (declared output not produced must be auditable)", bStatus, engine.ItemFailed)
+	}
+}
 
 // testMapGateReduce proves each gate branch's accepted-attempt leaf is staged
 // into the reducer. A faked merge.sh return alone would not distinguish 0 vs 2
