@@ -227,6 +227,7 @@ var catalog = map[string]string{
 	"AWF_IMPORT_READ":           "workflow import failed to read",
 	"AWF_IMPORT_SYMLINK":        "workflow import path resolves through a symlink",
 	"AWF5006":                   "reduce quorum/over names a body output field that no branch declares, or min_success and reduce:{quorum} are both declared on the same node",
+	"AWF5007":                   "reduce: a fan-in producer is nested under a loop or more than one gate; reduce collects only a single gate's accepted attempt, so this output would be silently dropped — flatten the body or remove the reduce:",
 	"AWF5008":                   "prune.score must name a numeric field declared in the output_schema of the map body's last step",
 	"AWF5009":                   "map id without reduce requires a final body code/agent/signal step with output_schema",
 	"AWF5010":                   "map aggregate product may only be referenced outside its producing map",

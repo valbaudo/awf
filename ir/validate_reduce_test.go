@@ -98,3 +98,100 @@ func TestValidateReduceValidRun(t *testing.T) {
 	assertNoErrorCode(t, diags, "AWF5006")
 	assertNoErrorCode(t, diags, "AWF1009")
 }
+
+// mapWithReduceBody constructs a workflow with a single Map whose body is the
+// given NodeList and whose reduce is a valid run: form. Used by the AWF5007
+// nesting tests below.
+func mapWithReduceBody(body NodeList) *LoadedDefinition {
+	r := &Reduce{Run: "./merge.sh", Container: "lab"}
+	return makeLD(&Workflow{
+		ID: "reduce-nesting-wf", Version: 1,
+		Containers: map[string]Container{"lab": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"), As: "item", Container: "lab", Concurrency: 1,
+				Reduce: r,
+				Body:   body,
+			},
+		},
+	})
+}
+
+// codeProducer is a code step that declares output_files — qualifies as a
+// fan-in producer that reduce would collect.
+func codeProducer(id string) *CodeStep {
+	return &CodeStep{
+		ID:          id,
+		Container:   "lab",
+		Run:         "true",
+		OutputFiles: OutputFiles{{Name: "out", Path: "/out/out.txt"}},
+	}
+}
+
+func TestValidateReduceLoopNestedProducerAWF5007(t *testing.T) {
+	// A producer nested under a loop in a reduce body → AWF5007.
+	body := NodeList{
+		&Loop{
+			MaxIters: intPtr(3),
+			Body:     NodeList{codeProducer("producer")},
+		},
+	}
+	assertErrorAt(t, Validate(mapWithReduceBody(body)), "AWF5007", "map[0].reduce")
+}
+
+func TestValidateReduceNestedGateProducerAWF5007(t *testing.T) {
+	// A producer nested under two gates (gate within gate's generate) → AWF5007.
+	innerCode := codeProducer("producer")
+	innerGate := &Gate{
+		Generate:    NodeList{innerCode},
+		Evaluate:    NodeList{&CodeStep{ID: "inner-eval", Container: "lab", Run: "true", OutputSchema: boolSchema("ok")}},
+		Until:       Expr("{{ evaluate.ok }}"),
+		MaxAttempts: 2,
+	}
+	outerGate := &Gate{
+		Generate:    NodeList{innerGate},
+		Evaluate:    NodeList{&CodeStep{ID: "outer-eval", Container: "lab", Run: "true", OutputSchema: boolSchema("ok")}},
+		Until:       Expr("{{ evaluate.ok }}"),
+		MaxAttempts: 2,
+	}
+	body := NodeList{outerGate}
+	assertErrorAt(t, Validate(mapWithReduceBody(body)), "AWF5007", "map[0].reduce")
+}
+
+func TestValidateReduceSingleGateProducerNoAWF5007(t *testing.T) {
+	// A producer nested under exactly one gate → allowed (Task-1 handles it).
+	innerCode := codeProducer("producer")
+	gate := &Gate{
+		Generate:    NodeList{innerCode},
+		Evaluate:    NodeList{&CodeStep{ID: "eval", Container: "lab", Run: "true", OutputSchema: boolSchema("ok")}},
+		Until:       Expr("{{ evaluate.ok }}"),
+		MaxAttempts: 2,
+	}
+	body := NodeList{gate}
+	assertNoErrorCode(t, Validate(mapWithReduceBody(body)), "AWF5007")
+}
+
+func TestValidateReducePlainProducerNoAWF5007(t *testing.T) {
+	// A producer directly in the map body (no nesting) → allowed.
+	body := NodeList{codeProducer("producer")}
+	assertNoErrorCode(t, Validate(mapWithReduceBody(body)), "AWF5007")
+}
+
+func TestValidateReduceGateInIfProducerNoAWF5007(t *testing.T) {
+	// A gate with a producer inside an if branch → if adds no runtime multiplicity,
+	// only the single enclosing gate counts. No AWF5007.
+	innerCode := codeProducer("producer")
+	gate := &Gate{
+		Generate:    NodeList{innerCode},
+		Evaluate:    NodeList{&CodeStep{ID: "eval", Container: "lab", Run: "true", OutputSchema: boolSchema("ok")}},
+		Until:       Expr("{{ evaluate.ok }}"),
+		MaxAttempts: 2,
+	}
+	body := NodeList{
+		&If{
+			Cond: Expr("{{ input.flag }}"),
+			Then: NodeList{gate},
+		},
+	}
+	assertNoErrorCode(t, Validate(mapWithReduceBody(body)), "AWF5007")
+}

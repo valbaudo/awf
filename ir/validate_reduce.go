@@ -90,6 +90,41 @@ func validateMapReduce(m *Map, nodePath string, wf *Workflow, scoped map[string]
 		}
 		checkContainerRefInScope(r.Container, rp, wf, scoped, mapImageTargetOwners, c, true /* required */)
 	}
+
+	// A reduce collects body producers by static path; Task-1 resolution handles at
+	// most ONE enclosing gate. A producer under a loop (.iter-N) or under a second
+	// gate (.attempt-N x2) would miss the lookup and be silently dropped, so reject
+	// it loudly here.
+	WalkNodes(m.Body, "", func(n Node, p string) {
+		switch s := n.(type) {
+		case *CodeStep:
+			checkReduceProducerNesting(p, s.OutputSchema, s.OutputFiles, rp, c)
+		case *AgentStep:
+			checkReduceProducerNesting(p, s.OutputSchema, s.OutputFiles, rp, c)
+		}
+	})
+}
+
+// checkReduceProducerNesting emits AWF5007 if a body producer that reduce would
+// collect (it declares output_schema or output_files) sits under a loop or more
+// than one gate. if/then/else add no runtime multiplicity and are allowed; a
+// single gate is allowed (Task-1 forwarding).
+func checkReduceProducerNesting(path string, schema *JSONSchema, files OutputFiles, rp string, c *collector) {
+	if schema == nil && len(files) == 0 {
+		return // not collected by reduce
+	}
+	gates, loops := 0, 0
+	for _, seg := range strings.Split(path, ".") {
+		switch {
+		case strings.HasPrefix(seg, "gate["):
+			gates++
+		case strings.HasPrefix(seg, "loop["):
+			loops++
+		}
+	}
+	if loops > 0 || gates > 1 {
+		c.errf(rp, "AWF5007", "producer "+path+" is under "+fmt.Sprintf("%d loop / %d gate", loops, gates)+" ancestors")
+	}
 }
 
 // bodyDeclaresField reports whether some step in the map body declares `field`
