@@ -183,6 +183,7 @@ func testReduce(t *testing.T, factory BackendFactory) {
 	})
 	t.Run("map_gate_reduce", func(t *testing.T) { testMapGateReduce(t, factory) }) // NEW
 	t.Run("map_gate_reduce_loud_missing", func(t *testing.T) { testMapGateReduceLoudMissing(t, factory) })
+	t.Run("map_gate_reduce_resume", func(t *testing.T) { testMapGateReduceResume(t, factory) })
 }
 
 func testReduceQuorumPass(t *testing.T, factory BackendFactory) {
@@ -603,6 +604,67 @@ func testMapGateReduceLoudMissing(t *testing.T, _ BackendFactory) {
 	}
 	if bStatus != engine.ItemFailed {
 		t.Fatalf("loud_missing: item b status = %q, want %q (declared output not produced must be auditable)", bStatus, engine.ItemFailed)
+	}
+}
+
+// testMapGateReduceResume — round 1 runs the 2 items + their gates, then CRASHES
+// on the reducer's merge.sh (FailExecAfterN before the reduce exec) → reduce
+// uncommitted. Round 2 resumes against a fake that programs ONLY merge.sh: the
+// items+gates replay from the journal (no re-exec), and collectReduceBranches
+// re-runs against folded GateAttempts to re-stage both leaves. Proves the
+// accepted-attempt resolution is resume-stable AND committed items do not re-run.
+//
+// Exec order (concurrency:1): gen a(0), check(1), gen b(2), check(3), merge(4).
+// FailExecAfterN(4) lets the first 4 calls (0–3) succeed and fails call 4
+// (merge.sh), crashing round 1 before the reduce commits.
+func testMapGateReduceResume(t *testing.T, _ BackendFactory) {
+	t.Helper()
+	var runFake, resumeFake *container.Fake
+	var resumeSpy *assetCopyToSpy
+	h := newHarnessWithInput(t, func() container.Backend {
+		f := container.NewFake()
+		if runFake == nil {
+			f.ProgramExecWithFiles("./gen.sh a", container.ExecResult{ExitCode: 0}, nil,
+				map[string][]byte{"/out/leaf.csv": []byte("a-leaf")})
+			f.ProgramExecWithFiles("./gen.sh b", container.ExecResult{ExitCode: 0}, nil,
+				map[string][]byte{"/out/leaf.csv": []byte("b-leaf")})
+			f.ProgramExec("./check.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"passed":true}`)}, nil)
+			// Exec order (concurrency 1): gen a(0), check(1), gen b(2), check(3), merge(4).
+			// Fail the 5th call (index 4) → crash before the reducer commits.
+			f.FailExecAfterN(4)
+			runFake = f
+			return f
+		}
+		// Resume fake: program ONLY merge.sh. Items+gates must replay (no re-exec);
+		// only the reducer re-runs.
+		f.ProgramExecWithFiles("./merge.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"rows":2}`)}, nil,
+			map[string][]byte{"/out/merged.csv": []byte("a-leaf\nb-leaf\n")})
+		resumeFake = f
+		resumeSpy = newAssetCopyToSpy(f)
+		return resumeSpy
+	}, mapGateReduceWorkflow, map[string]any{"items": []any{"a", "b"}})
+
+	if _, err := h.runWorkflow(t); err == nil {
+		t.Fatalf("map_gate_reduce_resume: round 1 expected a crash before the reducer, got nil error")
+	}
+	oc, err := h.resumeWorkflow(t)
+	if err != nil {
+		t.Fatalf("map_gate_reduce_resume: round 2: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("map_gate_reduce_resume: outcome = %q, want ok", oc)
+	}
+	// collectReduceBranches re-ran on resume and re-staged both gate leaves.
+	assertExactlyOneStagedPath(t, resumeSpy, "/work/.awf/branch-0/leaf", []byte("a-leaf"))
+	assertExactlyOneStagedPath(t, resumeSpy, "/work/.awf/branch-1/leaf", []byte("b-leaf"))
+	// Committed items did NOT re-run: the resume fake saw only the reducer.
+	if resumeFake == nil {
+		t.Fatal("map_gate_reduce_resume: resume did not mint a second fake")
+	}
+	for _, c := range resumeFake.Calls {
+		if c.Run != "./merge.sh" {
+			t.Fatalf("map_gate_reduce_resume: resume re-ran a committed step: %q (only ./merge.sh should run)", c.Run)
+		}
 	}
 }
 
