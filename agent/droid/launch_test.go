@@ -255,16 +255,19 @@ func TestLaunch_NoTerminalEventNoConfigPattern_UnexpectedExit(t *testing.T) {
 	}
 }
 
-func TestLaunch_AuthFailure_Retryable_AgentLaunch(t *testing.T) {
+// TestLaunch_AuthFailure_Permanent: a droid auth failure (the deterministic
+// "set a valid FACTORY_API_KEY" message) classifies PERMANENT — wraps
+// agent.ErrPermissionDenied — consistent with the claude and awf/llm adapters. A
+// bad key fails fast instead of burning the (now 8-attempt) retry budget.
+func TestLaunch_AuthFailure_Permanent(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
 	errLine := []byte(`{"type":"error","source":"cli","message":"Error: Authentication failed. set a valid FACTORY_API_KEY environment variable."}` + "\n")
 	f.ProgramExecAny(container.ExecResult{ExitCode: 1}, []container.IOChunk{chunk(sysLine()), chunk(errLine)})
 	a := droidAdapter(t, f)
 	_, outcome := drainLaunch(t, a, h, agent.AgentInvocation{NodePath: "graph[0]", Uses: droid.AdapterRef, With: ir.RawConfig{"prompt": "x"}})
-	var launch *agent.ErrAgentLaunch
-	if !errors.As(outcome.Err, &launch) {
-		t.Fatalf("outcome.Err = %v, want *agent.ErrAgentLaunch (auth is retryable, not permanent)", outcome.Err)
+	if !errors.Is(outcome.Err, agent.ErrPermissionDenied) {
+		t.Fatalf("outcome.Err = %v, want errors.Is agent.ErrPermissionDenied (auth is a deterministic fault — fail fast)", outcome.Err)
 	}
 }
 

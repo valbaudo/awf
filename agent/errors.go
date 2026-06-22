@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrAdapterAlreadyRegistered is returned by Registry.Register when a second
@@ -67,12 +68,28 @@ var (
 	ErrLiveRedaction       = errors.New("agent: live redaction")
 )
 
+// RetryHint is an optional, server-derived "wait this long before retrying"
+// signal an adapter may attach to a transient ErrAgentLaunch. RetryAfter is
+// parsed from a provider Retry-After header or a rate-limit reset time (e.g.
+// Anthropic anthropic-ratelimit-*-reset, or the Claude Code rate_limit event's
+// resetsAt). The engine dispatcher lifts it onto DispatchResult.RetryAfter and
+// engine.RunWithRetry honors it (capped at retry.MaxHonoredRetryAfter) so AWF
+// waits out the actual window instead of the short exp curve. Runtime-only —
+// never journaled.
+type RetryHint struct {
+	RetryAfter time.Duration
+}
+
 // ErrAgentLaunch is returned by Adapter.Launch when the harness failed to
 // start or terminated abnormally (transport / launch class). Wraps the
 // concrete cause for errors.Is matching at the top of the call chain.
 // The slice 5.2 dispatcher maps this to retryable_failure.
+//
+// RetryHint is optional: when the cause is a provider rate-limit/overload with a
+// known retry window, the adapter sets it and the engine honors that delay.
 type ErrAgentLaunch struct {
-	Cause error
+	Cause     error
+	RetryHint *RetryHint
 }
 
 func (e *ErrAgentLaunch) Error() string {

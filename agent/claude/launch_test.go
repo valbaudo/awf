@@ -87,6 +87,35 @@ func TestLaunch_ErrMaxStructuredOutputRetries(t *testing.T) {
 	}
 }
 
+// TestLaunch_AuthFailure_Permanent verifies a Claude Code auth failure
+// (subtype:success + is_error:true + "Not logged in") classifies PERMANENT —
+// the outcome error wraps agent.ErrPermissionDenied, which the engine maps to
+// permanent_failure. A bad/missing API key is deterministic; retrying it 8×
+// would only stall the pipeline before the inevitable failure.
+func TestLaunch_AuthFailure_Permanent(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":true,"duration_ms":71,"num_turns":1,"result":"Not logged in · Please run /login","stop_reason":"stop_sequence","session_id":"x","total_cost_usd":0}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
+	a, _ := claude.New(claude.WithBackend(f), claude.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	inv := agent.AgentInvocation{NodePath: "graph[0]", Uses: claude.AdapterRef, With: ir.RawConfig{"prompt": "x"}}
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch (pre-launch err): %v", err)
+	}
+	for range eventCh {
+	}
+	outcome := <-outcomeCh
+	if outcome.Err == nil {
+		t.Fatal("outcome.Err = nil; want a permanent auth error")
+	}
+	if !errors.Is(outcome.Err, agent.ErrPermissionDenied) {
+		t.Fatalf("outcome.Err = %v; want errors.Is agent.ErrPermissionDenied (auth must be permanent, not retryable)", outcome.Err)
+	}
+}
+
 func TestLaunch_NoResultEvent_ErrUnexpectedExit(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})

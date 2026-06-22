@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/ir"
@@ -140,7 +141,8 @@ func (a *Adapter) callAnthropic(ctx context.Context, cfg reqConfig, prompt strin
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		tail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", usageRec{}, "", "", &apiError{Status: resp.StatusCode, Type: anthropicErrType(tail), Body: string(tail)}
+		ra, sr := parseRetrySignals(resp.Header, time.Now())
+		return "", usageRec{}, "", "", &apiError{Status: resp.StatusCode, Type: anthropicErrType(tail), Body: string(tail), RetryAfter: ra, ShouldRetry: sr}
 	}
 
 	var full strings.Builder

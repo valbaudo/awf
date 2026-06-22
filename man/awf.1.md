@@ -668,10 +668,14 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     **with: api_key_env** (optional)
     :   Name of the env var holding the API key (default `OPENAI_API_KEY`). The
         named var must be present in **--agent-env**; an absent key is a
-        permanent config error. Quota or budget exhaustion at call time
-        (`insufficient_quota`, "budget exceeded") is likewise classified
+        permanent config error, and a present-but-invalid key (HTTP 401/403)
+        fails **permanent** at call time rather than retrying. Quota or budget
+        exhaustion (`insufficient_quota`, "budget exceeded") is likewise
         **permanent** — the step fails fast instead of burning the retry budget,
-        while an ordinary rate-limit stays retryable.
+        while an ordinary rate-limit stays retryable. On a retryable fault the
+        adapter forwards the provider's `Retry-After` / `retry-after-ms` and
+        `x-should-retry` headers to the retry loop, so a rate-limited step waits
+        the server's stated window rather than the default backoff curve.
 
     **with: system_prompt** (optional)
     :   Text prepended as a system message before the user prompt.

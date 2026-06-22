@@ -17,11 +17,11 @@ type usageRec struct {
 }
 
 // ErrAuthFailureSentinel marks a droid terminal "error" event whose message
-// names auth/FACTORY_API_KEY. Launch wraps it as *agent.ErrAgentLaunch
-// (RETRYABLE): the event carries only free text, so we cannot distinguish a
-// permanent bad key from a transient auth-infra error — the bounded retry
-// budget covers the transient case, and the present-key precondition is checked
-// in ValidateConfig.
+// names auth/FACTORY_API_KEY ("set a valid FACTORY_API_KEY"). Launch wraps it as
+// PERMANENT (agent.ErrPermissionDenied → permanent_failure): the message is a
+// deterministic bad/missing-key signal, so retrying only burns the budget;
+// transient auth-infra faults surface as 5xx/timeouts on the other retryable
+// paths instead. Consistent with the claude and awf/llm adapters.
 var ErrAuthFailureSentinel = errors.New("agent/droid: droid exec reported an authentication failure")
 
 // streamEvent is one line of droid's `-o stream-json` NDJSON output. droid emits
@@ -90,10 +90,9 @@ func resultFromCompletion(ev *streamEvent, inv agent.AgentInvocation) (agent.Age
 }
 
 // errorFromEvent maps a terminal "error" event to an outcome error. Auth
-// failures (message names auth / FACTORY_API_KEY) wrap ErrAuthFailureSentinel;
-// Launch maps both to retryable *agent.ErrAgentLaunch (the message is free text,
-// so a bad key can't be told from a transient auth-infra fault — bounded retry
-// covers the transient case; the present-key precondition is in ValidateConfig).
+// failures (message names auth / FACTORY_API_KEY) wrap ErrAuthFailureSentinel,
+// which Launch classifies PERMANENT (the message is a deterministic bad-key
+// signal); every other error event is retryable *agent.ErrAgentLaunch.
 func errorFromEvent(ev *streamEvent) error {
 	if strings.Contains(ev.Message, "Authentication failed") || strings.Contains(ev.Message, "FACTORY_API_KEY") {
 		return fmt.Errorf("%w: %s", ErrAuthFailureSentinel, ev.Message)

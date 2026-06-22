@@ -2,6 +2,7 @@ package awfllm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/valbaudo/awf/agent"
@@ -103,11 +104,35 @@ func liveEventText(s string) string {
 }
 
 // classifyLaunchErr maps a transport/stream error to a mechanical class:
-// permanent (*agent.ErrInvalidConfig) iff a 400 invalid_request_error; else
-// retryable (*agent.ErrAgentLaunch).
+// permanent (*agent.ErrInvalidConfig) iff a 400 invalid_request_error or
+// quota/budget exhaustion; else retryable (*agent.ErrAgentLaunch). The
+// x-should-retry header, when present, is AUTHORITATIVE and overrides the
+// status-based decision either way. A retryable apiError carrying a parsed
+// Retry-After is surfaced with an agent.RetryHint so the engine honors the
+// server's window instead of the short exp curve.
 func classifyLaunchErr(err error) error {
-	if isPermanentLLMError(err) {
-		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "", Reason: err.Error()}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		if ae.ShouldRetry != nil {
+			if !*ae.ShouldRetry {
+				return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "", Reason: err.Error()}
+			}
+			return &agent.ErrAgentLaunch{Cause: err, RetryHint: retryHintFromAPIErr(ae)}
+		}
+		if isPermanentLLMError(err) {
+			return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "", Reason: err.Error()}
+		}
+		return &agent.ErrAgentLaunch{Cause: err, RetryHint: retryHintFromAPIErr(ae)}
 	}
-	return &agent.ErrAgentLaunch{Cause: err} // agent.ErrAgentLaunch is {Cause error} ONLY — no Ref field (agent/errors.go:62)
+	// Non-apiError (raw transport/connection fault, ctx error) → retryable, no hint.
+	return &agent.ErrAgentLaunch{Cause: err} // agent.ErrAgentLaunch is {Cause, RetryHint} (agent/errors.go)
+}
+
+// retryHintFromAPIErr lifts a parsed Retry-After onto an agent.RetryHint, or nil
+// when the server gave no usable wait window.
+func retryHintFromAPIErr(ae *apiError) *agent.RetryHint {
+	if ae.RetryAfter > 0 {
+		return &agent.RetryHint{RetryAfter: ae.RetryAfter}
+	}
+	return nil
 }

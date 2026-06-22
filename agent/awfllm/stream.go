@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/pricing"
@@ -28,10 +31,58 @@ type apiError struct {
 	Type   string
 	Code   string // provider error.code (OpenAI); "" for synthesized non-OpenAI types
 	Body   string
+
+	// RetryAfter is the parsed Retry-After / retry-after-ms response header (0 if
+	// absent). On a retryable fault classifyLaunchErr surfaces it as an
+	// agent.RetryHint so the engine waits the server's window. ShouldRetry is the
+	// parsed x-should-retry header — authoritative override of the status-based
+	// retry decision (nil if absent). Both are zero on the mid-stream SSE error
+	// path (no HTTP response, no headers).
+	RetryAfter  time.Duration
+	ShouldRetry *bool
 }
 
 func (e *apiError) Error() string {
 	return fmt.Sprintf("agent/awfllm: HTTP %d (%s): %s", e.Status, e.Type, e.Body)
+}
+
+// parseRetrySignals extracts the retry-governing headers from an HTTP error
+// response: Retry-After (delta-seconds or an HTTP-date, relative to now),
+// retry-after-ms (the non-standard millisecond form OpenAI/Stainless emit, which
+// takes priority), and x-should-retry (the authoritative true/false override).
+// Pure — now is injected so the HTTP-date path is testable; a malformed header
+// degrades to "no signal" rather than erroring the classification.
+func parseRetrySignals(h http.Header, now time.Time) (time.Duration, *bool) {
+	var shouldRetry *bool
+	switch strings.ToLower(strings.TrimSpace(h.Get("X-Should-Retry"))) {
+	case "true":
+		v := true
+		shouldRetry = &v
+	case "false":
+		v := false
+		shouldRetry = &v
+	}
+
+	var retryAfter time.Duration
+	if ms := strings.TrimSpace(h.Get("Retry-After-Ms")); ms != "" {
+		if n, err := strconv.Atoi(ms); err == nil && n > 0 {
+			retryAfter = time.Duration(n) * time.Millisecond
+		}
+	}
+	if retryAfter == 0 {
+		if ra := strings.TrimSpace(h.Get("Retry-After")); ra != "" {
+			if n, err := strconv.Atoi(ra); err == nil {
+				if n > 0 {
+					retryAfter = time.Duration(n) * time.Second
+				}
+			} else if t, err := http.ParseTime(ra); err == nil {
+				if d := t.Sub(now); d > 0 {
+					retryAfter = d
+				}
+			}
+		}
+	}
+	return retryAfter, shouldRetry
 }
 
 // errTypeInvalidRequest is the OpenAI/Ollama error type string for a permanent
@@ -50,6 +101,14 @@ func isPermanentLLMError(err error) bool {
 	var ae *apiError
 	if !errors.As(err, &ae) {
 		return false
+	}
+	// 401/403: a present-but-invalid key, or a key lacking access to the model, is
+	// a DETERMINISTIC fault — retrying it only burns the budget before the
+	// inevitable failure. (An ABSENT key is already rejected at ValidateConfig.)
+	// An x-should-retry:true override still wins — it is checked first in
+	// classifyLaunchErr.
+	if ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden {
+		return true
 	}
 	if ae.Status == 400 && ae.Type == errTypeInvalidRequest {
 		return true

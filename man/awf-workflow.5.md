@@ -1356,7 +1356,19 @@ above.
 
 Retry — transient recovery, applied to every step by default:
 
-    retry: { attempts: 3, backoff: exp, initial: 1s, max: 60s, non_retryable_exit_codes: [78] }
+    retry: { attempts: 8, backoff: exp, initial: 1s, max: 60s, non_retryable_exit_codes: [78] }
+
+Eight attempts (up from three) let a transient provider fault — a 429 rate limit,
+a 529 overload, a 5xx, or a dropped connection — ride out its window without
+failing the pipeline; a `permanent_failure` (an `invalid_request` or exhausted
+quota) never consumes the budget. (Whether an authentication failure is permanent
+is adapter-specific — see the per-adapter notes in *awf*(1).) The backoff carries a small deterministic
+jitter (keyed on the node path, so it is resume-stable) so parallel retries
+decorrelate; and when a provider sends a wait hint — a `Retry-After` /
+`retry-after-ms` header or an `x-should-retry` directive — the runtime honors it
+for the next sleep (capped at 5m) instead of the curve, and `x-should-retry:
+false` suppresses the retry. These are runtime behaviors; the fields above are
+the only authored knobs.
 
 Repair — quality recovery — is the gate, a separate axis. A step can be retried
 for flakiness *and* sit inside a gate that repairs it for quality; the two

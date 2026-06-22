@@ -38,6 +38,12 @@ type Result struct {
 	Files      map[string][]byte
 	Live       *agent.LiveDispatch
 	Transcript agent.ThreadTurn // scriptable verbatim pair; copied into AgentResult.Transcript by Launch
+
+	// Err, when non-nil, makes Launch emit it as AgentOutcome.Err (after any
+	// scripted Events) instead of a success AgentResult — lets tests script
+	// transient/permanent launch failures (e.g. *agent.ErrAgentLaunch with a
+	// RetryHint) and drive the dispatcher's failure classification.
+	Err error
 }
 
 // Fake is the in-memory scripted adapter. Zero value is NOT usable — call
@@ -208,6 +214,13 @@ func (f *Fake) Launch(ctx context.Context, _ container.Handle, inv agent.AgentIn
 				case <-time.After(delay):
 				}
 			}
+		}
+
+		// Scripted launch failure: emit it as the outcome error (after any
+		// scripted Events above) instead of a success result.
+		if r.Err != nil {
+			outcomeCh <- agent.AgentOutcome{Err: r.Err}
+			return
 		}
 
 		cost := agent.MetricCost{}

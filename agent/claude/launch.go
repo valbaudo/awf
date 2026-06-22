@@ -162,9 +162,16 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			outcomeCh <- agent.AgentOutcome{Result: capturedResult}
 		case kind == "unparseable":
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrUnparseableOutput{NodePath: inv.NodePath}}
-		case kind == "auth", kind == "fatal":
-			// Both auth-failure (subtype:success + is_error:true) and other
-			// extract errors surface as ErrAgentLaunch wrapping captureErr.
+		case kind == "auth":
+			// Auth failure (subtype:success + is_error:true, "Not logged in") is a
+			// DETERMINISTIC fault — a bad/missing key. Classify PERMANENT by wrapping
+			// agent.ErrPermissionDenied (classifyAgentLaunchErr maps it to
+			// permanent_failure) so it fails fast instead of consuming the retry
+			// budget. captureErr (which wraps ErrAuthFailureSentinel) is kept in the
+			// chain for callers that match on it.
+			outcomeCh <- agent.AgentOutcome{Err: fmt.Errorf("agent/claude: authentication failed: %w: %w", agent.ErrPermissionDenied, captureErr)}
+		case kind == "fatal":
+			// Other extract errors are transport/launch-class → retryable.
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: captureErr}}
 		default: // kind == "" — no result event was seen
 			outcomeCh <- agent.AgentOutcome{Err: &ErrUnexpectedExit{ExitCode: execResult.ExitCode, Stderr: ""}}

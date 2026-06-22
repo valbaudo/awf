@@ -10,8 +10,8 @@ import (
 
 func TestDefaultPolicy(t *testing.T) {
 	d := retry.Default
-	if d.Attempts != 3 {
-		t.Errorf("Attempts = %d, want 3", d.Attempts)
+	if d.Attempts != 8 {
+		t.Errorf("Attempts = %d, want 8", d.Attempts)
 	}
 	if d.Backoff != retry.BackoffExp {
 		t.Errorf("Backoff = %v, want exp", d.Backoff)

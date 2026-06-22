@@ -150,6 +150,13 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			outcomeCh <- agent.AgentOutcome{Result: capturedResult}
 		case kind == "unparseable":
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrUnparseableOutput{NodePath: inv.NodePath}}
+		case kind == "fatal" && errors.Is(captureErr, ErrAuthFailureSentinel):
+			// Auth failure ("set a valid FACTORY_API_KEY") is a DETERMINISTIC fault —
+			// classify PERMANENT (wrap agent.ErrPermissionDenied → permanent_failure)
+			// so it fails fast instead of burning the 8-attempt retry budget,
+			// consistent with the claude and awf/llm adapters. captureErr (wrapping
+			// ErrAuthFailureSentinel) is kept in the chain.
+			outcomeCh <- agent.AgentOutcome{Err: fmt.Errorf("agent/droid: authentication failed: %w: %w", agent.ErrPermissionDenied, captureErr)}
 		case kind == "fatal":
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: captureErr}}
 		default: // no terminal completion/error event seen

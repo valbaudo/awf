@@ -55,9 +55,13 @@ func RunWithRetry(
 	var lastErr error
 
 	for attempt := 1; attempt <= policy.Attempts; attempt++ {
-		// Preceding-sleep for attempts > 1 (BackoffFor(1) = 0; spec §6 backoff).
+		// Preceding-sleep for attempts > 1 (EffectiveBackoff(1, …) = 0; spec §6
+		// backoff). dr still holds the PREVIOUS attempt's result here (it's
+		// reassigned below), so dr.RetryAfter is that attempt's server hint —
+		// EffectiveBackoff waits the longer of the curve and the hint, plus
+		// path-keyed jitter. On attempt 1 dr is the zero value (RetryAfter 0).
 		if attempt > 1 {
-			if err := clk.Sleep(ctx, policy.BackoffFor(attempt)); err != nil {
+			if err := clk.Sleep(ctx, policy.EffectiveBackoff(attempt, dr.RetryAfter, intent.Path)); err != nil {
 				return dr, nil, err
 			}
 		}

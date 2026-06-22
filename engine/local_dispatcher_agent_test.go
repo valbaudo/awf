@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	agentfake "github.com/valbaudo/awf/agent/fake"
@@ -13,6 +14,48 @@ import (
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
+
+// TestRunAgent_RetryAfterHintSurfaced verifies that when an adapter's Launch
+// fails with a transient *agent.ErrAgentLaunch carrying a RetryHint, the
+// dispatcher classifies it retryable AND surfaces the hint on
+// DispatchResult.RetryAfter — so the retry loop honors the server's window
+// instead of the short exp curve.
+func TestRunAgent_RetryAfterHintSurfaced(t *testing.T) {
+	ctx := context.Background()
+
+	fk := agentfake.New("awf/llm").WithCaps(agent.Caps{Containerless: true}).
+		Script(0, agentfake.Result{Err: &agent.ErrAgentLaunch{
+			Cause:     errors.New("429 rate_limit_error"),
+			RetryHint: &agent.RetryHint{RetryAfter: 30 * time.Second},
+		}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	d := &engine.LocalDispatcher{
+		Resolver: &reg,
+		Handles:  map[string]container.Handle{},
+	}
+	intent := engine.NodeIntent{
+		Path:           "ask",
+		Node:           &ir.AgentStep{ID: "ask", Uses: "awf/llm", Container: ""},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "awf/llm", With: ir.RawConfig{"model": "m", "prompt": "hi"}},
+	}
+
+	dr, ch, err := d.Run(ctx, intent)
+	if err != nil {
+		t.Fatalf("Run returned engine-level error: %v", err)
+	}
+	for range ch {
+	}
+	if dr.Outcome != engine.OutcomeRetryableFailure {
+		t.Fatalf("Outcome = %q, want %q", dr.Outcome, engine.OutcomeRetryableFailure)
+	}
+	if dr.RetryAfter != 30*time.Second {
+		t.Errorf("dr.RetryAfter = %v, want 30s (hint must surface from ErrAgentLaunch)", dr.RetryAfter)
+	}
+}
 
 // TestRunAgent_EmptyContainer_PassesZeroHandle verifies that an AgentStep with
 // an empty Container field does not trigger a "no handle" error. The dispatcher

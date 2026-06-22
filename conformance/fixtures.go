@@ -928,6 +928,8 @@ graph:
     uses: test/non-native-schema
     with:
       prompt: "extract structured data from prose"
+    retry:
+      attempts: 3
     output_schema:
       type: object
       additionalProperties: false

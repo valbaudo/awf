@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/ir"
@@ -337,7 +338,14 @@ func buildOpenAIMessages(systemPrompt string, turns []agent.ReactTurn) []openai.
 func classifyOpenAIErr(err error) error {
 	var oe *openai.Error
 	if errors.As(err, &oe) {
-		return &apiError{Status: oe.StatusCode, Type: oe.Type, Code: oe.Code, Body: oe.Error()}
+		ae := &apiError{Status: oe.StatusCode, Type: oe.Type, Code: oe.Code, Body: oe.Error()}
+		// Forward the server's retry signals (Retry-After / x-should-retry), like
+		// the Ollama/Gemini/Anthropic paths — otherwise a 429 from an OpenAI-compat
+		// endpoint (incl. a LiteLLM-proxied Claude) drops its hint and override.
+		if oe.Response != nil {
+			ae.RetryAfter, ae.ShouldRetry = parseRetrySignals(oe.Response.Header, time.Now())
+		}
+		return ae
 	}
 	return err
 }
@@ -423,7 +431,8 @@ func (a *Adapter) streamOllama(ctx context.Context, cfg reqConfig, prompt string
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		tail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", usageRec{}, "", "", &apiError{Status: resp.StatusCode, Type: ollamaErrType(tail), Body: string(tail)}
+		ra, sr := parseRetrySignals(resp.Header, time.Now())
+		return "", usageRec{}, "", "", &apiError{Status: resp.StatusCode, Type: ollamaErrType(tail), Body: string(tail), RetryAfter: ra, ShouldRetry: sr}
 	}
 
 	var full strings.Builder
@@ -582,7 +591,8 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 	defer func() { _ = resp.Body.Close() }()
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode != http.StatusOK {
-		return "", usageRec{}, "", "", &apiError{Status: resp.StatusCode, Type: geminiErrType(respBytes), Body: string(respBytes)}
+		ra, sr := parseRetrySignals(resp.Header, time.Now())
+		return "", usageRec{}, "", "", &apiError{Status: resp.StatusCode, Type: geminiErrType(respBytes), Body: string(respBytes), RetryAfter: ra, ShouldRetry: sr}
 	}
 
 	var gr struct {

@@ -98,7 +98,8 @@ func TestRunWithRetryRetryThenSuccess(t *testing.T) {
 	if dsp.calls != 2 {
 		t.Errorf("dispatcher called %d times, want 2", dsp.calls)
 	}
-	wantTime := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+	// One preceding sleep before attempt 2 = EffectiveBackoff(2, no-hint, path).
+	wantTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(policy.EffectiveBackoff(2, 0, "x"))
 	if !clk.Now().Equal(wantTime) {
 		t.Errorf("clock = %v, want %v", clk.Now(), wantTime)
 	}
@@ -161,7 +162,10 @@ func TestRunWithRetryExhaustedReturnsLastError(t *testing.T) {
 	if attempts != 2 {
 		t.Errorf("retry.attempt events = %d, want 2 (attempts 1 and 2; attempt 3 halts via run-error)", attempts)
 	}
-	wantTime := time.Date(2026, 1, 1, 0, 0, 3, 0, time.UTC)
+	// Two preceding sleeps (before attempts 2 and 3), each EffectiveBackoff w/ jitter.
+	wantTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).
+		Add(policy.EffectiveBackoff(2, 0, "x")).
+		Add(policy.EffectiveBackoff(3, 0, "x"))
 	if !clk.Now().Equal(wantTime) {
 		t.Errorf("clock = %v, want %v", clk.Now(), wantTime)
 	}
@@ -189,6 +193,40 @@ func TestRunWithRetryPermanentStopsImmediately(t *testing.T) {
 	}
 	if !clk.Now().Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("clock advanced on permanent failure: %v", clk.Now())
+	}
+}
+
+// TestRunWithRetryHonorsRetryAfterHint verifies that a retryable attempt
+// carrying a server Retry-After hint (DispatchResult.RetryAfter) makes the loop
+// wait at least that long before the next attempt — instead of the much shorter
+// exp curve. This is what stops AWF from burning its retry budget hammering a
+// rate-limit window the server said resets in 45s.
+func TestRunWithRetryHonorsRetryAfterHint(t *testing.T) {
+	t.Parallel()
+	exit := 0
+	dsp := &stubDispatcher{results: []stubResult{
+		{dr: engine.DispatchResult{Outcome: engine.OutcomeRetryableFailure, Err: errors.New("rate_limited"), RetryAfter: 45 * time.Second}},
+		{dr: engine.DispatchResult{Outcome: engine.OutcomeOK, ExitCode: &exit}},
+	}}
+	log := state.NewInMemoryLog(clock.System{})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := &clock.Fake{T: start}
+	// Curve for attempt 2 is only 1s — the 45s hint must dominate.
+	policy := retry.Policy{Attempts: 3, Backoff: retry.BackoffExp, Initial: time.Second, Max: 60 * time.Second}
+
+	dr, _, err := engine.RunWithRetry(context.Background(), dsp, defaultIntent(), policy, clk, log)
+	if err != nil {
+		t.Fatalf("RunWithRetry: %v", err)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Errorf("Outcome = %v, want ok", dr.Outcome)
+	}
+	want := start.Add(policy.EffectiveBackoff(2, 45*time.Second, "x"))
+	if !clk.Now().Equal(want) {
+		t.Errorf("clock = %v, want %v (honored the 45s Retry-After hint, not the 1s curve)", clk.Now(), want)
+	}
+	if clk.Now().Sub(start) < 45*time.Second {
+		t.Errorf("slept %v, want >= 45s (the hint was not honored)", clk.Now().Sub(start))
 	}
 }
 
@@ -230,7 +268,9 @@ func TestRunWithRetryUnderSynctest(t *testing.T) {
 		if dr.Outcome != engine.OutcomeOK {
 			t.Errorf("Outcome = %v, want ok", dr.Outcome)
 		}
-		want := 3 * time.Second
+		// Two retries → two preceding sleeps, each EffectiveBackoff (curve+jitter),
+		// fully deterministic (jitter is a pure hash, no rand).
+		want := policy.EffectiveBackoff(2, 0, "x") + policy.EffectiveBackoff(3, 0, "x")
 		if elapsed := time.Since(start); elapsed != want {
 			t.Errorf("elapsed = %v, want %v (under synctest = deterministic)", elapsed, want)
 		}
@@ -283,9 +323,9 @@ func TestRunWithRetryViaLocalDispatcher(t *testing.T) {
 	if len(fake.Calls) != 2 {
 		t.Errorf("fake.Calls len = %d, want 2", len(fake.Calls))
 	}
-	want := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
+	want := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(policy.EffectiveBackoff(2, 0, "flaky"))
 	if !clk.Now().Equal(want) {
-		t.Errorf("clock = %v, want %v (one BackoffFor(2)=1s sleep between attempts)", clk.Now(), want)
+		t.Errorf("clock = %v, want %v (one EffectiveBackoff(2) sleep between attempts)", clk.Now(), want)
 	}
 	events, _ := log.Fold()
 	var retryAttempts int

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
@@ -238,6 +239,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 			Outcome:     dispatchOutcome,
 			Err:         launchOutcome.Err,
 			AgentEvents: bufferedEvents,
+			RetryAfter:  agentRetryAfter(launchOutcome.Err),
 		}, closedChunks(), nil
 	}
 
@@ -364,6 +366,20 @@ func classifyAgentLaunchErr(err error) Outcome {
 		// *agent.ErrAgentLaunch and any other error class → transport.
 		return OutcomeRetryableFailure
 	}
+}
+
+// agentRetryAfter extracts an adapter-supplied Retry-After hint from a launch
+// error, if present, so the dispatcher can surface it on
+// DispatchResult.RetryAfter for engine.RunWithRetry to honor. Returns 0 when
+// the error is not an *agent.ErrAgentLaunch or carries no RetryHint. The engine
+// never reads HTTP — adapters parse the provider signal and attach the typed
+// hint; this only unwraps it.
+func agentRetryAfter(err error) time.Duration {
+	var la *agent.ErrAgentLaunch
+	if errors.As(err, &la) && la.RetryHint != nil {
+		return la.RetryHint.RetryAfter
+	}
+	return 0
 }
 
 // closedChunks returns a pre-closed IOChunk channel — runAgent doesn't emit

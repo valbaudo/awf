@@ -155,6 +155,16 @@ type DispatchResult struct {
 	Files    []container.CapturedFile // pre-commit captured file contents (path + bytes)
 	Err      error                    // set on non-ok outcomes; nil on Outcome == ok
 
+	// RetryAfter is an optional server-supplied "wait this long before retrying"
+	// hint surfaced on a retryable_failure — parsed by an adapter from a provider
+	// Retry-After header or a rate-limit reset time (e.g. Anthropic
+	// anthropic-ratelimit-*-reset, or the Claude Code rate_limit event's resetsAt).
+	// Zero means "no hint, use the policy curve". RunWithRetry feeds it to
+	// retry.Policy.EffectiveBackoff so the next sleep waits at least this long
+	// (capped at retry.MaxHonoredRetryAfter). Runtime-only: never journaled —
+	// Commit reads named fields off DispatchResult, not this one.
+	RetryAfter time.Duration
+
 	// Slice 5.2 — agent-step events. The dispatcher's runAgent drains the
 	// adapter's <-chan AgentEvent and buffers each here for the
 	// interpreter-level engine/agent_step.go to write as agent.event log

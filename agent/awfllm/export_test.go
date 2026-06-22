@@ -3,6 +3,7 @@ package awfllm
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/ir"
@@ -13,7 +14,16 @@ import (
 var (
 	ExtractJSONObjectForTest   = extractJSONObject
 	IsPermanentLLMErrorForTest = isPermanentLLMError
+	ParseRetrySignalsForTest   = parseRetrySignals
+	ClassifyLaunchErrForTest   = classifyLaunchErr
+	ClassifyOpenAIErrForTest   = classifyOpenAIErr
 )
+
+// NewAPIErrorWithHintForTest builds an apiError carrying the parsed retry
+// signals (Retry-After + x-should-retry) for classifier tests.
+func NewAPIErrorWithHintForTest(status int, typ string, retryAfter time.Duration, shouldRetry *bool) *apiError {
+	return &apiError{Status: status, Type: typ, RetryAfter: retryAfter, ShouldRetry: shouldRetry}
+}
 
 // BuildResultForTest exposes buildResult with explicit model and pricer for tests.
 func BuildResultForTest(full string, usage usageRec, model string, pricer pricing.Table, inv agent.AgentInvocation) (agent.AgentResult, error) {
