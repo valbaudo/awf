@@ -18,6 +18,10 @@ interface RunRow {
   run_id: string;
   status: string;
   workflow: string;
+  // false when the run executed against a different version of this workflow than the file the
+  // UI was launched with (the file was edited since). The run still renders faithfully against
+  // its own snapshot; this only flags the version difference in the picker.
+  version_match?: boolean;
 }
 
 // AwfNode renders every node (leaf and group). The data-* attributes are the testable
@@ -163,6 +167,7 @@ export default function App() {
           {runs.map((r) => (
             <option key={r.run_id} value={r.run_id}>
               {r.run_id.slice(0, 12)} · {r.status}
+              {r.version_match === false ? " · ⚠ other version" : ""}
             </option>
           ))}
         </select>

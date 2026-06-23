@@ -293,11 +293,18 @@ func (h *harness) runOrResume(t *testing.T, isResume bool, rerunFrom string) (en
 				return "", err
 			}
 		}
+		// Mirror cli/run.go: snapshot the run's canonical definition into Blobs (view-only).
+		// Recorded in run.started.definition_ref; never consulted for resume/pinning.
+		definitionRef, err := engine.StoreRunStartedDefinitionSnapshot(h.blobs, ld)
+		if err != nil {
+			return "", err
+		}
 		runStartedData, _ := json.Marshal(engine.RunStartedData{
 			RunID: h.runID, WorkflowDigest: digest, InputRef: inputRef,
 			StructuralDigest: structuralDigest, // "" unless recordStructuralDigest (omitempty)
 			Assets:           assetSnapshots,
 			Runtimes:         h.runtimes, // nil for non-role buckets (omitempty → byte-identical)
+			DefinitionRef:    definitionRef,
 		})
 		if err := h.log.Append(state.Event{
 			Type: engine.EventRunStarted, Data: runStartedData,
