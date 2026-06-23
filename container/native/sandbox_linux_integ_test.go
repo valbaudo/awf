@@ -142,7 +142,11 @@ func TestSandboxInteg_LandlockWriteHostDenied(t *testing.T) {
 	defer b.Destroy(ctx, h) //nolint:errcheck
 
 	cmd := container.Cmd{
-		Run: "echo forbidden > " + targetFile + " 2>&1; echo exit:$?",
+		// A bare redirect, with NO trailing `echo exit:$?`: that trailing command
+		// would mask the write's failure and make the step exit 0 even when the
+		// write is denied. With just the redirect, a Landlock-denied open(2) aborts
+		// the command and sh exits non-zero — the signal this test asserts on.
+		Run: "echo forbidden > " + targetFile,
 	}
 	_, resultCh, callErr := b.Exec(ctx, h, cmd)
 	if callErr != nil {
@@ -155,7 +159,7 @@ func TestSandboxInteg_LandlockWriteHostDenied(t *testing.T) {
 		os.Remove(targetFile)
 	}
 	if result.ExitCode == 0 {
-		t.Errorf("step exited 0 despite landlock write denial; stdout=%q", result.Stdout)
+		t.Errorf("step exited 0 despite landlock write denial (redirect to %s should fail)", targetFile)
 	}
 }
 
