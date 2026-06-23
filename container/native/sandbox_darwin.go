@@ -5,6 +5,8 @@ package native
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/valbaudo/awf/container"
 )
 
 // detectPlatformSandbox returns the best available sandbox launcher for macOS.
@@ -50,6 +52,7 @@ func (f *sandboxExecFactory) buildForRun(run string) sandboxLauncher {
 //	(deny file-write*)           ; deny all writes …
 //	(allow file-write* (subpath (param "SCRATCH")))  ; … except the scratch dir
 //	(allow file-write* (subpath (param "TMPDIR")))   ; … and TMPDIR
+//	(allow file-write* (subpath (param "AWFOUT")))   ; … and the AWF_OUTPUT dir
 //	(allow file-write* (literal "/dev/null"))         ; … and the discard device
 //
 // /dev/null is added beyond the brief minimum because `(deny file-write*)` also
@@ -91,6 +94,7 @@ const sbplProfile = `(version 1)
 (deny file-write*)
 (allow file-write* (subpath (param "SCRATCH")))
 (allow file-write* (subpath (param "TMPDIR")))
+(allow file-write* (subpath (param "AWFOUT")))
 (allow file-write* (literal "/dev/null"))
 `
 
@@ -102,6 +106,7 @@ const sbplProfile = `(version 1)
 //	["sandbox-exec",
 //	  "-D", "SCRATCH=<realPath>",
 //	  "-D", "TMPDIR=<realTmpdir>",
+//	  "-D", "AWFOUT=<realAwfOutputDir>",
 //	  "-f", "<profile.sb>",
 //	  "--", "sh", "-c", <run>]
 func (l sandboxExecLauncher) prepend(scratchDir string, _ []string) []string {
@@ -124,6 +129,21 @@ func (l sandboxExecLauncher) prepend(scratchDir string, _ []string) []string {
 	tmpdir, err := filepath.EvalSymlinks(rawTmpdir)
 	if err != nil {
 		tmpdir = rawTmpdir
+	}
+
+	// AWF_OUTPUT (spec §4.1) lives under AWFOutputDir (/tmp/awf) — the engine's
+	// typed-output capture path. A sandboxed step that declares output_schema MUST be
+	// able to write it, or its typed output comes back empty. Grant write to that dir,
+	// resolving symlinks so the SBPL subpath matches the real path the kernel sees
+	// (macOS /tmp -> /private/tmp). New() bootstraps the dir, but fall back to resolving
+	// the parent so the rule is correct even before the dir exists.
+	awfOut, err := filepath.EvalSymlinks(container.AWFOutputDir)
+	if err != nil {
+		if parent, perr := filepath.EvalSymlinks(filepath.Dir(container.AWFOutputDir)); perr == nil {
+			awfOut = filepath.Join(parent, filepath.Base(container.AWFOutputDir))
+		} else {
+			awfOut = container.AWFOutputDir
+		}
 	}
 
 	// Write the profile to a stable temp file. The file must outlive prepend
@@ -152,6 +172,7 @@ func (l sandboxExecLauncher) prepend(scratchDir string, _ []string) []string {
 		"sandbox-exec",
 		"-D", "SCRATCH=" + scratchAbs,
 		"-D", "TMPDIR=" + tmpdir,
+		"-D", "AWFOUT=" + awfOut,
 		"-f", profilePath,
 		"--", "sh", "-c", l.run,
 	}

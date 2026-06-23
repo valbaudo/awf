@@ -33,7 +33,7 @@ func realPath(p string) string {
 // builds the correct argv per the brief:
 //
 //	["sandbox-exec", "-D", "SCRATCH=<abs>", "-D", "TMPDIR=<tmpdir>",
-//	 "-f", "<profile.sb>", "--", "sh", "-c", <run>]
+//	 "-D", "AWFOUT=<awfout>", "-f", "<profile.sb>", "--", "sh", "-c", <run>]
 func TestSandboxExecLauncher_ArgvStructure(t *testing.T) {
 	scratch := t.TempDir()
 	const run = "echo hello"
@@ -42,7 +42,7 @@ func TestSandboxExecLauncher_ArgvStructure(t *testing.T) {
 	l := f.buildForRun(run).(sandboxExecLauncher)
 	argv := l.prepend(scratch, nil)
 
-	if len(argv) < 11 {
+	if len(argv) < 13 {
 		t.Fatalf("argv too short (%d elements): %v", len(argv), argv)
 	}
 
@@ -67,11 +67,18 @@ func TestSandboxExecLauncher_ArgvStructure(t *testing.T) {
 	if !strings.HasPrefix(argv[4], "TMPDIR=") {
 		t.Errorf("argv[4] = %q, want TMPDIR=...", argv[4])
 	}
-	// argv[5] == "-f", argv[6] == <profile path>
-	if argv[5] != "-f" {
-		t.Errorf("argv[5] = %q, want \"-f\"", argv[5])
+	// argv[5] == "-D", argv[6] == "AWFOUT=<dir>"
+	if argv[5] != "-D" {
+		t.Errorf("argv[5] = %q, want \"-D\"", argv[5])
 	}
-	profilePath := argv[6]
+	if !strings.HasPrefix(argv[6], "AWFOUT=") {
+		t.Errorf("argv[6] = %q, want AWFOUT=...", argv[6])
+	}
+	// argv[7] == "-f", argv[8] == <profile path>
+	if argv[7] != "-f" {
+		t.Errorf("argv[7] = %q, want \"-f\"", argv[7])
+	}
+	profilePath := argv[8]
 	if !strings.HasSuffix(profilePath, ".sb") {
 		t.Errorf("profile path %q: want *.sb suffix", profilePath)
 	}
@@ -89,12 +96,12 @@ func TestSandboxExecLauncher_ArgvStructure(t *testing.T) {
 			t.Errorf("profile missing %q; got:\n%s", want, profile)
 		}
 	}
-	// argv[7] == "--", argv[8] == "sh", argv[9] == "-c", argv[10] == run
-	if argv[7] != "--" {
-		t.Errorf("argv[7] = %q, want \"--\"", argv[7])
+	// argv[9] == "--", argv[10] == "sh", argv[11] == "-c", argv[12] == run
+	if argv[9] != "--" {
+		t.Errorf("argv[9] = %q, want \"--\"", argv[9])
 	}
-	if argv[8] != "sh" || argv[9] != "-c" || argv[10] != run {
-		t.Errorf("argv[7:11] = %v, want [-- sh -c %q]", argv[7:], run)
+	if argv[10] != "sh" || argv[11] != "-c" || argv[12] != run {
+		t.Errorf("argv[9:13] = %v, want [-- sh -c %q]", argv[9:], run)
 	}
 }
 
@@ -131,6 +138,7 @@ func TestSandboxExecLauncher_ProfileContent(t *testing.T) {
 		"(deny file-write*)",
 		`(allow file-write* (subpath (param "SCRATCH")))`,
 		`(allow file-write* (subpath (param "TMPDIR")))`,
+		`(allow file-write* (subpath (param "AWFOUT")))`,
 		`(allow file-write* (literal "/dev/null"))`,
 	}
 	for _, clause := range required {
