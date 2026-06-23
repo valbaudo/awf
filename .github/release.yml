@@ -1,0 +1,29 @@
+# Categorisation for GitHub's auto-generated release notes (`gh release create
+# --generate-notes`). Entries are grouped by the labels on the merged PRs they
+# come from; anything unlabelled falls under "Other Changes".
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: 🚀 Features
+      labels:
+        - enhancement
+        - feature
+    - title: 🐛 Fixes
+      labels:
+        - bug
+        - fix
+    - title: 🔒 Security
+      labels:
+        - security
+    - title: 📖 Documentation
+      labels:
+        - documentation
+    - title: 🧰 Maintenance
+      labels:
+        - chore
+        - dependencies
+    - title: Other Changes
+      labels:
+        - "*"
