@@ -331,6 +331,11 @@ func runCommandReduce(
 // are compacted out (they have no committed body output), exactly like the
 // aggregate.
 //
+// engine/scope.go's aggregateMapOutputs intentionally does NOT need the same
+// gate-nested-producer handling: ir.SingleMapBodyShape rejects any path
+// containing a "gate[" or "loop[" segment, so a gate-nested producer is
+// structurally unreachable from the typed-aggregate path.
+//
 // The supported (single-producing-step) body shape yields one body NodeResult
 // per item; if a body has multiple producing steps, their Outputs/Files are
 // shallow-merged into the branch. Files are keyed by declared output_files name,

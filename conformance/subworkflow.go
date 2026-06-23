@@ -386,6 +386,9 @@ func assertExactlyOneStagedPath(t *testing.T, spy *assetCopyToSpy, path string, 
 
 func assertNoStagedPath(t *testing.T, spy *assetCopyToSpy, path string) {
 	t.Helper()
+	if spy == nil {
+		t.Fatal("workflow did not create a fake backend")
+	}
 	spy.mu.Lock()
 	defer spy.mu.Unlock()
 	for _, f := range spy.staged {

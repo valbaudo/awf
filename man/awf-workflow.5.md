@@ -1083,7 +1083,7 @@ A `gate` inside the `body` may produce the reduce-collected artifact: each
 surviving branch then contributes its gate's **accepted attempt's** named
 `output_files`, staged at `$AWF_STAGING_ROOT/branch-<N>/<name>` like any other
 branch artifact. This follows the same files-only forwarding as the sequential
-`input_files`-after-`gate` exception (see *Scope*): **only durable files
+`input_files`-after-`gate` exception (see *Artifact channel*): **only durable files
 forward**; the gate's scalar outputs — the verdict, and any `generate`
 `output_schema` field — stay gate-scoped and do **not** appear in
 `aggregate.json`. Declare the artifact with `output_files` on the gate's
