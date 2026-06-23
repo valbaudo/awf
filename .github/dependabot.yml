@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Go module dependencies.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Keep the Docker/Moby client toolchain moving together — these modules are
+      # tightly coupled and their security fixes (see SECURITY.md) land in lockstep.
+      docker-toolchain:
+        patterns:
+          - "github.com/docker/*"
+          - "github.com/moby/*"
+          - "github.com/compose-spec/*"
+
+  # GitHub Actions used by the CI, release, and pricing workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
