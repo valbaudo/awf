@@ -188,16 +188,32 @@ func TestGraphCacheReflectsChange(t *testing.T) {
 	}
 }
 
-func TestRunsDigestFilter(t *testing.T) {
+// The run list is scoped by workflow id, not by exact digest: every version of the same workflow is
+// listed (the edited-file case), each flagged with version_match; runs of a different workflow stay
+// hidden; pre-6.1 runs (no workflow id) fall back to exact-digest visibility.
+func TestRunsScopedByWorkflowID(t *testing.T) {
 	dir := t.TempDir()
-	writeRunLog(t, dir, "mine",
-		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "mine", WorkflowDigest: testDigest, WorkflowID: "demo"})},
+	// Current version of "demo" (digest == testDigest, the server's loaded file).
+	writeRunLog(t, dir, "current",
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "current", WorkflowDigest: testDigest, WorkflowID: "demo"})},
 		state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})},
 	)
+	// An earlier version of "demo" — same id, different digest (file was edited since).
+	writeRunLog(t, dir, "edited",
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "edited", WorkflowDigest: "older-digest", WorkflowID: "demo"})},
+		state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})},
+	)
+	// A different workflow entirely — must stay hidden.
 	writeRunLog(t, dir, "other",
-		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "other", WorkflowDigest: "different-digest", WorkflowID: "x"})},
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "other", WorkflowDigest: "x-digest", WorkflowID: "x"})},
 		state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})},
 	)
+	// A pre-6.1 run of the current file: no workflow id, digest matches → still visible.
+	writeRunLog(t, dir, "legacy",
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "legacy", WorkflowDigest: testDigest})},
+		state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})},
+	)
+
 	ts := newTestServer(t, dir)
 	r, err := http.Get(ts.URL + "/api/runs")
 	if err != nil {
@@ -208,8 +224,24 @@ func TestRunsDigestFilter(t *testing.T) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Runs) != 1 || body.Runs[0].RunID != "mine" {
-		t.Errorf("runs = %+v, want only 'mine' (digest-filtered)", body.Runs)
+
+	got := map[string]RunRow{}
+	for _, row := range body.Runs {
+		got[row.RunID] = row
+	}
+	if _, ok := got["other"]; ok {
+		t.Errorf("run of a different workflow must be hidden; runs=%+v", body.Runs)
+	}
+	for _, id := range []string{"current", "edited", "legacy"} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("expected run %q to be listed; runs=%+v", id, body.Runs)
+		}
+	}
+	if !got["current"].VersionMatch {
+		t.Errorf("current-version run should have version_match=true; got %+v", got["current"])
+	}
+	if got["edited"].VersionMatch {
+		t.Errorf("edited (different-digest) run should have version_match=false; got %+v", got["edited"])
 	}
 }
 

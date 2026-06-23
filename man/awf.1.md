@@ -441,6 +441,17 @@ so a running workflow updates in place with no reload; **Refresh** forces a re-r
 The run list distinguishes running from crashed runs via the run-liveness lock. The
 graph is rendered from the same projection as **awf graph**.
 
+The list is scoped by the workflow's **workflow:** identifier, not the file's
+content digest, so every run of the workflow stays listed even after you edit the
+file. A run that executed against a different version of the file is flagged
+*other version* in the picker. Each run is rendered against the definition it
+actually ran — snapshotted at run start — so its graph reflects the structure that
+executed, not the file currently on disk. A run recorded before definition
+snapshots existed instead renders against the loaded file; a run from before the
+workflow carried a recorded identifier is listed only when its digest matches the
+loaded file. The UI is read-only and never affects resume or pinning, which always
+re-check the live file.
+
 **--state-dir** _dir_
 :   Base directory holding runs (default `./.awf`).
 

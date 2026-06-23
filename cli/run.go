@@ -297,6 +297,16 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
+	// Snapshot the run's full canonical definition into Blobs (view-only). Lets a reader
+	// render this run faithfully against the structure it executed against, even after the
+	// file is edited (`awf ui`). Written before run.started (content-address-then-pointer-
+	// swap); never consulted for resume/pinning — §8 drift is decided against the live file.
+	// CAS dedup → one blob per distinct definition.
+	definitionRef, err := engine.StoreRunStartedDefinitionSnapshot(blobs, ld)
+	if err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
 	// Step 9: OpenLogExclusive atomically claims the run.id.
 	runDir := filepath.Join(*stateDir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
@@ -372,6 +382,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		InputFiles:       inputFileRefs,
 		LiveHome:         engineLiveHomePin(liveRoot.Pin),
 		Runtimes:         resolvedRuntimes, // Phase 5 slice 5.1
+		DefinitionRef:    definitionRef,    // view-only snapshot of the run's canonical definition
 	})
 	if err != nil {
 		fprintf(stderr, "awf run: marshal run.started: %v\n", err)

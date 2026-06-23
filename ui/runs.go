@@ -17,14 +17,20 @@ type RunRow struct {
 	RunID    string `json:"run_id"`
 	Status   string `json:"status"`
 	Workflow string `json:"workflow"`
+	// VersionMatch is true when the run's recorded definition digest equals the digest of the
+	// workflow file the UI was launched against — i.e. the run executed against the current
+	// version. When false, the run is an earlier (or later) version of the same workflow; the
+	// SPA badges it. The run still renders faithfully against its own snapshot.
+	VersionMatch bool `json:"version_match"`
 }
 
-// listRuns enumerates stateDir/runs and returns the runs whose workflow_digest matches
-// the loaded workflow, sorted by run id. An "incomplete" run (started, no terminal
-// event) is resolved via the shared runlock probe into running (a live process holds the
-// lock) vs crashed (no holder), same split as `awf ls`. A missing runs dir yields an
-// empty slice (not an error): a freshly-created state dir simply has no runs yet.
-func listRuns(stateDir, wantDigest string) ([]RunRow, error) {
+// listRuns enumerates stateDir/runs and returns the runs belonging to the loaded workflow, sorted
+// by run id. Scoping is by workflow id (the stable `workflow:` identifier), so every version of the
+// same workflow is listed even after the file is edited — not just the exact-digest match. An
+// "incomplete" run (started, no terminal event) is resolved via the shared runlock probe into
+// running (a live process holds the lock) vs crashed (no holder), same split as `awf ls`. A missing
+// runs dir yields an empty slice (not an error): a freshly-created state dir simply has no runs yet.
+func listRuns(stateDir, wantID, wantDigest string) ([]RunRow, error) {
 	runsDir := filepath.Join(stateDir, "runs")
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -44,8 +50,8 @@ func listRuns(stateDir, wantDigest string) ([]RunRow, error) {
 			continue // a dir without a readable log is not a run; skip quietly
 		}
 		digest, wfID := runMeta(events)
-		if digest != wantDigest {
-			continue // a run of a different workflow (or version) -- don't offer it
+		if !runMatchesWorkflow(wfID, digest, wantID, wantDigest) {
+			continue // a run of a different workflow -- don't offer it
 		}
 		status := obs.DeriveStatus(events)
 		if status == obs.RunIncomplete {
@@ -60,13 +66,25 @@ func listRuns(stateDir, wantDigest string) ([]RunRow, error) {
 			}
 		}
 		rows = append(rows, RunRow{
-			RunID:    e.Name(),
-			Status:   string(status),
-			Workflow: wfID,
+			RunID:        e.Name(),
+			Status:       string(status),
+			Workflow:     wfID,
+			VersionMatch: digest == wantDigest,
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].RunID < rows[j].RunID })
 	return rows, nil
+}
+
+// runMatchesWorkflow reports whether a run belongs to the workflow the UI was launched against.
+// The primary key is the workflow id (stable across edits) so every version of the same workflow is
+// listed. Pre-6.1 logs have no workflow id; for those we fall back to the exact digest, preserving
+// the old "same file only" behaviour for legacy runs.
+func runMatchesWorkflow(wfID, digest, wantID, wantDigest string) bool {
+	if wfID != "" {
+		return wfID == wantID
+	}
+	return digest == wantDigest
 }
 
 // runMeta extracts (workflow_digest, workflow_id) from a run's run.started event.
@@ -83,4 +101,20 @@ func runMeta(events []state.Event) (digest, wfID string) {
 		return d.WorkflowDigest, d.WorkflowID
 	}
 	return "", ""
+}
+
+// runDefinitionRef extracts the run's definition snapshot ref (run.started.definition_ref), or ""
+// if absent (pre-snapshot logs) or unreadable.
+func runDefinitionRef(events []state.Event) string {
+	for _, e := range events {
+		if e.Type != engine.EventRunStarted {
+			continue
+		}
+		var d engine.RunStartedData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			return ""
+		}
+		return d.DefinitionRef
+	}
+	return ""
 }

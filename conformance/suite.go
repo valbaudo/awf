@@ -136,6 +136,7 @@ type BackendFactory func() container.Backend
 func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	t.Run("pinning", func(t *testing.T) { testPinning(t, factory) })
+	t.Run("definition_snapshot", func(t *testing.T) { testDefinitionSnapshot(t, factory) })
 	t.Run("replay", func(t *testing.T) { testReplay(t, factory) })
 	t.Run("atomic", func(t *testing.T) { testAtomic(t, factory) })
 	t.Run("propagation", func(t *testing.T) { testPropagation(t, factory) })

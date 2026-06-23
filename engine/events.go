@@ -307,6 +307,13 @@ type RunStartedData struct {
 	InputFiles map[string]string `json:"input_files,omitempty"`
 	LiveHome   *LiveHomePin      `json:"live_home,omitempty"`
 	Runtimes   []ResolvedRuntime `json:"runtimes,omitempty"`
+	// DefinitionRef is a CAS blob ref to the run's full canonical definition (the JSON of
+	// ir.LoadedDefinition), snapshotted once at run start. It lets read-only viewers (e.g.
+	// `awf ui`) render a past run faithfully against the structure it executed against, even
+	// after the on-disk file is edited. View-only: NEVER consulted for resume/pinning — §8
+	// drift is always decided against the live file. Empty in logs from before the snapshot
+	// landed (omitempty); viewers fall back to the current file then.
+	DefinitionRef string `json:"definition_ref,omitempty"`
 }
 
 type LiveHomePin struct {
