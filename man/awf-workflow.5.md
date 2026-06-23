@@ -745,8 +745,12 @@ step `input_files` because those bindings provide a destination tree.
     `input_files` reference may point at a producer inside that gate, and the
     runtime resolves it to the accepted attempt's committed artifact. Scalar
     `step.<id>.<field>` references remain gate-scoped; this exception exists only
-    for durable files. A producer inside a `map` body is still not referenceable
-    from outside unless the map has a `reduce:` product. An `asset.<id>` reference
+    for durable files. The same files-only rule governs a `gate` inside a `map`
+    body whose accepted attempt feeds `reduce:` (see *map*): only the gate's
+    named `output_files` forward into the fan-in; its scalar verdict and any
+    `generate` `output_schema` field stay gate-scoped. A producer inside a `map`
+    body is still not referenceable from outside unless the map has a `reduce:`
+    product. An `asset.<id>` reference
     must name a declared top-level asset. An `input.files.<name>` reference must
     name a public workflow `input_files:` contract entry that the parent call
     bound for this child run. Destination paths must be **absolute
@@ -981,6 +985,16 @@ instead of cancelling every sibling on the first one. Use `parallel` for a
 static, author-known set of distinct branches; use `map` for a runtime-sized set
 of identical ones.
 
+`container: <name>` inside a `map` body is **per-item-isolated**: item *N* runs
+its own backend container (`<name>-item-<N>`), a separate filesystem from every
+sibling and from the base `<name>`. The per-item containers are ephemeral — torn
+down as each item commits — so a step *after* the map that names the same
+`<name>` is a **different** filesystem (the base container), not the post-map
+state of any item. The only sanctioned way data leaves a map item is a declared
+output collected by `reduce:` (a typed `output_schema` field or a named
+`output_files` artifact); nothing written elsewhere in an item's filesystem
+survives the map.
+
 `id` names the map's aggregate product. Step ids and map aggregate ids share one
 namespace: duplicate step/map ids fail validation. Aggregate output ids must not
 duplicate sibling step ids where a downstream `step.<id>` reference would be
@@ -1064,6 +1078,20 @@ stages into that container every branch's named `output_files` artifact (under
 branches' typed outputs at `$AWF_STAGING_ROOT/aggregate.json` — deterministic,
 index-ordered, and committed-branches-only — via the same content-addressed
 delivery the artifact channel uses (see *Artifact channel*).
+
+A `gate` inside the `body` may produce the reduce-collected artifact: each
+surviving branch then contributes its gate's **accepted attempt's** named
+`output_files`, staged at `$AWF_STAGING_ROOT/branch-<N>/<name>` like any other
+branch artifact. This follows the same files-only forwarding as the sequential
+`input_files`-after-`gate` exception (see *Artifact channel*): **only durable files
+forward**; the gate's scalar outputs — the verdict, and any `generate`
+`output_schema` field — stay gate-scoped and do **not** appear in
+`aggregate.json`. Declare the artifact with `output_files` on the gate's
+`generate` step. A reduce-collected producer (one that declares `output_schema`
+or `output_files`) may be nested under **at most one `gate` and no loop**; a
+producer under a `loop`, or under more than one `gate`, is rejected at validation
+(**AWF5007**), because `reduce:` resolves only a single gate's accepted attempt.
+An `if`/`then`/`else` branch adds no runtime multiplicity and does not count.
 
 The engine injects `AWF_STAGING_ROOT` into the reducer's environment. Its value
 is backend-dependent: **docker** uses `/work/.awf` (an absolute in-container
@@ -1150,7 +1178,12 @@ Out of scope: `prune:` on `parallel` — a `parallel` branch has no durable
 per-branch status record, so a pruned branch could not survive resume safely;
 `parallel` has no `prune:` surface in the format. Growable membership (a runtime
 `enqueue` of new items) is also out of scope — the item set is fixed by `over:`
-and stays static and digest-pinned.
+and stays static and digest-pinned. So is any other channel out of a map item:
+gate→`reduce:` forwarding closes the `map → (single) gate → reduce` fan-in and
+**guards** the unsupported loop / nested-gate cases (AWF5007); it does not add
+in-band channels or arbitrary two-step path rendezvous between an item and a
+later step — a declared output collected by `reduce:` remains the one supported
+exit.
 
 ## compose
 

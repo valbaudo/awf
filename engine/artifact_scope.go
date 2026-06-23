@@ -100,18 +100,52 @@ func (s *Scope) resolveMapProductArtifactPath(id string, mp mapProduct, containe
 	return cas, nil
 }
 
+// attemptPath splices the ACCEPTED gate attempt into fullPath: it scans attempts
+// newest-first for the last AttemptPassed and replaces gatePrefix with
+// AttemptPath(gatePrefix, n). Returns "" if no passed attempt exists (the gate
+// did not run, or was rejected). Shared by passedGateArtifactRuntimePath (the
+// sequential input_files exception) and itemBodyStepPath (reduce fan-in) so the
+// forwarding rule lives in one place.
+func attemptPath(fullPath, gatePrefix string, attempts []AttemptResult) string {
+	for i := len(attempts) - 1; i >= 0; i-- {
+		if attempts[i].AttemptOutcome == AttemptPassed {
+			return strings.Replace(fullPath, gatePrefix, AttemptPath(gatePrefix, attempts[i].N), 1)
+		}
+	}
+	return ""
+}
+
 func (s *Scope) passedGateArtifactRuntimePath(staticPath string) (string, bool, error) {
 	gateStatic, ok := gateScopePrefix(staticPath)
 	if !ok || runtimePathWithinGate(s.ctxPath, gateStatic) {
 		return "", false, nil
 	}
-	attempts := s.rs.LookupGateAttempts(gateStatic)
-	for i := len(attempts) - 1; i >= 0; i-- {
-		if attempts[i].AttemptOutcome == AttemptPassed {
-			return strings.Replace(staticPath, gateStatic, AttemptPath(gateStatic, attempts[i].N), 1), true, nil
-		}
+	if p := attemptPath(staticPath, gateStatic, s.rs.LookupGateAttempts(gateStatic)); p != "" {
+		return p, true, nil
 	}
 	return "", true, template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step inside gate %q has no passed attempt", gateStatic)
+}
+
+// itemBodyStepPath returns the committed runtime path of a map body producer for
+// item n, plus whether it was forwarded through an enclosing gate. A plain
+// producer resolves to ItemStepPath(mapPath, n, suffix). A producer nested in a
+// single gate ran across attempts and committed at an attempt-suffixed path;
+// this splices in the ACCEPTED attempt via the shared attemptPath helper.
+// gateForwarded lets the caller keep the gate's SCALAR outputs gate-scoped and
+// forward only durable files. ok is false when the producer is gate-nested but
+// the gate did not run / has no passed attempt for this item (e.g. a gate in a
+// not-taken if-branch) → the caller compacts. Producers under a loop or >1 gate
+// are rejected at validation (Task 2), so this handles at most one gate.
+func itemBodyStepPath(rs *RunState, mapPath string, n int, suffix string) (string, bool, bool) {
+	gateRel, isGate := gateScopePrefix(suffix)
+	if !isGate {
+		return ItemStepPath(mapPath, n, suffix), false, true
+	}
+	itemGatePath := ItemStepPath(mapPath, n, gateRel)
+	if p := attemptPath(ItemStepPath(mapPath, n, suffix), itemGatePath, rs.LookupGateAttempts(itemGatePath)); p != "" {
+		return p, true, true
+	}
+	return "", true, false
 }
 
 func gateScopePrefix(staticPath string) (string, bool) {

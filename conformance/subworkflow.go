@@ -384,6 +384,20 @@ func assertExactlyOneStagedPath(t *testing.T, spy *assetCopyToSpy, path string, 
 	}
 }
 
+func assertNoStagedPath(t *testing.T, spy *assetCopyToSpy, path string) {
+	t.Helper()
+	if spy == nil {
+		t.Fatal("workflow did not create a fake backend")
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	for _, f := range spy.staged {
+		if f.Path == path {
+			t.Fatalf("staged %s unexpectedly (content %q); a missing gate output must not produce a branch", path, f.Content)
+		}
+	}
+}
+
 func countEventsAt(events []state.Event, typ, path string) int {
 	count := 0
 	for _, ev := range events {
