@@ -50,6 +50,46 @@ func TestResolveVersionNoBuildInfo(t *testing.T) {
 	}
 }
 
+// TestResolveVersionGoInstallFallback: a `go install module@vX.Y.Z` build leaves the linker
+// var at "(devel)" but records the module version in BuildInfo.Main.Version. resolveVersion must
+// prefer Main.Version in that case so installed binaries report their tag, not "(devel)".
+func TestResolveVersionGoInstallFallback(t *testing.T) {
+	bi := &debug.BuildInfo{
+		GoVersion: "go1.99",
+		Main:      debug.Module{Version: "v0.1.0"},
+	}
+	got := resolveVersion("(devel)", "go1.99", bi, true)
+	if got.Version != "v0.1.0" {
+		t.Errorf("Version = %q, want v0.1.0 (go-install build should fall back to Main.Version)", got.Version)
+	}
+}
+
+// TestResolveVersionLinkerStampWins: when the linker stamped a real version (the release-tarball
+// path), it must win over Main.Version — the fallback only fires for the unstamped "(devel)" default.
+func TestResolveVersionLinkerStampWins(t *testing.T) {
+	bi := &debug.BuildInfo{
+		GoVersion: "go1.99",
+		Main:      debug.Module{Version: "v0.9.9"},
+	}
+	got := resolveVersion("v1.2.3", "go1.99", bi, true)
+	if got.Version != "v1.2.3" {
+		t.Errorf("Version = %q, want v1.2.3 (linker stamp must win over Main.Version)", got.Version)
+	}
+}
+
+// TestResolveVersionNoUsableMainVersion: when neither a linker stamp nor a usable Main.Version is
+// present (Main.Version is empty or itself "(devel)", as with `go run` / `go build` in a module),
+// the version stays "(devel)" rather than adopting a meaningless value.
+func TestResolveVersionNoUsableMainVersion(t *testing.T) {
+	for _, mainVer := range []string{"", "(devel)"} {
+		bi := &debug.BuildInfo{GoVersion: "go1.99", Main: debug.Module{Version: mainVer}}
+		got := resolveVersion("(devel)", "go1.99", bi, true)
+		if got.Version != "(devel)" {
+			t.Errorf("Main.Version=%q: Version = %q, want (devel)", mainVer, got.Version)
+		}
+	}
+}
+
 // TestVersionTextFull locks the one-line text shape: 12-char sha, +dirty suffix, build time.
 func TestVersionTextFull(t *testing.T) {
 	v := versionInfo{Version: "v1.2.3", Commit: "0123456789abcdef0123456789abcdef01234567", Dirty: true, BuildTime: "2026-06-15T00:00:00Z", GoVersion: "go1.99"}

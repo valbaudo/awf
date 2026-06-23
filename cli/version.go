@@ -39,6 +39,13 @@ func resolveVersion(ver, goVersion string, bi *debug.BuildInfo, ok bool) version
 	if !ok || bi == nil {
 		return info
 	}
+	// A `go install module@vX.Y.Z` build never runs the -ldflags stamp, so ver is still the
+	// "(devel)" default — but the module version is recorded in BuildInfo.Main.Version. Adopt it
+	// so installed binaries report their tag. A real linker stamp (the release-tarball path) wins,
+	// and an absent/"(devel)" Main.Version (go run / go build in a module) leaves "(devel)" intact.
+	if info.Version == "(devel)" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		info.Version = bi.Main.Version
+	}
 	for _, s := range bi.Settings {
 		switch s.Key {
 		case "vcs.revision":
