@@ -22,6 +22,12 @@ type RestoreCall struct {
 	Ref  SnapshotRef
 }
 
+// WriteFileAtCall records a WriteFileAt for test assertions (mirrors RestoreCall).
+type WriteFileAtCall struct {
+	Path    string
+	Content []byte
+}
+
 // Fake is the in-memory Backend used by Phase 2 engine tests and the
 // conformance suite (slice 2.6). Deterministic: monotonic-counter handle
 // IDs, no time.Now, no OS-level process spawning, no goroutines.
@@ -102,6 +108,10 @@ type Fake struct {
 	// RestoreCalls records every Restore invocation, in order (test assertion
 	// aid — mirrors Calls for Exec).
 	RestoreCalls []RestoreCall
+
+	// WriteFileAtCalls records every WriteFileAt invocation, in order (test
+	// assertion aid — mirrors RestoreCalls).
+	WriteFileAtCalls []WriteFileAtCall
 
 	// P6a — programmable spec.Image → resolved-digest table; Create returns the
 	// looked-up digest on the Handle ("" if unprogrammed). failCreate models an
@@ -353,6 +363,41 @@ func (f *Fake) CopyTo(ctx context.Context, h Handle, files []InputFile) error {
 		copy(dup, in.Content)
 		fh.files[in.Path] = dup
 	}
+	return nil
+}
+
+// ReadFileAt implements container.Backend.
+func (f *Fake) ReadFileAt(ctx context.Context, h Handle, path string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fh, ok := f.handles[h.ID]
+	if !ok {
+		return nil, fmt.Errorf("container/fake: ReadFileAt: unknown handle %q", h.ID)
+	}
+	content, ok := fh.files[path]
+	if !ok {
+		return nil, fmt.Errorf("container/fake: ReadFileAt: path %q not present in handle %q", path, h.ID)
+	}
+	return cloneBytes(content), nil
+}
+
+// WriteFileAt implements container.Backend.
+func (f *Fake) WriteFileAt(ctx context.Context, h Handle, path string, content []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fh, ok := f.handles[h.ID]
+	if !ok {
+		return fmt.Errorf("container/fake: WriteFileAt: unknown handle %q", h.ID)
+	}
+	dup := cloneBytes(content)
+	fh.files[path] = dup
+	f.WriteFileAtCalls = append(f.WriteFileAtCalls, WriteFileAtCall{Path: path, Content: dup})
 	return nil
 }
 

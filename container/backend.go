@@ -118,6 +118,16 @@ type Backend interface {
 	// hard error. Never touches state.Blobs.
 	CopyTo(ctx context.Context, h Handle, files []InputFile) error
 
+	// ReadFileAt reads a single in-container path and returns its content.
+	// Missing path or unknown handle is a hard error. Mirrors CaptureFiles but
+	// for one path. NEVER touches state.Blobs — the engine Puts at commit.
+	ReadFileAt(ctx context.Context, h Handle, path string) ([]byte, error)
+
+	// WriteFileAt writes content to a single in-container path, overwriting.
+	// Unknown handle is a hard error. Symmetric inverse of ReadFileAt. NEVER
+	// touches state.Blobs. Real impls confine the path; the fake is in-memory.
+	WriteFileAt(ctx context.Context, h Handle, path string, content []byte) error
+
 	// Snapshot captures the handle's filesystem as a CoW diff. Only meaningful
 	// for snapshot:workspace containers (spec §3). Phase 2 fake: returns
 	// ("", ErrUnsupported). Phase 4 Docker (slice 4.4): streaming gzip-tar

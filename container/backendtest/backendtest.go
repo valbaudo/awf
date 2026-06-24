@@ -81,6 +81,28 @@ func RunCopyToContract(t *testing.T, b container.Backend) {
 	}
 }
 
+// RunReadWriteFileAtContract verifies WriteFileAt → ReadFileAt round-trips and
+// that a cancelled context errors. Backends without a real impl (docker/native
+// stubs) should not be passed here yet.
+func RunReadWriteFileAtContract(t *testing.T, b container.Backend) {
+	t.Helper()
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "bt"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want := []byte("transcript-bytes")
+	if err := b.WriteFileAt(context.Background(), h, "/p/s.jsonl", want); err != nil {
+		t.Fatalf("WriteFileAt: %v", err)
+	}
+	got, err := b.ReadFileAt(context.Background(), h, "/p/s.jsonl")
+	if err != nil {
+		t.Fatalf("ReadFileAt: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("round-trip = %q, want %q", got, want)
+	}
+}
+
 func testCapsKnownMode(t *testing.T, b container.Backend) {
 	switch m := b.Capabilities().Snapshot; m {
 	case container.SnapshotNone, container.SnapshotFSCoW, container.SnapshotFSArchive:
