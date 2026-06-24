@@ -522,6 +522,67 @@ func TestRunAgent_OutputFileContractInvalidArtifactRetryable(t *testing.T) {
 	}
 }
 
+// dispatchOKAgentForTest is a test helper that sets up a LocalDispatcher backed
+// by the given fake and handle, registers a scripted "test/agent" adapter that
+// produces a successful OutcomeOK result, dispatches through d.Run, and returns
+// the DispatchResult. The given ri is merged on top of the minimal ResolvedInputs
+// needed for a successful dispatch so tests can set only the field under test
+// (e.g. SessionTranscriptPath). The container is registered as "ws".
+func dispatchOKAgentForTest(t *testing.T, f *container.Fake, h container.Handle, ri engine.ResolvedInputs) engine.DispatchResult {
+	t.Helper()
+	ctx := context.Background()
+	fk := agentfake.New("test/agent").Script(0, agentfake.Result{Output: map[string]any{"ok": true}})
+	reg := &agent.Registry{}
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("dispatchOKAgentForTest: Register: %v", err)
+	}
+	ri.Uses = "test/agent"
+	d := &engine.LocalDispatcher{
+		Backend:  f,
+		Handles:  map[string]container.Handle{"ws": h},
+		Resolver: reg,
+	}
+	intent := engine.NodeIntent{
+		Path:           "gen",
+		Node:           &ir.AgentStep{ID: "gen", Container: "ws", Uses: "test/agent"},
+		ResolvedInputs: ri,
+	}
+	dr, ch, err := d.Run(ctx, intent)
+	for range ch {
+	}
+	if err != nil {
+		t.Fatalf("dispatchOKAgentForTest: Run engine-level error: %v", err)
+	}
+	return dr
+}
+
+// TestRunAgentCapturesSessionTranscript verifies that runAgent reads the file at
+// SessionTranscriptPath and populates DispatchResult.SessionTranscript on an OK step.
+func TestRunAgentCapturesSessionTranscript(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "c"})
+	_ = f.WriteFileAt(context.Background(), h, "/t/s.jsonl", []byte("session-bytes"))
+	dr := dispatchOKAgentForTest(t, f, h, engine.ResolvedInputs{SessionTranscriptPath: "/t/s.jsonl"})
+	if string(dr.SessionTranscript) != "session-bytes" {
+		t.Errorf("SessionTranscript = %q, want %q", dr.SessionTranscript, "session-bytes")
+	}
+}
+
+// TestRunAgentSessionCaptureFailureIsMechanical verifies that a ReadFileAt error
+// (e.g. missing path) yields a non-OK mechanical outcome — crash ≠ verdict.
+func TestRunAgentSessionCaptureFailureIsMechanical(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "c"})
+	// path absent → ReadFileAt errors → must become a non-OK mechanical outcome.
+	dr := dispatchOKAgentForTest(t, f, h, engine.ResolvedInputs{SessionTranscriptPath: "/missing.jsonl"})
+	if dr.Outcome == engine.OutcomeOK {
+		t.Fatal("capture failure must yield a non-OK outcome (crash != verdict)")
+	}
+	if dr.Outcome != engine.OutcomeRetryableFailure && dr.Outcome != engine.OutcomePermanentFailure {
+		t.Errorf("Outcome = %q, want a mechanical failure", dr.Outcome)
+	}
+}
+
 // TestDispatcherCapturesSnapshotOnEligibleAgentStep is the agent-step counterpart
 // to TestDispatcherCapturesSnapshotOnEligibleOkStep (in local_dispatcher_test.go):
 // it exercises runAgent's snapshot:workspace capture block. An eligible agent step

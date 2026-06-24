@@ -338,6 +338,19 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}
 		dr.SnapshotRef = string(ref)
 	}
+	if dr.Outcome == OutcomeOK && intent.ResolvedInputs.SessionTranscriptPath != "" {
+		transcript, readErr := d.Backend.ReadFileAt(ctx, h, intent.ResolvedInputs.SessionTranscriptPath)
+		if readErr != nil {
+			oc := snapshotFailureOutcome(readErr)
+			return DispatchResult{
+				Outcome:     oc,
+				ExitCode:    exitCodePtr,
+				AgentEvents: bufferedEvents,
+				Err:         fmt.Errorf("engine.LocalDispatcher.runAgent: capture session %q at %q: %w", QualifiedContainerKey(d.RuntimeParent, bare), intent.Path, readErr),
+			}, closedChunks(), nil
+		}
+		dr.SessionTranscript = transcript
+	}
 	return dr, closedChunks(), nil
 }
 
