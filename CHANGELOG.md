@@ -8,7 +8,7 @@ While `awf` is pre-1.0, the workflow format and CLI may still change between
 minor versions. The workflow-format version (`version: 1` in a workflow file)
 is tracked independently of the `awf` tool version.
 
-## [0.1.0] - 2026-06-23
+## [0.1.0] - 2026-06-24
 
 First public release. A single-binary runtime for agentic workflows with an
 independent acceptance gate and content-addressed checkpoint/resume.

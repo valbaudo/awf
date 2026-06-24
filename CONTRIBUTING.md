@@ -30,8 +30,7 @@ code:
   be revised, explicitly and separately, first.
 - [`awf(1)`](man/awf.1.md) — the command reference: flags, exit status,
   environment, and tracing.
-- [`README.md`](README.md) — what AWF is and why. [`ROADMAP.md`](ROADMAP.md) —
-  build order and scope.
+- [`README.md`](README.md) — what AWF is and why.
 
 When CLI or format behavior changes, update the man-page source (`man/*.md`) in
 the same change.

@@ -16,7 +16,10 @@ AGENTS.local.md
 GEMINI.md
 TODOS.md
 TODO.local.md
-docs/
+# Internal design/planning + research notes are local-only; the architecture
+# doc docs/runtime-design.md IS tracked (design reference + a test fixture).
+docs/superpowers/
+docs/research/
 ROADMAP.md
 /bin/
 # A bare `go build` at the repo root drops the binary here; `make` uses /bin/.
