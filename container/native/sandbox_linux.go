@@ -150,7 +150,13 @@ type SandboxPolicy struct {
 
 // systemRODirs are the fixed OS directories the trampoline always grants
 // read-only access to (mirrors the bwrap --ro-bind list for the landlock case).
-var systemRODirs = []string{"/usr", "/bin", "/lib", "/lib64", "/etc"}
+//
+// /proc and /sys are included because runtimes like Bun (the claude-code CLI)
+// read them on startup; without /proc the process aborts before running. The
+// bwrap path supplies /proc via `--proc /proc`, so granting it here keeps the
+// two sandbox backends at parity. (/dev is granted read-WRITE — see the
+// trampoline's RWDirs below — because Bun must open /dev/urandom and /dev/null.)
+var systemRODirs = []string{"/usr", "/bin", "/lib", "/lib64", "/etc", "/proc", "/sys"}
 
 // prepend returns the argv:
 //
@@ -168,7 +174,11 @@ func (l trampolineLauncher) prepend(scratchDir string, roDirs []string) []string
 
 	p := SandboxPolicy{
 		RODirs: allRO,
-		RWDirs: []string{scratchDir, "/tmp"},
+		// /dev is read-write: Bun (claude-code) opens /dev/urandom for entropy
+		// and writes to /dev/null on startup, and aborts if it cannot. The bwrap
+		// path provides this via `--dev /dev`; the landlock path must grant it
+		// explicitly or the confined process never starts.
+		RWDirs: []string{scratchDir, "/tmp", "/dev"},
 		Run:    l.run,
 	}
 	pJSON, err := json.Marshal(p)

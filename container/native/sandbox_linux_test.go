@@ -223,13 +223,19 @@ func TestTrampolineLauncher_ArgvStructure(t *testing.T) {
 			t.Errorf("policy.RODirs missing cred dir %q; RODirs=%v", cred, p.RODirs)
 		}
 	}
-	for _, sysDir := range []string{"/usr", "/bin", "/lib", "/etc"} {
+	// /proc and /sys are part of the fixed system RO set: Bun (the claude
+	// runtime) reads /proc on startup, and the bwrap path already grants
+	// --proc /proc, so the landlock path must match for parity.
+	for _, sysDir := range []string{"/usr", "/bin", "/lib", "/etc", "/proc", "/sys"} {
 		if !roDirSet[sysDir] {
 			t.Errorf("policy.RODirs missing system dir %q; RODirs=%v", sysDir, p.RODirs)
 		}
 	}
 
-	// RWDirs must include scratch and /tmp.
+	// RWDirs must include scratch, /tmp, AND /dev. /dev is load-bearing: Bun
+	// aborts on startup if it cannot open /dev/urandom (entropy) or /dev/null,
+	// which is why a bwrap-less container needs the landlock policy to grant it
+	// (the bwrap path already does, via --dev /dev).
 	rwDirSet := make(map[string]bool, len(p.RWDirs))
 	for _, d := range p.RWDirs {
 		rwDirSet[d] = true
@@ -239,6 +245,9 @@ func TestTrampolineLauncher_ArgvStructure(t *testing.T) {
 	}
 	if !rwDirSet["/tmp"] {
 		t.Errorf("policy.RWDirs missing /tmp; RWDirs=%v", p.RWDirs)
+	}
+	if !rwDirSet["/dev"] {
+		t.Errorf("policy.RWDirs missing /dev; RWDirs=%v", p.RWDirs)
 	}
 
 	// separator and sh -c run at the tail.
