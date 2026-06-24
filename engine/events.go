@@ -432,6 +432,7 @@ type NodeCompletedData struct {
 	// without recomputing NodeKey. Empty for non-deterministic steps (agent, react, reduce,
 	// signal, etc.). omitempty keeps pre-WS6b2 logs byte-identical (additive, no fold breakage).
 	NodeSubtreeDigest string `json:"node_subtree_digest,omitempty"`
+	SessionRef        string `json:"session_ref,omitempty"` // native-session transcript blob ref (session adapters only)
 }
 
 // BranchTakenData is the if-decision marker (spec §5.1). Fold uses Which to know which

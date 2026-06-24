@@ -83,6 +83,12 @@ type ResolvedInputs struct {
 	// container; the dispatcher captures a CoW diff after a successful exec.
 	Snapshot string
 
+	// SessionTranscriptPath is the in-container path of the agent's native
+	// session transcript to capture at commit (empty = no session capture).
+	// Set by the interpreter for PersistentSession adapters; Milestone-1 tests
+	// set it directly.
+	SessionTranscriptPath string
+
 	// Slice 5.2 — agent-step fields. Zero values when the node is a CodeStep
 	// (runCode ignores them); populated by engine/agent_step.go runAgentStep
 	// before dispatch.
@@ -195,6 +201,14 @@ type DispatchResult struct {
 	// Container is the step's bare container name (for node.completed.container —
 	// resume's snapshot→container mapping + obs's awf.container.name).
 	Container string
+
+	// SessionTranscript is the raw native-session transcript captured by the
+	// dispatcher (via Backend.ReadFileAt) after a successful agent turn. Commit
+	// content-addresses it into Blobs and records SessionRef. json:"-" — never
+	// journaled raw (mirrors Transcript at :185).
+	SessionTranscript []byte `json:"-"`
+	// SessionRef is set by Commit after Put. Operational, ref-only.
+	SessionRef string
 
 	// Node and InputRefs are populated ONLY on the code-step dispatch path
 	// (engine/interpreter.go) so Commit can compute the NodeKey for deterministic
