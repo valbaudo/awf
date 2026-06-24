@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -42,7 +42,7 @@ jobs:
         run: make pricing-regen
 
       - name: Open a pull request if the table changed
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.PRICING_PR_TOKEN || secrets.GITHUB_TOKEN }}
           branch: automation/pricing-refresh

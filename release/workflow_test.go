@@ -57,7 +57,7 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		// Strict SemVer gate (rejects v1, v1.2, v1.2.3-rc1).
 		`^v[0-9]+\.[0-9]+\.[0-9]+$`,
 		// Pinned actions.
-		"actions/checkout@v6",
+		"actions/checkout@v7",
 		"actions/setup-go@v6",
 		"actions/upload-artifact@v7",
 		"actions/download-artifact@v8",
