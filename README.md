@@ -1,6 +1,6 @@
 # awf
 
-[![CI](https://github.com/valbaudo/awf/actions/workflows/ci.yml/badge.svg)](https://github.com/valbaudo/awf/actions/workflows/ci.yml) [![Go Report Card](https://goreportcard.com/badge/github.com/valbaudo/awf)](https://goreportcard.com/report/github.com/valbaudo/awf) [![Go Reference](https://pkg.go.dev/badge/github.com/valbaudo/awf.svg)](https://pkg.go.dev/github.com/valbaudo/awf) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![CI](https://github.com/valbaudo/awf/actions/workflows/ci.yml/badge.svg)](https://github.com/valbaudo/awf/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/valbaudo/awf?sort=semver)](https://github.com/valbaudo/awf/releases) [![Go Report Card](https://goreportcard.com/badge/github.com/valbaudo/awf)](https://goreportcard.com/report/github.com/valbaudo/awf) [![Go Reference](https://pkg.go.dev/badge/github.com/valbaudo/awf.svg)](https://pkg.go.dev/github.com/valbaudo/awf) [![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **Run agents you don't babysit, and trust the result.**
 
@@ -121,9 +121,48 @@ That same shape works for higher-stakes tasks: generate a patch and run tests,
 draft a customer reply and judge it against account data, triage a CVE and check
 the exploitability claim, or migrate data and verify the target state.
 
+## Install
+
+### Prebuilt binary (recommended)
+
+Download the archive for your platform from the
+[Releases page](https://github.com/valbaudo/awf/releases), verify it against the
+published checksums, and put `awf` on your `PATH`. Prebuilt binaries are
+published for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`.
+
+```sh
+VERSION=0.1.0
+OS=linux ARCH=amd64        # or: OS=darwin ARCH=arm64
+BASE="https://github.com/valbaudo/awf/releases/download/v${VERSION}"
+
+curl -LO "${BASE}/awf_${VERSION}_${OS}_${ARCH}.tar.gz"
+curl -LO "${BASE}/awf_${VERSION}_checksums.txt"
+shasum -a 256 -c "awf_${VERSION}_checksums.txt" --ignore-missing
+
+tar -xzf "awf_${VERSION}_${OS}_${ARCH}.tar.gz"
+sudo install "awf_${VERSION}_${OS}_${ARCH}/awf" /usr/local/bin/awf
+awf version
+```
+
+Release archives are built by GitHub Actions and carry a [build-provenance
+attestation](https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds).
+You can verify one with the GitHub CLI:
+
+```sh
+gh attestation verify "awf_${VERSION}_${OS}_${ARCH}.tar.gz" --repo valbaudo/awf
+```
+
+### Go install
+
+With a Go 1.26+ toolchain:
+
+```sh
+go install github.com/valbaudo/awf/cmd/awf@latest
+```
+
 ## Quickstart
 
-AWF is a Go 1.26 CLI. Build the binary:
+To build from source instead — the path for contributors:
 
 ```sh
 git clone https://github.com/valbaudo/awf.git
@@ -163,6 +202,22 @@ make build            # build ./bin/awf
 make integ            # Docker/native integration suite; no live API spend
 ```
 
+### Cutting a release (maintainers)
+
+Releases are tag-triggered. Push an annotated, signed `vMAJOR.MINOR.PATCH` tag;
+GitHub Actions then re-runs the full gate, builds the four platform archives,
+and publishes the GitHub Release with checksums and a build-provenance
+attestation:
+
+```sh
+git tag -s v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+Published version tags are immutable: fix a bad release with the next patch tag
+(`v0.1.1`), never by moving or deleting a tag. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor bar.
+
 ## How AWF Is Different
 
 | Concern | Common agent framework shape | AWF shape |
@@ -183,7 +238,9 @@ independent check before the workflow can move on.
 
 - **Workflow**: a YAML document with input schema, optional assets/imports,
   execution infrastructure, and a graph of steps/control flow. The resolved
-  document is content-addressed at run start.
+  document is content-addressed at run start. Its `version: 1` field is the
+  workflow-format version and is independent of the `awf` tool version — `awf
+  v0.1.0` implements workflow format version 1.
 - **Step**: a `run:` command, `uses:` agent invocation, `await` signal, or
   imported workflow call. Steps can produce typed JSON outputs and named output
   files.

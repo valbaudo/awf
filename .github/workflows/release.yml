@@ -1,0 +1,203 @@
+name: Release
+
+# Tag-triggered. Cut a release by pushing an annotated, signed SemVer tag:
+#   git tag -s v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+# Published version tags are immutable — fix a bad release with the next patch
+# tag (v0.1.1), never by moving or deleting a tag.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Least privilege: the workflow is granted nothing by default. Only the final
+# `release` job opts into the write scopes it needs (mirrors ci.yml's read-only
+# default). The verify/package jobs run with no token permissions at all.
+permissions: {}
+
+# One release run per tag; never cancel a publish in flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-SemVer tags
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$TAG' is not a strict vMAJOR.MINOR.PATCH tag (e.g. v0.1.0); pre-releases such as v1.2.3-rc1 and short forms such as v1 / v1.2 are rejected"
+            exit 1
+          fi
+          echo "tag $TAG accepted"
+
+  # Re-run the full project gate against the tagged tree before producing any
+  # artifact. The test logic lives in the make targets, so this stays in lockstep
+  # with ci.yml without duplicating the test list itself.
+  verify:
+    name: Verify (lint, test, build, integ)
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Lint
+        run: make lint
+      - name: Test
+        run: make test
+      - name: Build
+        run: make build
+      - name: Verify Docker is available
+        run: |
+          docker version
+          docker info
+      - name: Verify vulnerable-service fixture
+        run: cd cli/testdata/phase5/oracle/vulnerable-service && go test -race -count=1 ./...
+      - name: Run integration tests
+        run: make integ
+
+  # Build one stamped binary per target on a runner of the matching OS. Darwin
+  # cannot be cross-compiled from Linux (cgo via the transitive fsevents
+  # dependency), so macOS targets build on native macOS runners.
+  package:
+    name: Package ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-latest
+            cgo: "0"
+            smoke: true
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-latest
+            cgo: "0"
+            smoke: false   # cross-compiled on an amd64 runner; cannot exec the arm64 binary here
+          - goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            cgo: "1"
+            smoke: true
+          - goos: darwin
+            goarch: arm64
+            runner: macos-15
+            cgo: "1"
+            smoke: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build man pages
+        run: make man
+      - name: Build awf
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/valbaudo/awf/cli.version=${TAG}" \
+            -o dist/awf ./cmd/awf
+          file dist/awf
+      - name: Smoke-test built binary
+        if: ${{ matrix.smoke }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          OUT="$(dist/awf version)"
+          echo "$OUT"
+          case "$OUT" in
+            *"(devel)"*) echo "::error::built binary reports (devel); the version stamp did not take"; exit 1 ;;
+          esac
+          case "$OUT" in
+            "awf ${TAG} "*) echo "version stamp OK" ;;
+            *) echo "::error::version output did not start with 'awf ${TAG} '"; exit 1 ;;
+          esac
+      - name: Archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VER="${TAG#v}"
+          PKG="awf_${VER}_${GOOS}_${GOARCH}"
+          STAGE="stage/${PKG}"
+          mkdir -p "$STAGE"
+          cp dist/awf README.md LICENSE CHANGELOG.md "$STAGE/"
+          cp man/awf.1 man/awf-workflow.5 "$STAGE/"
+          tar -czf "${PKG}.tar.gz" -C stage "$PKG"
+          ls -l "${PKG}.tar.gz"
+      - name: Upload archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: awf_*_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the GitHub Release and upload assets
+      id-token: write       # keyless OIDC identity for the provenance attestation
+      attestations: write   # record the build-provenance attestation
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: dist
+      - name: Assert four archives and generate checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VER="${TAG#v}"
+          cd dist
+          for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            test -f "awf_${VER}_${a}.tar.gz" || { echo "::error::missing awf_${VER}_${a}.tar.gz"; exit 1; }
+          done
+          archives=( awf_"${VER}"_*.tar.gz )
+          test "${#archives[@]}" = "4" || { echo "::error::expected exactly 4 archives, found ${#archives[@]}"; exit 1; }
+          sha256sum awf_"${VER}"_*.tar.gz > "awf_${VER}_checksums.txt"
+          cat "awf_${VER}_checksums.txt"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/awf_*.tar.gz
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VER="${TAG#v}"
+          cd dist
+          gh release create "$TAG" \
+            awf_"${VER}"_*.tar.gz "awf_${VER}_checksums.txt" \
+            --repo "${{ github.repository }}" \
+            --verify-tag \
+            --generate-notes
