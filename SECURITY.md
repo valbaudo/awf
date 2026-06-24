@@ -55,6 +55,18 @@ upstream and bump as fixes land; Dependabot watches these modules.
 | [GO-2026-4858](https://pkg.go.dev/vuln/GO-2026-4858) | BuildKit malicious frontend → file escape | `github.com/moby/buildkit` | `v0.28.1` |
 | [GO-2026-4610](https://pkg.go.dev/vuln/GO-2026-4610) | Docker CLI plugin uncontrolled search path → local code execution | `github.com/docker/cli`, `github.com/docker/compose/v2` | `docker/cli v29.2.0`; compose not yet |
 
+**Why these are still present.** The buildkit (GO-2026-4859, GO-2026-4858) and
+docker/cli (GO-2026-4610) fixes require the Docker v29 toolchain, which has begun
+relocating the client SDK from `github.com/docker/docker` to
+`github.com/moby/moby`. The packages AWF uses to drive Compose —
+`docker/compose/v2` (latest v2.40.3) and `docker/buildx` (v0.29.1) — still use the
+old module and fail to compile against the patched buildkit/cli, and no compatible
+release exists yet (verified 2026-06-24: bumping buildkit to v0.28.1 breaks
+`docker/buildx` on `docker/docker` ↔ `moby/moby` type mismatches). We are waiting
+on a `docker/compose/v2` release that adopts the v29 stack; Dependabot will
+re-propose the bump once it builds. The two `github.com/docker/docker` advisories
+have no upstream fix in any version.
+
 Re-check at any time with [`govulncheck`](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck):
 
 ```sh
