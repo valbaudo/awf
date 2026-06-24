@@ -166,6 +166,8 @@ jobs:
       id-token: write       # keyless OIDC identity for the provenance attestation
       attestations: write   # record the build-provenance attestation
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
       - name: Download archives
         uses: actions/download-artifact@v8
         with:
@@ -189,15 +191,32 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/awf_*.tar.gz
+      # Release notes are the curated CHANGELOG.md section for this version, not
+      # auto-generated commit/PR churn. Fail loudly if the entry is missing.
+      - name: Build release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VER="${TAG#v}"
+          awk -v hdr="## [${VER}]" '
+            index($0, hdr) == 1 { cap = 1; next }
+            cap && /^## \[/ { exit }
+            cap { print }
+          ' CHANGELOG.md | sed -E '/^\[[0-9][^]]*\]:[[:space:]]+http/d' > notes-body.md
+          if ! grep -q '[^[:space:]]' notes-body.md; then
+            echo "::error::no '## [${VER}]' section in CHANGELOG.md — add a changelog entry for this release before tagging"
+            exit 1
+          fi
+          echo "----- release notes -----"; cat notes-body.md
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           VER="${TAG#v}"
-          cd dist
           gh release create "$TAG" \
-            awf_"${VER}"_*.tar.gz "awf_${VER}_checksums.txt" \
+            dist/awf_"${VER}"_*.tar.gz "dist/awf_${VER}_checksums.txt" \
             --repo "${{ github.repository }}" \
+            --title "awf ${TAG}" \
             --verify-tag \
-            --generate-notes
+            --notes-file notes-body.md

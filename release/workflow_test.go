@@ -85,7 +85,9 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		"sha256sum",
 		"gh release create",
 		"--verify-tag",
-		"--generate-notes",
+		// Notes come from the curated CHANGELOG section, never auto-generated PR churn.
+		"--notes-file",
+		"CHANGELOG.md",
 	} {
 		requireContains(t, "release.yml", wf, want)
 	}
