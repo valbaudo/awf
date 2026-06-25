@@ -453,5 +453,7 @@ func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *Local
 		AgentEventTap:    d.AgentEventTap,
 		RenderAgentEvent: d.RenderAgentEvent,
 		StepCostLine:     d.StepCostLine,
+		RunState:         d.RunState,
+		Blobs:            d.Blobs,
 	}
 }
