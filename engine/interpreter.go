@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
@@ -31,6 +32,14 @@ import (
 //
 //	fmt.Errorf("%w: %s at path %q", ErrNodeNotImplemented, kindName, path)
 var ErrNodeNotImplemented = errors.New("engine: node kind not implemented")
+
+// AdapterResolver is an optional interface that Dispatcher implementations may
+// satisfy to expose their agent.Resolver to the interpreter. The interpreter
+// uses it to set ResolvedInputs.SessionTranscriptPath for PersistentSession
+// adapters that implement agent.SessionPathProvider (M2 wiring).
+type AdapterResolver interface {
+	AgentResolver() agent.Resolver
+}
 
 // RunOptions carries optional runtime hooks for Run.
 type RunOptions struct {
@@ -132,6 +141,11 @@ func Run(
 		broker:        opts.Broker,
 		liveFinalizer: opts.LiveFinalizer,
 		resume:        opts.Resume,
+	}
+	// M2: wire the agent resolver so runAgentStepWithContext can set
+	// SessionTranscriptPath for PersistentSession + SessionPathProvider adapters.
+	if ar, ok := dispatcher.(AdapterResolver); ok {
+		ictx.resolver = ar.AgentResolver()
 	}
 	if err := preflightCallStartedRuntimes(ctx, ictx); err != nil {
 		return "", err

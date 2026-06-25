@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/signal"
@@ -20,6 +21,7 @@ type interpreterContext struct {
 	runtimeParent string
 	runstate      *RunState
 	dispatcher    Dispatcher
+	resolver      agent.Resolver // M2: exposes adapter lookup for SessionTranscriptPath wiring; nil if dispatcher doesn't implement AdapterResolver
 	log           state.Log
 	blobs         state.Blobs
 	clk           clock.Clock

@@ -429,6 +429,10 @@ func (d *LocalDispatcher) handleKey(containerRef string) string {
 	return QualifiedContainerKey(d.RuntimeParent, bare)
 }
 
+// AgentResolver implements AdapterResolver — exposes the dispatcher's
+// agent.Resolver to the interpreter so it can wire SessionTranscriptPath.
+func (d *LocalDispatcher) AgentResolver() agent.Resolver { return d.Resolver }
+
 // WithItemHandle returns a shallow clone of d with Handles cloned and the
 // (name → h) entry overridden (or inserted). Slice 3.4: the map executor
 // (engine/map.go) calls this per item to retarget body's container lookup

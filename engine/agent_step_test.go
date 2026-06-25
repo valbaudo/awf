@@ -2000,3 +2000,180 @@ func assertNoEventTypeAtPath(t *testing.T, log state.Log, typ, path string) {
 		t.Fatalf("%s count at %q = %d, want 0", typ, path, got)
 	}
 }
+
+// sessionPathFake is a test-only adapter that wraps *fake.Fake and also
+// implements agent.SessionPathProvider (returning a fixed transcript path).
+// Used to verify that runAgentStepWithContext sets ResolvedInputs.SessionTranscriptPath
+// when the resolved adapter is PersistentSession + SessionPathProvider.
+type sessionPathFake struct {
+	*fake.Fake
+	transcriptPath string
+}
+
+func (s *sessionPathFake) SessionTranscriptPath(_ agent.AgentInvocation, _ string) string {
+	return s.transcriptPath
+}
+
+// TestRunAgentStep_SessionTranscriptPathSetWhenPersistentSessionProviderRegistered
+// verifies that the interpreter sets ResolvedInputs.SessionTranscriptPath for a
+// PersistentSession adapter that implements SessionPathProvider. The evidence is
+// that node.completed carries a non-empty session_ref — which only happens if the
+// dispatcher's ReadFileAt (capture) block fires, which only fires when
+// SessionTranscriptPath is set.
+func TestRunAgentStep_SessionTranscriptPathSetWhenPersistentSessionProviderRegistered(t *testing.T) {
+	const wfYAML = `workflow: session-path-wiring
+version: 1
+containers:
+  ws:
+    image: oci://example.com/img@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: gen
+    container: ws
+    uses: test/session-fake
+    with:
+      prompt: "hello"
+`
+	ld := loadAgentSimpleDef(t, wfYAML)
+
+	const fixedPath = "/home/agent/.claude/projects/-work/gen.jsonl"
+	sfk := &sessionPathFake{
+		Fake: fake.New("test/session-fake").
+			WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).
+			Script(0, fake.Result{}),
+		transcriptPath: fixedPath,
+	}
+
+	// Seed the transcript file so Backend.ReadFileAt succeeds on capture.
+	f := container.NewFake()
+	h, err := f.Create(t.Context(), container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if wErr := f.WriteFileAt(t.Context(), h, fixedPath, []byte(`{"session":"r1"}`)); wErr != nil {
+		t.Fatalf("seed transcript: %v", wErr)
+	}
+	// Reset WriteFileAtCalls so the seed write is not counted.
+	f.WriteFileAtCalls = nil
+
+	var reg agent.Registry
+	if err := reg.Register(sfk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  f,
+		Handles:  map[string]container.Handle{"ws": h},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{
+		Type: engine.EventRunStarted,
+		Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"}),
+	}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, runErr := engine.Run(t.Context(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{})
+	if runErr != nil {
+		t.Fatalf("engine.Run: %v", runErr)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	// Proof: node.completed carries a session_ref iff ReadFileAt(fixedPath) was called
+	// — which only happens when SessionTranscriptPath was set on ResolvedInputs.
+	events, foldErr := log.Fold()
+	if foldErr != nil {
+		t.Fatalf("Fold: %v", foldErr)
+	}
+	var foundSessionRef bool
+	for _, ev := range events {
+		if ev.Type == engine.EventNodeCompleted && ev.Path == "gen" {
+			var d engine.NodeCompletedData
+			if uerr := json.Unmarshal(ev.Data, &d); uerr != nil {
+				t.Fatalf("unmarshal NodeCompletedData: %v", uerr)
+			}
+			if d.SessionRef != "" {
+				foundSessionRef = true
+			}
+		}
+	}
+	if !foundSessionRef {
+		t.Fatal("node.completed for gen has no session_ref — SessionTranscriptPath was not set by the interpreter (PersistentSession+SessionPathProvider adapter)")
+	}
+}
+
+// TestRunAgentStep_SessionTranscriptPathNotSetForPlainAdapter verifies that a
+// non-PersistentSession adapter leaves ResolvedInputs.SessionTranscriptPath empty,
+// so no session capture fires and node.completed carries no session_ref.
+func TestRunAgentStep_SessionTranscriptPathNotSetForPlainAdapter(t *testing.T) {
+	const wfYAML = `workflow: plain-adapter-no-session
+version: 1
+containers:
+  ws:
+    image: oci://example.com/img@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: gen
+    container: ws
+    uses: test/plain-fake
+    with:
+      prompt: "hello"
+`
+	ld := loadAgentSimpleDef(t, wfYAML)
+
+	fk := fake.New("test/plain-fake").
+		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: false}).
+		Script(0, fake.Result{})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	f := container.NewFake()
+	h, err := f.Create(t.Context(), container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  f,
+		Handles:  map[string]container.Handle{"ws": h},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{
+		Type: engine.EventRunStarted,
+		Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"}),
+	}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, runErr := engine.Run(t.Context(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{})
+	if runErr != nil {
+		t.Fatalf("engine.Run: %v", runErr)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	events, foldErr := log.Fold()
+	if foldErr != nil {
+		t.Fatalf("Fold: %v", foldErr)
+	}
+	for _, ev := range events {
+		if ev.Type == engine.EventNodeCompleted && ev.Path == "gen" {
+			var d engine.NodeCompletedData
+			if uerr := json.Unmarshal(ev.Data, &d); uerr != nil {
+				t.Fatalf("unmarshal NodeCompletedData: %v", uerr)
+			}
+			if d.SessionRef != "" {
+				t.Errorf("plain adapter: node.completed has session_ref %q, want empty (SessionTranscriptPath must not be set for non-PersistentSession adapters)", d.SessionRef)
+			}
+		}
+	}
+}

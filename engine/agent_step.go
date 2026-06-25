@@ -220,6 +220,33 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
 	snapBare, _ := SplitContainerRef(as.Container)
 	uses := AgentRuntimeRef(wf, ictx.moduleID, as.Uses)
+
+	// M2: set SessionTranscriptPath if the resolved adapter declares PersistentSession
+	// AND implements agent.SessionPathProvider. The workdir is "" — the interpreter
+	// has no per-container workdir; adapters that need it (e.g. claudesession) derive
+	// the path solely from the AgentInvocation identity fields (RunID, epoch, path).
+	// The partial AgentInvocation below carries those identity fields; With is included
+	// so adapters that key on with-fields can also use it.
+	var sessionTranscriptPath string
+	if ictx.resolver != nil {
+		if adp, ok := ictx.resolver.Lookup(uses); ok &&
+			adp.Capabilities().PersistentSession {
+			if spp, ok := adp.(agent.SessionPathProvider); ok {
+				partialInv := agent.AgentInvocation{
+					NodePath: path,
+					Uses:     uses,
+					RunContext: agent.RunContext{
+						RunID:        runstate.RunID,
+						CurrentEpoch: runstate.Epoch,
+						NextEpoch:    runstate.Epoch,
+					},
+					With: resolvedWith,
+				}
+				sessionTranscriptPath = spp.SessionTranscriptPath(partialInv, "")
+			}
+		}
+	}
+
 	resolved := ResolvedInputs{
 		Uses:                  uses,
 		With:                  resolvedWith,
@@ -233,6 +260,7 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		InputFiles:            inputFiles,         // SP1 artifact channel (container path)
 		ContainerlessFiles:    containerlessFiles, // inline message parts (containerless path)
 		OutputFileContracts:   outputFileContracts,
+		SessionTranscriptPath: sessionTranscriptPath, // M2: set for PersistentSession+SessionPathProvider adapters
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)
