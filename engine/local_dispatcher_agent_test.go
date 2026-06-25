@@ -15,6 +15,39 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
+// dispatchOKAgentWithRunStateForTest is like dispatchOKAgentForTest but also
+// accepts a RunState so the dispatcher's RunState field is set (needed for the
+// session restore path). The container is registered as "ws".
+func dispatchOKAgentWithRunStateForTest(t *testing.T, f *container.Fake, h container.Handle, rs *engine.RunState, blobs *state.InMemoryBlobs, ri engine.ResolvedInputs) engine.DispatchResult {
+	t.Helper()
+	ctx := context.Background()
+	fk := agentfake.New("test/agent").Script(0, agentfake.Result{Output: map[string]any{"ok": true}})
+	reg := &agent.Registry{}
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("dispatchOKAgentWithRunStateForTest: Register: %v", err)
+	}
+	ri.Uses = "test/agent"
+	d := &engine.LocalDispatcher{
+		Backend:  f,
+		Handles:  map[string]container.Handle{"ws": h},
+		Resolver: reg,
+		RunState: rs,
+		Blobs:    blobs,
+	}
+	intent := engine.NodeIntent{
+		Path:           "gen",
+		Node:           &ir.AgentStep{ID: "gen", Container: "ws", Uses: "test/agent"},
+		ResolvedInputs: ri,
+	}
+	dr, ch, err := d.Run(ctx, intent)
+	for range ch {
+	}
+	if err != nil {
+		t.Fatalf("dispatchOKAgentWithRunStateForTest: Run engine-level error: %v", err)
+	}
+	return dr
+}
+
 // TestRunAgent_RetryAfterHintSurfaced verifies that when an adapter's Launch
 // fails with a transient *agent.ErrAgentLaunch carrying a RetryHint, the
 // dispatcher classifies it retryable AND surfaces the hint on
@@ -639,5 +672,131 @@ func TestDispatcherCapturesSnapshotOnEligibleAgentStep(t *testing.T) {
 	}
 	if dr2.SnapshotRef != "" {
 		t.Errorf("non-eligible SnapshotRef = %q, want empty", dr2.SnapshotRef)
+	}
+}
+
+// TestRunAgentRestoresSessionTranscriptOnResume verifies that on resume, when
+// RunState.SessionRefs[path] is set and ResolvedInputs.SessionTranscriptPath
+// is non-empty, the dispatcher calls Backend.WriteFileAt with the blob bytes
+// BEFORE launching the agent — so the agent resumes from the prior session.
+func TestRunAgentRestoresSessionTranscriptOnResume(t *testing.T) {
+	ctx := context.Background()
+	blobs := state.NewInMemoryBlobs()
+	f := container.NewFake().WithBlobs(blobs)
+	h, err := f.Create(ctx, container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Seed a transcript blob into blobs and a SessionRef in RunState.
+	sessionBytes := []byte(`{"session":"round1"}`)
+	ref, putErr := blobs.Put(sessionBytes)
+	if putErr != nil {
+		t.Fatalf("blobs.Put: %v", putErr)
+	}
+	rs := engine.NewRunState("r", "d", nil)
+	rs.SessionRefs["gen"] = ref
+
+	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
+	dr := dispatchOKAgentWithRunStateForTest(t, f, h, rs, blobs, engine.ResolvedInputs{
+		SessionTranscriptPath: transcriptPath,
+	})
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+
+	// WriteFileAt must have been called with the committed transcript bytes.
+	var found bool
+	for _, c := range f.WriteFileAtCalls {
+		if c.Path == transcriptPath && string(c.Content) == string(sessionBytes) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("WriteFileAt not called with restored session transcript (WriteFileAtCalls=%+v)", f.WriteFileAtCalls)
+	}
+}
+
+// TestRunAgentNoRestoreWhenSessionRefAbsent verifies that when RunState has
+// no SessionRefs entry for the node path, WriteFileAt is NOT called (first
+// run / no prior session).
+func TestRunAgentNoRestoreWhenSessionRefAbsent(t *testing.T) {
+	ctx := context.Background()
+	blobs := state.NewInMemoryBlobs()
+	f := container.NewFake().WithBlobs(blobs)
+	h, err := f.Create(ctx, container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	rs := engine.NewRunState("r", "d", nil) // no SessionRefs["gen"]
+
+	// Pre-write the transcript file so the capture block (ReadFileAt after the
+	// agent runs) succeeds and the step completes OK. We assert WriteFileAtCalls
+	// is empty — WriteFileAt is only called by the restore path (not by capture).
+	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
+	if wErr := f.WriteFileAt(ctx, h, transcriptPath, []byte("transcript")); wErr != nil {
+		t.Fatalf("seed transcript: %v", wErr)
+	}
+	// Reset WriteFileAtCalls so the seed write above is not counted in assertions.
+	f.WriteFileAtCalls = nil
+
+	dr := dispatchOKAgentWithRunStateForTest(t, f, h, rs, blobs, engine.ResolvedInputs{
+		SessionTranscriptPath: transcriptPath,
+	})
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+	if len(f.WriteFileAtCalls) != 0 {
+		t.Errorf("WriteFileAt called on first run (no prior session), want 0 calls; got %+v", f.WriteFileAtCalls)
+	}
+}
+
+// TestRunAgentRestoreFailureIsMechanical verifies that when the blob is
+// present in SessionRefs but the WriteFileAt call fails, the dispatcher
+// returns a non-OK mechanical outcome (crash ≠ verdict).
+func TestRunAgentRestoreFailureIsMechanical(t *testing.T) {
+	ctx := context.Background()
+	blobs := state.NewInMemoryBlobs()
+	f := container.NewFake().WithBlobs(blobs)
+	h, err := f.Create(ctx, container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Point SessionRefs at a ref that does NOT exist in blobs — blobs.Get fails.
+	rs := engine.NewRunState("r", "d", nil)
+	rs.SessionRefs["gen"] = "awf-d1:sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+	fk := agentfake.New("test/agent").Script(0, agentfake.Result{Output: map[string]any{"ok": true}})
+	reg := &agent.Registry{}
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  f,
+		Handles:  map[string]container.Handle{"ws": h},
+		Resolver: reg,
+		RunState: rs,
+		Blobs:    blobs,
+	}
+	intent := engine.NodeIntent{
+		Path: "gen",
+		Node: &ir.AgentStep{ID: "gen", Container: "ws", Uses: "test/agent"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:                  "test/agent",
+			SessionTranscriptPath: "/t/s.jsonl",
+		},
+	}
+	dr, ch, runErr := d.Run(ctx, intent)
+	for range ch {
+	}
+	if runErr != nil {
+		t.Fatalf("Run returned engine-level error (want nil, outcome via dr): %v", runErr)
+	}
+	if dr.Outcome == engine.OutcomeOK {
+		t.Fatal("restore blob-get failure must yield a non-OK outcome (crash != verdict)")
+	}
+	if dr.Outcome != engine.OutcomeRetryableFailure && dr.Outcome != engine.OutcomePermanentFailure {
+		t.Errorf("Outcome = %q, want a mechanical failure", dr.Outcome)
 	}
 }

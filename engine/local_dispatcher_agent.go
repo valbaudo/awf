@@ -108,6 +108,34 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}
 	}
 
+	// Session restore on the generator frontier (Task 1.5 / M1): before launching
+	// the agent, write the committed session transcript back into the container so
+	// the agent resumes from it. Symmetric inverse of the capture block below.
+	//
+	// Conditions: SessionTranscriptPath set + RunState present + a committed ref
+	// exists for this node path. All three must hold; any absent → skip (first run
+	// or non-session step). A Blobs.Get error or WriteFileAt error is a mechanical
+	// failure (crash ≠ verdict) — never commits and never consumes a gate attempt.
+	if intent.ResolvedInputs.SessionTranscriptPath != "" && d.RunState != nil && d.Blobs != nil {
+		if ref := d.RunState.SessionRefs[intent.Path]; ref != "" {
+			sessionBytes, getErr := d.Blobs.Get(ref)
+			if getErr != nil {
+				oc := snapshotFailureOutcome(getErr)
+				return DispatchResult{
+					Outcome: oc,
+					Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: get session blob %q for %q: %w", ref, intent.Path, getErr),
+				}, closedChunks(), nil
+			}
+			if writeErr := d.Backend.WriteFileAt(ctx, h, intent.ResolvedInputs.SessionTranscriptPath, sessionBytes); writeErr != nil {
+				oc := snapshotFailureOutcome(writeErr)
+				return DispatchResult{
+					Outcome: oc,
+					Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: restore session transcript at %q for %q: %w", intent.ResolvedInputs.SessionTranscriptPath, intent.Path, writeErr),
+				}, closedChunks(), nil
+			}
+		}
+	}
+
 	// Reject input_files on a containerless agent step (no container to stage
 	// into). The interpreter (engine/agent_step.go) already rejects this BEFORE
 	// resolution; this guard is defense-in-depth for a runtime bypass — a direct

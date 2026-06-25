@@ -77,5 +77,7 @@ func cloneDispatcherForRuntime(parent *LocalDispatcher, runtimeParent string, co
 		AgentEventTap:    parent.AgentEventTap,
 		RenderAgentEvent: parent.RenderAgentEvent,
 		StepCostLine:     parent.StepCostLine,
+		RunState:         parent.RunState,
+		Blobs:            parent.Blobs,
 	}
 }
