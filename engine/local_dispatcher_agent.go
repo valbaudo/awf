@@ -116,6 +116,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// exists for this node path. All three must hold; any absent → skip (first run
 	// or non-session step). A Blobs.Get error or WriteFileAt error is a mechanical
 	// failure (crash ≠ verdict) — never commits and never consumes a gate attempt.
+	var sessionRestored bool
 	if intent.ResolvedInputs.SessionTranscriptPath != "" && d.RunState != nil && d.Blobs != nil {
 		if ref := d.RunState.SessionRefs[intent.Path]; ref != "" {
 			sessionBytes, getErr := d.Blobs.Get(ref)
@@ -133,6 +134,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 					Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: restore session transcript at %q for %q: %w", intent.ResolvedInputs.SessionTranscriptPath, intent.Path, writeErr),
 				}, closedChunks(), nil
 			}
+			sessionRestored = true
 		}
 	}
 
@@ -197,6 +199,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		Thread:          intent.ResolvedInputs.Thread,   // Task 4.5
 		ContextEvidence: intent.ResolvedInputs.ContextEvidence,
 		InputFiles:      intent.ResolvedInputs.ContainerlessFiles, // resolved input_files for containerless steps; nil for container-backed (those use stageInputFiles)
+		ResumeSession:   sessionRestored,                          // M2 task: true when session transcript was written back for this node
 	}
 
 	// γ contract: Launch returns immediately with events + outcome channels

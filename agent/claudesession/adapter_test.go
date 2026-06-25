@@ -336,12 +336,76 @@ func TestLaunch_CommandContainsSessionID(t *testing.T) {
 	if !strings.Contains(cmd, expectedUUID) {
 		t.Errorf("command missing expected uuid %q: %s", expectedUUID, cmd)
 	}
+	// --resume MUST be absent on a fresh turn (ResumeSession=false).
+	if strings.Contains(cmd, "--resume") {
+		t.Errorf("command contains --resume on fresh turn (ResumeSession=false); must use --session-id only: %s", cmd)
+	}
 	// --no-session-persistence MUST be absent (session adapter persists sessions).
 	if strings.Contains(cmd, "--no-session-persistence") {
 		t.Errorf("command contains --no-session-persistence (must be absent for session adapter): %s", cmd)
 	}
 	if !strings.Contains(cmd, "--output-format stream-json") {
 		t.Errorf("command missing --output-format stream-json: %s", cmd)
+	}
+}
+
+// TestLaunch_ResumeSession_CommandContainsResume verifies that when
+// inv.ResumeSession is true (the engine has restored a session transcript),
+// the adapter passes --resume <uuid> and NOT --session-id.
+func TestLaunch_ResumeSession_CommandContainsResume(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{"ok":true}}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
+
+	a, _ := claudesession.New(
+		claudesession.WithBackend(f),
+		claudesession.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}),
+	)
+	inv := agent.AgentInvocation{
+		NodePath:   "graph[0]",
+		Uses:       claudesession.AdapterRef,
+		RunContext: agent.RunContext{RunID: "run-xyz", CurrentEpoch: 2},
+		With:       ir.RawConfig{"prompt": "do stuff"},
+		OutputSchema: &ir.JSONSchema{
+			"type": "object", "additionalProperties": false,
+			"required": []string{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}},
+		},
+		ResumeSession: true, // engine restored a transcript for this node
+	}
+
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range eventCh {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+
+	if len(f.Calls) == 0 {
+		t.Fatal("no recorded calls")
+	}
+	cmd := f.Calls[0].Run
+
+	expectedUUID := claudesession.SessionUUIDForTest(inv)
+	// --resume <uuid> must be present on a restored turn.
+	if !strings.Contains(cmd, "--resume") {
+		t.Errorf("command missing --resume on restored turn (ResumeSession=true): %s", cmd)
+	}
+	if !strings.Contains(cmd, expectedUUID) {
+		t.Errorf("command missing expected uuid %q: %s", expectedUUID, cmd)
+	}
+	// --session-id MUST be absent (only one of --resume or --session-id is passed).
+	if strings.Contains(cmd, "--session-id") {
+		t.Errorf("command contains --session-id on restored turn (ResumeSession=true); must use --resume only: %s", cmd)
+	}
+	// --no-session-persistence MUST be absent.
+	if strings.Contains(cmd, "--no-session-persistence") {
+		t.Errorf("command contains --no-session-persistence (must be absent for session adapter): %s", cmd)
 	}
 }
 

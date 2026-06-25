@@ -370,7 +370,17 @@ func assembleSessionCommand(inv agent.AgentInvocation) (string, error) {
 	parts = append(parts, "--output-format", "stream-json", "--verbose")
 	// --no-session-persistence is intentionally OMITTED so the host journal
 	// records the session for transcript capture/restore.
-	parts = append(parts, "--session-id", uuid)
+	//
+	// Fresh turn (ResumeSession=false): --session-id <uuid> creates / adopts
+	// the session by its deterministic id.
+	// Restored turn (ResumeSession=true): --resume <uuid> re-primes Claude
+	// from the transcript the engine wrote back before launching.
+	// Exactly one flag is passed; both flags are never combined.
+	if inv.ResumeSession {
+		parts = append(parts, "--resume", uuid)
+	} else {
+		parts = append(parts, "--session-id", uuid)
+	}
 
 	if inv.OutputSchema != nil {
 		schemaBytes, serr := json.Marshal(*inv.OutputSchema)
