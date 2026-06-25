@@ -222,16 +222,22 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	uses := AgentRuntimeRef(wf, ictx.moduleID, as.Uses)
 
 	// M2: set SessionTranscriptPath if the resolved adapter declares PersistentSession
-	// AND implements agent.SessionPathProvider. The workdir is "" — the interpreter
-	// has no per-container workdir; adapters that need it (e.g. claudesession) derive
-	// the path solely from the AgentInvocation identity fields (RunID, epoch, path).
-	// The partial AgentInvocation below carries those identity fields; With is included
-	// so adapters that key on with-fields can also use it.
+	// AND implements agent.SessionPathProvider. The workdir is read from the resolved
+	// with["workdir"] key (M2d): authors using anthropic/claude-code-session MUST
+	// declare the container's working directory there so the adapter can derive the
+	// correct transcript bucket (~/.claude/projects/<encodeProjectDir(workdir)>/…).
+	// When the key is absent, workdir is "" which produces a degenerate (but
+	// non-panicking) path — preserved for conformance fakes that return a fixed path
+	// regardless of workdir.
 	var sessionTranscriptPath string
 	if ictx.resolver != nil {
 		if adp, ok := ictx.resolver.Lookup(uses); ok &&
 			adp.Capabilities().PersistentSession {
 			if spp, ok := adp.(agent.SessionPathProvider); ok {
+				var workdir string
+				if wd, wdOK := resolvedWith["workdir"].(string); wdOK {
+					workdir = wd
+				}
 				partialInv := agent.AgentInvocation{
 					NodePath: path,
 					Uses:     uses,
@@ -242,13 +248,7 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 					},
 					With: resolvedWith,
 				}
-				// TODO(M2d): workdir is "" here. The real claude-code-session adapter derives the
-				// transcript path from the CONTAINER workdir (encodeProjectDir(workdir)); with "" it
-				// produces a degenerate path (no project bucket) that won't match where claude writes.
-				// The live-integration task (M2d) MUST thread the real container workdir before any
-				// live claude run, and is gated on fixing this. Until then this path is correct ONLY
-				// for adapters whose SessionTranscriptPath ignores workdir (the conformance fake).
-				sessionTranscriptPath = spp.SessionTranscriptPath(partialInv, "")
+				sessionTranscriptPath = spp.SessionTranscriptPath(partialInv, workdir)
 			}
 		}
 	}

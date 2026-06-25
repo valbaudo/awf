@@ -191,6 +191,11 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("must be number, got %T", v), keyMaxBudgetUSD)
 		}
 	}
+	if v, ok := with[keyWorkdir]; ok {
+		if _, ok := v.(string); !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyWorkdir)
+		}
+	}
 
 	// 4. bare-requires-API-key (same as claude adapter, decision 9).
 	bare := defaultBare

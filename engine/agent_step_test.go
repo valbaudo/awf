@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/claudesession"
 	"github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -2014,6 +2015,20 @@ func (s *sessionPathFake) SessionTranscriptPath(_ agent.AgentInvocation, _ strin
 	return s.transcriptPath
 }
 
+// sessionPathRealFake is a test-only adapter that wraps *fake.Fake for launch
+// but delegates SessionTranscriptPath to a real function. This lets the
+// engine/agent_step workdir-wiring test (M2d) prove that with.workdir is
+// threaded from resolvedWith into SessionTranscriptPath without requiring a
+// live claude binary.
+type sessionPathRealFake struct {
+	*fake.Fake
+	pathFn func(inv agent.AgentInvocation, workdir string) string
+}
+
+func (s *sessionPathRealFake) SessionTranscriptPath(inv agent.AgentInvocation, workdir string) string {
+	return s.pathFn(inv, workdir)
+}
+
 // TestRunAgentStep_SessionTranscriptPathSetWhenPersistentSessionProviderRegistered
 // verifies that the interpreter sets ResolvedInputs.SessionTranscriptPath for a
 // PersistentSession adapter that implements SessionPathProvider. The evidence is
@@ -2104,6 +2119,160 @@ graph:
 	if !foundSessionRef {
 		t.Fatal("node.completed for gen has no session_ref — SessionTranscriptPath was not set by the interpreter (PersistentSession+SessionPathProvider adapter)")
 	}
+}
+
+// TestRunAgentStep_WorkdirThreadedIntoSessionTranscriptPath verifies the M2d fix:
+// when a PersistentSession+SessionPathProvider adapter step declares with.workdir,
+// the interpreter extracts it from resolvedWith and passes it (not "") to
+// SessionTranscriptPath. The test uses a real claudesession.Adapter as the
+// SessionPathProvider so the encoded path (/root/.claude/projects/-work-proj/…)
+// is derived by the real encodeProjectDir logic — proving with.workdir="/work/proj"
+// produces a path that contains "-work-proj", not the degenerate "" bucket.
+func TestRunAgentStep_WorkdirThreadedIntoSessionTranscriptPath(t *testing.T) {
+	const workdir = "/work/proj"
+	const wfYAML = `workflow: session-workdir-threading
+version: 1
+containers:
+  ws:
+    image: oci://example.com/img@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: gen
+    container: ws
+    uses: test/session-workdir-fake
+    with:
+      prompt: "hello"
+      workdir: "/work/proj"
+`
+	ld := loadAgentSimpleDef(t, wfYAML)
+
+	// Build a real claudesession.Adapter (with home=/root, no live backend needed
+	// for SessionTranscriptPath — it's a pure computation). Use it as the pathFn
+	// so encodeProjectDir("/work/proj") runs through the real implementation.
+	realAdp, err := claudesession.New(claudesession.WithHomeDir("/root"))
+	if err != nil {
+		t.Fatalf("claudesession.New: %v", err)
+	}
+
+	// Capture the path the interpreter calls SessionTranscriptPath with.
+	var gotPath string
+	var gotWorkdir string
+	sfk := &sessionPathRealFake{
+		Fake: fake.New("test/session-workdir-fake").
+			WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).
+			Script(0, fake.Result{}),
+		pathFn: func(inv agent.AgentInvocation, wd string) string {
+			gotWorkdir = wd
+			p := realAdp.SessionTranscriptPath(inv, wd)
+			gotPath = p
+			return p
+		},
+	}
+
+	// Seed the transcript file at the derived path so Backend.ReadFileAt succeeds.
+	// We derive the expected path here so we can pre-seed it in the fake.
+	// The real claudesession adapter uses encodeProjectDir so: /work/proj → -work-proj.
+	// We don't know the exact UUID yet (it depends on RunID which is assigned
+	// inside engine.Run), so we register the fake with ProgramExecAny to seed
+	// AFTER we know the path via the pathFn capture.
+	f := container.NewFake()
+	h, createErr := f.Create(t.Context(), container.ContainerSpec{Name: "ws"})
+	if createErr != nil {
+		t.Fatalf("Create: %v", createErr)
+	}
+
+	var reg agent.Registry
+	if err := reg.Register(sfk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  f,
+		Handles:  map[string]container.Handle{"ws": h},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{
+		Type: engine.EventRunStarted,
+		Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"}),
+	}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	// Intercept: we need the transcript path to pre-seed it in the fake backend
+	// so Backend.ReadFileAt (the capture block) succeeds. The pathFn callback
+	// fires synchronously inside engine.Run (before dispatch). Use a hook: seed
+	// WriteFileAt lazily via the existing ProgramExecAny (no-op Exec), and
+	// pre-seed the transcript ourselves here using ProgramExecAny before Run.
+	// We know the path will contain "-work-proj" but not the UUID, so we write
+	// using ProgramExecAny for Exec, then after Run resolves gotPath, check it.
+	//
+	// Simpler approach: configure the fake to succeed on Exec (the agent launch)
+	// without requiring a pre-seeded file at the exact path — but the capture
+	// block calls ReadFileAt which will return "not found" for an unseeded path.
+	// To avoid that, we use a sessionSeedingFake-like wrapper inline.
+	//
+	// Since gotPath is set by pathFn before the dispatcher fires ReadFileAt,
+	// and we can't intercept between interpreter and dispatch in this test,
+	// we use a different approach: wire a custom Backend that auto-seeds any
+	// ReadFileAt call with fixed bytes (simulating a live claude transcript).
+	seedingBackend := &autoSeedFake{Fake: f}
+	dispatcher.Backend = seedingBackend
+
+	oc, runErr := engine.Run(t.Context(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{})
+	if runErr != nil {
+		t.Fatalf("engine.Run: %v", runErr)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	// Assert 1: workdir was threaded correctly — gotWorkdir must be "/work/proj".
+	if gotWorkdir != workdir {
+		t.Errorf("workdir passed to SessionTranscriptPath = %q, want %q (with.workdir not threaded)", gotWorkdir, workdir)
+	}
+	// Assert 2: the derived path contains the encoded workdir bucket "-work-proj".
+	if !strings.Contains(gotPath, "-work-proj") {
+		t.Errorf("SessionTranscriptPath = %q; want path containing encoded bucket \"-work-proj\" (encodeProjectDir(%q))", gotPath, workdir)
+	}
+	// Assert 3: the path does NOT contain the degenerate empty-bucket form
+	// ("/root/.claude/projects//" would appear if workdir were "").
+	if strings.Contains(gotPath, "//") {
+		t.Errorf("SessionTranscriptPath = %q; degenerate empty-bucket path (workdir was not threaded)", gotPath)
+	}
+	// Assert 4: node.completed carries a session_ref (capture fired).
+	events, foldErr := log.Fold()
+	if foldErr != nil {
+		t.Fatalf("Fold: %v", foldErr)
+	}
+	var foundSessionRef bool
+	for _, ev := range events {
+		if ev.Type == engine.EventNodeCompleted && ev.Path == "gen" {
+			var d engine.NodeCompletedData
+			if uerr := json.Unmarshal(ev.Data, &d); uerr != nil {
+				t.Fatalf("unmarshal NodeCompletedData: %v", uerr)
+			}
+			if d.SessionRef != "" {
+				foundSessionRef = true
+			}
+		}
+	}
+	if !foundSessionRef {
+		t.Error("node.completed has no session_ref — capture did not fire (ReadFileAt failed?)")
+	}
+}
+
+// autoSeedFake wraps *container.Fake and overrides ReadFileAt to return a
+// fixed transcript placeholder for ANY path, so the session capture block
+// succeeds regardless of the exact derived transcript path. Used by the M2d
+// workdir-threading test where the exact path isn't known before engine.Run.
+type autoSeedFake struct {
+	*container.Fake
+}
+
+func (a *autoSeedFake) ReadFileAt(ctx context.Context, h container.Handle, path string) ([]byte, error) {
+	return []byte(`{"session":"m2d-workdir-test"}`), nil
 }
 
 // TestRunAgentStep_SessionTranscriptPathNotSetForPlainAdapter verifies that a
