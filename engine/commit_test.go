@@ -323,6 +323,55 @@ func TestCommitOmitsTranscriptWhenNotParticipating(t *testing.T) {
 	}
 }
 
+func TestCommitPutsAndRecordsSessionRef(t *testing.T) {
+	log := state.NewInMemoryLog(&clock.Fake{})
+	blobs := state.NewInMemoryBlobs()
+	transcript := []byte(`{"session":"abc"}`)
+	dr := engine.DispatchResult{Outcome: engine.OutcomeOK, SessionTranscript: transcript}
+
+	if _, err := engine.Commit(log, blobs, "gen", dr, false); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	events, _ := log.Fold()
+	var data engine.NodeCompletedData
+	for _, e := range events {
+		if e.Type == engine.EventNodeCompleted && e.Path == "gen" {
+			_ = json.Unmarshal(e.Data, &data)
+		}
+	}
+	if data.SessionRef == "" {
+		t.Fatal("SessionRef not recorded on node.completed")
+	}
+	got, err := blobs.Get(data.SessionRef)
+	if err != nil {
+		t.Fatalf("blobs.Get(SessionRef): %v", err)
+	}
+	if string(got) != string(transcript) {
+		t.Errorf("blob = %q, want %q", got, transcript)
+	}
+	if data.SessionRef != state.RefFor(transcript) {
+		t.Errorf("SessionRef = %q, want content address %q", data.SessionRef, state.RefFor(transcript))
+	}
+}
+
+func TestCommitNoSessionWhenNoTranscript(t *testing.T) {
+	log := state.NewInMemoryLog(&clock.Fake{})
+	blobs := state.NewInMemoryBlobs()
+	if _, err := engine.Commit(log, blobs, "gen", engine.DispatchResult{Outcome: engine.OutcomeOK}, false); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	events, _ := log.Fold()
+	for _, e := range events {
+		if e.Type == engine.EventNodeCompleted {
+			var data engine.NodeCompletedData
+			_ = json.Unmarshal(e.Data, &data)
+			if data.SessionRef != "" {
+				t.Errorf("SessionRef = %q, want empty (no transcript)", data.SessionRef)
+			}
+		}
+	}
+}
+
 func mapEqual(a, b map[string]any) bool {
 	if len(a) != len(b) {
 		return false

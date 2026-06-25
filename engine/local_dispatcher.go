@@ -10,6 +10,7 @@ import (
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/state"
 )
 
 // LocalDispatcher is the Phase 2 Dispatcher impl — runs code steps in-process
@@ -73,6 +74,25 @@ type LocalDispatcher struct {
 	// CLI (cli/execute.go) sets it true. Sourced from the adapter's already-
 	// extracted MetricSet — never parses harness output, never touches obs.
 	StepCostLine bool
+
+	// M1 session restore — read-only access for the agent restore site.
+	//
+	// RunState is the folded run state for the current run. When non-nil and
+	// RunState.SessionRefs[path] is set, runAgent restores the committed session
+	// transcript into the container BEFORE launching the agent (the inverse of the
+	// capture block). Nil means no prior session map (first run or non-session step).
+	// The interpreter sets this in interpreter.go (engine.Run's LocalDispatcher
+	// construction); direct LocalDispatcher callers (tests) can set it too.
+	//
+	// NOTE: the dispatcher NEVER writes to RunState; only the interpreter (via
+	// engine.Commit + runstate.RecordCompleted) updates it. The restore path only
+	// calls RunState.SessionRefs (read) + Blobs.Get (read) + Backend.WriteFileAt.
+	RunState *RunState
+
+	// Blobs is the shared content-addressed store. Read-only from the dispatcher:
+	// the restore path calls Blobs.Get to materialize the committed session transcript.
+	// Only engine.Commit (interpreter-side) calls Blobs.Put — never the dispatcher.
+	Blobs state.Blobs
 }
 
 // Run executes one attempt of intent.Node. See the Dispatcher interface doc
@@ -433,5 +453,7 @@ func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *Local
 		AgentEventTap:    d.AgentEventTap,
 		RenderAgentEvent: d.RenderAgentEvent,
 		StepCostLine:     d.StepCostLine,
+		RunState:         d.RunState,
+		Blobs:            d.Blobs,
 	}
 }

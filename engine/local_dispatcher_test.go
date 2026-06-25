@@ -1461,3 +1461,30 @@ func TestDispatcherSnapshotTerminalErrorIsPermanent(t *testing.T) {
 		t.Errorf("terminal snapshot error: outcome=%q, want permanent_failure", dr.Outcome)
 	}
 }
+
+// TestWithItemHandle_CopiesRunStateAndBlobs is a regression test for the
+// finding that WithItemHandle did not propagate RunState and Blobs onto the
+// per-item dispatcher clone (unlike cloneDispatcherForRuntime, which does).
+// A session generate step inside a map body would reach the restore block with
+// d.RunState == nil and silently skip restore — a resume-fidelity failure.
+func TestWithItemHandle_CopiesRunStateAndBlobs(t *testing.T) {
+	rs := engine.NewRunState("run-1", "digest-abc", nil)
+	blobs := state.NewInMemoryBlobs()
+
+	original := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"ws": {Name: "ws", ID: "ws-0"}},
+		RunState: rs,
+		Blobs:    blobs,
+	}
+
+	itemHandle := container.Handle{Name: "ws", ID: "ws-item-1"}
+	clone := original.WithItemHandle("ws", itemHandle)
+
+	if clone.RunState != rs {
+		t.Errorf("clone.RunState = %v, want same pointer as original (%v); WithItemHandle must propagate RunState", clone.RunState, rs)
+	}
+	if clone.Blobs != blobs {
+		t.Errorf("clone.Blobs = %v, want same pointer as original (%v); WithItemHandle must propagate Blobs", clone.Blobs, blobs)
+	}
+}

@@ -181,3 +181,12 @@ func mapHas[V any](m map[string]V, k string) bool {
 	_, ok := m[k]
 	return ok
 }
+
+func TestClearInvalidatedPathsDropsSessionRefs(t *testing.T) {
+	rs := NewRunState("r", "d", nil)
+	rs.SessionRefs["gen"] = "awf-d1:sha256:deadbeef"
+	clearInvalidatedPaths(rs, []string{"gen"})
+	if _, ok := rs.SessionRefs["gen"]; ok {
+		t.Error("SessionRefs[gen] survived a path sweep; a re-run generate node must drop its stale session")
+	}
+}

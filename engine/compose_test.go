@@ -247,6 +247,14 @@ func (b *destroyFailingBackend) Restore(ctx context.Context, ref container.Snaps
 	return b.inner.Restore(ctx, ref, name)
 }
 
+func (b *destroyFailingBackend) ReadFileAt(ctx context.Context, h container.Handle, path string) ([]byte, error) {
+	return b.inner.ReadFileAt(ctx, h, path)
+}
+
+func (b *destroyFailingBackend) WriteFileAt(ctx context.Context, h container.Handle, path string, content []byte) error {
+	return b.inner.WriteFileAt(ctx, h, path, content)
+}
+
 func (b *destroyFailingBackend) Destroy(ctx context.Context, h container.Handle) error {
 	if err := b.inner.Destroy(ctx, h); err != nil {
 		return fmt.Errorf("inner destroy: %w", err)

@@ -85,6 +85,8 @@ func (r *Runner) runAndFinish(
 		AgentEventTap:    tap,
 		RenderAgentEvent: newAgentEventRenderer(tap),
 		StepCostLine:     true,
+		RunState:         rs,
+		Blobs:            blobs,
 	}
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, engine.RunOptions{
 		Tap:           stdout,

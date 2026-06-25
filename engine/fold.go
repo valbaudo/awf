@@ -90,6 +90,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 	rs.CallStarted = make(map[string]CallStartedRecord, len(events)/16)
 	rs.SignalReceivedAt = make(map[string]SignalReceivedEntry, len(events)/16)
 	rs.SnapshotRefs = make(map[string]string) // slice 7.1 — snapshot:workspace containers only; sparse
+	rs.SessionRefs = make(map[string]string)  // M1 — native-session transcript refs; keyed by node path
 	rs.SelectedSkills = make(map[string]SkillsSelectedData, len(events)/16)
 
 	seenRunStarted := false
@@ -229,6 +230,9 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			rs.Completed[e.Path] = nr
 			if d.SnapshotRef != "" && d.Container != "" {
 				rs.SnapshotRefs[d.Container] = d.SnapshotRef // last write wins = latest commit
+			}
+			if d.SessionRef != "" {
+				rs.SessionRefs[e.Path] = d.SessionRef // path-keyed; last write wins = latest commit for this node
 			}
 
 		case EventBranchTaken:

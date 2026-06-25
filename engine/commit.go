@@ -111,6 +111,18 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		nr.Transcript = dr.Transcript
 	}
 
+	// session transcript — when the dispatcher captured a native-session transcript
+	// (via Backend.ReadFileAt), content-address it before the node.completed append,
+	// preserving the Put→Append→Sync ordering (mirrors the transcript block above).
+	sessionRef := dr.SessionRef
+	if sessionRef == "" && len(dr.SessionTranscript) > 0 {
+		ref, err := blobs.Put(dr.SessionTranscript)
+		if err != nil {
+			return NodeResult{}, fmt.Errorf("engine.Commit: put session transcript: %w", err)
+		}
+		sessionRef = ref
+	}
+
 	// 2. Compute the node_key for deterministic (code) steps.
 	// dr.Node is set ONLY on the code-step dispatch path (interpreter.go);
 	// all other call sites leave it nil → isDeterministicNode(nil) == false → empty key.
@@ -145,6 +157,7 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		TranscriptRef:     transcriptRef,
 		NodeKey:           nodeKey,
 		NodeSubtreeDigest: nodeSubtreeDigest, // reuses the same subtree value as NodeKey's input; no drift
+		SessionRef:        sessionRef,
 	}
 	if err := appendNodeCompleted(log, path, data); err != nil {
 		return NodeResult{}, fmt.Errorf("engine.Commit: %w", err)
