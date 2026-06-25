@@ -62,23 +62,6 @@ func (e *ErrBareRequiresAPIKey) Error() string {
 	return fmt.Sprintf("agent/claudesession: with.bare: true requires ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in the adapter's env allowlist (--agent-env); allowlist has %v but neither key is present", e.AvailableKeys)
 }
 
-// ErrAgentRuntimeNotFound is returned by Version when `claude --version` fails
-// inside the container.
-type ErrAgentRuntimeNotFound struct {
-	Ref       string
-	Container string
-	Cause     error
-}
-
-func (e *ErrAgentRuntimeNotFound) Error() string {
-	return fmt.Sprintf("agent/claudesession: %q binary not found in container %q: %v", e.Ref, e.Container, e.Cause)
-}
-
-func (e *ErrAgentRuntimeNotFound) Unwrap() error { return e.Cause }
-
-// Compile-time assertion.
-var _ = []error{(*ErrAgentRuntimeNotFound)(nil)}
-
 // wrapInvalidConfig wraps an agent.ErrInvalidConfig for this adapter.
 func wrapInvalidConfig(reason string, key string) error {
 	return &agent.ErrInvalidConfig{

@@ -137,12 +137,11 @@ func TestValidateConfig_BareTrue_WithAuthToken_OK(t *testing.T) {
 	}
 }
 
-// TestValidateConfig_SessionReuseKeysAllowed verifies that session_id /
-// continue / resume are ALLOWED in the session adapter's with-schema — they
-// are rejected by the base claude adapter (gate independence) but the session
-// adapter manages session state internally. These keys ARE however unknown,
-// so they should be rejected as unknown keys (the workflow author never sets
-// them; the adapter derives the uuid itself).
+// TestValidateConfig_SessionReuseKeysRejectedAsUnknown verifies that session_id
+// is rejected as an unknown with-key. The session adapter derives the UUID
+// deterministically from the invocation; the workflow author cannot override it.
+// Unlike the base claude adapter (which rejects session_id as a session-reuse
+// attempt), this adapter rejects it because it is simply not a known key.
 func TestValidateConfig_SessionReuseKeysRejectedAsUnknown(t *testing.T) {
 	// The session adapter does NOT accept session_id as a user-visible with-key.
 	// The UUID is derived internally from the invocation; the workflow author
@@ -152,6 +151,27 @@ func TestValidateConfig_SessionReuseKeysRejectedAsUnknown(t *testing.T) {
 	var bad *agent.ErrInvalidConfig
 	if !errors.As(err, &bad) {
 		t.Fatalf("err = %v; want *agent.ErrInvalidConfig (session_id is an unknown with-key)", err)
+	}
+}
+
+// ---- ResumePreflighter ----
+
+// TestAdapter_ImplementsResumePreflighter asserts that *Adapter satisfies
+// agent.ResumePreflighter (no-op stub, real logic deferred to M2d).
+func TestAdapter_ImplementsResumePreflighter(t *testing.T) {
+	a, _ := claudesession.New()
+	var _ agent.ResumePreflighter = a // compile-time; belt-and-suspenders at runtime:
+	if _, ok := any(a).(agent.ResumePreflighter); !ok {
+		t.Fatal("*Adapter does not implement agent.ResumePreflighter")
+	}
+}
+
+// TestAdapter_PreflightResume_NoOp asserts that PreflightResume always returns nil.
+func TestAdapter_PreflightResume_NoOp(t *testing.T) {
+	a, _ := claudesession.New()
+	req := agent.LiveResumePreflightRequest{}
+	if err := a.PreflightResume(context.Background(), req); err != nil {
+		t.Fatalf("PreflightResume returned non-nil error: %v", err)
 	}
 }
 

@@ -2,18 +2,26 @@ package claudesession
 
 // Stream parsing for Claude Code's --output-format stream-json output.
 //
+// KEEP IN SYNC WITH agent/claude/stream.go — any protocol/field change there
+// must be mirrored here (see M2d de-duplication TODO).
+//
 // This is a faithful copy of the parsing logic in agent/claude/stream.go,
 // adjusted for the claudesession package namespace. It is deliberately
-// duplicated rather than exported from agent/claude because:
-//   1. The claude package's stream types are internal to that package
-//      (unexported) per the codebase's modularity discipline.
-//   2. Exporting would mean importing claudesession → claude which creates
-//      a tighter coupling than needed.
-//   3. The parsing contract is stable (empirically pinned against claude
-//      2.1.153 stream-json format); the few lines of divergence are
-//      localised error-prefix strings ("agent/claudesession:" vs "agent/claude:").
+// duplicated rather than exported from agent/claude because the stream types
+// and assembleCommand are unexported in agent/claude; the cleaner long-term
+// fix is to export them (or extract a shared agent/claudebase package) and is
+// deferred to the M2d live-integration task.
 //
-// If the upstream stream format changes, update BOTH packages.
+// TODO(M2d): de-duplicate — extract shared stream types + assembleCommand into
+// agent/claudebase (or export from agent/claude) and delete this copy.
+//
+// TODO(M3): this copy of streamMessage omits ~20 fields present in
+// agent/claude/stream.go (e.g. costUSD, cacheTokens breakdown, tool_use
+// content) causing journal Payload divergence between the two adapters; will
+// be fixed by the M2d de-duplication.
+//
+// TODO(M4): errUnexpectedExit here drops the Stderr field present in
+// agent/claude's version — also fixed by M2d de-duplication.
 
 import (
 	"encoding/json"

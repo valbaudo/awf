@@ -25,9 +25,9 @@ import (
 //   - --no-session-persistence is OMITTED (so the host journal records the session)
 //   - SessionTranscriptPath (agent.SessionPathProvider) for engine capture/restore
 //
-// The base *claude.Adapter is embedded for delegation; Launch is overridden
-// because the command construction differs (session-id flag, no
-// --no-session-persistence). All other methods delegate to the base.
+// The base *claude.Adapter is a named field (not embedded) used for delegation;
+// Launch is overridden because the command construction differs (session-id flag,
+// no --no-session-persistence). All other methods delegate to the base.
 type Adapter struct {
 	base    *claude.Adapter // shared env/backend/stream-parse logic
 	backend container.Backend
@@ -442,5 +442,14 @@ func toFloat(v any) (float64, bool) {
 	}
 }
 
-// Compile-time assertion that Adapter satisfies agent.Adapter.
+// PreflightResume is a no-op for now — session restore is driven by the engine's
+// content-addressed SessionRef (transcript blob), not a live provider session, so
+// there is nothing to preflight at this stage. Real preflight logic (if any) lands
+// with the live-integration task (M2d).
+func (a *Adapter) PreflightResume(_ context.Context, _ agent.LiveResumePreflightRequest) error {
+	return nil
+}
+
+// Compile-time assertions.
 var _ agent.Adapter = (*Adapter)(nil)
+var _ agent.ResumePreflighter = (*Adapter)(nil)
