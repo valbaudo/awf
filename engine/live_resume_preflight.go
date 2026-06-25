@@ -321,6 +321,7 @@ func cloneRunStateForPreflight(rs *RunState) *RunState {
 	cp.CallStarted = copyCallStartedMap(rs.CallStarted)
 	cp.SignalReceivedAt = copySignalReceivedAtMap(rs.SignalReceivedAt)
 	cp.SnapshotRefs = copyStringMap(rs.SnapshotRefs)
+	cp.SessionRefs = copyStringMap(rs.SessionRefs)
 	return cp
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -1305,5 +1306,38 @@ func TestFold_StructuralDigestLegacyEmpty(t *testing.T) {
 	}
 	if rs.StructuralDigest != "" {
 		t.Fatalf("StructuralDigest = %q, want empty for legacy log", rs.StructuralDigest)
+	}
+}
+
+func TestFoldSessionRefsLastWriteWinsByPath(t *testing.T) {
+	log := state.NewInMemoryLog(clock.System{})
+	blobs := state.NewInMemoryBlobs()
+	// seed run.started so the log is valid
+	if err := log.Append(state.Event{
+		Type: EventRunStarted,
+		Data: marshalOrFatal(t, RunStartedData{RunID: "r1", WorkflowDigest: "d"}),
+	}); err != nil {
+		t.Fatalf("seed run.started: %v", err)
+	}
+	commit := func(path, transcript string) {
+		_, err := Commit(log, blobs, path, DispatchResult{Outcome: OutcomeOK, SessionTranscript: []byte(transcript)}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit("gen", "v1")
+	commit("gen", "v2") // same node re-committed → last write wins
+	commit("other", "x")
+
+	events, _ := log.Fold()
+	rs, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if got := rs.SessionRefs["gen"]; got != state.RefFor([]byte("v2")) {
+		t.Errorf("SessionRefs[gen] = %q, want the v2 ref (last write wins)", got)
+	}
+	if rs.SessionRefs["other"] == "" {
+		t.Error("SessionRefs[other] missing")
 	}
 }

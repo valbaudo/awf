@@ -183,8 +183,8 @@ func ComputeRerunInvalidation(wf *ir.Workflow, rs *RunState, target string) ([]s
 }
 
 // clearInvalidatedPaths deletes each path from the nine path-keyed RunState
-// indices. Used by the fold delete-arm and engine.Run's live apply. NOT the
-// name/container-keyed maps (SnapshotRefs, Signals). Caller is single-threaded
+// indices plus SessionRefs (path-keyed, unlike the name/container-keyed
+// SnapshotRefs and Signals which are NOT cleared here). Caller is single-threaded
 // (fold at resume-build; engine.Run before the poller/goroutines).
 func clearInvalidatedPaths(rs *RunState, paths []string) {
 	for _, p := range paths {
@@ -197,5 +197,6 @@ func clearInvalidatedPaths(rs *RunState, paths []string) {
 		delete(rs.CallStarted, p)
 		delete(rs.SignalReceivedAt, p)
 		delete(rs.SelectedSkills, p)
+		delete(rs.SessionRefs, p) // path-keyed (unlike SnapshotRefs); a re-run generate node drops its stale session
 	}
 }

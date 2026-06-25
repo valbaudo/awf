@@ -337,6 +337,13 @@ type RunState struct {
 	// omitempty, so the Fold guard skips them).
 	SnapshotRefs map[string]string
 
+	// SessionRefs maps a generate NODE PATH to its latest committed native-session
+	// transcript ref. Unlike SnapshotRefs (container-keyed), a session belongs to a
+	// specific generate node. Fold-populated (pre-Run), then read-only during Run.
+	// IMPORTANT: unlike SnapshotRefs, SessionRefs IS cleared by clearInvalidatedPaths
+	// (rerun.go) — a re-run generate node must drop its stale session.
+	SessionRefs map[string]string
+
 	// SelectedSkills records skills.selected decisions by runtime node path.
 	// Agent steps consult it on resume to replay routed skill IDs without
 	// re-running the router against a possibly changed query.
@@ -399,6 +406,7 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		CallStarted:      map[string]CallStartedRecord{},
 		SignalReceivedAt: map[string]SignalReceivedEntry{},
 		SnapshotRefs:     map[string]string{},
+		SessionRefs:      map[string]string{},
 		SelectedSkills:   map[string]SkillsSelectedData{},
 		// Paused, Cancelled, CancelReason — zero values are correct
 	}
