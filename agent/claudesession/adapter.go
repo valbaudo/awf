@@ -1,0 +1,446 @@
+package claudesession
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
+	"slices"
+	"strings"
+
+	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/claude"
+	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/ir"
+)
+
+// Adapter is the agent.Adapter implementation for Claude Code with deterministic
+// session-id reuse. It wraps a *claude.Adapter for shared functionality
+// (env passthrough, backend wiring, version, stream parsing) and adds:
+//   - Capabilities().PersistentSession = true
+//   - --session-id <deterministic-uuid> injected into every launch command
+//   - --no-session-persistence is OMITTED (so the host journal records the session)
+//   - SessionTranscriptPath (agent.SessionPathProvider) for engine capture/restore
+//
+// The base *claude.Adapter is embedded for delegation; Launch is overridden
+// because the command construction differs (session-id flag, no
+// --no-session-persistence). All other methods delegate to the base.
+type Adapter struct {
+	base    *claude.Adapter // shared env/backend/stream-parse logic
+	backend container.Backend
+	env     agent.SecretEnv
+	homeDir string // in-container home directory for transcript path derivation
+}
+
+// Option configures the Adapter at construction time.
+type Option func(*Adapter)
+
+// WithEnv supplies the env-var allowlist forwarded into each `claude -p`
+// invocation. Same semantics as claude.WithEnv.
+func WithEnv(env map[string]string) Option {
+	return func(a *Adapter) {
+		if len(env) == 0 {
+			a.env = agent.SecretEnv{}
+		} else {
+			out := make(agent.SecretEnv, len(env))
+			for k, v := range env {
+				out[k] = v
+			}
+			a.env = out
+		}
+	}
+}
+
+// WithBackend supplies the container.Backend used for Version and Launch.
+func WithBackend(b container.Backend) Option {
+	return func(a *Adapter) {
+		a.backend = b
+	}
+}
+
+// WithHomeDir overrides the in-container home directory used for transcript
+// path derivation. Defaults to DefaultHomeDir ("/root"). The exact value is
+// finalised in the live integration task (task M2d).
+func WithHomeDir(home string) Option {
+	return func(a *Adapter) {
+		a.homeDir = home
+	}
+}
+
+// New constructs an Adapter. The base *claude.Adapter is constructed with
+// the same env and backend options so that all shared logic (Version, stream
+// parsing, env redaction) is delegated there.
+func New(opts ...Option) (*Adapter, error) {
+	a := &Adapter{
+		env:     agent.SecretEnv{},
+		homeDir: DefaultHomeDir,
+	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	// Construct the base claude adapter with the same env + backend so that
+	// Version and other shared operations delegate there correctly.
+	base, err := claude.New(
+		claude.WithEnv(map[string]string(a.env)),
+		claude.WithBackend(a.backend),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("agent/claudesession: construct base claude adapter: %w", err)
+	}
+	a.base = base
+	return a, nil
+}
+
+// Ref returns the agent-runtime identifier.
+func (*Adapter) Ref() string { return AdapterRef }
+
+// Capabilities returns Caps{NativeSchema: true, PersistentSession: true}.
+// Not Containerless — this adapter requires a container (like the base
+// claude adapter). Gate independence is enforced by the engine's PR0a guard
+// that rejects PersistentSession adapters in gate.evaluate.
+func (*Adapter) Capabilities() agent.Caps {
+	return agent.Caps{
+		NativeSchema:      true,
+		PersistentSession: true,
+	}
+}
+
+// RequiredEnv implements agent.CredentialNamer.
+func (*Adapter) RequiredEnv() []string { return DefaultEnvAllowlist }
+
+// Version delegates to the base claude adapter.
+func (a *Adapter) Version(ctx context.Context, handle container.Handle) (string, error) {
+	return a.base.Version(ctx, handle)
+}
+
+// ValidateConfig enforces the same with-schema as the claude adapter (it
+// accepts the same keys), but ALLOWS session_id / continue / resume — those
+// keys are managed internally by the adapter via the deterministic UUID, not
+// by the workflow author. Unknown keys and missing prompt are still rejected.
+//
+// The difference from the base adapter: session reuse keys are NOT rejected
+// (since this adapter IS the session adapter). We therefore reimplement
+// validation rather than delegating to avoid the ErrSessionReuseAttempted
+// path in the base.
+func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
+	// 1. Unknown-key rejection (same allowed set as claude, minus the
+	//    session-reuse rejection step).
+	for _, k := range slices.Sorted(maps.Keys(with)) {
+		if _, ok := allowedKeys[k]; !ok {
+			return &agent.ErrInvalidConfig{
+				Ref:    AdapterRef,
+				Key:    k,
+				Reason: fmt.Sprintf("unknown with-key (allowed: %v)", slices.Sorted(maps.Keys(allowedKeys))),
+			}
+		}
+	}
+
+	// 2. prompt (required, string).
+	prompt, ok := with[keyPrompt]
+	if !ok {
+		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyPrompt, Reason: "required"}
+	}
+	if _, ok := prompt.(string); !ok {
+		return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyPrompt, Reason: fmt.Sprintf("must be string, got %T", prompt)}
+	}
+
+	// 3. Optional-field types.
+	if v, ok := with[keyModel]; ok {
+		if _, ok := v.(string); !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyModel)
+		}
+	}
+	if v, ok := with[keyEffort]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyEffort)
+		}
+		if !slices.Contains(effortValues, s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", effortValues, s), keyEffort)
+		}
+	}
+	if v, ok := with[keyMaxTurns]; ok {
+		switch v.(type) {
+		case int, int64, float64:
+		default:
+			return wrapInvalidConfig(fmt.Sprintf("must be integer, got %T", v), keyMaxTurns)
+		}
+	}
+	if v, ok := with[keySystemPrompt]; ok {
+		if _, ok := v.(string); !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keySystemPrompt)
+		}
+	}
+	if v, ok := with[keyAllowedTools]; ok {
+		if _, ok := v.([]any); !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be array of strings, got %T", v), keyAllowedTools)
+		}
+	}
+	if v, ok := with[keyBare]; ok {
+		if _, ok := v.(bool); !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be bool, got %T", v), keyBare)
+		}
+	}
+	if v, ok := with[keyMaxBudgetUSD]; ok {
+		switch v.(type) {
+		case int, int64, float64:
+		default:
+			return wrapInvalidConfig(fmt.Sprintf("must be number, got %T", v), keyMaxBudgetUSD)
+		}
+	}
+
+	// 4. bare-requires-API-key (same as claude adapter, decision 9).
+	bare := defaultBare
+	if v, ok := with[keyBare]; ok {
+		bare = v.(bool)
+	}
+	if bare {
+		_, haveAPIKey := a.env["ANTHROPIC_API_KEY"]
+		_, haveAuthToken := a.env["ANTHROPIC_AUTH_TOKEN"]
+		if !haveAPIKey && !haveAuthToken {
+			return &ErrBareRequiresAPIKey{AvailableKeys: slices.Sorted(maps.Keys(a.env))}
+		}
+	}
+
+	return nil
+}
+
+// Launch runs `claude -p ... --session-id <uuid>` inside handle.
+// It uses the same streaming Backend.Exec / io.Pipe / bufio.Scanner pattern
+// as the base claude.Adapter.Launch (copied here because the command
+// construction differs and the base launch function is not exported).
+//
+// Key differences from base claude.Adapter.Launch:
+//   - --session-id <sessionUUID(inv)> is appended
+//   - --no-session-persistence is OMITTED (so Claude records the session)
+func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+	if a.backend == nil {
+		return nil, nil, &agent.ErrAgentLaunch{Cause: errors.New("agent/claudesession: Launch: no Backend wired (use WithBackend in New)")}
+	}
+
+	cmdString, err := assembleSessionCommand(inv)
+	if err != nil {
+		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
+	}
+
+	execCmd := container.Cmd{
+		Run: cmdString,
+		Env: map[string]string(a.env),
+	}
+	if inv.IdempotencyKey != "" {
+		if execCmd.Env == nil {
+			execCmd.Env = map[string]string{}
+		}
+		execCmd.Env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
+	}
+
+	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, execCmd)
+	if execErr != nil {
+		return nil, nil, &agent.ErrAgentLaunch{Cause: execErr}
+	}
+
+	events := make(chan agent.AgentEvent, 16)
+	outcomeCh := make(chan agent.AgentOutcome, 1)
+
+	pr, pw := io.Pipe()
+
+	// Goroutine A: forward stdout chunks into pipe.
+	go func() {
+		defer func() { _ = pw.Close() }()
+		for c := range chunks {
+			if c.Stream != "stdout" {
+				continue
+			}
+			if _, werr := pw.Write(c.Data); werr != nil {
+				for range chunks {
+				}
+				return
+			}
+		}
+	}()
+
+	// Goroutine B: parse stream-json, emit events progressively, send outcome.
+	go func() {
+		defer close(outcomeCh)
+		defer close(events)
+		defer func() { _ = pr.Close() }()
+
+		var capturedResult agent.AgentResult
+		var kind string
+		var captureErr error
+		var initModel string
+
+		scanner := bufio.NewScanner(pr)
+		scanner.Buffer(make([]byte, 64*1024), 1<<20)
+
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			msg, perr := parseStreamLine(line)
+			if perr != nil {
+				captureErr = perr
+				continue
+			}
+			if msg.Type == "system" && msg.Subtype == "init" && msg.Model != "" {
+				initModel = msg.Model
+			}
+			for _, ev := range messageToEvents(msg) {
+				select {
+				case events <- ev:
+				case <-ctx.Done():
+					outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
+					return
+				}
+			}
+			if msg.Type == "result" {
+				res, eerr := extractResult(msg, initModel)
+				switch {
+				case eerr == nil:
+					capturedResult = res
+					kind = "ok"
+				case errors.Is(eerr, errAuthFailureSentinel):
+					kind = "auth"
+					captureErr = eerr
+				case strings.Contains(eerr.Error(), "structured_output"):
+					kind = "unparseable"
+				default:
+					kind = "fatal"
+					captureErr = eerr
+				}
+			}
+		}
+		if serr := scanner.Err(); serr != nil && kind == "" {
+			kind = "fatal"
+			captureErr = fmt.Errorf("agent/claudesession: scan stream-json: %w", serr)
+		}
+
+		execResult := <-resultCh
+
+		switch {
+		case execResult.Err != nil:
+			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: execResult.Err}}
+		case kind == "ok":
+			outcomeCh <- agent.AgentOutcome{Result: capturedResult}
+		case kind == "unparseable":
+			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrUnparseableOutput{NodePath: inv.NodePath}}
+		case kind == "auth":
+			outcomeCh <- agent.AgentOutcome{Err: fmt.Errorf("agent/claudesession: authentication failed: %w: %w", agent.ErrPermissionDenied, captureErr)}
+		case kind == "fatal":
+			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: captureErr}}
+		default:
+			outcomeCh <- agent.AgentOutcome{Err: &errUnexpectedExit{ExitCode: execResult.ExitCode}}
+		}
+	}()
+
+	return events, outcomeCh, nil
+}
+
+// assembleSessionCommand builds the full `claude -p ... --session-id <uuid>`
+// shell-command string. It mirrors assembleCommand in the base claude package
+// but:
+//   - Appends --session-id <sessionUUID(inv)>
+//   - Does NOT append --no-session-persistence
+func assembleSessionCommand(inv agent.AgentInvocation) (string, error) {
+	prompt, ok := inv.With[keyPrompt].(string)
+	if !ok {
+		return "", fmt.Errorf("agent/claudesession: assembleSessionCommand: with.prompt missing or non-string")
+	}
+	if len(inv.Feedback) > 0 {
+		fb, ferr := json.Marshal(inv.Feedback)
+		if ferr != nil {
+			return "", fmt.Errorf("agent/claudesession: marshal Feedback: %w", ferr)
+		}
+		prompt = fmt.Sprintf("<previous verdict>\n%s\n\n%s", string(fb), prompt)
+	}
+
+	uuid := sessionUUID(inv)
+
+	var parts []string
+	parts = append(parts, "claude", "-p", shellQuote(prompt))
+	parts = append(parts, "--output-format", "stream-json", "--verbose")
+	// --no-session-persistence is intentionally OMITTED so the host journal
+	// records the session for transcript capture/restore.
+	parts = append(parts, "--session-id", uuid)
+
+	if inv.OutputSchema != nil {
+		schemaBytes, serr := json.Marshal(*inv.OutputSchema)
+		if serr != nil {
+			return "", fmt.Errorf("agent/claudesession: marshal OutputSchema: %w", serr)
+		}
+		parts = append(parts, "--json-schema", shellQuote(string(schemaBytes)))
+	}
+
+	bare := defaultBare
+	if v, ok := inv.With[keyBare].(bool); ok {
+		bare = v
+	}
+	if bare {
+		parts = append(parts, "--bare")
+	}
+	if model, ok := inv.With[keyModel].(string); ok && model != "" {
+		parts = append(parts, "--model", shellQuote(model))
+	}
+	if effort, ok := inv.With[keyEffort].(string); ok && effort != "" {
+		parts = append(parts, "--effort", shellQuote(effort))
+	}
+	if mt, ok := toInt(inv.With[keyMaxTurns]); ok && mt > 0 {
+		parts = append(parts, "--max-turns", fmt.Sprintf("%d", mt))
+	}
+	if sp, ok := inv.With[keySystemPrompt].(string); ok && sp != "" {
+		parts = append(parts, "--system-prompt", shellQuote(sp))
+	}
+	if at, ok := inv.With[keyAllowedTools].([]any); ok && len(at) > 0 {
+		var toolStrs []string
+		for _, v := range at {
+			if s, ok := v.(string); ok {
+				toolStrs = append(toolStrs, s)
+			}
+		}
+		if len(toolStrs) > 0 {
+			parts = append(parts, "--allowedTools", shellQuote(strings.Join(toolStrs, ",")))
+		}
+	}
+	if budget, ok := toFloat(inv.With[keyMaxBudgetUSD]); ok && budget > 0 {
+		parts = append(parts, "--max-budget-usd", fmt.Sprintf("%g", budget))
+	}
+
+	return strings.Join(parts, " "), nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func toInt(v any) (int, bool) {
+	switch x := v.(type) {
+	case int:
+		return x, true
+	case int64:
+		return int(x), true
+	case float64:
+		return int(x), true
+	default:
+		return 0, false
+	}
+}
+
+func toFloat(v any) (float64, bool) {
+	switch x := v.(type) {
+	case int:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case float64:
+		return x, true
+	default:
+		return 0, false
+	}
+}
+
+// Compile-time assertion that Adapter satisfies agent.Adapter.
+var _ agent.Adapter = (*Adapter)(nil)
