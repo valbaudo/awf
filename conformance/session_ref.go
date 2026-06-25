@@ -129,45 +129,11 @@ func testSessionRefFullE2E(t *testing.T) {
 	h.blobs = blobs
 
 	// Track run/resume fakes for assertions.
+	// NOTE: this e2e uses a fixed-path fake adapter (sessionConformanceFake.SessionTranscriptPath
+	// returns sessionConformancePath unconditionally and ignores workdir). It does NOT exercise
+	// the real workdir-based path derivation (encodeProjectDir) used by the live claude-code-session
+	// adapter. The workdir gap is tracked by TODO(M2d) in engine/agent_step.go.
 	var runFake, resumeFake *container.Fake
-	h.factory = func() container.Backend {
-		f := container.NewFake().WithBlobs(blobs)
-		// Pre-seed the transcript file so ReadFileAt (capture) succeeds on gen's run.
-		// We seed it into every fake because the harness creates the container from
-		// scratch; the fake's WriteFile sets it in the handle created by the next Create.
-		// We use ProgramExecAny for downstream.sh so it succeeds on resume.
-		f.ProgramExec("./downstream.sh", container.ExecResult{ExitCode: 0}, nil)
-		if runFake == nil {
-			// Run 1: crash downstream (2nd exec call) after gen's agent launch.
-			// gen is an agent step so it does NOT call Backend.Exec — only downstream
-			// uses Exec. FailExecAfterN(0) crashes the FIRST Exec call, which is
-			// downstream.sh on run 1.
-			f.FailExecAfterN(0)
-			runFake = f
-		} else {
-			resumeFake = f
-		}
-		return f
-	}
-
-	// Run 1: gen's container must have the transcript file available for ReadFileAt.
-	// The fake's file-system is per-handle (created at Create time). We hook the
-	// factory to seed the transcript AFTER Create via ProgramExecWithFiles — but
-	// gen is an AGENT step, not a code step, so Backend.Exec is never called for gen.
-	// Instead we need to write the transcript directly into the handle's file-table.
-	//
-	// The fake's Create returns a fresh handle with an empty file table. We can't
-	// pre-seed per-path files at Create time. Solution: use WriteFileAt after the
-	// factory returns (before runWorkflow). But the harness calls factory() inside
-	// runOrResume, so we can't call WriteFileAt here.
-	//
-	// Alternative: override factory to call WriteFileAt on the handle right after
-	// Create. We wrap the factory to intercept Create and pre-seed the file.
-	// Simplest approach: use a custom BackendFactory that records and seeds.
-	//
-	// Re-design: use a factory wrapper that seeds the transcript after Create.
-	runFake = nil
-	resumeFake = nil
 	h.factory = func() container.Backend {
 		f := container.NewFake().WithBlobs(blobs)
 		f.ProgramExec("./downstream.sh", container.ExecResult{ExitCode: 0}, nil)

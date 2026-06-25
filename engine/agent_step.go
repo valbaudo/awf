@@ -242,6 +242,12 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 					},
 					With: resolvedWith,
 				}
+				// TODO(M2d): workdir is "" here. The real claude-code-session adapter derives the
+				// transcript path from the CONTAINER workdir (encodeProjectDir(workdir)); with "" it
+				// produces a degenerate path (no project bucket) that won't match where claude writes.
+				// The live-integration task (M2d) MUST thread the real container workdir before any
+				// live claude run, and is gated on fixing this. Until then this path is correct ONLY
+				// for adapters whose SessionTranscriptPath ignores workdir (the conformance fake).
 				sessionTranscriptPath = spp.SessionTranscriptPath(partialInv, "")
 			}
 		}

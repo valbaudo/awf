@@ -34,9 +34,12 @@ import (
 var ErrNodeNotImplemented = errors.New("engine: node kind not implemented")
 
 // AdapterResolver is an optional interface that Dispatcher implementations may
-// satisfy to expose their agent.Resolver to the interpreter. The interpreter
-// uses it to set ResolvedInputs.SessionTranscriptPath for PersistentSession
-// adapters that implement agent.SessionPathProvider (M2 wiring).
+// satisfy to expose their agent.Resolver to the interpreter. It exposes a
+// read-only agent.Resolver (Lookup-only) that is stable for the lifetime of
+// Run; it exists so the interpreter can resolve an agent step's adapter to
+// query optional capabilities (e.g. SessionPathProvider). The interpreter uses
+// it to set ResolvedInputs.SessionTranscriptPath for PersistentSession adapters
+// that implement agent.SessionPathProvider (M2 wiring).
 type AdapterResolver interface {
 	AgentResolver() agent.Resolver
 }
