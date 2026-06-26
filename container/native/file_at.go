@@ -15,6 +15,12 @@ import (
 // goes through os.OpenRoot rooted at the workdir — TOCTOU-safe, matching the
 // extractInto pattern in snapshot.go. The cleaned path must resolve to a file;
 // a missing path is a hard error.
+//
+// Symlink policy: os.Root follows symlinks that stay within the workdir but
+// refuses any symlink (or ".." component) that would resolve outside it, so a
+// malicious or stray symlink cannot escape the root. Following an intra-root
+// symlink is intentional — the captured artifact is the agent's own session
+// transcript, which legitimately lives under the workdir.
 func (b *Backend) ReadFileAt(ctx context.Context, h container.Handle, filePath string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -54,6 +60,10 @@ func (b *Backend) ReadFileAt(ctx context.Context, h container.Handle, filePath s
 // parent directories as needed. Confinement goes through os.OpenRoot rooted at
 // the workdir — TOCTOU-safe, matching the extractInto pattern in snapshot.go.
 // Overwrites any existing file.
+//
+// Symlink policy: identical to ReadFileAt — os.Root follows intra-root symlinks
+// but refuses any symlink (or ".." component) that resolves outside the workdir,
+// so a write cannot escape the root.
 func (b *Backend) WriteFileAt(ctx context.Context, h container.Handle, filePath string, content []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
