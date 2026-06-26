@@ -8,9 +8,9 @@ import (
 	"github.com/valbaudo/awf/agent"
 )
 
-// streamMessage mirrors the discriminated-union Phase 5 design Appendix A
+// StreamMessage mirrors the discriminated-union Phase 5 design Appendix A
 // pins. Empirically verified against claude 2.1.153 stream-json output.
-type streamMessage struct {
+type StreamMessage struct {
 	Type    string `json:"type"`              // "system" | "assistant" | "user" | "result" | "rate_limit_event"
 	Subtype string `json:"subtype,omitempty"` // system: "init" | "hook_started" | "hook_response"; result: "success" | "error_max_structured_output_retries"
 
@@ -46,13 +46,13 @@ type streamMessage struct {
 	Result           string          `json:"result,omitempty"`
 	StopReason       string          `json:"stop_reason,omitempty"`
 	TotalCostUSD     float64         `json:"total_cost_usd,omitempty"`
-	Usage            *usageRec       `json:"usage,omitempty"`
+	Usage            *UsageRec       `json:"usage,omitempty"`
 	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
 	TerminalReason   string          `json:"terminal_reason,omitempty"`
 	FastModeState    string          `json:"fast_mode_state,omitempty"`
 }
 
-type usageRec struct {
+type UsageRec struct {
 	InputTokens              int             `json:"input_tokens"`
 	OutputTokens             int             `json:"output_tokens"`
 	CacheCreationInputTokens int             `json:"cache_creation_input_tokens"`
@@ -82,21 +82,21 @@ type messageContentBlock struct {
 	Input    json.RawMessage `json:"input,omitempty"`
 }
 
-// parseStreamLine decodes one stream-json line. Wraps json.Unmarshal errors
+// ParseStreamLine decodes one stream-json line. Wraps json.Unmarshal errors
 // as *ErrStreamParse for the operator-facing path.
-func parseStreamLine(b []byte) (streamMessage, error) {
-	var msg streamMessage
+func ParseStreamLine(b []byte) (StreamMessage, error) {
+	var msg StreamMessage
 	if err := json.Unmarshal(b, &msg); err != nil {
-		return streamMessage{}, &ErrStreamParse{Line: b, Cause: err}
+		return StreamMessage{}, &ErrStreamParse{Line: b, Cause: err}
 	}
 	return msg, nil
 }
 
-// messageToEvents splits one streamMessage into one or more AgentEvents.
+// MessageToEvents splits one StreamMessage into one or more AgentEvents.
 // Per Phase 5 design decision 14: assistant messages split per content
 // block (one event per text / thinking / tool_use / tool_result).
 // System / rate_limit / user / result emit a single event each.
-func messageToEvents(msg streamMessage) []agent.AgentEvent {
+func MessageToEvents(msg StreamMessage) []agent.AgentEvent {
 	switch msg.Type {
 	case "system":
 		raw, _ := json.Marshal(msg)
@@ -127,7 +127,7 @@ func messageToEvents(msg streamMessage) []agent.AgentEvent {
 
 // splitAssistantMessage decodes the embedded Message and emits one
 // AgentEvent per content block.
-func splitAssistantMessage(msg streamMessage) []agent.AgentEvent {
+func splitAssistantMessage(msg StreamMessage) []agent.AgentEvent {
 	var wrapper struct {
 		Content []messageContentBlock `json:"content"`
 	}
@@ -162,11 +162,11 @@ func displayForClaudeBlock(b messageContentBlock) agent.EventDisplay {
 	}
 }
 
-// ErrNoResultEvent is the sentinel returned by extractResult when the
-// streamMessage isn't a result event. Internal — Launch checks for it.
-var ErrNoResultEvent = errors.New("agent/claude: streamMessage is not a result event")
+// ErrNoResultEvent is the sentinel returned by ExtractResult when the
+// StreamMessage isn't a result event. Internal — Launch checks for it.
+var ErrNoResultEvent = errors.New("agent/claude: StreamMessage is not a result event")
 
-// ErrAuthFailureSentinel is the sentinel returned by extractResult when the
+// ErrAuthFailureSentinel is the sentinel returned by ExtractResult when the
 // result event has subtype:"success" but is_error:true (auth failure path —
 // verified against real claude 2.1.153). Launch wraps this as
 // *agent.ErrAgentLaunch so the engine maps to retryable_failure (or
@@ -174,7 +174,7 @@ var ErrNoResultEvent = errors.New("agent/claude: streamMessage is not a result e
 // logged in").
 var ErrAuthFailureSentinel = errors.New("agent/claude: result event has is_error:true")
 
-// extractResult builds an AgentResult from a result-typed streamMessage.
+// ExtractResult builds an AgentResult from a result-typed StreamMessage.
 // Returns ErrNoResultEvent if the message type is not "result"; returns a
 // non-nil error carrying "structured_output" verbiage for the
 // error_max_structured_output_retries subtype (Launch maps to
@@ -183,7 +183,7 @@ var ErrAuthFailureSentinel = errors.New("agent/claude: result event has is_error
 //
 // Auth failures: real claude returns {"subtype":"success", "is_error":true,
 // "result":"Not logged in"} WITHOUT a structured_output field. Pre-fix
-// extractResult would have returned AgentResult{Output: nil} with nil
+// ExtractResult would have returned AgentResult{Output: nil} with nil
 // error, silently masking the auth failure as a schema-violation retry.
 // We check is_error FIRST inside the success case and return a wrapped
 // error carrying the result text so Launch can produce *agent.ErrAgentLaunch.
@@ -191,7 +191,7 @@ var ErrAuthFailureSentinel = errors.New("agent/claude: result event has is_error
 // model is the value captured from the system/init event's "model" field.
 // It is stored in Metrics.Model for auditability. The result event itself
 // does not carry the model — the caller must thread it from the init event.
-func extractResult(msg streamMessage, model string) (agent.AgentResult, error) {
+func ExtractResult(msg StreamMessage, model string) (agent.AgentResult, error) {
 	if msg.Type != "result" {
 		return agent.AgentResult{}, ErrNoResultEvent
 	}

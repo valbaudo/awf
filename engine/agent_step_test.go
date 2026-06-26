@@ -2236,10 +2236,13 @@ graph:
 	if !strings.Contains(gotPath, "-work-proj") {
 		t.Errorf("SessionTranscriptPath = %q; want path containing encoded bucket \"-work-proj\" (encodeProjectDir(%q))", gotPath, workdir)
 	}
-	// Assert 3: the path does NOT contain the degenerate empty-bucket form
-	// ("/root/.claude/projects//" would appear if workdir were "").
-	if strings.Contains(gotPath, "//") {
-		t.Errorf("SessionTranscriptPath = %q; degenerate empty-bucket path (workdir was not threaded)", gotPath)
+	// Assert 3: the encoded workdir is a real path segment, not elided. A "//"
+	// check would be a no-op here — SessionTranscriptPath joins with
+	// filepath.Join, which drops empty elements, so an empty workdir collapses
+	// to ".../projects/<uuid>.jsonl" with no double slash. Assert the bucket
+	// segment is present instead, which actually catches the degenerate case.
+	if !strings.Contains(gotPath, "/projects/-work-proj/") {
+		t.Errorf("SessionTranscriptPath = %q; encoded workdir bucket missing as a path segment (workdir not threaded)", gotPath)
 	}
 	// Assert 4: node.completed carries a session_ref (capture fired).
 	events, foldErr := log.Fold()

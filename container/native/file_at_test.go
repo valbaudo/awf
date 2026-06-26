@@ -96,6 +96,15 @@ func TestFileAtPathEscapeRejected(t *testing.T) {
 		t.Errorf("path-escape succeeded: sentinel file found at %s", escapedPath)
 	}
 
+	// "../../deep-escape" climbs TWO levels above the workdir. The path-cleaning
+	// collapses the leading "../" segments so it is confined inside "ws/"; the
+	// sentinel must not appear two levels up (the parent of root).
+	_ = b.WriteFileAt(ctx, h, "../../deep-escape", []byte("deep-escaped"))
+	deepEscaped := filepath.Join(filepath.Dir(root), "deep-escape")
+	if _, statErr := os.Stat(deepEscaped); statErr == nil {
+		t.Errorf("two-level path-escape succeeded: sentinel file found at %s", deepEscaped)
+	}
+
 	// Also try an absolute path outside root entirely.
 	absTarget := filepath.Join(t.TempDir(), "abs-escape")
 	_ = b.WriteFileAt(ctx, h, absTarget, []byte("abs-escaped"))

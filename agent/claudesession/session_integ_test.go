@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -268,7 +269,7 @@ func TestClaudeSessionRestoreAndResume(t *testing.T) {
 	}
 	// Re-create parent directories in case Remove left a gap (it won't, but
 	// be defensive so the test is robust).
-	if err := os.MkdirAll(transcriptPath[:strings.LastIndex(transcriptPath, "/")], 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll transcript dir: %v", err)
 	}
 	if err := os.WriteFile(transcriptPath, rawTranscript, 0o644); err != nil {
