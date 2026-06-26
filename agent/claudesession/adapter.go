@@ -226,17 +226,16 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 	// mutates the adapter's shared a.env (type-converting agent.SecretEnv to
 	// map[string]string is a label change only — it aliases the same underlying
 	// map). All writes below are safe because they target this local copy.
-	env := make(map[string]string, len(a.env)+3)
+	env := make(map[string]string, len(a.env)+5)
 	for k, v := range a.env {
 		env[k] = v
 	}
 	if inv.IdempotencyKey != "" {
 		env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
 	}
-	env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-	if inv.SessionConfigDir != "" {
-		env["CLAUDE_CONFIG_DIR"] = inv.SessionConfigDir
-	}
+	// Per-run config isolation (CLAUDE_CONFIG_DIR + per-run XDG state/cache) +
+	// headless hygiene. Shared with the base claude adapter (KEEP IN SYNC).
+	claude.ApplyPerRunConfigEnv(env, inv)
 	execCmd := container.Cmd{
 		Run: cmdString,
 		Env: env,

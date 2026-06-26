@@ -36,19 +36,14 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 	// Build a FRESH env map: map[string]string(a.env) is a type CONVERSION that
 	// ALIASES the shared adapter env, so writing into it would mutate a.env and
 	// data-race across concurrent Launches. Copy first, then add per-launch keys.
-	env := make(map[string]string, len(a.env)+3)
+	env := make(map[string]string, len(a.env)+5)
 	for k, v := range a.env {
 		env[k] = v
 	}
-	// Headless hygiene: disable telemetry/autoupdater/error-reporting/feedback.
-	env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-	// Per-run isolated config dir (engine-computed, RunID-keyed). Even though this
-	// adapter passes --no-session-persistence (no session journal), claude still
-	// writes config/project-registry/statsig under CLAUDE_CONFIG_DIR; pointing it
-	// at a per-run dir keeps concurrent native runs from colliding on ~/.claude.
-	if inv.SessionConfigDir != "" {
-		env["CLAUDE_CONFIG_DIR"] = inv.SessionConfigDir
-	}
+	// Per-run config isolation: CLAUDE_CONFIG_DIR + per-run XDG state/cache (so the
+	// version lock under $XDG_STATE_HOME doesn't collide across concurrent native
+	// runs) + headless hygiene. Shared with the session adapter (KEEP IN SYNC).
+	ApplyPerRunConfigEnv(env, inv)
 	if inv.IdempotencyKey != "" {
 		// Mirror runCode's idempotency-key injection (spec §10).
 		env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
