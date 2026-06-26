@@ -146,6 +146,12 @@ type AgentInvocation struct {
 	// It is engine operational state, not author with: config — modelled after
 	// the existing Thread/ContextEvidence fields. json:"-": never journaled.
 	ResumeSession bool `json:"-"`
+	// SessionConfigDir is the absolute per-run CLAUDE_CONFIG_DIR the engine
+	// computes for claude-session adapters (<stagingRoot>/claude-session/<run-id>);
+	// the adapter forwards it as the CLAUDE_CONFIG_DIR env var so claude relocates
+	// its whole config tree per run. Empty for non-session / non-claude steps.
+	// Engine-set, like ResumeSession — keep it out of the journal.
+	SessionConfigDir string `json:"-"`
 }
 
 // AgentResult is the synchronous return of Adapter.Launch. Output is the

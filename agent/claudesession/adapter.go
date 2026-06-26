@@ -247,6 +247,22 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		}
 		execCmd.Env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
 	}
+	// Headless-hygiene and per-run config isolation. Copy the env map before
+	// writing so we never mutate the adapter's shared a.env (the type
+	// conversion map[string]string(a.env) above aliases the underlying map —
+	// it is a type label change, not a copy, and writing to execCmd.Env would
+	// write through to a.env without this copy-on-write step).
+	{
+		fresh := make(map[string]string, len(execCmd.Env)+2)
+		for k, v := range execCmd.Env {
+			fresh[k] = v
+		}
+		execCmd.Env = fresh
+	}
+	execCmd.Env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+	if inv.SessionConfigDir != "" {
+		execCmd.Env["CLAUDE_CONFIG_DIR"] = inv.SessionConfigDir
+	}
 
 	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, execCmd)
 	if execErr != nil {

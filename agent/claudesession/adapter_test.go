@@ -410,6 +410,175 @@ func TestLaunch_ResumeSession_CommandContainsResume(t *testing.T) {
 	}
 }
 
+// TestLaunch_SessionConfigDir_EnvInjection verifies that when
+// inv.SessionConfigDir is non-empty, the adapter sets both
+// CLAUDE_CONFIG_DIR and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC in the
+// Cmd.Env forwarded to the backend.
+func TestLaunch_SessionConfigDir_EnvInjection(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{"ok":true}}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
+
+	a, _ := claudesession.New(
+		claudesession.WithBackend(f),
+		claudesession.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}),
+	)
+	inv := agent.AgentInvocation{
+		NodePath:         "graph[0]",
+		Uses:             claudesession.AdapterRef,
+		RunContext:       agent.RunContext{RunID: "run-xyz", CurrentEpoch: 1},
+		With:             ir.RawConfig{"prompt": "do stuff"},
+		SessionConfigDir: "/staging/claude-session/run-xyz",
+	}
+
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range eventCh {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+
+	if len(f.Calls) == 0 {
+		t.Fatal("no recorded calls")
+	}
+	env := f.Calls[0].Env
+
+	if got := env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]; got != "1" {
+		t.Errorf("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = %q; want %q", got, "1")
+	}
+	if got := env["CLAUDE_CONFIG_DIR"]; got != "/staging/claude-session/run-xyz" {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q; want %q", got, "/staging/claude-session/run-xyz")
+	}
+}
+
+// TestLaunch_EmptySessionConfigDir_NoClaudeConfigDir verifies that when
+// inv.SessionConfigDir is empty, CLAUDE_CONFIG_DIR is NOT set in the Cmd.Env,
+// but CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is always set.
+func TestLaunch_EmptySessionConfigDir_NoClaudeConfigDir(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{"ok":true}}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
+
+	a, _ := claudesession.New(
+		claudesession.WithBackend(f),
+		claudesession.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}),
+	)
+	inv := agent.AgentInvocation{
+		NodePath:   "graph[0]",
+		Uses:       claudesession.AdapterRef,
+		RunContext: agent.RunContext{RunID: "run-xyz", CurrentEpoch: 1},
+		With:       ir.RawConfig{"prompt": "do stuff"},
+		// SessionConfigDir intentionally empty
+	}
+
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range eventCh {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+
+	if len(f.Calls) == 0 {
+		t.Fatal("no recorded calls")
+	}
+	env := f.Calls[0].Env
+
+	if got := env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]; got != "1" {
+		t.Errorf("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = %q; want %q", got, "1")
+	}
+	if _, ok := env["CLAUDE_CONFIG_DIR"]; ok {
+		t.Errorf("CLAUDE_CONFIG_DIR unexpectedly set to %q; should be absent when SessionConfigDir is empty", env["CLAUDE_CONFIG_DIR"])
+	}
+}
+
+// TestLaunch_EnvNotMutatedAcrossTwoLaunches verifies that the adapter's
+// stored a.env is not mutated by Launch. If the env map were mutated, keys
+// injected during the first Launch (e.g. CLAUDE_CONFIG_DIR) would bleed into
+// the second Launch's Cmd.Env even when the second invocation has an empty
+// SessionConfigDir.
+func TestLaunch_EnvNotMutatedAcrossTwoLaunches(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{"ok":true}}` + "\n")
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
+
+	a, _ := claudesession.New(
+		claudesession.WithBackend(f),
+		claudesession.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}),
+	)
+
+	// First Launch: SessionConfigDir is set.
+	inv1 := agent.AgentInvocation{
+		NodePath:         "graph[0]",
+		Uses:             claudesession.AdapterRef,
+		RunContext:       agent.RunContext{RunID: "run-xyz", CurrentEpoch: 1},
+		With:             ir.RawConfig{"prompt": "first"},
+		SessionConfigDir: "/staging/claude-session/run-xyz",
+	}
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv1)
+	if err != nil {
+		t.Fatalf("Launch #1: %v", err)
+	}
+	for range eventCh {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("Launch #1 outcome.Err = %v", outcome.Err)
+	}
+
+	// Second Launch: SessionConfigDir is empty — CLAUDE_CONFIG_DIR must not bleed.
+	inv2 := agent.AgentInvocation{
+		NodePath:   "graph[1]",
+		Uses:       claudesession.AdapterRef,
+		RunContext: agent.RunContext{RunID: "run-xyz", CurrentEpoch: 1},
+		With:       ir.RawConfig{"prompt": "second"},
+		// SessionConfigDir intentionally empty
+	}
+	eventCh2, outcomeCh2, err2 := a.Launch(context.Background(), h, inv2)
+	if err2 != nil {
+		t.Fatalf("Launch #2: %v", err2)
+	}
+	for range eventCh2 {
+	}
+	if outcome := <-outcomeCh2; outcome.Err != nil {
+		t.Fatalf("Launch #2 outcome.Err = %v", outcome.Err)
+	}
+
+	if len(f.Calls) < 2 {
+		t.Fatalf("expected 2 recorded calls, got %d", len(f.Calls))
+	}
+
+	// First call must have CLAUDE_CONFIG_DIR.
+	if got := f.Calls[0].Env["CLAUDE_CONFIG_DIR"]; got != "/staging/claude-session/run-xyz" {
+		t.Errorf("Launch #1 CLAUDE_CONFIG_DIR = %q; want %q", got, "/staging/claude-session/run-xyz")
+	}
+
+	// Second call must NOT have CLAUDE_CONFIG_DIR (proving a.env was not mutated).
+	if _, ok := f.Calls[1].Env["CLAUDE_CONFIG_DIR"]; ok {
+		t.Errorf("Launch #2 CLAUDE_CONFIG_DIR = %q unexpectedly present; a.env was mutated by Launch #1", f.Calls[1].Env["CLAUDE_CONFIG_DIR"])
+	}
+
+	// Both calls must have CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC.
+	for i, c := range f.Calls[:2] {
+		if got := c.Env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]; got != "1" {
+			t.Errorf("Launch #%d CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = %q; want %q", i+1, got, "1")
+		}
+	}
+}
+
 func TestLaunch_NoBackend_Errors(t *testing.T) {
 	a, _ := claudesession.New() // no WithBackend
 	h := container.Handle{Name: "lab"}
