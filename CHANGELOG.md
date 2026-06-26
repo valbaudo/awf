@@ -8,6 +8,47 @@ While `awf` is pre-1.0, the workflow format and CLI may still change between
 minor versions. The workflow-format version (`version: 1` in a workflow file)
 is tracked independently of the `awf` tool version.
 
+## [0.1.1] - 2026-06-26
+
+Adds a persistent-session Claude Code adapter with per-run configuration
+isolation, fixes a data race in the Claude adapters, and refreshes dependencies.
+No workflow-format or CLI-flag changes — `awf` workflows and commands from 0.1.0
+run unchanged.
+
+### Added
+
+- **`anthropic/claude-code-session` adapter.** A persistent-session variant of
+  `anthropic/claude-code`: instead of discarding Claude Code's on-disk session
+  after each turn it reuses it. When the step commits, `awf` captures the
+  session's `projects/` directory as a content-addressed artifact; before the step
+  launches again it restores that subtree and resumes the same session
+  (`claude --resume`). A re-executed step — for example after `awf resume` —
+  continues from Claude's own session state, including internal state a
+  re-assembled message log cannot reconstruct. Generator-only: a persistent-session
+  runtime is rejected as a gate evaluator, so the judge always starts fresh.
+  Documented in `awf-workflow(5)`.
+- **Per-run Claude configuration isolation.** Both `anthropic/claude-code` and
+  `anthropic/claude-code-session` now run each `awf run` with its own
+  `CLAUDE_CONFIG_DIR` under the per-run `.awf` staging root, so concurrent runs on
+  the `native` backend no longer collide on a shared `~/.claude` (config, project
+  registry, session journal, telemetry). Non-essential Claude Code traffic
+  (telemetry, auto-updater) is disabled for unattended agent runs.
+
+### Fixed
+
+- **Data race in the Claude adapters.** Concurrent `Launch` calls no longer mutate
+  the adapter's shared environment map — the per-invocation `AWF_IDEMPOTENCY_KEY`
+  and `CLAUDE_CONFIG_DIR` writes now go to a fresh copy. Affected both
+  `anthropic/claude-code` and `anthropic/claude-code-session`.
+- `native` backend: the Landlock sandbox now grants `/proc`, `/sys`, and `/dev`,
+  so confined steps that need them start correctly.
+
+### Changed
+
+- Bumped OpenTelemetry to 1.44, `openai-go` to 3.41, and `actions/checkout` to v7.
+- `SECURITY.md` documents why the Docker-toolchain advisories cannot yet be patched
+  (no fixed upstream release).
+
 ## [0.1.0] - 2026-06-24
 
 First public release. A single-binary runtime for agentic workflows with an
@@ -52,4 +93,5 @@ independent acceptance gate and content-addressed checkpoint/resume.
 - **Documentation.** `awf(1)` command reference and `awf-workflow(5)`
   workflow-format reference (the stable format contract).
 
+[0.1.1]: https://github.com/valbaudo/awf/releases/tag/v0.1.1
 [0.1.0]: https://github.com/valbaudo/awf/releases/tag/v0.1.0
