@@ -236,7 +236,12 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	if ictx.resolver != nil {
 		if adp, ok := ictx.resolver.Lookup(uses); ok {
 			caps := adp.Capabilities()
-			if !caps.Containerless && caps.IsolatedConfigDir {
+			// PersistentSession IMPLIES a config dir: capture/restore reads the
+			// per-run config dir's projects/ subtree, so a session adapter is always
+			// given one (even if it didn't explicitly declare IsolatedConfigDir) —
+			// this keeps "captured dir" and "claude's config dir" the same by
+			// construction and removes a silent-no-capture footgun.
+			if !caps.Containerless && (caps.IsolatedConfigDir || caps.PersistentSession) {
 				sessionConfigDirRel = dispatcherStagingRoot(ictx.dispatcher) + "/claude-session/" + runstate.RunID
 				if caps.PersistentSession {
 					sessionDir = sessionConfigDirRel + "/projects"

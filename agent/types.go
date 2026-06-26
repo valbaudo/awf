@@ -157,9 +157,12 @@ type AgentInvocation struct {
 	// the existing Thread/ContextEvidence fields. json:"-": never journaled.
 	ResumeSession bool `json:"-"`
 	// SessionConfigDir is the absolute per-run CLAUDE_CONFIG_DIR the engine
-	// computes for claude-session adapters (<stagingRoot>/claude-session/<run-id>);
+	// computes for claude-family adapters (<stagingRoot>/claude-session/<run-id>);
 	// the adapter forwards it as the CLAUDE_CONFIG_DIR env var so claude relocates
-	// its whole config tree per run. Empty for non-session / non-claude steps.
+	// its whole config tree per run. Set for any container-backed IsolatedConfigDir
+	// adapter — both the base anthropic/claude-code adapter (config isolation only)
+	// and the session adapter (which ALSO captures the projects/ subtree). Empty
+	// for non-claude / containerless steps.
 	// Engine-set, like ResumeSession — keep it out of the journal.
 	SessionConfigDir string `json:"-"`
 }
