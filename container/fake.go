@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -382,6 +383,76 @@ func (f *Fake) ReadFileAt(ctx context.Context, h Handle, path string) ([]byte, e
 		return nil, fmt.Errorf("container/fake: ReadFileAt: path %q not present in handle %q", path, h.ID)
 	}
 	return cloneBytes(content), nil
+}
+
+// ReadTreeAt returns the subtree rooted at dir as a gzip-tar (built via
+// BuildTreeTar). Entry paths in the archive are relative to dir. Returns an
+// error when no files exist under dir (the caller cannot distinguish an empty
+// directory from a missing one in the flat in-memory fs, so both are treated
+// as absent).
+//
+// ReadTreeAt is NOT on the container.Backend interface — that addition happens
+// once all three backends implement it (a later task). It is defined here on
+// *Fake so session-capture tests can exercise the full round-trip against the
+// in-memory backend.
+func (f *Fake) ReadTreeAt(ctx context.Context, h Handle, dir string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fh, ok := f.handles[h.ID]
+	if !ok {
+		return nil, fmt.Errorf("container/fake: ReadTreeAt: unknown handle %q", h.ID)
+	}
+	// Normalise: strip any trailing slash so the prefix comparison is consistent.
+	prefix := strings.TrimRight(dir, "/") + "/"
+	collected := map[string][]byte{}
+	for p, content := range fh.files {
+		if strings.HasPrefix(p, prefix) {
+			rel := p[len(prefix):]
+			if rel == "" {
+				continue // bare prefix — skip
+			}
+			collected[rel] = cloneBytes(content)
+		}
+	}
+	if len(collected) == 0 {
+		return nil, fmt.Errorf("container/fake: ReadTreeAt: no files found under %q", dir)
+	}
+	tarGz, err := BuildTreeTar(collected)
+	if err != nil {
+		return nil, fmt.Errorf("container/fake: ReadTreeAt: %w", err)
+	}
+	return tarGz, nil
+}
+
+// WriteTreeAt extracts a gzip-tar (as produced by BuildTreeTar or ReadTreeAt)
+// into the handle's in-memory fs under dir. Relative paths from the archive
+// are joined to dir; existing files are overwritten. Enforces the standard
+// TreeTarMaxBytes / TreeTarMaxEntries caps to guard against zip-bomb payloads.
+//
+// WriteTreeAt is NOT on the container.Backend interface for the same reason as
+// ReadTreeAt — the interface addition happens in a later task.
+func (f *Fake) WriteTreeAt(ctx context.Context, h Handle, dir string, tarGz []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	files, err := ExtractTreeTar(tarGz, TreeTarMaxBytes, TreeTarMaxEntries)
+	if err != nil {
+		return fmt.Errorf("container/fake: WriteTreeAt: %w", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fh, ok := f.handles[h.ID]
+	if !ok {
+		return fmt.Errorf("container/fake: WriteTreeAt: unknown handle %q", h.ID)
+	}
+	base := strings.TrimRight(dir, "/")
+	for rel, content := range files {
+		fh.files[base+"/"+rel] = cloneBytes(content)
+	}
+	return nil
 }
 
 // WriteFileAt implements container.Backend.
