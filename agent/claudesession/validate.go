@@ -12,15 +12,13 @@ const (
 	keyAllowedTools = "allowed_tools"
 	keyBare         = "bare"
 	keyMaxBudgetUSD = "max_budget_usd"
-	// keyWorkdir is the in-container working directory for this step. The
-	// session transcript path is keyed on it
-	// (~/.claude/projects/<encodeProjectDir(workdir)>/…). Authors MUST set
-	// this to the directory claude will run in (the image's WORKDIR, or a
-	// compose-declared working_dir). When absent the transcript path uses ""
-	// as the project bucket, which is degenerate and will NOT match where
-	// claude writes; the field is optional only to preserve backward
-	// compatibility with existing conformance tests that use a fixed-path
-	// fake adapter.
+	// keyWorkdir was the in-container working directory used by the OLD
+	// single-transcript-file session model to derive the ~/.claude/projects
+	// bucket. The 2026-06-26 native-config-isolation revision captures the whole
+	// per-run CLAUDE_CONFIG_DIR/projects subtree instead, so the transcript bucket
+	// lives INSIDE the captured artifact and this key no longer participates in
+	// the session path. It is still ACCEPTED (optional) for backward
+	// compatibility; dropping it is a tracked follow-up (needs a man-page update).
 	keyWorkdir = "workdir"
 )
 

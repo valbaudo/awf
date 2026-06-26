@@ -231,5 +231,20 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 // Restore re-materializes a container workdir from a SnapshotRef; it lives in
 // snapshot.go (os.Root-confined extraction).
 
+// ResolveWorkdirPath implements container.WorkdirResolver. It returns
+// filepath.Join(workdir, rel) where workdir is the absolute host path of the
+// handle's working directory. If the handle is unknown (defensive), rel is
+// returned unchanged — the method never panics.
+func (b *Backend) ResolveWorkdirPath(h container.Handle, rel string) string {
+	b.mu.Lock()
+	r, ok := b.handles[h.ID]
+	b.mu.Unlock()
+	if !ok {
+		return rel
+	}
+	return filepath.Join(r.workdir, rel)
+}
+
 // Compile-time interface satisfaction.
 var _ container.Backend = (*Backend)(nil)
+var _ container.WorkdirResolver = (*Backend)(nil)

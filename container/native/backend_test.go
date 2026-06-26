@@ -184,3 +184,38 @@ func TestDoubleDestroyErrors(t *testing.T) {
 		t.Error("second Destroy returned nil, want error (handle gone)")
 	}
 }
+
+// TestResolveWorkdirPath verifies that native.Backend implements
+// container.WorkdirResolver and that:
+//   - a known handle returns filepath.Join(workdir, rel)
+//   - an unknown handle returns rel unchanged (defensive, never panics)
+func TestResolveWorkdirPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	b, err := native.New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	wr, ok := any(b).(container.WorkdirResolver)
+	if !ok {
+		t.Fatal("native.Backend does not implement container.WorkdirResolver")
+	}
+
+	const rel = ".awf/claude-session/RUN"
+	// h.ID is the workdir path for the native backend.
+	want := filepath.Join(h.ID, rel)
+	if got := wr.ResolveWorkdirPath(h, rel); got != want {
+		t.Errorf("ResolveWorkdirPath(known) = %q, want %q", got, want)
+	}
+
+	// Unknown handle: must return rel unchanged (defensive — never panic).
+	ghost := container.Handle{ID: "ghost-never-created"}
+	if got := wr.ResolveWorkdirPath(ghost, rel); got != rel {
+		t.Errorf("ResolveWorkdirPath(unknown) = %q, want %q (rel unchanged)", got, rel)
+	}
+}

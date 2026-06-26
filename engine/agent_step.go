@@ -221,34 +221,26 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	snapBare, _ := SplitContainerRef(as.Container)
 	uses := AgentRuntimeRef(wf, ictx.moduleID, as.Uses)
 
-	// M2: set SessionTranscriptPath if the resolved adapter declares PersistentSession
-	// AND implements agent.SessionPathProvider. The workdir is read from the resolved
-	// with["workdir"] key (M2d): authors using anthropic/claude-code-session MUST
-	// declare the container's working directory there so the adapter can derive the
-	// correct transcript bucket (~/.claude/projects/<encodeProjectDir(workdir)>/…).
-	// When the key is absent, workdir is "" which produces a degenerate (but
-	// non-panicking) path — preserved for conformance fakes that return a fixed path
-	// regardless of workdir.
-	var sessionTranscriptPath string
+	// Session capture/restore: when the resolved adapter declares
+	// PersistentSession AND is container-backed, the engine captures/restores the
+	// whole per-run claude `projects/` subtree under the staging root, RunID-keyed.
+	// Derived from
+	// Caps.StagingRoot + RunID alone — no adapter, no cwd. The transcript bucket
+	// lives INSIDE the captured subtree, so claude's cwd / with.workdir no longer
+	// participates in the path (the 2026-06-26 native-config-isolation design
+	// replaced the single-transcript-file model with the projects/-subtree
+	// model). RunID is read-from-log on resume, so the dir is determinism-safe.
+	var sessionDir string
 	if ictx.resolver != nil {
-		if adp, ok := ictx.resolver.Lookup(uses); ok &&
-			adp.Capabilities().PersistentSession {
-			if spp, ok := adp.(agent.SessionPathProvider); ok {
-				var workdir string
-				if wd, wdOK := resolvedWith["workdir"].(string); wdOK {
-					workdir = wd
-				}
-				partialInv := agent.AgentInvocation{
-					NodePath: path,
-					Uses:     uses,
-					RunContext: agent.RunContext{
-						RunID:        runstate.RunID,
-						CurrentEpoch: runstate.Epoch,
-						NextEpoch:    runstate.Epoch,
-					},
-					With: resolvedWith,
-				}
-				sessionTranscriptPath = spp.SessionTranscriptPath(partialInv, workdir)
+		if adp, ok := ictx.resolver.Lookup(uses); ok {
+			// Subtree capture/restore reads the agent's <CLAUDE_CONFIG_DIR>/projects
+			// subtree off a container filesystem, so it requires a CONTAINER-BACKED
+			// session adapter. A Containerless adapter (e.g. agent/codexlive) has no
+			// container handle and its PersistentSession is a live-process session,
+			// NOT a config-dir subtree — including it would fire ReadTreeAt against a
+			// zero handle and turn every successful run into a mechanical failure.
+			if caps := adp.Capabilities(); caps.PersistentSession && !caps.Containerless {
+				sessionDir = dispatcherStagingRoot(ictx.dispatcher) + "/claude-session/" + runstate.RunID + "/projects"
 			}
 		}
 	}
@@ -266,7 +258,7 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		InputFiles:            inputFiles,         // SP1 artifact channel (container path)
 		ContainerlessFiles:    containerlessFiles, // inline message parts (containerless path)
 		OutputFileContracts:   outputFileContracts,
-		SessionTranscriptPath: sessionTranscriptPath, // M2: set for PersistentSession+SessionPathProvider adapters
+		SessionDir:            sessionDir, // set for PersistentSession adapters; RunID-keyed projects/ subtree
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)

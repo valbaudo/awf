@@ -21,7 +21,7 @@ type interpreterContext struct {
 	runtimeParent string
 	runstate      *RunState
 	dispatcher    Dispatcher
-	resolver      agent.Resolver // M2: exposes adapter lookup for SessionTranscriptPath wiring; nil if dispatcher doesn't implement AdapterResolver
+	resolver      agent.Resolver // exposes adapter lookup for SessionDir (PersistentSession) wiring; nil if dispatcher doesn't implement AdapterResolver
 	log           state.Log
 	blobs         state.Blobs
 	clk           clock.Clock

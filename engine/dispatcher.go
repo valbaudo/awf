@@ -83,11 +83,13 @@ type ResolvedInputs struct {
 	// container; the dispatcher captures a CoW diff after a successful exec.
 	Snapshot string
 
-	// SessionTranscriptPath is the in-container path of the agent's native
-	// session transcript to capture at commit (empty = no session capture).
-	// Set by the interpreter for PersistentSession adapters; Milestone-1 tests
-	// set it directly.
-	SessionTranscriptPath string
+	// SessionDir is the per-run claude session `projects/` directory to
+	// capture/restore, in StagingRoot form (native relative `.awf/...`, docker
+	// absolute `/work/.awf/...`); empty for non-session steps. The engine
+	// captures the whole subtree at commit (Backend.ReadTreeAt) and restores it
+	// on the generator frontier (Backend.WriteTreeAt). Set by the interpreter
+	// for PersistentSession adapters; Milestone-1 tests set it directly.
+	SessionDir string
 
 	// Slice 5.2 — agent-step fields. Zero values when the node is a CodeStep
 	// (runCode ignores them); populated by engine/agent_step.go runAgentStep
@@ -202,10 +204,10 @@ type DispatchResult struct {
 	// resume's snapshot→container mapping + obs's awf.container.name).
 	Container string
 
-	// SessionTranscript is the raw native-session transcript captured by the
-	// dispatcher (via Backend.ReadFileAt) after a successful agent turn. Commit
-	// content-addresses it into Blobs and records SessionRef. json:"-" — never
-	// journaled raw (mirrors Transcript at :185).
+	// SessionTranscript is the captured claude session `projects/` subtree as a
+	// gzip-tar, read by the dispatcher (via Backend.ReadTreeAt) after a
+	// successful agent turn. Commit content-addresses it into Blobs and records
+	// SessionRef. json:"-" — never journaled raw (mirrors Transcript at :185).
 	SessionTranscript []byte `json:"-"`
 	// SessionRef is set by Commit after Put. Operational, ref-only.
 	SessionRef string

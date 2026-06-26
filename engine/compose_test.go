@@ -255,6 +255,14 @@ func (b *destroyFailingBackend) WriteFileAt(ctx context.Context, h container.Han
 	return b.inner.WriteFileAt(ctx, h, path, content)
 }
 
+func (b *destroyFailingBackend) ReadTreeAt(ctx context.Context, h container.Handle, dir string) ([]byte, error) {
+	return b.inner.ReadTreeAt(ctx, h, dir)
+}
+
+func (b *destroyFailingBackend) WriteTreeAt(ctx context.Context, h container.Handle, dir string, tarGz []byte) error {
+	return b.inner.WriteTreeAt(ctx, h, dir, tarGz)
+}
+
 func (b *destroyFailingBackend) Destroy(ctx context.Context, h container.Handle) error {
 	if err := b.inner.Destroy(ctx, h); err != nil {
 		return fmt.Errorf("inner destroy: %w", err)

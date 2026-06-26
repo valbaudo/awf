@@ -1,9 +1,11 @@
 package conformance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,24 +17,6 @@ import (
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
-
-// sessionConformanceFake is a test-only agent adapter used by the full e2e
-// conformance test. It wraps *agentfake.Fake and additionally implements
-// agent.SessionPathProvider (returning the fixed path sessionConformancePath).
-// Caps.PersistentSession is set to true so the M2 interpreter wiring sets
-// ResolvedInputs.SessionTranscriptPath for steps using this adapter.
-type sessionConformanceFake struct {
-	*agentfake.Fake
-}
-
-const sessionConformancePath = "/transcript.jsonl"
-
-func (s *sessionConformanceFake) SessionTranscriptPath(_ agent.AgentInvocation, _ string) string {
-	return sessionConformancePath
-}
-
-// Compile-time assertion: sessionConformanceFake satisfies agent.SessionPathProvider.
-var _ agent.SessionPathProvider = (*sessionConformanceFake)(nil)
 
 // sessionE2EWorkflow is the workflow YAML used by testSessionRefFullE2E.
 // It has two steps:
@@ -62,33 +46,58 @@ graph:
     retry: { attempts: 1 }
 `, fakeImageDigest)
 
-// testSessionRef is the Bucket-19 entry point: session transcript capture →
+// testSessionRef is the Bucket-19 entry point: session-subtree capture →
 // fold → restore on the generator frontier.
 //
 // Sub-tests:
-//   - restore_calls_write_file_at: dispatcher-level restore (M1, already green).
-//   - no_restore_on_first_run: no WriteFileAt on a first run (M1, already green).
-//   - session_ref_blob_round_trip: Commit+Fold round-trip (M1, already green).
-//   - full_e2e_conformance_harness: YAML-driven capture + fold + restore (M2, promoted
-//     from skip now that the interpreter wires SessionTranscriptPath).
+//   - restore_calls_write_tree_at: dispatcher-level restore (subtree model).
+//   - no_restore_on_first_run: no WriteTreeAt on a first run.
+//   - session_ref_blob_round_trip: Commit+Fold round-trip.
+//   - full_e2e_conformance_harness: YAML-driven capture + fold + restore.
 func testSessionRef(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	if _, ok := factory().(*container.Fake); !ok {
-		t.Skip("session_ref asserts on the fake's WriteFileAtCalls recorder; fake-only")
+		t.Skip("session_ref asserts on the fake's WriteTreeAtCalls recorder; fake-only")
 	}
-	t.Run("restore_calls_write_file_at", func(t *testing.T) { testSessionRefRestoreCallsWriteFileAt(t) })
+	t.Run("restore_calls_write_tree_at", func(t *testing.T) { testSessionRefRestoreCallsWriteTreeAt(t) })
 	t.Run("no_restore_on_first_run", func(t *testing.T) { testSessionRefNoRestoreOnFirstRun(t) })
 	t.Run("session_ref_blob_round_trip", func(t *testing.T) { testSessionRefBlobRoundTrip(t) })
 	t.Run("full_e2e_conformance_harness", func(t *testing.T) { testSessionRefFullE2E(t) })
 }
 
-// testSessionRefFullE2E is the M2 full-workflow e2e (promoted from M1-deferred skip).
+// sessionSeedingFake wraps *container.Fake and overrides ReadTreeAt to seed a
+// transcript file UNDER the captured SessionDir on the first (empty) read —
+// simulating claude having written $CLAUDE_CONFIG_DIR/projects/<bucket>/<uuid>.jsonl
+// during the run. This lets the capture block's ReadTreeAt(SessionDir) succeed
+// without the engine (or the test) knowing the RunID-derived SessionDir a priori.
+// On the restore path the subtree is already populated (WriteTreeAt ran first),
+// so the seed is a no-op. WriteTreeAt is recorded by the embedded *container.Fake's
+// WriteTreeAtCalls (promoted method), so restore is observable via the underlying fake.
+type sessionSeedingFake struct {
+	*container.Fake
+	transcript []byte
+}
+
+// ReadTreeAt seeds a transcript under dir on the first (empty) read, then
+// delegates to the embedded fake (the capture path).
+func (s *sessionSeedingFake) ReadTreeAt(ctx context.Context, h container.Handle, dir string) ([]byte, error) {
+	if existing, _ := s.Fake.ReadTreeAt(ctx, h, dir); existing == nil {
+		seedPath := strings.TrimRight(dir, "/") + "/-work/session.jsonl"
+		if wErr := s.WriteFileAt(ctx, h, seedPath, s.transcript); wErr != nil {
+			return nil, wErr
+		}
+	}
+	return s.Fake.ReadTreeAt(ctx, h, dir)
+}
+
+// testSessionRefFullE2E is the full-workflow e2e for the subtree session model.
 // It exercises the complete session-ref pipeline through the real harness:
 //
 //  1. Run 1 (YAML-driven via runWorkflow):
-//     - gen (PersistentSession, sessionConformanceFake) runs, its transcript is
-//     present in the fake container at sessionConformancePath → ReadFileAt captures
-//     it → node.completed carries session_ref → RunState.SessionRefs["gen"] populated.
+//     - gen (PersistentSession) runs; the seeding fake writes a transcript file
+//     under the engine-derived SessionDir → ReadTreeAt(SessionDir) captures the
+//     whole projects/ subtree as a gzip-tar → node.completed carries session_ref
+//     → RunState.SessionRefs["gen"] populated.
 //     - downstream (code step) is crashed by FailExecAfterN → downstream is the frontier.
 //
 //  2. Fold the log → assert RunState.SessionRefs["gen"] is set (interpreter wiring proof).
@@ -99,7 +108,7 @@ func testSessionRef(t *testing.T, factory BackendFactory) {
 //  4. Restore-path proof: after folding the completed log, dispatch gen again (as if
 //     it were on the frontier) using a fresh fake backed by the SAME shared blobs.
 //     The folded RunState carries SessionRefs["gen"]; the dispatcher must call
-//     Backend.WriteFileAt with the committed transcript bytes before launching.
+//     Backend.WriteTreeAt with the committed subtree tar before launching.
 //     This proves the full capture → fold → restore pipeline end-to-end.
 //
 // Structure mirrors testSnapshotRestoreCalledOnResume (conformance/snapshot.go):
@@ -109,13 +118,12 @@ func testSessionRefFullE2E(t *testing.T) {
 	t.Helper()
 	blobs := state.NewInMemoryBlobs()
 
-	// Session adapter: PersistentSession + SessionPathProvider → fixed transcript path.
-	sessionAdapter := &sessionConformanceFake{
-		Fake: agentfake.New("test/session-e2e-agent").
-			WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).
-			Script(0, agentfake.Result{}). // run 1: gen succeeds
-			Script(1, agentfake.Result{}), // proof dispatch: gen succeeds again
-	}
+	// Session adapter: PersistentSession (no SessionPathProvider — the engine
+	// derives SessionDir from Caps.StagingRoot + RunID alone).
+	sessionAdapter := agentfake.New("test/session-e2e-agent").
+		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).
+		Script(0, agentfake.Result{}). // run 1: gen succeeds
+		Script(1, agentfake.Result{})  // proof dispatch: gen succeeds again
 
 	h := newHarnessWithAgentRegistry(t,
 		func() container.Backend { return container.NewFake().WithBlobs(blobs) },
@@ -128,11 +136,10 @@ func testSessionRefFullE2E(t *testing.T) {
 	)
 	h.blobs = blobs
 
-	// Track run/resume fakes for assertions.
-	// NOTE: this e2e uses a fixed-path fake adapter (sessionConformanceFake.SessionTranscriptPath
-	// returns sessionConformancePath unconditionally and ignores workdir). It does NOT exercise
-	// the real workdir-based path derivation (encodeProjectDir) used by the live claude-code-session
-	// adapter. The workdir gap is tracked by TODO(M2d) in engine/agent_step.go.
+	// Track run/resume fakes for assertions. The engine computes
+	// SessionDir = /work/.awf/claude-session/<RunID>/projects (fake StagingRoot
+	// is /work/.awf); the seeding fake writes a transcript file under whatever
+	// SessionDir the engine derives, so the test needs no a-priori RunID.
 	var runFake, resumeFake *container.Fake
 	h.factory = func() container.Backend {
 		f := container.NewFake().WithBlobs(blobs)
@@ -143,7 +150,7 @@ func testSessionRefFullE2E(t *testing.T) {
 		} else {
 			resumeFake = f
 		}
-		return &sessionSeedingFake{Fake: f, transcriptPath: sessionConformancePath, transcript: []byte(`{"session":"e2e-run1"}`)}
+		return &sessionSeedingFake{Fake: f, transcript: []byte(`{"session":"e2e-run1"}`)}
 	}
 
 	// First run: gen commits (SessionRef captured), downstream crashes → frontier.
@@ -195,17 +202,17 @@ func testSessionRefFullE2E(t *testing.T) {
 		t.Fatal("resume did not mint a second fake")
 	}
 
-	// The transcript blob must survive in shared blobs after run + resume.
-	transcriptBytes, getErr := blobs.Get(genSessionRef)
+	// The subtree tar blob must survive in shared blobs after run + resume.
+	transcriptTar, getErr := blobs.Get(genSessionRef)
 	if getErr != nil {
-		t.Fatalf("transcript blob not durable after resume: %v", getErr)
+		t.Fatalf("session-subtree blob not durable after resume: %v", getErr)
 	}
 
 	// Restore-path proof (mirrors the snapshot test's "Restore was called" assertion):
 	// Dispatch gen again using the fully-folded RunState (after both run + resume).
 	// The folded RunState still has SessionRefs["gen"] from run 1's commit (downstream's
 	// completion on resume does not clear gen's SessionRef).
-	// The fresh fake must call WriteFileAt at sessionConformancePath with the committed bytes.
+	// The fresh fake must call WriteTreeAt at the SessionDir with the committed tar.
 	finalEvents := mustFoldEvents(t, h)
 	finalRS, fferr := engine.Fold(finalEvents, blobs)
 	if fferr != nil {
@@ -216,16 +223,13 @@ func testSessionRefFullE2E(t *testing.T) {
 	}
 
 	// Build a fresh fake (as if gen were re-dispatched on a new run with prior session).
+	// No pre-seed: the restore path (WriteTreeAt) populates the SessionDir subtree
+	// before capture's ReadTreeAt reads it back.
 	proofFake := container.NewFake().WithBlobs(blobs)
 	ph, phErr := proofFake.Create(t.Context(), container.ContainerSpec{Name: "ws"})
 	if phErr != nil {
 		t.Fatalf("Create proof fake: %v", phErr)
 	}
-	// Pre-seed the transcript for the capture side of the proof dispatch.
-	if wErr := proofFake.WriteFileAt(t.Context(), ph, sessionConformancePath, transcriptBytes); wErr != nil {
-		t.Fatalf("seed transcript in proof fake: %v", wErr)
-	}
-	proofFake.WriteFileAtCalls = nil // reset so seed write is not counted
 
 	// Register the session adapter for the proof dispatch (Script(1) = gen's second call).
 	proofReg := &agent.Registry{}
@@ -233,9 +237,10 @@ func testSessionRefFullE2E(t *testing.T) {
 		t.Fatalf("Register session adapter for proof: %v", regErr)
 	}
 
+	const proofSessionDir = "/work/.awf/claude-session/proof/projects"
 	proofRI := engine.ResolvedInputs{
-		Uses:                  "test/session-e2e-agent",
-		SessionTranscriptPath: sessionConformancePath,
+		Uses:       "test/session-e2e-agent",
+		SessionDir: proofSessionDir,
 	}
 	proofD := &engine.LocalDispatcher{
 		Backend:  proofFake,
@@ -259,49 +264,23 @@ func testSessionRefFullE2E(t *testing.T) {
 		t.Fatalf("proof dispatch outcome = %q, want ok (Err: %v)", proofDR.Outcome, proofDR.Err)
 	}
 
-	// WriteFileAt must have been called with the original committed transcript bytes.
+	// WriteTreeAt must have been called at the SessionDir with the original committed tar.
 	var restored bool
-	for _, c := range proofFake.WriteFileAtCalls {
-		if c.Path == sessionConformancePath && string(c.Content) == string(transcriptBytes) {
+	for _, c := range proofFake.WriteTreeAtCalls {
+		if c.Dir == proofSessionDir && bytes.Equal(c.Content, transcriptTar) {
 			restored = true
 		}
 	}
 	if !restored {
-		t.Errorf("restore-path proof: WriteFileAt not called at %q with committed transcript (WriteFileAtCalls=%+v)", sessionConformancePath, proofFake.WriteFileAtCalls)
+		t.Errorf("restore-path proof: WriteTreeAt not called at %q with committed subtree tar (WriteTreeAtCalls=%+v)", proofSessionDir, proofFake.WriteTreeAtCalls)
 	}
 }
 
-// sessionSeedingFake wraps *container.Fake and overrides Create to pre-seed a
-// transcript file at transcriptPath in every handle it creates. This lets the
-// conformance e2e pre-seed the agent transcript so Backend.ReadFileAt (the
-// capture block) succeeds without requiring a separate pre-seeding step after
-// the harness creates its handles internally.
-type sessionSeedingFake struct {
-	*container.Fake
-	transcriptPath string
-	transcript     []byte
-}
-
-func (s *sessionSeedingFake) Create(ctx context.Context, spec container.ContainerSpec) (container.Handle, error) {
-	h, err := s.Fake.Create(ctx, spec)
-	if err != nil {
-		return h, err
-	}
-	// Pre-seed the transcript file in the newly created handle so that
-	// Backend.ReadFileAt (the capture block) succeeds when gen runs.
-	if wErr := s.WriteFileAt(ctx, h, s.transcriptPath, s.transcript); wErr != nil {
-		return h, fmt.Errorf("sessionSeedingFake.Create: seed transcript: %w", wErr)
-	}
-	// Reset WriteFileAtCalls so the seed write is not visible to test assertions.
-	s.WriteFileAtCalls = nil
-	return h, nil
-}
-
-// testSessionRefRestoreCallsWriteFileAt verifies the restore site: when RunState
+// testSessionRefRestoreCallsWriteTreeAt verifies the restore site: when RunState
 // carries a SessionRef for the dispatched node path and ResolvedInputs has a
-// SessionTranscriptPath, the dispatcher calls Backend.WriteFileAt with the
-// committed blob bytes before launching the agent.
-func testSessionRefRestoreCallsWriteFileAt(t *testing.T) {
+// SessionDir, the dispatcher calls Backend.WriteTreeAt with the committed
+// subtree tar before launching the agent.
+func testSessionRefRestoreCallsWriteTreeAt(t *testing.T) {
 	t.Helper()
 	blobs := state.NewInMemoryBlobs()
 	f := container.NewFake().WithBlobs(blobs)
@@ -310,9 +289,12 @@ func testSessionRefRestoreCallsWriteFileAt(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Seed a transcript blob and a SessionRef for node path "gen".
-	transcript := []byte(`{"session":"round1","history":[]}`)
-	ref, putErr := blobs.Put(transcript)
+	// Seed a session-subtree tar blob and a SessionRef for node path "gen".
+	tarGz, terr := container.BuildTreeTar(map[string][]byte{"-work/s.jsonl": []byte(`{"session":"round1"}`)})
+	if terr != nil {
+		t.Fatalf("BuildTreeTar: %v", terr)
+	}
+	ref, putErr := blobs.Put(tarGz)
 	if putErr != nil {
 		t.Fatalf("blobs.Put: %v", putErr)
 	}
@@ -320,37 +302,37 @@ func testSessionRefRestoreCallsWriteFileAt(t *testing.T) {
 	rs.SessionRefs["gen"] = ref
 
 	// Dispatch the agent with RunState + Blobs set on the dispatcher.
-	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
+	const sessionDir = "/work/.awf/claude-session/run-1/projects"
 	dr := dispatchOKAgentSessionForConformance(t, f, h, rs, blobs, engine.ResolvedInputs{
-		SessionTranscriptPath: transcriptPath,
+		SessionDir: sessionDir,
 	})
 	if dr.Outcome != engine.OutcomeOK {
 		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
 	}
 
-	// WriteFileAt must have been called with the committed transcript bytes.
+	// WriteTreeAt must have been called at SessionDir with the committed tar.
 	var found bool
-	for _, c := range f.WriteFileAtCalls {
-		if c.Path == transcriptPath && string(c.Content) == string(transcript) {
+	for _, c := range f.WriteTreeAtCalls {
+		if c.Dir == sessionDir && bytes.Equal(c.Content, tarGz) {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("restore did not call WriteFileAt with the committed transcript (WriteFileAtCalls=%+v)", f.WriteFileAtCalls)
+		t.Errorf("restore did not call WriteTreeAt with the committed subtree tar (WriteTreeAtCalls=%+v)", f.WriteTreeAtCalls)
 	}
 
-	// The transcript blob survives in the shared store (content-addressed durability).
+	// The subtree blob survives in the shared store (content-addressed durability).
 	got, getErr := blobs.Get(ref)
 	if getErr != nil {
-		t.Errorf("transcript blob not durable after restore: %v", getErr)
+		t.Errorf("session-subtree blob not durable after restore: %v", getErr)
 	}
-	if string(got) != string(transcript) {
-		t.Errorf("blob round-trip = %q, want %q", got, transcript)
+	if !bytes.Equal(got, tarGz) {
+		t.Errorf("blob round-trip mismatch")
 	}
 }
 
 // testSessionRefNoRestoreOnFirstRun verifies that when RunState has no
-// SessionRefs entry for the dispatched node path, WriteFileAt is NOT called
+// SessionRefs entry for the dispatched node path, WriteTreeAt is NOT called
 // (first run with no prior session).
 func testSessionRefNoRestoreOnFirstRun(t *testing.T) {
 	t.Helper()
@@ -362,29 +344,28 @@ func testSessionRefNoRestoreOnFirstRun(t *testing.T) {
 	}
 	rs := engine.NewRunState("run-1", "digest-1", nil) // no SessionRefs["gen"]
 
-	// Pre-write the transcript file so the capture block (ReadFileAt) succeeds
-	// and the step returns OutcomeOK. WriteFileAtCalls is then reset so the seed
-	// write is not counted — WriteFileAt is only called by the restore path.
-	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
-	if wErr := f.WriteFileAt(t.Context(), h, transcriptPath, []byte("transcript")); wErr != nil {
+	// Pre-seed a file UNDER SessionDir so the capture block (ReadTreeAt) succeeds
+	// and the step returns OutcomeOK. WriteFileAt does not touch WriteTreeAtCalls,
+	// so WriteTreeAt remains observably uncalled (restore is the only WriteTreeAt caller).
+	const sessionDir = "/work/.awf/claude-session/run-1/projects"
+	if wErr := f.WriteFileAt(t.Context(), h, sessionDir+"/-work/s.jsonl", []byte("transcript")); wErr != nil {
 		t.Fatalf("seed transcript: %v", wErr)
 	}
-	f.WriteFileAtCalls = nil
 
 	dr := dispatchOKAgentSessionForConformance(t, f, h, rs, blobs, engine.ResolvedInputs{
-		SessionTranscriptPath: transcriptPath,
+		SessionDir: sessionDir,
 	})
 	if dr.Outcome != engine.OutcomeOK {
 		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
 	}
-	if len(f.WriteFileAtCalls) != 0 {
-		t.Errorf("WriteFileAt called on first run (no prior session), want 0 calls; got %+v", f.WriteFileAtCalls)
+	if len(f.WriteTreeAtCalls) != 0 {
+		t.Errorf("WriteTreeAt called on first run (no prior session), want 0 calls; got %+v", f.WriteTreeAtCalls)
 	}
 }
 
 // testSessionRefBlobRoundTrip verifies the full Commit + Fold path: a
-// DispatchResult with a SessionTranscript is content-addressed by Commit,
-// recorded as SessionRef in NodeCompletedData, and Fold populates
+// DispatchResult with a SessionTranscript (the subtree tar) is content-addressed
+// by Commit, recorded as SessionRef in NodeCompletedData, and Fold populates
 // RunState.SessionRefs[path] — the prerequisite for restore on the next run.
 func testSessionRefBlobRoundTrip(t *testing.T) {
 	t.Helper()
@@ -400,8 +381,11 @@ func testSessionRefBlobRoundTrip(t *testing.T) {
 		t.Fatalf("seed run.started: %v", err)
 	}
 
-	transcript := []byte(`{"session":"round2"}`)
-	dr := engine.DispatchResult{Outcome: engine.OutcomeOK, SessionTranscript: transcript}
+	transcriptTar, terr := container.BuildTreeTar(map[string][]byte{"-work/s.jsonl": []byte(`{"session":"round2"}`)})
+	if terr != nil {
+		t.Fatalf("BuildTreeTar: %v", terr)
+	}
+	dr := engine.DispatchResult{Outcome: engine.OutcomeOK, SessionTranscript: transcriptTar}
 
 	if _, commitErr := engine.Commit(log, blobs, "gen", dr, false); commitErr != nil {
 		t.Fatalf("Commit: %v", commitErr)
@@ -421,13 +405,13 @@ func testSessionRefBlobRoundTrip(t *testing.T) {
 		t.Fatalf("SessionRefs[gen] not populated after Fold (rs.SessionRefs=%v)", rs.SessionRefs)
 	}
 
-	// The blob survives and matches the original transcript.
+	// The blob survives and matches the original subtree tar.
 	got, getErr := blobs.Get(ref)
 	if getErr != nil {
 		t.Fatalf("blobs.Get(SessionRef): %v", getErr)
 	}
-	if string(got) != string(transcript) {
-		t.Errorf("blob = %q, want %q", got, transcript)
+	if !bytes.Equal(got, transcriptTar) {
+		t.Errorf("blob round-trip mismatch")
 	}
 
 	// The node.completed event carries the session_ref field.
