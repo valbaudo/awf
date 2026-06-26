@@ -142,21 +142,6 @@ type ResumePreflighter interface {
 	PreflightResume(context.Context, LiveResumePreflightRequest) error
 }
 
-// SessionPathProvider is implemented by adapters with Caps.PersistentSession
-// that maintain a provider-side transcript file (e.g. ~/.claude/projects/…).
-// The interpreter calls it AFTER folding the log and BEFORE committing
-// node.started to determine the path it should capture/restore via
-// Backend.ReadFileAt / Backend.WriteFileAt. The optional-interface pattern
-// mirrors ResumePreflighter: a type assertion on the concrete adapter at
-// dispatch time; adapters that do not implement it are treated as having no
-// transcript path (nil/empty → no capture/restore).
-//
-// workdir is the container working directory for the step (used by the claude
-// session adapter to derive the ~/.claude/projects/<enc>/ bucket).
-type SessionPathProvider interface {
-	SessionTranscriptPath(inv AgentInvocation, workdir string) string
-}
-
 // ToolLoopRunner is implemented only by adapters that can run an engine-mediated
 // tool loop (Caps.Containerless && Caps.Threaded — in v1, only awf/llm). It is an
 // OPTIONAL interface (the ResumePreflighter pattern), NOT part of the Adapter seam,

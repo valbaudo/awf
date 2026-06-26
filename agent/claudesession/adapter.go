@@ -28,8 +28,8 @@ const stderrCaptureLimit = 8 << 10 // 8 KiB
 // (env passthrough, backend wiring, version, stream parsing) and adds:
 //   - Capabilities().PersistentSession = true
 //   - --session-id <deterministic-uuid> injected into every launch command
-//   - --no-session-persistence is OMITTED (so the host journal records the session)
-//   - SessionTranscriptPath (agent.SessionPathProvider) for engine capture/restore
+//   - --no-session-persistence is OMITTED (so the session journal is recorded
+//     under the per-run CLAUDE_CONFIG_DIR the engine injects via inv.SessionConfigDir)
 //
 // The base *claude.Adapter is a named field (not embedded) used for delegation;
 // Launch is overridden because the command construction differs (session-id flag,
@@ -38,7 +38,6 @@ type Adapter struct {
 	base    *claude.Adapter // shared env/backend/stream-parse logic
 	backend container.Backend
 	env     agent.SecretEnv
-	homeDir string // in-container home directory for transcript path derivation
 }
 
 // Option configures the Adapter at construction time.
@@ -67,22 +66,12 @@ func WithBackend(b container.Backend) Option {
 	}
 }
 
-// WithHomeDir overrides the in-container home directory used for transcript
-// path derivation. Defaults to DefaultHomeDir ("/root"). The exact value is
-// finalised in the live integration task (task M2d).
-func WithHomeDir(home string) Option {
-	return func(a *Adapter) {
-		a.homeDir = home
-	}
-}
-
 // New constructs an Adapter. The base *claude.Adapter is constructed with
 // the same env and backend options so that all shared logic (Version, stream
 // parsing, env redaction) is delegated there.
 func New(opts ...Option) (*Adapter, error) {
 	a := &Adapter{
-		env:     agent.SecretEnv{},
-		homeDir: DefaultHomeDir,
+		env: agent.SecretEnv{},
 	}
 	for _, opt := range opts {
 		opt(a)

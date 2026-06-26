@@ -430,7 +430,7 @@ func (d *LocalDispatcher) handleKey(containerRef string) string {
 }
 
 // AgentResolver implements AdapterResolver — exposes the dispatcher's
-// agent.Resolver to the interpreter so it can wire SessionTranscriptPath.
+// agent.Resolver to the interpreter so it can wire ResolvedInputs.SessionDir.
 func (d *LocalDispatcher) AgentResolver() agent.Resolver { return d.Resolver }
 
 // WithItemHandle returns a shallow clone of d with Handles cloned and the

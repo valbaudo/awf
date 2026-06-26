@@ -3,22 +3,22 @@
 // the PersistentSession counterpart to agent/claude (which is the
 // fresh-per-launch, gate-safe adapter).
 //
-// Design decisions locked in the M2 task brief (2026-06-25):
+// Design (M2 + the 2026-06-26 native-config-isolation revision):
 //   - Session UUID is deterministic: sha256(runID|epoch|nodePath), first 16
-//     bytes formatted as a UUID v4 string. Same inputs → same UUID; different
-//     nodePath → different UUID.
-//   - Transcript path follows Claude Code's project-journal layout:
-//     <home>/.claude/projects/<encodeProjectDir(workdir)>/<uuid>.jsonl
+//     bytes formatted as a UUID string. Same inputs → same UUID; different
+//     nodePath → different UUID. It is passed to claude's --session-id / --resume.
 //   - Reuses the base claude.Adapter for all shared logic (env, backend,
-//     version, stream parsing). Launch appends --session-id <uuid> to the
-//     assembled command, and drops --no-session-persistence so the host's
-//     ~/.claude/projects/ journal records the AWF session.
+//     version, stream parsing). Launch appends --session-id <uuid> and drops
+//     --no-session-persistence so claude records the session journal.
+//   - Per-run isolation: the engine computes a per-run CLAUDE_CONFIG_DIR
+//     (<staging-root>/claude-session/<run-id>) and threads it via
+//     inv.SessionConfigDir; Launch sets it on the exec env so claude relocates
+//     its whole config tree per run. The engine captures/restores the
+//     <CLAUDE_CONFIG_DIR>/projects subtree as the SessionRef (no path derivation
+//     here — the adapter no longer computes a transcript path).
 //   - Capabilities(): NativeSchema:true, PersistentSession:true.
-//   - The adapter is a container-backed CLI adapter (NOT Containerless).
-//
-// The exact in-container HOME is NOT yet finalised — that is resolved in the
-// live integration task. The HomeDir option defaults to "/root" (the common
-// Claude Code container image default); callers may override it.
+//   - The adapter is a container-backed CLI adapter (NOT Containerless) — subtree
+//     capture requires a container filesystem.
 package claudesession
 
 import (
@@ -31,11 +31,6 @@ import (
 // returns from Ref(). Constant so cli/agent_registry.go and unit tests
 // can refer to it without typing the string literal.
 const AdapterRef = "anthropic/claude-code-session"
-
-// DefaultHomeDir is the in-container home directory used to derive the
-// transcript path. The exact value is finalised in the live integration task
-// (task M2d); containers running Claude Code typically run as root.
-const DefaultHomeDir = "/root"
 
 // DefaultEnvAllowlist is the same credential set as agent/claude since
 // claude-code-session launches the same `claude -p` binary with the same

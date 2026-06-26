@@ -146,7 +146,7 @@ func Run(
 		resume:        opts.Resume,
 	}
 	// M2: wire the agent resolver so runAgentStepWithContext can set
-	// SessionTranscriptPath for PersistentSession + SessionPathProvider adapters.
+	// ResolvedInputs.SessionDir for container-backed PersistentSession adapters.
 	if ar, ok := dispatcher.(AdapterResolver); ok {
 		ictx.resolver = ar.AgentResolver()
 	}

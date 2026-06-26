@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -228,67 +227,6 @@ func TestSessionUUID_Format_IsUUIDShaped(t *testing.T) {
 		if len(parts[i]) != want {
 			t.Errorf("UUID group %d: len=%d, want %d (full uuid: %q)", i, len(parts[i]), want, u)
 		}
-	}
-}
-
-// ---- encodeProjectDir ----
-
-func TestEncodeProjectDir(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"/work/proj", "-work-proj"},
-		{"/", "-"},
-		{"/home/user/.work", "-home-user--work"},
-		{"/work/my_project", "-work-my-project"},
-		{"/no/dots/or/underscores", "-no-dots-or-underscores"},
-	}
-	for _, tc := range cases {
-		got := claudesession.EncodeProjectDirForTest(tc.in)
-		if got != tc.want {
-			t.Errorf("encodeProjectDir(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-// ---- SessionTranscriptPath ----
-
-func TestSessionTranscriptPath_ExpectedLayout(t *testing.T) {
-	a, _ := claudesession.New(
-		claudesession.WithHomeDir("/root"),
-	)
-	inv := agent.AgentInvocation{
-		NodePath:   "graph[0]",
-		RunContext: agent.RunContext{RunID: "run-abc", CurrentEpoch: 1},
-	}
-	workdir := "/work/proj"
-	got := a.SessionTranscriptPath(inv, workdir)
-
-	expectedUUID := claudesession.SessionUUIDForTest(inv)
-	expectedEnc := claudesession.EncodeProjectDirForTest(workdir)
-	want := filepath.Join("/root", ".claude", "projects", expectedEnc, expectedUUID+".jsonl")
-
-	if got != want {
-		t.Errorf("SessionTranscriptPath = %q, want %q", got, want)
-	}
-	if !strings.HasSuffix(got, ".jsonl") {
-		t.Errorf("path does not end in .jsonl: %q", got)
-	}
-}
-
-func TestSessionTranscriptPath_ContainsWorkdirEncoding(t *testing.T) {
-	a, _ := claudesession.New(claudesession.WithHomeDir("/home/agent"))
-	inv := agent.AgentInvocation{
-		NodePath:   "graph[0]",
-		RunContext: agent.RunContext{RunID: "r", CurrentEpoch: 0},
-	}
-	got := a.SessionTranscriptPath(inv, "/work/proj")
-	if !strings.Contains(got, "-work-proj") {
-		t.Errorf("path does not contain encoded workdir '-work-proj': %q", got)
-	}
-	if !strings.HasPrefix(got, "/home/agent/.claude/projects/") {
-		t.Errorf("path does not start with home/.claude/projects/: %q", got)
 	}
 }
 
