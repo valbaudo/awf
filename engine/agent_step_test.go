@@ -263,7 +263,7 @@ graph:
 `
 	ld := loadAgentSimpleDef(t, yaml)
 	var reg agent.Registry
-	fk := fake.New("openai/codex-live").WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).Script(0, fake.Result{
+	fk := fake.New("openai/codex-live").WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true, IsolatedConfigDir: true}).Script(0, fake.Result{
 		Output: map[string]any{"ok": true},
 		Events: []agent.AgentEvent{{
 			Kind:    "delta",
@@ -514,7 +514,7 @@ graph:
 	ld := loadAgentSimpleDef(t, yaml)
 	var reg agent.Registry
 	fk := fake.New("openai/codex-live").
-		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).
+		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true, IsolatedConfigDir: true}).
 		WithEmitDelay(300*time.Millisecond).
 		Script(0, fake.Result{
 			Output: map[string]any{"ok": true},
@@ -2023,7 +2023,7 @@ graph:
 	ld := loadAgentSimpleDef(t, wfYAML)
 
 	fk := fake.New("test/session-fake").
-		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).
+		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true, IsolatedConfigDir: true}).
 		Script(0, fake.Result{})
 
 	// The engine derives SessionDir = <StagingRoot>/claude-session/<RunID>/projects.
@@ -2158,6 +2158,83 @@ graph:
 			}
 			if d.SessionRef != "" {
 				t.Errorf("plain adapter: node.completed has session_ref %q, want empty (SessionDir must not be set for non-PersistentSession adapters)", d.SessionRef)
+			}
+		}
+	}
+}
+
+// TestRunAgentStep_ConfigDirSetForIsolatedConfigButNoCapture verifies the base
+// anthropic/claude-code path: a container-backed IsolatedConfigDir adapter that is
+// NOT PersistentSession gets a per-run CLAUDE_CONFIG_DIR threaded via
+// inv.SessionConfigDir (so concurrent runs don't collide on shared ~/.claude), but
+// NO session subtree is captured (node.completed carries no session_ref).
+func TestRunAgentStep_ConfigDirSetForIsolatedConfigButNoCapture(t *testing.T) {
+	const wfYAML = `workflow: isolated-config-no-session
+version: 1
+containers:
+  ws:
+    image: oci://example.com/img@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: gen
+    container: ws
+    uses: test/isolated-fake
+    with:
+      prompt: "hello"
+`
+	ld := loadAgentSimpleDef(t, wfYAML)
+
+	fk := fake.New("test/isolated-fake").
+		WithCaps(agent.Caps{NativeSchema: true, IsolatedConfigDir: true}). // base claude: config dir, NOT PersistentSession
+		Script(0, fake.Result{})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	f := container.NewFake()
+	h, err := f.Create(t.Context(), container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{Backend: f, Handles: map[string]container.Handle{"ws": h}, Resolver: &reg}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, runErr := engine.Run(t.Context(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{})
+	if runErr != nil {
+		t.Fatalf("engine.Run: %v", runErr)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	// The engine threaded a per-run CLAUDE_CONFIG_DIR (fake StagingRoot /work/.awf).
+	calls := fk.Calls()
+	if len(calls) == 0 {
+		t.Fatal("fake adapter never launched")
+	}
+	if got, want := calls[0].SessionConfigDir, "/work/.awf/claude-session/r1"; got != want {
+		t.Errorf("inv.SessionConfigDir = %q, want %q", got, want)
+	}
+
+	// ...but NO session subtree was captured (not PersistentSession).
+	events, foldErr := log.Fold()
+	if foldErr != nil {
+		t.Fatalf("Fold: %v", foldErr)
+	}
+	for _, ev := range events {
+		if ev.Type == engine.EventNodeCompleted && ev.Path == "gen" {
+			var d engine.NodeCompletedData
+			if uerr := json.Unmarshal(ev.Data, &d); uerr != nil {
+				t.Fatalf("unmarshal: %v", uerr)
+			}
+			if d.SessionRef != "" {
+				t.Errorf("IsolatedConfigDir-only adapter has session_ref %q, want empty (no capture without PersistentSession)", d.SessionRef)
 			}
 		}
 	}

@@ -100,6 +100,7 @@ func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{
 		NativeSchema:      true,
 		PersistentSession: true,
+		IsolatedConfigDir: true,
 	}
 }
 
@@ -184,11 +185,6 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		case int, int64, float64:
 		default:
 			return wrapInvalidConfig(fmt.Sprintf("must be number, got %T", v), keyMaxBudgetUSD)
-		}
-	}
-	if v, ok := with[keyWorkdir]; ok {
-		if _, ok := v.(string); !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyWorkdir)
 		}
 	}
 

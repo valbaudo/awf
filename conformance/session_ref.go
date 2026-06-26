@@ -118,10 +118,11 @@ func testSessionRefFullE2E(t *testing.T) {
 	t.Helper()
 	blobs := state.NewInMemoryBlobs()
 
-	// Session adapter: PersistentSession (no SessionPathProvider — the engine
-	// derives SessionDir from Caps.StagingRoot + RunID alone).
+	// Session adapter: PersistentSession + IsolatedConfigDir (mirrors the real
+	// anthropic/claude-code-session caps). The engine derives the per-run config
+	// dir + SessionDir from Caps.StagingRoot + RunID alone.
 	sessionAdapter := agentfake.New("test/session-e2e-agent").
-		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true}).
+		WithCaps(agent.Caps{NativeSchema: true, PersistentSession: true, IsolatedConfigDir: true}).
 		Script(0, agentfake.Result{}). // run 1: gen succeeds
 		Script(1, agentfake.Result{})  // proof dispatch: gen succeeds again
 

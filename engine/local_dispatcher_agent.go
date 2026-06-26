@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/valbaudo/awf/agent"
@@ -188,17 +187,18 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}, nil, nil
 	}
 
-	// Compute the absolute CLAUDE_CONFIG_DIR for claude-session adapters and
-	// thread it via the invocation, so the adapter sets it on the exec env
-	// BEFORE Launch (per-run config isolation). It is SessionDir minus its
-	// trailing "/projects". The value must be ABSOLUTE: docker/fake StagingRoot
-	// is already absolute (use SessionDir's parent as-is); native's StagingRoot
-	// is workdir-relative, so resolve it under the workdir via WorkdirResolver.
-	// Empty for non-session steps.
+	// Compute the absolute CLAUDE_CONFIG_DIR for claude-family adapters
+	// (IsolatedConfigDir) and thread it via the invocation, so the adapter sets it
+	// on the exec env BEFORE Launch (per-run config isolation). The value must be
+	// ABSOLUTE: docker/fake StagingRoot is already absolute (use it as-is); native's
+	// StagingRoot is workdir-relative, so resolve it under the workdir via
+	// WorkdirResolver. Empty for non-claude-family steps. Set for BOTH the base
+	// (non-session) adapter and the session adapter; the session subtree
+	// capture/restore below is the additional PersistentSession-only behavior.
 	var sessionConfigDir string
-	if intent.ResolvedInputs.SessionDir != "" && d.Backend != nil {
+	if intent.ResolvedInputs.SessionConfigDirRel != "" && d.Backend != nil {
 		stagingRoot := d.Backend.Capabilities().StagingRoot
-		sessionParent := strings.TrimSuffix(intent.ResolvedInputs.SessionDir, "/projects")
+		sessionParent := intent.ResolvedInputs.SessionConfigDirRel
 		switch {
 		case filepath.IsAbs(stagingRoot):
 			sessionConfigDir = sessionParent // docker / fake: StagingRoot already absolute

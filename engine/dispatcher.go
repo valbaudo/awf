@@ -83,12 +83,19 @@ type ResolvedInputs struct {
 	// container; the dispatcher captures a CoW diff after a successful exec.
 	Snapshot string
 
+	// SessionConfigDirRel is the per-run claude config directory (the value mapped
+	// to CLAUDE_CONFIG_DIR), in StagingRoot form (native relative `.awf/...`, docker
+	// absolute `/work/.awf/...`); empty for non-claude-family steps. The dispatcher
+	// resolves it to an absolute path and threads it via inv.SessionConfigDir. Set
+	// by the interpreter for container-backed IsolatedConfigDir adapters.
+	SessionConfigDirRel string
+
 	// SessionDir is the per-run claude session `projects/` directory to
-	// capture/restore, in StagingRoot form (native relative `.awf/...`, docker
-	// absolute `/work/.awf/...`); empty for non-session steps. The engine
-	// captures the whole subtree at commit (Backend.ReadTreeAt) and restores it
-	// on the generator frontier (Backend.WriteTreeAt). Set by the interpreter
-	// for PersistentSession adapters; Milestone-1 tests set it directly.
+	// capture/restore, in StagingRoot form (= SessionConfigDirRel + "/projects");
+	// empty for non-session steps. The engine captures the whole subtree at commit
+	// (Backend.ReadTreeAt) and restores it on the generator frontier
+	// (Backend.WriteTreeAt). Set by the interpreter for PersistentSession adapters;
+	// Milestone-1 tests set it directly.
 	SessionDir string
 
 	// Slice 5.2 — agent-step fields. Zero values when the node is a CodeStep

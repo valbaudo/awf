@@ -33,16 +33,29 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
 	}
 
-	execCmd := container.Cmd{
-		Run: cmdString,
-		Env: map[string]string(a.env), // adapter-captured env allowlist
+	// Build a FRESH env map: map[string]string(a.env) is a type CONVERSION that
+	// ALIASES the shared adapter env, so writing into it would mutate a.env and
+	// data-race across concurrent Launches. Copy first, then add per-launch keys.
+	env := make(map[string]string, len(a.env)+3)
+	for k, v := range a.env {
+		env[k] = v
+	}
+	// Headless hygiene: disable telemetry/autoupdater/error-reporting/feedback.
+	env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+	// Per-run isolated config dir (engine-computed, RunID-keyed). Even though this
+	// adapter passes --no-session-persistence (no session journal), claude still
+	// writes config/project-registry/statsig under CLAUDE_CONFIG_DIR; pointing it
+	// at a per-run dir keeps concurrent native runs from colliding on ~/.claude.
+	if inv.SessionConfigDir != "" {
+		env["CLAUDE_CONFIG_DIR"] = inv.SessionConfigDir
 	}
 	if inv.IdempotencyKey != "" {
 		// Mirror runCode's idempotency-key injection (spec §10).
-		if execCmd.Env == nil {
-			execCmd.Env = map[string]string{}
-		}
-		execCmd.Env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
+		env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
+	}
+	execCmd := container.Cmd{
+		Run: cmdString,
+		Env: env,
 	}
 
 	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, execCmd)
