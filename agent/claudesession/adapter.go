@@ -100,6 +100,7 @@ func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{
 		NativeSchema:      true,
 		PersistentSession: true,
+		IsolatedConfigDir: true,
 	}
 }
 

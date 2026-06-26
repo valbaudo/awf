@@ -47,6 +47,16 @@ type Caps struct {
 	// PersistentSession adapters are rejected in gate.evaluate contexts while
 	// remaining allowed elsewhere, including gate.generate.
 	PersistentSession bool `json:"persistent_session,omitempty"`
+
+	// IsolatedConfigDir reports that this adapter benefits from a per-run,
+	// RunID-keyed isolated config directory (mapped to its config-dir env var,
+	// e.g. CLAUDE_CONFIG_DIR) so concurrent runs do not collide on shared host
+	// config. The engine computes the dir (<staging-root>/claude-session/<run-id>)
+	// and threads it via AgentInvocation.SessionConfigDir; the adapter sets it on
+	// the exec env. Container-backed only (a Containerless adapter has no container
+	// filesystem to isolate). Orthogonal to PersistentSession, which ADDITIONALLY
+	// captures/restores the session as that dir's projects/ subtree.
+	IsolatedConfigDir bool `json:"isolated_config_dir,omitempty"`
 }
 
 // SecretEnv is the type used for env-passthrough values that contain secrets

@@ -221,26 +221,26 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	snapBare, _ := SplitContainerRef(as.Container)
 	uses := AgentRuntimeRef(wf, ictx.moduleID, as.Uses)
 
-	// Session capture/restore: when the resolved adapter declares
-	// PersistentSession AND is container-backed, the engine captures/restores the
-	// whole per-run claude `projects/` subtree under the staging root, RunID-keyed.
-	// Derived from
-	// Caps.StagingRoot + RunID alone — no adapter, no cwd. The transcript bucket
-	// lives INSIDE the captured subtree, so claude's cwd / with.workdir no longer
-	// participates in the path (the 2026-06-26 native-config-isolation design
-	// replaced the single-transcript-file model with the projects/-subtree
-	// model). RunID is read-from-log on resume, so the dir is determinism-safe.
-	var sessionDir string
+	// Per-run config isolation + session capture. A container-backed adapter that
+	// declares IsolatedConfigDir gets a RunID-keyed per-run config directory
+	// (<staging-root>/claude-session/<run-id>) injected as CLAUDE_CONFIG_DIR, so
+	// concurrent runs never collide on shared host config. If it ALSO declares
+	// PersistentSession, the engine additionally captures/restores its session as
+	// that dir's `projects/` subtree (the transcript bucket lives INSIDE the
+	// captured subtree, so claude's cwd / with.workdir no longer participate). A
+	// Containerless adapter (e.g. agent/codexlive) has no container filesystem to
+	// isolate or capture and is excluded — including it would fire tree ops against
+	// a zero handle and fail every successful run. Both paths are RunID-keyed and
+	// RunID is read-from-log on resume, so the dirs are determinism-safe.
+	var sessionDir, sessionConfigDirRel string
 	if ictx.resolver != nil {
 		if adp, ok := ictx.resolver.Lookup(uses); ok {
-			// Subtree capture/restore reads the agent's <CLAUDE_CONFIG_DIR>/projects
-			// subtree off a container filesystem, so it requires a CONTAINER-BACKED
-			// session adapter. A Containerless adapter (e.g. agent/codexlive) has no
-			// container handle and its PersistentSession is a live-process session,
-			// NOT a config-dir subtree — including it would fire ReadTreeAt against a
-			// zero handle and turn every successful run into a mechanical failure.
-			if caps := adp.Capabilities(); caps.PersistentSession && !caps.Containerless {
-				sessionDir = dispatcherStagingRoot(ictx.dispatcher) + "/claude-session/" + runstate.RunID + "/projects"
+			caps := adp.Capabilities()
+			if !caps.Containerless && caps.IsolatedConfigDir {
+				sessionConfigDirRel = dispatcherStagingRoot(ictx.dispatcher) + "/claude-session/" + runstate.RunID
+				if caps.PersistentSession {
+					sessionDir = sessionConfigDirRel + "/projects"
+				}
 			}
 		}
 	}
@@ -258,7 +258,8 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		InputFiles:            inputFiles,         // SP1 artifact channel (container path)
 		ContainerlessFiles:    containerlessFiles, // inline message parts (containerless path)
 		OutputFileContracts:   outputFileContracts,
-		SessionDir:            sessionDir, // set for PersistentSession adapters; RunID-keyed projects/ subtree
+		SessionConfigDirRel:   sessionConfigDirRel, // RunID-keyed per-run CLAUDE_CONFIG_DIR (staging form); IsolatedConfigDir adapters
+		SessionDir:            sessionDir,          // projects/ subtree to capture; PersistentSession adapters only
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)
