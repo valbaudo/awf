@@ -2163,6 +2163,75 @@ graph:
 	}
 }
 
+// TestRunAgentStep_SessionDirNotSetForContainerlessSession is the regression test
+// for the codexlive gate bug: subtree capture/restore reads a container filesystem,
+// so it must be gated on PersistentSession AND !Containerless. A Containerless
+// adapter (e.g. agent/codexlive) runs with a ZERO handle, so if SessionDir were set
+// for it the capture block ReadTreeAt(ctx, h, SessionDir) would hit "unknown handle"
+// and turn every successful run into a mechanical failure. This test pins that a
+// Containerless+PersistentSession adapter (a) succeeds and (b) gets no session_ref.
+// Against the un-narrowed gate (PersistentSession alone) it fails: the run does not
+// reach OutcomeOK.
+func TestRunAgentStep_SessionDirNotSetForContainerlessSession(t *testing.T) {
+	var reg agent.Registry
+	// codexlive-shaped: Containerless + PersistentSession (a live-process session,
+	// NOT a config-dir subtree). Container-omitting step => zero handle at dispatch.
+	fk := fake.New("test/live-session").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true, PersistentSession: true}).
+		Script(0, fake.Result{})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	wf := &ir.Workflow{
+		ID: "x", Version: 1,
+		Graph: ir.NodeList{
+			&ir.AgentStep{ID: "gen", Uses: "test/live-session", With: ir.RawConfig{"prompt": "hi"}},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	// Containerless dispatch: Backend present (non-nil) but NO Handles — the step
+	// runs with a zero handle, exactly as codexlive does.
+	dispatcher := &engine.LocalDispatcher{Backend: container.NewFake(), Resolver: &reg}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, runErr := engine.Run(context.Background(), def, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
+	if runErr != nil {
+		t.Fatalf("engine.Run: %v", runErr)
+	}
+	// The load-bearing assertion: a Containerless session adapter must succeed. Under
+	// the un-narrowed gate, SessionDir is set and ReadTreeAt(zero handle) fails the run.
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Containerless PersistentSession adapter must not trigger subtree capture)", oc, engine.OutcomeOK)
+	}
+	// And it must have actually run (not failed before dispatch).
+	if len(fk.Calls()) == 0 {
+		t.Fatalf("fake was never launched — test did not exercise the dispatch/capture path")
+	}
+	events, foldErr := log.Fold()
+	if foldErr != nil {
+		t.Fatalf("Fold: %v", foldErr)
+	}
+	for _, ev := range events {
+		if ev.Type == engine.EventNodeCompleted && ev.Path == "gen" {
+			var d engine.NodeCompletedData
+			if uerr := json.Unmarshal(ev.Data, &d); uerr != nil {
+				t.Fatalf("unmarshal NodeCompletedData: %v", uerr)
+			}
+			if d.SessionRef != "" {
+				t.Errorf("containerless session adapter: node.completed has session_ref %q, want empty (SessionDir must not be set for Containerless adapters)", d.SessionRef)
+			}
+		}
+	}
+}
+
 // autoTreeFake wraps *container.Fake and overrides ReadTreeAt to return a fixed
 // session subtree for ANY dir/handle, so the per-run session capture block
 // (Backend.ReadTreeAt(SessionDir)) succeeds for tests that use a PersistentSession

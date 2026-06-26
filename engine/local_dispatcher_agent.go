@@ -203,11 +203,20 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		case filepath.IsAbs(stagingRoot):
 			sessionConfigDir = sessionParent // docker / fake: StagingRoot already absolute
 		default:
-			if wr, ok := d.Backend.(container.WorkdirResolver); ok {
-				sessionConfigDir = wr.ResolveWorkdirPath(h, sessionParent) // native: resolve under the workdir
-			} else {
-				sessionConfigDir = sessionParent // defensive: unknown relative backend
+			wr, ok := d.Backend.(container.WorkdirResolver)
+			if !ok {
+				// Fail closed: a relative StagingRoot with no WorkdirResolver cannot
+				// yield an ABSOLUTE CLAUDE_CONFIG_DIR, and a relative one would
+				// silently point claude at the wrong config dir. Unreachable today
+				// (native implements WorkdirResolver; docker/fake StagingRoot is
+				// absolute), but never emit a wrong config dir.
+				return DispatchResult{
+					Outcome: OutcomePermanentFailure,
+					Err: fmt.Errorf("engine.LocalDispatcher.runAgent: cannot resolve absolute CLAUDE_CONFIG_DIR for %q: backend StagingRoot %q is relative but backend does not implement container.WorkdirResolver",
+						intent.Path, stagingRoot),
+				}, nil, nil
 			}
+			sessionConfigDir = wr.ResolveWorkdirPath(h, sessionParent) // native: resolve under the workdir
 		}
 	}
 
