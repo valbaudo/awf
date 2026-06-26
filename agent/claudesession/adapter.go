@@ -237,31 +237,24 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
 	}
 
-	execCmd := container.Cmd{
-		Run: cmdString,
-		Env: map[string]string(a.env),
+	// Build a fresh per-invocation env map from a.env so no code path ever
+	// mutates the adapter's shared a.env (type-converting agent.SecretEnv to
+	// map[string]string is a label change only — it aliases the same underlying
+	// map). All writes below are safe because they target this local copy.
+	env := make(map[string]string, len(a.env)+3)
+	for k, v := range a.env {
+		env[k] = v
 	}
 	if inv.IdempotencyKey != "" {
-		if execCmd.Env == nil {
-			execCmd.Env = map[string]string{}
-		}
-		execCmd.Env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
+		env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
 	}
-	// Headless-hygiene and per-run config isolation. Copy the env map before
-	// writing so we never mutate the adapter's shared a.env (the type
-	// conversion map[string]string(a.env) above aliases the underlying map —
-	// it is a type label change, not a copy, and writing to execCmd.Env would
-	// write through to a.env without this copy-on-write step).
-	{
-		fresh := make(map[string]string, len(execCmd.Env)+2)
-		for k, v := range execCmd.Env {
-			fresh[k] = v
-		}
-		execCmd.Env = fresh
-	}
-	execCmd.Env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+	env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 	if inv.SessionConfigDir != "" {
-		execCmd.Env["CLAUDE_CONFIG_DIR"] = inv.SessionConfigDir
+		env["CLAUDE_CONFIG_DIR"] = inv.SessionConfigDir
+	}
+	execCmd := container.Cmd{
+		Run: cmdString,
+		Env: env,
 	}
 
 	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, execCmd)

@@ -3,8 +3,10 @@ package claudesession_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -594,5 +596,72 @@ func TestLaunch_NoBackend_Errors(t *testing.T) {
 	var launchErr *agent.ErrAgentLaunch
 	if !errors.As(err, &launchErr) {
 		t.Errorf("err = %T %v; want *agent.ErrAgentLaunch", err, err)
+	}
+}
+
+// TestLaunch_ConcurrentEnvMutation verifies that concurrent calls to Launch
+// from multiple goroutines do not mutate the adapter's shared a.env map.
+// Covers two failure modes:
+//  1. Data race: concurrent writes to the same map detected by -race.
+//  2. Key leakage: AWF_IDEMPOTENCY_KEY / CLAUDE_CONFIG_DIR /
+//     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC must not appear in a.env after
+//     any number of launches.
+//
+// Run with: go test -race ./agent/claudesession/...
+func TestLaunch_ConcurrentEnvMutation(t *testing.T) {
+	const goroutines = 8
+
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	streamLines := []byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"structured_output":{"ok":true}}` + "\n")
+	// ProgramExecAny matches any Cmd.Run — one call serves all concurrent launches.
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: streamLines}, []container.IOChunk{
+		{Stream: "stdout", Data: streamLines},
+	})
+
+	a, _ := claudesession.New(
+		claudesession.WithBackend(f),
+		claudesession.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}),
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			inv := agent.AgentInvocation{
+				NodePath:         fmt.Sprintf("graph[%d]", i),
+				Uses:             claudesession.AdapterRef,
+				RunContext:       agent.RunContext{RunID: "run-race", CurrentEpoch: uint32(i)},
+				With:             ir.RawConfig{"prompt": "concurrent"},
+				IdempotencyKey:   fmt.Sprintf("idem-%d", i),
+				SessionConfigDir: fmt.Sprintf("/staging/cfg/%d", i),
+			}
+			eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+			if err != nil {
+				t.Errorf("goroutine %d: Launch: %v", i, err)
+				return
+			}
+			for range eventCh {
+			}
+			if outcome := <-outcomeCh; outcome.Err != nil {
+				t.Errorf("goroutine %d: outcome.Err = %v", i, outcome.Err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// After all launches, a.env must not contain any per-invocation keys.
+	env := claudesession.AdapterEnvForTest(a)
+	forbidden := []string{
+		"AWF_IDEMPOTENCY_KEY",
+		"CLAUDE_CONFIG_DIR",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+	}
+	for _, key := range forbidden {
+		if _, ok := env[key]; ok {
+			t.Errorf("a.env contains %q after concurrent launches; shared env was mutated", key)
+		}
 	}
 }
