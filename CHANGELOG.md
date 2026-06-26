@@ -8,10 +8,11 @@ While `awf` is pre-1.0, the workflow format and CLI may still change between
 minor versions. The workflow-format version (`version: 1` in a workflow file)
 is tracked independently of the `awf` tool version.
 
-## [0.1.2] - 2026-06-26
+## [0.1.3] - 2026-06-26
 
 Fixes concurrent `anthropic/claude-code` runs on the `native` backend that failed
-when 2+ ran in parallel. No workflow-format or CLI changes.
+when 2+ ran in parallel. No workflow-format or CLI changes. (Supersedes the `v0.1.2`
+tag, whose release build failed a formatting check and published nothing.)
 
 ### Fixed
 
@@ -111,6 +112,6 @@ independent acceptance gate and content-addressed checkpoint/resume.
 - **Documentation.** `awf(1)` command reference and `awf-workflow(5)`
   workflow-format reference (the stable format contract).
 
-[0.1.2]: https://github.com/valbaudo/awf/releases/tag/v0.1.2
+[0.1.3]: https://github.com/valbaudo/awf/releases/tag/v0.1.3
 [0.1.1]: https://github.com/valbaudo/awf/releases/tag/v0.1.1
 [0.1.0]: https://github.com/valbaudo/awf/releases/tag/v0.1.0
