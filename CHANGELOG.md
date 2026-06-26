@@ -8,6 +8,24 @@ While `awf` is pre-1.0, the workflow format and CLI may still change between
 minor versions. The workflow-format version (`version: 1` in a workflow file)
 is tracked independently of the `awf` tool version.
 
+## [0.1.2] - 2026-06-26
+
+Fixes concurrent `anthropic/claude-code` runs on the `native` backend that failed
+when 2+ ran in parallel. No workflow-format or CLI changes.
+
+### Fixed
+
+- **Concurrent native Claude runs no longer contend on claude-code's version lock.**
+  0.1.1 gave each run its own `CLAUDE_CONFIG_DIR`, but claude-code keeps a per-version
+  single-instance lock at `$XDG_STATE_HOME/claude/locks/<version>.lock` — *outside* the
+  config dir. On the `native` backend every run inherits the shared host `$HOME` (and
+  therefore `$XDG_STATE_HOME`), so two or more concurrent runs of the same claude version
+  contended on the same lock and the loser exited non-zero. Both `anthropic/claude-code`
+  and `anthropic/claude-code-session` now also relocate `XDG_STATE_HOME` and
+  `XDG_CACHE_HOME` to per-run directories alongside `CLAUDE_CONFIG_DIR`, isolating the
+  lock and cache per run. `HOME` and `XDG_DATA_HOME` are intentionally left shared
+  (claude's versioned binary lives under `XDG_DATA_HOME` and must stay resolvable).
+
 ## [0.1.1] - 2026-06-26
 
 Adds a persistent-session Claude Code adapter with per-run configuration
@@ -93,5 +111,6 @@ independent acceptance gate and content-addressed checkpoint/resume.
 - **Documentation.** `awf(1)` command reference and `awf-workflow(5)`
   workflow-format reference (the stable format contract).
 
+[0.1.2]: https://github.com/valbaudo/awf/releases/tag/v0.1.2
 [0.1.1]: https://github.com/valbaudo/awf/releases/tag/v0.1.1
 [0.1.0]: https://github.com/valbaudo/awf/releases/tag/v0.1.0
