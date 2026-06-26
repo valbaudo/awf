@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -53,6 +54,110 @@ func TestLaunch_HappyPath_StructuredOutput(t *testing.T) {
 	}
 	if v, ok := outcome.Result.Output["answer"].(float64); !ok || v != 42 {
 		t.Errorf("Output[answer] = %v (%T)", outcome.Result.Output["answer"], outcome.Result.Output["answer"])
+	}
+}
+
+// plainResultLine is a minimal successful claude result with no structured
+// output (used by the env-injection tests, which don't set an OutputSchema).
+var plainResultLine = []byte(`{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"ok","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}` + "\n")
+
+// TestLaunch_SessionConfigDir_EnvInjection: when inv.SessionConfigDir is set,
+// the base adapter forwards CLAUDE_CONFIG_DIR + CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+// on the Cmd.Env (per-run config isolation, even though it passes --no-session-persistence).
+func TestLaunch_SessionConfigDir_EnvInjection(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: plainResultLine}, []container.IOChunk{{Stream: "stdout", Data: plainResultLine}})
+
+	a, _ := claude.New(claude.WithBackend(f), claude.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	inv := agent.AgentInvocation{
+		NodePath:         "graph[0]",
+		Uses:             claude.AdapterRef,
+		With:             ir.RawConfig{"prompt": "hi"},
+		SessionConfigDir: "/staging/claude-session/run-xyz",
+	}
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range eventCh {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	if len(f.Calls) == 0 {
+		t.Fatal("no recorded calls")
+	}
+	env := f.Calls[0].Env
+	if got := env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]; got != "1" {
+		t.Errorf("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = %q; want %q", got, "1")
+	}
+	if got := env["CLAUDE_CONFIG_DIR"]; got != "/staging/claude-session/run-xyz" {
+		t.Errorf("CLAUDE_CONFIG_DIR = %q; want %q", got, "/staging/claude-session/run-xyz")
+	}
+}
+
+// TestLaunch_EmptySessionConfigDir_NoClaudeConfigDir: empty SessionConfigDir →
+// no CLAUDE_CONFIG_DIR, but the hygiene var is still set.
+func TestLaunch_EmptySessionConfigDir_NoClaudeConfigDir(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: plainResultLine}, []container.IOChunk{{Stream: "stdout", Data: plainResultLine}})
+
+	a, _ := claude.New(claude.WithBackend(f), claude.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	inv := agent.AgentInvocation{NodePath: "graph[0]", Uses: claude.AdapterRef, With: ir.RawConfig{"prompt": "hi"}}
+	eventCh, outcomeCh, err := a.Launch(context.Background(), h, inv)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	for range eventCh {
+	}
+	if outcome := <-outcomeCh; outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	env := f.Calls[0].Env
+	if got := env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]; got != "1" {
+		t.Errorf("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = %q; want %q", got, "1")
+	}
+	if _, ok := env["CLAUDE_CONFIG_DIR"]; ok {
+		t.Errorf("CLAUDE_CONFIG_DIR set %q; want absent when SessionConfigDir empty", env["CLAUDE_CONFIG_DIR"])
+	}
+}
+
+// TestLaunch_ConcurrentEnvNoMutation pins that Launch never mutates the shared
+// adapter env (the old map[string]string(a.env) alias). 8 concurrent Launches
+// with IdempotencyKey + SessionConfigDir set; afterwards a.env must hold none of
+// the per-invocation keys. Run under -race to catch the data race on regression.
+func TestLaunch_ConcurrentEnvNoMutation(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0, Stdout: plainResultLine}, []container.IOChunk{{Stream: "stdout", Data: plainResultLine}})
+
+	a, _ := claude.New(claude.WithBackend(f), claude.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			inv := agent.AgentInvocation{
+				NodePath: "graph[0]", Uses: claude.AdapterRef, With: ir.RawConfig{"prompt": "hi"},
+				IdempotencyKey: "idem", SessionConfigDir: "/staging/claude-session/r",
+			}
+			eventCh, outcomeCh, lerr := a.Launch(context.Background(), h, inv)
+			if lerr != nil {
+				return
+			}
+			for range eventCh {
+			}
+			<-outcomeCh
+		}()
+	}
+	wg.Wait()
+	env := claude.AdapterEnvForTest(a)
+	for _, k := range []string{"AWF_IDEMPOTENCY_KEY", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"} {
+		if _, ok := env[k]; ok {
+			t.Errorf("a.env was mutated: contains per-invocation key %q", k)
+		}
 	}
 }
 
