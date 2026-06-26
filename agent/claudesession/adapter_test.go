@@ -91,6 +91,7 @@ func TestValidateConfig_HappyPath_AllOptionalKeys(t *testing.T) {
 		"allowed_tools":  []any{"Bash", "Read"},
 		"bare":           true,
 		"max_budget_usd": 5.0,
+		"workdir":        "/work/proj",
 	})
 	if err != nil {
 		t.Errorf("ValidateConfig: %v", err)
