@@ -37,9 +37,9 @@ var ErrNodeNotImplemented = errors.New("engine: node kind not implemented")
 // satisfy to expose their agent.Resolver to the interpreter. It exposes a
 // read-only agent.Resolver (Lookup-only) that is stable for the lifetime of
 // Run; it exists so the interpreter can resolve an agent step's adapter to
-// query optional capabilities (e.g. SessionPathProvider). The interpreter uses
-// it to set ResolvedInputs.SessionTranscriptPath for PersistentSession adapters
-// that implement agent.SessionPathProvider (M2 wiring).
+// query optional capabilities (e.g. Caps.PersistentSession). The interpreter
+// uses it to set ResolvedInputs.SessionDir (the per-run claude projects/ subtree
+// to capture/restore) for PersistentSession adapters.
 type AdapterResolver interface {
 	AgentResolver() agent.Resolver
 }

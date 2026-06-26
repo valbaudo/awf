@@ -580,7 +580,7 @@ func argsFilePath(toolPath, root string) string {
 // Returns "/work/.awf" as a safe default when the dispatcher is not a
 // *LocalDispatcher (e.g. a test stub that doesn't embed a real backend).
 func dispatcherStagingRoot(d Dispatcher) string {
-	if ld, ok := d.(*LocalDispatcher); ok {
+	if ld, ok := d.(*LocalDispatcher); ok && ld.Backend != nil {
 		if root := ld.Backend.Capabilities().StagingRoot; root != "" {
 			return root
 		}

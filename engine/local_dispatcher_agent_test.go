@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -560,7 +561,7 @@ func TestRunAgent_OutputFileContractInvalidArtifactRetryable(t *testing.T) {
 // produces a successful OutcomeOK result, dispatches through d.Run, and returns
 // the DispatchResult. The given ri is merged on top of the minimal ResolvedInputs
 // needed for a successful dispatch so tests can set only the field under test
-// (e.g. SessionTranscriptPath). The container is registered as "ws".
+// (e.g. SessionDir). The container is registered as "ws".
 func dispatchOKAgentForTest(t *testing.T, f *container.Fake, h container.Handle, ri engine.ResolvedInputs) engine.DispatchResult {
 	t.Helper()
 	ctx := context.Background()
@@ -589,25 +590,35 @@ func dispatchOKAgentForTest(t *testing.T, f *container.Fake, h container.Handle,
 	return dr
 }
 
-// TestRunAgentCapturesSessionTranscript verifies that runAgent reads the file at
-// SessionTranscriptPath and populates DispatchResult.SessionTranscript on an OK step.
+// TestRunAgentCapturesSessionTranscript verifies that runAgent reads the
+// session projects/ subtree at SessionDir (via ReadTreeAt) and populates
+// DispatchResult.SessionTranscript (a gzip-tar) on an OK step.
 func TestRunAgentCapturesSessionTranscript(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "c"})
-	_ = f.WriteFileAt(context.Background(), h, "/t/s.jsonl", []byte("session-bytes"))
-	dr := dispatchOKAgentForTest(t, f, h, engine.ResolvedInputs{SessionTranscriptPath: "/t/s.jsonl"})
-	if string(dr.SessionTranscript) != "session-bytes" {
-		t.Errorf("SessionTranscript = %q, want %q", dr.SessionTranscript, "session-bytes")
+	const sessionDir = "/work/.awf/claude-session/r/projects"
+	// Simulate claude having written a transcript under the projects/ subtree.
+	_ = f.WriteFileAt(context.Background(), h, sessionDir+"/-work/s.jsonl", []byte("session-bytes"))
+	dr := dispatchOKAgentForTest(t, f, h, engine.ResolvedInputs{SessionDir: sessionDir})
+	if len(dr.SessionTranscript) == 0 {
+		t.Fatalf("SessionTranscript empty, want the captured subtree tar")
+	}
+	files, exErr := container.ExtractTreeTar(dr.SessionTranscript, container.TreeTarMaxBytes, container.TreeTarMaxEntries)
+	if exErr != nil {
+		t.Fatalf("ExtractTreeTar(SessionTranscript): %v", exErr)
+	}
+	if string(files["-work/s.jsonl"]) != "session-bytes" {
+		t.Errorf("captured subtree entry = %q, want %q (files=%v)", files["-work/s.jsonl"], "session-bytes", files)
 	}
 }
 
-// TestRunAgentSessionCaptureFailureIsMechanical verifies that a ReadFileAt error
-// (e.g. missing path) yields a non-OK mechanical outcome — crash ≠ verdict.
+// TestRunAgentSessionCaptureFailureIsMechanical verifies that a ReadTreeAt error
+// (e.g. an empty/missing subtree) yields a non-OK mechanical outcome — crash ≠ verdict.
 func TestRunAgentSessionCaptureFailureIsMechanical(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "c"})
-	// path absent → ReadFileAt errors → must become a non-OK mechanical outcome.
-	dr := dispatchOKAgentForTest(t, f, h, engine.ResolvedInputs{SessionTranscriptPath: "/missing.jsonl"})
+	// subtree empty → ReadTreeAt errors → must become a non-OK mechanical outcome.
+	dr := dispatchOKAgentForTest(t, f, h, engine.ResolvedInputs{SessionDir: "/work/.awf/claude-session/missing/projects"})
 	if dr.Outcome == engine.OutcomeOK {
 		t.Fatal("capture failure must yield a non-OK outcome (crash != verdict)")
 	}
@@ -676,8 +687,8 @@ func TestDispatcherCapturesSnapshotOnEligibleAgentStep(t *testing.T) {
 }
 
 // TestRunAgentRestoresSessionTranscriptOnResume verifies that on resume, when
-// RunState.SessionRefs[path] is set and ResolvedInputs.SessionTranscriptPath
-// is non-empty, the dispatcher calls Backend.WriteFileAt with the blob bytes
+// RunState.SessionRefs[path] is set and ResolvedInputs.SessionDir is non-empty,
+// the dispatcher calls Backend.WriteTreeAt with the committed subtree tar
 // BEFORE launching the agent — so the agent resumes from the prior session.
 func TestRunAgentRestoresSessionTranscriptOnResume(t *testing.T) {
 	ctx := context.Background()
@@ -688,37 +699,40 @@ func TestRunAgentRestoresSessionTranscriptOnResume(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Seed a transcript blob into blobs and a SessionRef in RunState.
-	sessionBytes := []byte(`{"session":"round1"}`)
-	ref, putErr := blobs.Put(sessionBytes)
+	// Seed a subtree tar blob into blobs and a SessionRef in RunState.
+	tarGz, terr := container.BuildTreeTar(map[string][]byte{"-work/s.jsonl": []byte(`{"session":"round1"}`)})
+	if terr != nil {
+		t.Fatalf("BuildTreeTar: %v", terr)
+	}
+	ref, putErr := blobs.Put(tarGz)
 	if putErr != nil {
 		t.Fatalf("blobs.Put: %v", putErr)
 	}
 	rs := engine.NewRunState("r", "d", nil)
 	rs.SessionRefs["gen"] = ref
 
-	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
+	const sessionDir = "/work/.awf/claude-session/r/projects"
 	dr := dispatchOKAgentWithRunStateForTest(t, f, h, rs, blobs, engine.ResolvedInputs{
-		SessionTranscriptPath: transcriptPath,
+		SessionDir: sessionDir,
 	})
 	if dr.Outcome != engine.OutcomeOK {
 		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
 	}
 
-	// WriteFileAt must have been called with the committed transcript bytes.
+	// WriteTreeAt must have been called at SessionDir with the committed tar.
 	var found bool
-	for _, c := range f.WriteFileAtCalls {
-		if c.Path == transcriptPath && string(c.Content) == string(sessionBytes) {
+	for _, c := range f.WriteTreeAtCalls {
+		if c.Dir == sessionDir && bytes.Equal(c.Content, tarGz) {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("WriteFileAt not called with restored session transcript (WriteFileAtCalls=%+v)", f.WriteFileAtCalls)
+		t.Errorf("WriteTreeAt not called with restored session subtree (WriteTreeAtCalls=%+v)", f.WriteTreeAtCalls)
 	}
 }
 
 // TestRunAgentNoRestoreWhenSessionRefAbsent verifies that when RunState has
-// no SessionRefs entry for the node path, WriteFileAt is NOT called (first
+// no SessionRefs entry for the node path, WriteTreeAt is NOT called (first
 // run / no prior session).
 func TestRunAgentNoRestoreWhenSessionRefAbsent(t *testing.T) {
 	ctx := context.Background()
@@ -730,24 +744,22 @@ func TestRunAgentNoRestoreWhenSessionRefAbsent(t *testing.T) {
 	}
 	rs := engine.NewRunState("r", "d", nil) // no SessionRefs["gen"]
 
-	// Pre-write the transcript file so the capture block (ReadFileAt after the
-	// agent runs) succeeds and the step completes OK. We assert WriteFileAtCalls
-	// is empty — WriteFileAt is only called by the restore path (not by capture).
-	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
-	if wErr := f.WriteFileAt(ctx, h, transcriptPath, []byte("transcript")); wErr != nil {
+	// Pre-seed a transcript under the subtree so the capture block (ReadTreeAt
+	// after the agent runs) succeeds and the step completes OK. WriteFileAt does
+	// not touch WriteTreeAtCalls — WriteTreeAt is only called by the restore path.
+	const sessionDir = "/work/.awf/claude-session/r/projects"
+	if wErr := f.WriteFileAt(ctx, h, sessionDir+"/-work/s.jsonl", []byte("transcript")); wErr != nil {
 		t.Fatalf("seed transcript: %v", wErr)
 	}
-	// Reset WriteFileAtCalls so the seed write above is not counted in assertions.
-	f.WriteFileAtCalls = nil
 
 	dr := dispatchOKAgentWithRunStateForTest(t, f, h, rs, blobs, engine.ResolvedInputs{
-		SessionTranscriptPath: transcriptPath,
+		SessionDir: sessionDir,
 	})
 	if dr.Outcome != engine.OutcomeOK {
 		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
 	}
-	if len(f.WriteFileAtCalls) != 0 {
-		t.Errorf("WriteFileAt called on first run (no prior session), want 0 calls; got %+v", f.WriteFileAtCalls)
+	if len(f.WriteTreeAtCalls) != 0 {
+		t.Errorf("WriteTreeAt called on first run (no prior session), want 0 calls; got %+v", f.WriteTreeAtCalls)
 	}
 }
 
@@ -765,9 +777,12 @@ func TestRunAgent_ResumeSession_TrueWhenSessionRestored(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Seed a transcript blob.
-	sessionBytes := []byte(`{"session":"prior"}`)
-	ref, putErr := blobs.Put(sessionBytes)
+	// Seed a subtree tar blob.
+	tarGz, terr := container.BuildTreeTar(map[string][]byte{"-work/s.jsonl": []byte(`{"session":"prior"}`)})
+	if terr != nil {
+		t.Fatalf("BuildTreeTar: %v", terr)
+	}
+	ref, putErr := blobs.Put(tarGz)
 	if putErr != nil {
 		t.Fatalf("blobs.Put: %v", putErr)
 	}
@@ -780,11 +795,8 @@ func TestRunAgent_ResumeSession_TrueWhenSessionRestored(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
-	// Pre-write a placeholder so the capture ReadFileAt after launch succeeds.
-	if wErr := f.WriteFileAt(ctx, h, transcriptPath, []byte("post-run")); wErr != nil {
-		t.Fatalf("seed transcript: %v", wErr)
-	}
+	const sessionDir = "/work/.awf/claude-session/r/projects"
+	// Restore (WriteTreeAt) populates the subtree before capture's ReadTreeAt reads it.
 
 	d := &engine.LocalDispatcher{
 		Backend:  f,
@@ -797,8 +809,8 @@ func TestRunAgent_ResumeSession_TrueWhenSessionRestored(t *testing.T) {
 		Path: "gen",
 		Node: &ir.AgentStep{ID: "gen", Container: "ws", Uses: "test/agent"},
 		ResolvedInputs: engine.ResolvedInputs{
-			Uses:                  "test/agent",
-			SessionTranscriptPath: transcriptPath,
+			Uses:       "test/agent",
+			SessionDir: sessionDir,
 		},
 	}
 	dr, ch, runErr := d.Run(ctx, intent)
@@ -839,11 +851,11 @@ func TestRunAgent_ResumeSession_FalseWhenNoSessionRef(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
-	if wErr := f.WriteFileAt(ctx, h, transcriptPath, []byte("transcript")); wErr != nil {
+	const sessionDir = "/work/.awf/claude-session/r/projects"
+	// Pre-seed a transcript under the subtree so capture's ReadTreeAt succeeds.
+	if wErr := f.WriteFileAt(ctx, h, sessionDir+"/-work/s.jsonl", []byte("transcript")); wErr != nil {
 		t.Fatalf("seed transcript: %v", wErr)
 	}
-	f.WriteFileAtCalls = nil // discard seed write
 
 	d := &engine.LocalDispatcher{
 		Backend:  f,
@@ -856,8 +868,8 @@ func TestRunAgent_ResumeSession_FalseWhenNoSessionRef(t *testing.T) {
 		Path: "gen",
 		Node: &ir.AgentStep{ID: "gen", Container: "ws", Uses: "test/agent"},
 		ResolvedInputs: engine.ResolvedInputs{
-			Uses:                  "test/agent",
-			SessionTranscriptPath: transcriptPath,
+			Uses:       "test/agent",
+			SessionDir: sessionDir,
 		},
 	}
 	dr, ch, runErr := d.Run(ctx, intent)
@@ -911,8 +923,8 @@ func TestRunAgentRestoreFailureIsMechanical(t *testing.T) {
 		Path: "gen",
 		Node: &ir.AgentStep{ID: "gen", Container: "ws", Uses: "test/agent"},
 		ResolvedInputs: engine.ResolvedInputs{
-			Uses:                  "test/agent",
-			SessionTranscriptPath: "/t/s.jsonl",
+			Uses:       "test/agent",
+			SessionDir: "/work/.awf/claude-session/r/projects",
 		},
 	}
 	dr, ch, runErr := d.Run(ctx, intent)

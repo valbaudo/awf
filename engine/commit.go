@@ -111,9 +111,10 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		nr.Transcript = dr.Transcript
 	}
 
-	// session transcript — when the dispatcher captured a native-session transcript
-	// (via Backend.ReadFileAt), content-address it before the node.completed append,
-	// preserving the Put→Append→Sync ordering (mirrors the transcript block above).
+	// session subtree — when the dispatcher captured a claude session projects/
+	// subtree (via Backend.ReadTreeAt, a gzip-tar), content-address it before the
+	// node.completed append, preserving the Put→Append→Sync ordering (mirrors the
+	// transcript block above).
 	sessionRef := dr.SessionRef
 	if sessionRef == "" && len(dr.SessionTranscript) > 0 {
 		ref, err := blobs.Put(dr.SessionTranscript)

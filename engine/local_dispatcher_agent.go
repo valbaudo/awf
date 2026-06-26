@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/valbaudo/awf/agent"
@@ -109,15 +111,18 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	}
 
 	// Session restore on the generator frontier (Task 1.5 / M1): before launching
-	// the agent, write the committed session transcript back into the container so
-	// the agent resumes from it. Symmetric inverse of the capture block below.
+	// the agent, write the committed session `projects/` subtree back into the
+	// container so the agent resumes from it. Symmetric inverse of the capture
+	// block below.
 	//
-	// Conditions: SessionTranscriptPath set + RunState present + a committed ref
-	// exists for this node path. All three must hold; any absent → skip (first run
-	// or non-session step). A Blobs.Get error or WriteFileAt error is a mechanical
-	// failure (crash ≠ verdict) — never commits and never consumes a gate attempt.
+	// Conditions: SessionDir set + RunState present + a committed ref exists for
+	// this node path. All three must hold; any absent → skip (first run or
+	// non-session step). The committed blob is a gzip-tar of the subtree; WriteTreeAt
+	// extracts it under SessionDir. A Blobs.Get error or WriteTreeAt error is a
+	// mechanical failure (crash ≠ verdict) — never commits and never consumes a
+	// gate attempt.
 	var sessionRestored bool
-	if intent.ResolvedInputs.SessionTranscriptPath != "" && d.RunState != nil && d.Blobs != nil {
+	if intent.ResolvedInputs.SessionDir != "" && d.RunState != nil && d.Blobs != nil {
 		if ref := d.RunState.SessionRefs[intent.Path]; ref != "" {
 			sessionBytes, getErr := d.Blobs.Get(ref)
 			if getErr != nil {
@@ -127,11 +132,11 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 					Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: get session blob %q for %q: %w", ref, intent.Path, getErr),
 				}, closedChunks(), nil
 			}
-			if writeErr := d.Backend.WriteFileAt(ctx, h, intent.ResolvedInputs.SessionTranscriptPath, sessionBytes); writeErr != nil {
+			if writeErr := d.Backend.WriteTreeAt(ctx, h, intent.ResolvedInputs.SessionDir, sessionBytes); writeErr != nil {
 				oc := snapshotFailureOutcome(writeErr)
 				return DispatchResult{
 					Outcome: oc,
-					Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: restore session transcript at %q for %q: %w", intent.ResolvedInputs.SessionTranscriptPath, intent.Path, writeErr),
+					Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: restore session subtree at %q for %q: %w", intent.ResolvedInputs.SessionDir, intent.Path, writeErr),
 				}, closedChunks(), nil
 			}
 			sessionRestored = true
@@ -183,23 +188,47 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}, nil, nil
 	}
 
+	// Compute the absolute CLAUDE_CONFIG_DIR for claude-session adapters and
+	// thread it via the invocation, so the adapter sets it on the exec env
+	// BEFORE Launch (per-run config isolation). It is SessionDir minus its
+	// trailing "/projects". The value must be ABSOLUTE: docker/fake StagingRoot
+	// is already absolute (use SessionDir's parent as-is); native's StagingRoot
+	// is workdir-relative, so resolve it under the workdir via WorkdirResolver.
+	// Empty for non-session steps.
+	var sessionConfigDir string
+	if intent.ResolvedInputs.SessionDir != "" && d.Backend != nil {
+		stagingRoot := d.Backend.Capabilities().StagingRoot
+		sessionParent := strings.TrimSuffix(intent.ResolvedInputs.SessionDir, "/projects")
+		switch {
+		case filepath.IsAbs(stagingRoot):
+			sessionConfigDir = sessionParent // docker / fake: StagingRoot already absolute
+		default:
+			if wr, ok := d.Backend.(container.WorkdirResolver); ok {
+				sessionConfigDir = wr.ResolveWorkdirPath(h, sessionParent) // native: resolve under the workdir
+			} else {
+				sessionConfigDir = sessionParent // defensive: unknown relative backend
+			}
+		}
+	}
+
 	// Build AgentInvocation. Feedback (slice 5.3) carries the prior evaluator
 	// verdict on gate repair attempts N>1 — populated by runAgentStep from
 	// the enclosing gate's runstate.LookupGateAttempts. Adapters that consume
 	// an implicit "previous verdict:" preamble (the Claude Code adapter) read
 	// it; nil on attempt 1, non-gate paths, and code steps.
 	inv := agent.AgentInvocation{
-		NodePath:        intent.Path,
-		Uses:            intent.ResolvedInputs.Uses,
-		RunContext:      intent.RunContext,
-		With:            intent.ResolvedInputs.With,
-		OutputSchema:    intent.ResolvedInputs.OutputSchema,
-		IdempotencyKey:  intent.IdempotencyKey,
-		Feedback:        intent.ResolvedInputs.Feedback, // slice 5.3
-		Thread:          intent.ResolvedInputs.Thread,   // Task 4.5
-		ContextEvidence: intent.ResolvedInputs.ContextEvidence,
-		InputFiles:      intent.ResolvedInputs.ContainerlessFiles, // resolved input_files for containerless steps; nil for container-backed (those use stageInputFiles)
-		ResumeSession:   sessionRestored,                          // M2 task: true when session transcript was written back for this node
+		NodePath:         intent.Path,
+		Uses:             intent.ResolvedInputs.Uses,
+		RunContext:       intent.RunContext,
+		With:             intent.ResolvedInputs.With,
+		OutputSchema:     intent.ResolvedInputs.OutputSchema,
+		IdempotencyKey:   intent.IdempotencyKey,
+		Feedback:         intent.ResolvedInputs.Feedback, // slice 5.3
+		Thread:           intent.ResolvedInputs.Thread,   // Task 4.5
+		ContextEvidence:  intent.ResolvedInputs.ContextEvidence,
+		InputFiles:       intent.ResolvedInputs.ContainerlessFiles, // resolved input_files for containerless steps; nil for container-backed (those use stageInputFiles)
+		ResumeSession:    sessionRestored,                          // M2 task: true when session subtree was written back for this node
+		SessionConfigDir: sessionConfigDir,                         // absolute per-run CLAUDE_CONFIG_DIR; adapter sets it on the exec env
 	}
 
 	// γ contract: Launch returns immediately with events + outcome channels
@@ -369,8 +398,8 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}
 		dr.SnapshotRef = string(ref)
 	}
-	if dr.Outcome == OutcomeOK && intent.ResolvedInputs.SessionTranscriptPath != "" {
-		transcript, readErr := d.Backend.ReadFileAt(ctx, h, intent.ResolvedInputs.SessionTranscriptPath)
+	if dr.Outcome == OutcomeOK && intent.ResolvedInputs.SessionDir != "" {
+		transcript, readErr := d.Backend.ReadTreeAt(ctx, h, intent.ResolvedInputs.SessionDir)
 		if readErr != nil {
 			oc := snapshotFailureOutcome(readErr)
 			return DispatchResult{

@@ -29,6 +29,13 @@ type WriteFileAtCall struct {
 	Content []byte
 }
 
+// WriteTreeAtCall records a WriteTreeAt for test assertions (mirrors
+// WriteFileAtCall). Content is the gzip-tar passed to WriteTreeAt.
+type WriteTreeAtCall struct {
+	Dir     string
+	Content []byte
+}
+
 // Fake is the in-memory Backend used by Phase 2 engine tests and the
 // conformance suite (slice 2.6). Deterministic: monotonic-counter handle
 // IDs, no time.Now, no OS-level process spawning, no goroutines.
@@ -113,6 +120,11 @@ type Fake struct {
 	// WriteFileAtCalls records every WriteFileAt invocation, in order (test
 	// assertion aid — mirrors RestoreCalls).
 	WriteFileAtCalls []WriteFileAtCall
+
+	// WriteTreeAtCalls records every WriteTreeAt invocation, in order (test
+	// assertion aid — mirrors WriteFileAtCalls; used to observe session-subtree
+	// restores).
+	WriteTreeAtCalls []WriteTreeAtCall
 
 	// P6a — programmable spec.Image → resolved-digest table; Create returns the
 	// looked-up digest on the Handle ("" if unprogrammed). failCreate models an
@@ -445,6 +457,7 @@ func (f *Fake) WriteTreeAt(ctx context.Context, h Handle, dir string, tarGz []by
 	for rel, content := range files {
 		fh.files[base+"/"+rel] = cloneBytes(content)
 	}
+	f.WriteTreeAtCalls = append(f.WriteTreeAtCalls, WriteTreeAtCall{Dir: dir, Content: cloneBytes(tarGz)})
 	return nil
 }
 
