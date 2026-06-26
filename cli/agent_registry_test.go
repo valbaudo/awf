@@ -7,6 +7,7 @@ import (
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/claude"
+	"github.com/valbaudo/awf/agent/claudesession"
 	"github.com/valbaudo/awf/agent/codexlive"
 	"github.com/valbaudo/awf/agent/droid"
 	agentfake "github.com/valbaudo/awf/agent/fake"
@@ -419,6 +420,24 @@ func TestRoleWithFor_ExplicitWithKeyWins(t *testing.T) {
 	got := roleWithFor(role)
 	if got["model"] != "sonnet" {
 		t.Errorf("model = %v, want sonnet (explicit with: wins over convenience field)", got["model"])
+	}
+}
+
+func TestBuildAgentRegistry_RegistersClaudeSession(t *testing.T) {
+	reg, err := buildAgentRegistry([]string{"ANTHROPIC_API_KEY"}, container.NewFake())
+	if err != nil {
+		t.Fatalf("buildAgentRegistry: %v", err)
+	}
+	a, ok := reg.Lookup(claudesession.AdapterRef)
+	if !ok {
+		t.Fatalf("%s not registered", claudesession.AdapterRef)
+	}
+	caps := a.Capabilities()
+	if !caps.NativeSchema || !caps.PersistentSession {
+		t.Fatalf("claude-session caps = %+v, want NativeSchema+PersistentSession", caps)
+	}
+	if caps.Containerless {
+		t.Errorf("claude-session caps.Containerless = true; want false (container-backed)")
 	}
 }
 

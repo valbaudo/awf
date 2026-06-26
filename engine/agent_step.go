@@ -220,6 +220,39 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// `type Duration time.Duration`, so the deref-then-cast is the conversion.
 	snapBare, _ := SplitContainerRef(as.Container)
 	uses := AgentRuntimeRef(wf, ictx.moduleID, as.Uses)
+
+	// M2: set SessionTranscriptPath if the resolved adapter declares PersistentSession
+	// AND implements agent.SessionPathProvider. The workdir is read from the resolved
+	// with["workdir"] key (M2d): authors using anthropic/claude-code-session MUST
+	// declare the container's working directory there so the adapter can derive the
+	// correct transcript bucket (~/.claude/projects/<encodeProjectDir(workdir)>/…).
+	// When the key is absent, workdir is "" which produces a degenerate (but
+	// non-panicking) path — preserved for conformance fakes that return a fixed path
+	// regardless of workdir.
+	var sessionTranscriptPath string
+	if ictx.resolver != nil {
+		if adp, ok := ictx.resolver.Lookup(uses); ok &&
+			adp.Capabilities().PersistentSession {
+			if spp, ok := adp.(agent.SessionPathProvider); ok {
+				var workdir string
+				if wd, wdOK := resolvedWith["workdir"].(string); wdOK {
+					workdir = wd
+				}
+				partialInv := agent.AgentInvocation{
+					NodePath: path,
+					Uses:     uses,
+					RunContext: agent.RunContext{
+						RunID:        runstate.RunID,
+						CurrentEpoch: runstate.Epoch,
+						NextEpoch:    runstate.Epoch,
+					},
+					With: resolvedWith,
+				}
+				sessionTranscriptPath = spp.SessionTranscriptPath(partialInv, workdir)
+			}
+		}
+	}
+
 	resolved := ResolvedInputs{
 		Uses:                  uses,
 		With:                  resolvedWith,
@@ -233,6 +266,7 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		InputFiles:            inputFiles,         // SP1 artifact channel (container path)
 		ContainerlessFiles:    containerlessFiles, // inline message parts (containerless path)
 		OutputFileContracts:   outputFileContracts,
+		SessionTranscriptPath: sessionTranscriptPath, // M2: set for PersistentSession+SessionPathProvider adapters
 	}
 	if as.Timeout != nil {
 		resolved.Timeout = time.Duration(*as.Timeout)

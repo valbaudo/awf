@@ -138,6 +138,14 @@ type AgentInvocation struct {
 	// containerless analog of container.InputFile staging). Empty for
 	// container-backed steps. json:"-": bytes never reach the state log.
 	InputFiles []InputFile `json:"-"`
+	// ResumeSession is set true by the engine when it successfully restored a
+	// committed session transcript for this node before calling adapter.Launch.
+	// The adapter uses it to select the correct CLI flag:
+	//   - false (fresh turn): pass --session-id <uuid> (create/adopt a session)
+	//   - true  (restored turn): pass --resume <uuid> (re-prime from restored transcript)
+	// It is engine operational state, not author with: config — modelled after
+	// the existing Thread/ContextEvidence fields. json:"-": never journaled.
+	ResumeSession bool `json:"-"`
 }
 
 // AgentResult is the synchronous return of Adapter.Launch. Output is the

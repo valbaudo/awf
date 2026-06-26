@@ -9,6 +9,7 @@ import (
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/awfllm"
 	"github.com/valbaudo/awf/agent/claude"
+	"github.com/valbaudo/awf/agent/claudesession"
 	"github.com/valbaudo/awf/agent/codex"
 	"github.com/valbaudo/awf/agent/codexlive"
 	"github.com/valbaudo/awf/agent/droid"
@@ -30,6 +31,7 @@ var adapterEnvAllowlists = [][]string{
 	codex.DefaultEnvAllowlist,
 	codexlive.DefaultEnvAllowlist,
 	awfllm.DefaultEnvAllowlist,
+	claudesession.DefaultEnvAllowlist,
 }
 
 // defaultAgentEnv is the union of every registered adapter's DefaultEnvAllowlist.
@@ -199,6 +201,17 @@ func buildAgentRegistryWithLiveRoot(envAllowlist []string, backend container.Bac
 	if err := reg.Register(lladapter); err != nil {
 		return nil, fmt.Errorf("cli: buildAgentRegistry: register awf/llm adapter: %w", err)
 	}
+
+	// anthropic/claude-code-session: same env allowlist as claude, adds
+	// PersistentSession + deterministic --session-id per launch.
+	csadapter, err := claudesession.New(claudesession.WithEnv(env), claudesession.WithBackend(backend))
+	if err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: construct claude-session adapter: %w", err)
+	}
+	if err := reg.Register(csadapter); err != nil {
+		return nil, fmt.Errorf("cli: buildAgentRegistry: register claude-session adapter: %w", err)
+	}
+
 	return &reg, nil
 }
 

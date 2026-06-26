@@ -751,6 +751,134 @@ func TestRunAgentNoRestoreWhenSessionRefAbsent(t *testing.T) {
 	}
 }
 
+// TestRunAgent_ResumeSession_TrueWhenSessionRestored verifies that when the
+// engine successfully restores a session transcript (SessionRefs[path] is set
+// and WriteFileAt succeeds), the AgentInvocation passed to Launch carries
+// ResumeSession=true. Uses the fake agent's Calls() recorder to inspect the
+// invocation the adapter received.
+func TestRunAgent_ResumeSession_TrueWhenSessionRestored(t *testing.T) {
+	ctx := context.Background()
+	blobs := state.NewInMemoryBlobs()
+	f := container.NewFake().WithBlobs(blobs)
+	h, err := f.Create(ctx, container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Seed a transcript blob.
+	sessionBytes := []byte(`{"session":"prior"}`)
+	ref, putErr := blobs.Put(sessionBytes)
+	if putErr != nil {
+		t.Fatalf("blobs.Put: %v", putErr)
+	}
+	rs := engine.NewRunState("r", "d", nil)
+	rs.SessionRefs["gen"] = ref
+
+	fk := agentfake.New("test/agent").Script(0, agentfake.Result{Output: map[string]any{"ok": true}})
+	reg := &agent.Registry{}
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
+	// Pre-write a placeholder so the capture ReadFileAt after launch succeeds.
+	if wErr := f.WriteFileAt(ctx, h, transcriptPath, []byte("post-run")); wErr != nil {
+		t.Fatalf("seed transcript: %v", wErr)
+	}
+
+	d := &engine.LocalDispatcher{
+		Backend:  f,
+		Handles:  map[string]container.Handle{"ws": h},
+		Resolver: reg,
+		RunState: rs,
+		Blobs:    blobs,
+	}
+	intent := engine.NodeIntent{
+		Path: "gen",
+		Node: &ir.AgentStep{ID: "gen", Container: "ws", Uses: "test/agent"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:                  "test/agent",
+			SessionTranscriptPath: transcriptPath,
+		},
+	}
+	dr, ch, runErr := d.Run(ctx, intent)
+	for range ch {
+	}
+	if runErr != nil {
+		t.Fatalf("Run returned engine-level error: %v", runErr)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Launch calls = %d, want 1", len(calls))
+	}
+	if !calls[0].ResumeSession {
+		t.Errorf("AgentInvocation.ResumeSession = false; want true (session was restored for this node)")
+	}
+}
+
+// TestRunAgent_ResumeSession_FalseWhenNoSessionRef verifies that when there is
+// no prior SessionRef for the node (first run), ResumeSession is false on the
+// invocation passed to Launch.
+func TestRunAgent_ResumeSession_FalseWhenNoSessionRef(t *testing.T) {
+	ctx := context.Background()
+	blobs := state.NewInMemoryBlobs()
+	f := container.NewFake().WithBlobs(blobs)
+	h, err := f.Create(ctx, container.ContainerSpec{Name: "ws"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	rs := engine.NewRunState("r", "d", nil) // no SessionRefs["gen"]
+
+	fk := agentfake.New("test/agent").Script(0, agentfake.Result{Output: map[string]any{"ok": true}})
+	reg := &agent.Registry{}
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	const transcriptPath = "/home/agent/.claude/projects/p/s.jsonl"
+	if wErr := f.WriteFileAt(ctx, h, transcriptPath, []byte("transcript")); wErr != nil {
+		t.Fatalf("seed transcript: %v", wErr)
+	}
+	f.WriteFileAtCalls = nil // discard seed write
+
+	d := &engine.LocalDispatcher{
+		Backend:  f,
+		Handles:  map[string]container.Handle{"ws": h},
+		Resolver: reg,
+		RunState: rs,
+		Blobs:    blobs,
+	}
+	intent := engine.NodeIntent{
+		Path: "gen",
+		Node: &ir.AgentStep{ID: "gen", Container: "ws", Uses: "test/agent"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:                  "test/agent",
+			SessionTranscriptPath: transcriptPath,
+		},
+	}
+	dr, ch, runErr := d.Run(ctx, intent)
+	for range ch {
+	}
+	if runErr != nil {
+		t.Fatalf("Run returned engine-level error: %v", runErr)
+	}
+	if dr.Outcome != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q (Err: %v)", dr.Outcome, engine.OutcomeOK, dr.Err)
+	}
+
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("Launch calls = %d, want 1", len(calls))
+	}
+	if calls[0].ResumeSession {
+		t.Errorf("AgentInvocation.ResumeSession = true; want false (no prior session for this node)")
+	}
+}
+
 // TestRunAgentRestoreFailureIsMechanical verifies that when the blob is
 // present in SessionRefs but the WriteFileAt call fails, the dispatcher
 // returns a non-OK mechanical outcome (crash ≠ verdict).
