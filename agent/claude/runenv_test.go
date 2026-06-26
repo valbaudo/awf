@@ -13,9 +13,9 @@ func TestApplyPerRunConfigEnv_SetsConfigAndXDG(t *testing.T) {
 
 	want := map[string]string{
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-		"CLAUDE_CONFIG_DIR": "/work/.awf/claude-session/r1",
-		"XDG_STATE_HOME":    "/work/.awf/claude-session/r1/xdg-state",
-		"XDG_CACHE_HOME":    "/work/.awf/claude-session/r1/xdg-cache",
+		"CLAUDE_CONFIG_DIR":                        "/work/.awf/claude-session/r1",
+		"XDG_STATE_HOME":                           "/work/.awf/claude-session/r1/xdg-state",
+		"XDG_CACHE_HOME":                           "/work/.awf/claude-session/r1/xdg-cache",
 	}
 	for k, v := range want {
 		if env[k] != v {
