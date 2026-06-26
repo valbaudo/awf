@@ -1517,11 +1517,18 @@ validated post-hoc, not constraint-enforced.
 `anthropic/claude-code-session` is a persistent-session variant of the
 `anthropic/claude-code` runtime. It runs the same Claude Code CLI and accepts the
 same `with:` keys, but instead of discarding Claude's on-disk session after each
-turn it **reuses** it. When the step commits, AWF captures Claude Code's session
-transcript as a content-addressed artifact; before the step launches again it
-restores that transcript and resumes the same session (`claude --resume`). A
-re-executed step — for example after `awf resume` — therefore continues from
-Claude's own session state, not from a message log AWF re-assembled.
+turn it **reuses** it.
+
+AWF gives every run its own Claude configuration directory: it sets
+`CLAUDE_CONFIG_DIR` to a per-run path under the container's `.awf` staging root
+(`<staging-root>/claude-session/<run-id>`), so Claude relocates its whole config
+tree there and concurrent runs never collide on a shared `~/.claude`. When the step
+commits, AWF captures that directory's `projects/` session subtree as a
+content-addressed artifact; before the step launches again it restores the subtree
+and resumes the same session (`claude --resume`). A re-executed step — for example
+after `awf resume` — therefore continues from Claude's own session state, not from a
+message log AWF re-assembled. Because the whole subtree is the artifact, AWF never
+needs to know Claude's working directory or transcript-bucket encoding.
 
 This is a different mechanism from `continues:`. `continues:` is
 harness-agnostic: AWF prepends a prior step's committed turns, verbatim, before
@@ -1531,27 +1538,17 @@ turn list cannot reconstruct. Use `continues:` for ordinary cross-step threading
 use this runtime when a step's own internal session state must survive its
 re-execution.
 
-The `with:` schema is identical to `anthropic/claude-code`, plus one key:
+The `with:` schema is identical to `anthropic/claude-code` — no extra keys are
+required (the session config dir and capture path are managed entirely by AWF).
 
-    with:
-      prompt: <template>              # required (as for anthropic/claude-code)
-      # ... all other anthropic/claude-code keys (model, effort, ...) ...
-      workdir: <abs-container-path>   # the directory Claude runs in
-
-**workdir**
-:   The in-container working directory Claude Code runs in — the image's
-    `WORKDIR` or a compose `working_dir`. AWF derives the session transcript's
-    on-disk location from it, so it must match where Claude actually runs. When
-    `workdir` is omitted the derived path is degenerate: capture and restore find
-    nothing and the step runs a fresh session every time (no error is raised).
-    Set it for any real use.
-
-**Constraints.** This runtime requires a container (it is not containerless). It
-is **generator-only**: a persistent-session runtime is rejected as a gate
-**evaluator** (`gate.evaluate`), because the judge must always start in a fresh,
-independent context (see **continues** and **gate**). The restored session is
-reconstructed from the content-addressed transcript artifact, never from live
-container state, so it survives checkpoint/resume like any other committed output.
+**Constraints.** This runtime requires a container (it is not containerless) — the
+per-run session subtree is captured from the container filesystem, so a
+containerless session adapter is not eligible. It is **generator-only**: a
+persistent-session runtime is rejected as a gate **evaluator** (`gate.evaluate`),
+because the judge must always start in a fresh, independent context (see
+**continues** and **gate**). The restored session is reconstructed from the
+content-addressed subtree artifact, never from live container state, so it survives
+checkpoint/resume like any other committed output.
 
 ## Workflow Exports
 
