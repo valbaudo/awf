@@ -1526,9 +1526,10 @@ Claude's own session state, not from a message log AWF re-assembled.
 This is a different mechanism from `continues:`. `continues:` is
 harness-agnostic: AWF prepends a prior step's committed turns, verbatim, before
 the next prompt. `anthropic/claude-code-session` instead carries the harness's
-native session forward in full fidelity, which a re-assembled turn list cannot
-reconstruct. Use `continues:` for ordinary cross-step threading; use this runtime
-when a step's own internal session state must survive its re-execution.
+own native session forward, including internal session state that a re-assembled
+turn list cannot reconstruct. Use `continues:` for ordinary cross-step threading;
+use this runtime when a step's own internal session state must survive its
+re-execution.
 
 The `with:` schema is identical to `anthropic/claude-code`, plus one key:
 
