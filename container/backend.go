@@ -128,6 +128,20 @@ type Backend interface {
 	// touches state.Blobs. Real impls confine the path; the fake is in-memory.
 	WriteFileAt(ctx context.Context, h Handle, path string, content []byte) error
 
+	// ReadTreeAt returns the subtree rooted at dir inside the container as a
+	// gzip-tar whose entries are relative to dir (no leading dir prefix).
+	// Missing or empty dir is a hard error. Unknown handle is a hard error.
+	// NEVER touches state.Blobs — the engine Puts the archive at commit.
+	ReadTreeAt(ctx context.Context, h Handle, dir string) ([]byte, error)
+
+	// WriteTreeAt extracts a gzip-tar (as produced by ReadTreeAt or
+	// BuildTreeTar) into the container under dir, creating dir and all
+	// parent directories. Archive entries must be relative to dir (no
+	// leading slash, no ".." escape); implementations reject escape
+	// attempts. Overwrites existing files. Unknown handle is a hard error.
+	// NEVER touches state.Blobs.
+	WriteTreeAt(ctx context.Context, h Handle, dir string, tarGz []byte) error
+
 	// Snapshot captures the handle's filesystem as a CoW diff. Only meaningful
 	// for snapshot:workspace containers (spec §3). Phase 2 fake: returns
 	// ("", ErrUnsupported). Phase 4 Docker (slice 4.4): streaming gzip-tar
@@ -386,6 +400,23 @@ type InputFile struct {
 // Restore. Phase 2 fake never produces one (Snapshot returns ErrUnsupported);
 // Phase 4 sets it to the CAS ref of the CoW diff.
 type SnapshotRef string
+
+// WorkdirResolver is an OPTIONAL interface implemented by backends whose
+// StagingRoot is workdir-relative (native), so callers can resolve it to an
+// absolute path for a live handle — e.g. to set an absolute CLAUDE_CONFIG_DIR.
+//
+// Backends with an absolute StagingRoot (docker: "/work/.awf", fake: "/work/.awf")
+// do NOT implement this interface; callers use the StagingRoot path as-is without
+// any host-path resolution.
+//
+// Usage: if wr, ok := b.(container.WorkdirResolver); ok { abs = wr.ResolveWorkdirPath(h, rel) }
+type WorkdirResolver interface {
+	// ResolveWorkdirPath returns the absolute host path for rel (a
+	// workdir-relative staging path) under the handle's working directory.
+	// If the handle is unknown (defensive), rel is returned unchanged — callers
+	// must not rely on an error return; the method never panics.
+	ResolveWorkdirPath(h Handle, rel string) string
+}
 
 // ErrUnsupported is the sentinel returned by Backend methods this backend
 // doesn't implement. Phase 2 fake returns it from Snapshot / Restore. Callers

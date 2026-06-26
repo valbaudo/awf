@@ -385,16 +385,11 @@ func (f *Fake) ReadFileAt(ctx context.Context, h Handle, path string) ([]byte, e
 	return cloneBytes(content), nil
 }
 
-// ReadTreeAt returns the subtree rooted at dir as a gzip-tar (built via
-// BuildTreeTar). Entry paths in the archive are relative to dir. Returns an
-// error when no files exist under dir (the caller cannot distinguish an empty
-// directory from a missing one in the flat in-memory fs, so both are treated
-// as absent).
-//
-// ReadTreeAt is NOT on the container.Backend interface — that addition happens
-// once all three backends implement it (a later task). It is defined here on
-// *Fake so session-capture tests can exercise the full round-trip against the
-// in-memory backend.
+// ReadTreeAt implements container.Backend. Returns the subtree rooted at dir as
+// a gzip-tar (built via BuildTreeTar). Entry paths in the archive are relative
+// to dir. Returns an error when no files exist under dir (the caller cannot
+// distinguish an empty directory from a missing one in the flat in-memory fs,
+// so both are treated as absent).
 func (f *Fake) ReadTreeAt(ctx context.Context, h Handle, dir string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -427,13 +422,11 @@ func (f *Fake) ReadTreeAt(ctx context.Context, h Handle, dir string) ([]byte, er
 	return tarGz, nil
 }
 
-// WriteTreeAt extracts a gzip-tar (as produced by BuildTreeTar or ReadTreeAt)
-// into the handle's in-memory fs under dir. Relative paths from the archive
-// are joined to dir; existing files are overwritten. Enforces the standard
-// TreeTarMaxBytes / TreeTarMaxEntries caps to guard against zip-bomb payloads.
-//
-// WriteTreeAt is NOT on the container.Backend interface for the same reason as
-// ReadTreeAt — the interface addition happens in a later task.
+// WriteTreeAt implements container.Backend. Extracts a gzip-tar (as produced
+// by BuildTreeTar or ReadTreeAt) into the handle's in-memory fs under dir.
+// Relative paths from the archive are joined to dir; existing files are
+// overwritten. Enforces the standard TreeTarMaxBytes / TreeTarMaxEntries caps
+// to guard against zip-bomb payloads.
 func (f *Fake) WriteTreeAt(ctx context.Context, h Handle, dir string, tarGz []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
