@@ -23,7 +23,7 @@
 // Streaming: Launch parses claude's --output-format stream-json line-by-
 // line via io.Pipe + bufio.Scanner from the streaming Backend.Exec chunks
 // channel (slice 5.3 Group A refactor). Each line becomes one
-// streamMessage; an assistant message may split into multiple AgentEvents
+// StreamMessage; an assistant message may split into multiple AgentEvents
 // (one per content block). Launch returns IMMEDIATELY under the γ contract
 // with events + outcome channels open; the parser goroutine writes events
 // progressively, then sends AgentOutcome on outcomeCh after claude exits.

@@ -17,6 +17,12 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
+// stderrCaptureLimit bounds how many stderr bytes Launch accumulates for the
+// unexpected-exit diagnostic (claude.ErrUnexpectedExit.Stderr). The error's
+// own Error() truncates to ~200 chars for display; the raw field keeps a
+// little headroom so callers inspecting the field see more context.
+const stderrCaptureLimit = 8 << 10 // 8 KiB
+
 // Adapter is the agent.Adapter implementation for Claude Code with deterministic
 // session-id reuse. It wraps a *claude.Adapter for shared functionality
 // (env passthrough, backend wiring, version, stream parsing) and adds:
@@ -252,11 +258,31 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 
 	pr, pw := io.Pipe()
 
-	// Goroutine A: forward stdout chunks into pipe.
+	// stderrCh carries the stderr bytes captured by goroutine A so the
+	// unexpected-exit path can populate claude.ErrUnexpectedExit.Stderr.
+	// Buffered + closed-by-A so goroutine B reads it race-free after the
+	// chunks channel has drained (the close establishes happens-before).
+	stderrCh := make(chan string, 1)
+
+	// Goroutine A: forward stdout chunks into pipe, accumulate stderr.
 	go func() {
 		defer func() { _ = pw.Close() }()
+		// Bounded stderr capture: claude's stream-json result is stdout-only,
+		// but on an early non-zero exit (no result event) the diagnostic lives
+		// on stderr. Cap at stderrCaptureLimit so a noisy process can't grow
+		// this unbounded.
+		var stderrBuf []byte
+		defer func() { stderrCh <- string(stderrBuf) }()
 		for c := range chunks {
 			if c.Stream != "stdout" {
+				if c.Stream == "stderr" && len(stderrBuf) < stderrCaptureLimit {
+					room := stderrCaptureLimit - len(stderrBuf)
+					if len(c.Data) > room {
+						stderrBuf = append(stderrBuf, c.Data[:room]...)
+					} else {
+						stderrBuf = append(stderrBuf, c.Data...)
+					}
+				}
 				continue
 			}
 			if _, werr := pw.Write(c.Data); werr != nil {
@@ -286,7 +312,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			if len(line) == 0 {
 				continue
 			}
-			msg, perr := parseStreamLine(line)
+			msg, perr := claude.ParseStreamLine(line)
 			if perr != nil {
 				captureErr = perr
 				continue
@@ -294,7 +320,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			if msg.Type == "system" && msg.Subtype == "init" && msg.Model != "" {
 				initModel = msg.Model
 			}
-			for _, ev := range messageToEvents(msg) {
+			for _, ev := range claude.MessageToEvents(msg) {
 				select {
 				case events <- ev:
 				case <-ctx.Done():
@@ -303,12 +329,12 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 				}
 			}
 			if msg.Type == "result" {
-				res, eerr := extractResult(msg, initModel)
+				res, eerr := claude.ExtractResult(msg, initModel)
 				switch {
 				case eerr == nil:
 					capturedResult = res
 					kind = "ok"
-				case errors.Is(eerr, errAuthFailureSentinel):
+				case errors.Is(eerr, claude.ErrAuthFailureSentinel):
 					kind = "auth"
 					captureErr = eerr
 				case strings.Contains(eerr.Error(), "structured_output"):
@@ -337,8 +363,11 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			outcomeCh <- agent.AgentOutcome{Err: fmt.Errorf("agent/claudesession: authentication failed: %w: %w", agent.ErrPermissionDenied, captureErr)}
 		case kind == "fatal":
 			outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: captureErr}}
-		default:
-			outcomeCh <- agent.AgentOutcome{Err: &errUnexpectedExit{ExitCode: execResult.ExitCode}}
+		default: // kind == "" — no result event was seen
+			// stderrCh is closed-after-write by goroutine A; the receive blocks
+			// only until that single value lands (after chunks drained), giving
+			// a race-free read of the captured stderr.
+			outcomeCh <- agent.AgentOutcome{Err: &claude.ErrUnexpectedExit{ExitCode: execResult.ExitCode, Stderr: <-stderrCh}}
 		}
 	}()
 

@@ -109,7 +109,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			if len(line) == 0 {
 				continue
 			}
-			msg, perr := parseStreamLine(line)
+			msg, perr := ParseStreamLine(line)
 			if perr != nil {
 				captureErr = perr
 				continue
@@ -122,7 +122,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			// AS SOON AS each stream-json line parses. ctx-aware send
 			// so the caller dropping the channel doesn't hang us
 			// indefinitely.
-			for _, ev := range messageToEvents(msg) {
+			for _, ev := range MessageToEvents(msg) {
 				select {
 				case events <- ev:
 				case <-ctx.Done():
@@ -131,7 +131,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 				}
 			}
 			if msg.Type == "result" {
-				res, eerr := extractResult(msg, initModel)
+				res, eerr := ExtractResult(msg, initModel)
 				switch {
 				case eerr == nil:
 					capturedResult = res

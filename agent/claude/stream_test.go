@@ -59,7 +59,7 @@ func TestParseStreamLine_SystemInit_FromCapturedFixture(t *testing.T) {
 	if len(lines) == 0 {
 		t.Fatal("no lines in sample-stream.jsonl")
 	}
-	msg, err := parseStreamLine(lines[0])
+	msg, err := ParseStreamLine(lines[0])
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -75,16 +75,16 @@ func TestParseStreamLine_SystemInit_FromCapturedFixture(t *testing.T) {
 }
 
 func TestExtractResult_AuthFailureSubtypeSuccessIsError(t *testing.T) {
-	msg, err := parseStreamLine([]byte(resultAuthFailureLine))
+	msg, err := ParseStreamLine([]byte(resultAuthFailureLine))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	_, eerr := extractResult(msg, "")
+	_, eerr := ExtractResult(msg, "")
 	if eerr == nil {
-		t.Fatal("extractResult returned nil error; want ErrAuthFailureSentinel")
+		t.Fatal("ExtractResult returned nil error; want ErrAuthFailureSentinel")
 	}
 	if !errors.Is(eerr, ErrAuthFailureSentinel) {
-		t.Errorf("extractResult error = %v; want errors.Is ErrAuthFailureSentinel", eerr)
+		t.Errorf("ExtractResult error = %v; want errors.Is ErrAuthFailureSentinel", eerr)
 	}
 	if !strings.Contains(eerr.Error(), "Not logged in") {
 		t.Errorf("error = %v; want it to wrap claude's 'Not logged in' message", eerr)
@@ -92,15 +92,15 @@ func TestExtractResult_AuthFailureSubtypeSuccessIsError(t *testing.T) {
 }
 
 func TestParseStreamLine_BadJSON(t *testing.T) {
-	_, err := parseStreamLine([]byte(`not json`))
+	_, err := ParseStreamLine([]byte(`not json`))
 	if err == nil {
 		t.Fatal("err nil; want non-nil")
 	}
 }
 
 func TestMessageToEvents_AssistantSingleText(t *testing.T) {
-	msg, _ := parseStreamLine([]byte(assistantSingleTextLine))
-	events := messageToEvents(msg)
+	msg, _ := ParseStreamLine([]byte(assistantSingleTextLine))
+	events := MessageToEvents(msg)
 	if len(events) != 1 {
 		t.Fatalf("len = %d, want 1", len(events))
 	}
@@ -113,8 +113,8 @@ func TestMessageToEvents_AssistantSingleText(t *testing.T) {
 }
 
 func TestMessageToEvents_AssistantMultiBlock_Splits(t *testing.T) {
-	msg, _ := parseStreamLine([]byte(assistantMultiBlockLine))
-	events := messageToEvents(msg)
+	msg, _ := ParseStreamLine([]byte(assistantMultiBlockLine))
+	events := MessageToEvents(msg)
 	if len(events) != 3 {
 		t.Fatalf("len = %d, want 3 (thinking + text + tool_use)", len(events))
 	}
@@ -128,8 +128,8 @@ func TestMessageToEvents_AssistantMultiBlock_Splits(t *testing.T) {
 }
 
 func TestMessageToEvents_SystemEmitsSingleEvent(t *testing.T) {
-	msg, _ := parseStreamLine([]byte(systemInitLine))
-	events := messageToEvents(msg)
+	msg, _ := ParseStreamLine([]byte(systemInitLine))
+	events := MessageToEvents(msg)
 	if len(events) != 1 {
 		t.Fatalf("len = %d, want 1", len(events))
 	}
@@ -139,8 +139,8 @@ func TestMessageToEvents_SystemEmitsSingleEvent(t *testing.T) {
 }
 
 func TestMessageToEvents_RateLimit(t *testing.T) {
-	msg, _ := parseStreamLine([]byte(rateLimitLine))
-	events := messageToEvents(msg)
+	msg, _ := ParseStreamLine([]byte(rateLimitLine))
+	events := MessageToEvents(msg)
 	if len(events) != 1 {
 		t.Fatalf("len = %d, want 1", len(events))
 	}
@@ -150,10 +150,10 @@ func TestMessageToEvents_RateLimit(t *testing.T) {
 }
 
 func TestExtractResult_Success(t *testing.T) {
-	msg, _ := parseStreamLine([]byte(resultSuccessLine))
-	res, err := extractResult(msg, "")
+	msg, _ := ParseStreamLine([]byte(resultSuccessLine))
+	res, err := ExtractResult(msg, "")
 	if err != nil {
-		t.Fatalf("extractResult: %v", err)
+		t.Fatalf("ExtractResult: %v", err)
 	}
 	if res.Metrics.Cost.Total != 0.012 {
 		t.Errorf("Cost.Total = %v, want 0.012", res.Metrics.Cost.Total)
@@ -176,8 +176,8 @@ func TestExtractResult_Success(t *testing.T) {
 }
 
 func TestExtractResult_ErrorMaxStructuredOutputRetries(t *testing.T) {
-	msg, _ := parseStreamLine([]byte(resultErrorLine))
-	_, err := extractResult(msg, "")
+	msg, _ := ParseStreamLine([]byte(resultErrorLine))
+	_, err := ExtractResult(msg, "")
 	if err == nil {
 		t.Fatal("err nil; want non-nil for error_max_structured_output_retries")
 	}
@@ -189,7 +189,7 @@ func TestExtractResult_ErrorMaxStructuredOutputRetries(t *testing.T) {
 func TestExtractResult_CapturesSystemInitModel(t *testing.T) {
 	// Simulate the streaming loop: parse system/init to capture the model,
 	// then parse the result event and assert Metrics.Model is populated.
-	initMsg, err := parseStreamLine([]byte(systemInitLine))
+	initMsg, err := ParseStreamLine([]byte(systemInitLine))
 	if err != nil {
 		t.Fatalf("parse system/init: %v", err)
 	}
@@ -198,13 +198,13 @@ func TestExtractResult_CapturesSystemInitModel(t *testing.T) {
 	}
 	capturedModel := initMsg.Model // "claude-opus-4-7"
 
-	resultMsg, err := parseStreamLine([]byte(resultSuccessLine))
+	resultMsg, err := ParseStreamLine([]byte(resultSuccessLine))
 	if err != nil {
 		t.Fatalf("parse result: %v", err)
 	}
-	res, err := extractResult(resultMsg, capturedModel)
+	res, err := ExtractResult(resultMsg, capturedModel)
 	if err != nil {
-		t.Fatalf("extractResult: %v", err)
+		t.Fatalf("ExtractResult: %v", err)
 	}
 	if res.Metrics.Model != "claude-opus-4-7" {
 		t.Errorf("Metrics.Model = %q, want %q", res.Metrics.Model, "claude-opus-4-7")
@@ -212,12 +212,12 @@ func TestExtractResult_CapturesSystemInitModel(t *testing.T) {
 }
 
 func TestStreamMessage_RoundTrip(t *testing.T) {
-	in := streamMessage{
+	in := StreamMessage{
 		Type:    "system",
 		Subtype: "init",
 	}
 	b, _ := json.Marshal(in)
-	var out streamMessage
+	var out StreamMessage
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
