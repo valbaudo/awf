@@ -113,7 +113,7 @@
     "output_per_m": 2.5,
     "cache_read_per_m": 0.03,
     "cache_write_per_m": 0,
-    "updated_on": "2025-06-05",
+    "updated_on": "2025-06-17",
     "source": "https://models.dev"
   },
   "gemini-2.5-flash-lite": {
@@ -131,7 +131,7 @@
     "output_per_m": 10,
     "cache_read_per_m": 0.125,
     "cache_write_per_m": 0,
-    "updated_on": "2025-06-05",
+    "updated_on": "2025-06-17",
     "source": "https://models.dev"
   },
   "gemini-3-flash-preview": {
