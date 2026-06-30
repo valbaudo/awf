@@ -1561,3 +1561,33 @@ func TestResolveAggregateMapOutputs(t *testing.T) {
 		t.Fatalf("field aggregate: %v / %#v", err, proj)
 	}
 }
+
+func TestAbsentDueToUntakenIf(t *testing.T) {
+	rs := NewRunState("r1", "d", nil)
+	rs.RecordBranch("if[0]", "else")            // outer took else
+	rs.RecordBranch("if[0].then.if[1]", "then") // (would only exist if outer were then)
+	s := &Scope{rs: rs}
+	cases := []struct {
+		name, runtimePath string
+		want              bool
+	}{
+		// step under the NON-taken then-branch of if[0] → absent
+		{"outer-skipped", "if[0].then.deep", true},
+		// step under the TAKEN else-branch but not committed → genuine (not absent)
+		{"taken-branch-missing", "if[0].else.deep", false},
+		// OUTER skipped, inner if never recorded → MUST be absent (the review bug:
+		// inner-first scanning would wrongly return genuine here).
+		{"outer-skipped-nested", "if[0].then.if[1].else.X", true},
+		// no if on the path → genuine
+		{"no-if", "scan", false},
+		// false-positive guard: a step literally named "then" not preceded by if[
+		{"then-as-stepid", "scan.then", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s.absentDueToUntakenIf(tc.runtimePath); got != tc.want {
+				t.Fatalf("absentDueToUntakenIf(%q)=%v, want %v", tc.runtimePath, got, tc.want)
+			}
+		})
+	}
+}

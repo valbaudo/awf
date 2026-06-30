@@ -229,6 +229,9 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 	}
 	nr, ok := s.rs.LookupCompleted(runtimePath)
 	if !ok {
+		if s.absentDueToUntakenIf(runtimePath) {
+			return nil, template.EvalErrf(template.EvalCodeRefAbsent, "step %q is under a non-taken if branch (runtime path %q)", idSeg.Ident, runtimePath)
+		}
 		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not yet committed (runtime path %q)", idSeg.Ident, runtimePath)
 	}
 	switch fieldSeg.Ident {
@@ -252,6 +255,43 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 		}
 		return descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
 	}
+}
+
+// absentDueToUntakenIf reports whether runtimePath names a step lexically under
+// an `if` branch that was NOT taken (→ legitimately ABSENT, AWF4006), as opposed
+// to a genuinely-uncommitted step (→ AWF4002). It scans `if[K].then|else` pairs
+// OUTERMOST→innermost using the guarded-pair technique (segments[i] is then|else
+// AND segments[i-1] starts with "if[", so a step literally named then/else can't
+// false-match — same guard as enclosingMapForBinding). Read-only.
+//
+// Outermost-first is REQUIRED: for a step under a nested if where an OUTER branch
+// was skipped, the inner if was never decided (LookupBranch !recorded). Inner-first
+// would return "genuine" on that unrecorded inner if before ever seeing the outer
+// if that actually routed away.
+func (s *Scope) absentDueToUntakenIf(runtimePath string) bool {
+	segments := strings.Split(runtimePath, ".")
+	for i := 1; i < len(segments); i++ {
+		seg := segments[i]
+		if seg != "then" && seg != "else" {
+			continue
+		}
+		if !strings.HasPrefix(segments[i-1], "if[") {
+			continue
+		}
+		ifPath := strings.Join(segments[:i], ".")
+		taken, recorded := s.rs.LookupBranch(ifPath)
+		if !recorded {
+			// Every OUTER if on the path was confirmed taken (we only reach here
+			// by continuing through them), so this if is the genuine unreached
+			// frontier — NOT absent.
+			return false
+		}
+		if taken != seg {
+			return true // outermost mismatch wins → ABSENT
+		}
+		// taken == seg: this if is satisfied; continue inward.
+	}
+	return false
 }
 
 // resolveEvaluate handles `evaluate.<field>` refs. Per Phase 3 slice 3.3
