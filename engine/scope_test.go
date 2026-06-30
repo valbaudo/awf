@@ -1564,8 +1564,12 @@ func TestResolveAggregateMapOutputs(t *testing.T) {
 
 func TestAbsentDueToUntakenIf(t *testing.T) {
 	rs := NewRunState("r1", "d", nil)
-	rs.RecordBranch("if[0]", "else")            // outer took else
-	rs.RecordBranch("if[0].then.if[1]", "then") // (would only exist if outer were then)
+	// Outer if took `else`. The inner if[1] is DELIBERATELY left unrecorded: because
+	// the outer `then` branch was never entered, if[1] was never reached/decided. This
+	// realistic state is what makes `outer-skipped-nested` below a genuine ordering
+	// guard — a naive inner-first scan hits the unrecorded if[1] and wrongly returns
+	// "genuine" (false); only outermost-first correctly returns ABSENT (true).
+	rs.RecordBranch("if[0]", "else")
 	s := &Scope{rs: rs}
 	cases := []struct {
 		name, runtimePath string
