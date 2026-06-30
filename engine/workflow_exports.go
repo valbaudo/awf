@@ -119,7 +119,10 @@ func firstOfRefs(raw ir.TemplateValue) ([]json.RawMessage, bool) {
 		return nil, false
 	}
 	var arr []json.RawMessage
-	if err := json.Unmarshal(inner, &arr); err != nil {
+	if err := json.Unmarshal(inner, &arr); err != nil || arr == nil {
+		// arr == nil rejects `{"first_of": null}`: `null` unmarshals into a slice
+		// without error but is not a JSON array, so it is not the directive — fall
+		// through to the generic path rather than silently treating it as empty.
 		return nil, false
 	}
 	return arr, true
