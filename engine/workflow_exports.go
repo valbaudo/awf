@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -39,6 +40,17 @@ func EvaluateExports(rs *RunState, wf *ir.Workflow, ctxPath string, input map[st
 		for _, key := range keys {
 			value, err := template.EvalTemplateValue(wf.Outputs[key], scope)
 			if err != nil {
+				// AWF4006 (EvalCodeRefAbsent): the binding names a step under a
+				// non-taken `if` branch — legitimately ABSENT. OMIT the key (don't
+				// set it); ValidateOutputMap below then enforces output_schema
+				// required-ness (omitted+required → hard fail; omitted+optional →
+				// pass). errors.As (not a bare assertion) handles the wrapped case:
+				// a mixed string like "x-{{ step.deep.summary }}" routes through
+				// Substitute, which re-wraps the EvalError while preserving Code.
+				var ee *template.EvalError
+				if errors.As(err, &ee) && ee.Code == template.EvalCodeRefAbsent {
+					continue
+				}
 				return WorkflowExportResult{}, fmt.Errorf("evaluate workflow output %q: %w", key, err)
 			}
 			out.Outputs[key] = value

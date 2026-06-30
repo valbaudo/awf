@@ -1238,7 +1238,7 @@ func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *coll
 		validateTemplateValueRefs(c, "AWF1048", path, map[string]TemplateValue{"": wf.Outputs[key]}, producers, maps, nil)
 		for _, refID := range outputStepRefs(wf.Outputs[key]) {
 			if p, ok := producers[refID]; ok && conditionallyScoped(p.path) {
-				c.warnf(path, "AWF3012", fmt.Sprintf("%s: output %q binds step %q in conditional scope %s; it may not commit, and `awf outputs` will then error", catalog["AWF3012"], key, refID, p.path))
+				c.warnf(path, "AWF3012", fmt.Sprintf("%s: output %q binds step %q in conditional scope %s; if that branch is not taken the output key is omitted, and if the field is required by output_schema, validation fails", catalog["AWF3012"], key, refID, p.path))
 			}
 		}
 	}
