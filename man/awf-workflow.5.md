@@ -465,6 +465,7 @@ format never hard-codes one harness's options.
       continues: <id>                # optional; id of a prior agent turn this turn continues
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
+      output_artifact: <name>        # containerless only; mutually exclusive with output_files
       output_files: [<path>, ...]    # optional; or { <name>: <path|contract> } -> named
       input_files: { <label>: step.<id>.files.<name> }  # or asset.<id>; optional; label is an in-container path (container) or a logical name forwarded inline (containerless)
       skills:
@@ -535,6 +536,53 @@ constrained/structured-output mode or schema-aligned parsing of the final messag
 value within the retry budget the step is a `retryable_failure`. References bind
 only to typed fields, so `**verdict: pass**` versus `verdict: pass` can never
 silently break a gate.
+
+**output_artifact**
+:   Optional. **Agent-only; valid only on a containerless agent step** (one that
+    omits `container:`). When set, the engine serializes the step's fully-validated
+    `output_schema` object as canonical JSON at commit time and publishes the
+    result as a named artifact with the handle `step.<id>.files.<name>`.
+    Consumers reference it with the same `step.<id>.files.<name>` syntax used for
+    `output_files` artifacts — via a later step's `input_files` or the workflow-level
+    `output_files` alias map. The behavior is identical to a named `output_files`
+    entry in a container-backed step.
+
+    Two constraints are enforced at validation (**AWF3010**):
+
+    - `output_artifact` requires `output_schema` — the artifact is the serialized
+      typed output, so there is nothing to emit without a schema.
+    - `output_artifact` and `output_files` are **mutually exclusive** on the same
+      step (a containerless step has no container paths to capture via
+      `output_files`; use `output_artifact` instead).
+
+    Setting `output_artifact` on a code (`run:`) step has no effect and is
+    silently ignored — `output_artifact` is an agent-only field. Authors should
+    not rely on this behavior; a future validator revision may warn.
+
+    **Known limitation (v1):** `react:` steps (the other containerless producer)
+    cannot emit `output_artifact`. A `react:` step's structured output is not
+    yet exposed as a whole-object artifact; individual typed fields remain
+    referenceable via `step.<id>.<field>` as usual.
+
+    Example — a containerless `awf/llm` extract step that exposes its typed
+    output as a named artifact:
+
+        - id: draft
+          uses: awf/llm
+          with:
+            provider: anthropic
+            model: claude-sonnet-4-6
+            max_tokens: 1024
+            prompt: "Extract key points from the text."
+          output_schema:
+            type: object
+            required: [points]
+            properties:
+              points: { type: array, items: { type: string } }
+          output_artifact: result
+
+    A downstream `input_files` or the workflow's `output_files` then binds
+    `step.draft.files.result`.
 
 **input_files**
 :   Optional. Stages prior artifacts for the step. The key semantics depend on
@@ -656,7 +704,7 @@ or child artifacts except through those exports. Mechanical failures inside the
 imported workflow propagate as the call node's mechanical outcome; quality
 decisions remain the called workflow's own gate responsibility.
 
-## Artifact channel (output_files, input_files)
+## Artifact channel (output_files, input_files, output_artifact)
 
 `output_files` and `input_files` hand a file produced by one step to a *later*
 step — across **distinct** containers, content-addressed and resume-safe. The
@@ -665,6 +713,14 @@ runtime stages the bytes in before the consumer runs. This is the file-handoff
 seam between black boxes: an agent writes a report in one workspace, a code step
 verifies it in a clean one. Both fields appear on code (`run:`) and agent
 (`uses:`) steps.
+
+Containerless agent steps (those that omit `container:`, such as `awf/llm`)
+cannot use `output_files` — there is no container file system to capture from.
+They use `output_artifact` instead: the engine serializes the step's fully-typed
+`output_schema` object as canonical JSON and injects it into the same artifact
+channel under `step.<id>.files.<name>`. From a consumer's perspective the handle
+is indistinguishable from a named `output_files` artifact produced by a
+container-backed step.
 
 The name shape depends on the surface:
 
