@@ -62,6 +62,9 @@ type ResolvedInputs struct {
 	Command               string
 	Env                   map[string]string
 	OutputFiles           []string
+	// OutputArtifact: when non-empty on a containerless agent step, the dispatcher
+	// serializes the validated typed Output as canonical JSON into Files[name].
+	OutputArtifact        string
 	OutputFileContracts   map[string]OutputFileContract
 	OutputSchema          *ir.JSONSchema
 	NonRetryableExitCodes []int
