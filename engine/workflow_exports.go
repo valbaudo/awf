@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -38,6 +39,16 @@ func EvaluateExports(rs *RunState, wf *ir.Workflow, ctxPath string, input map[st
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
+			if refs, ok := firstOfRefs(wf.Outputs[key]); ok {
+				value, absent, err := evalFirstOf(refs, scope)
+				if err != nil {
+					return WorkflowExportResult{}, fmt.Errorf("evaluate workflow output %q: %w", key, err)
+				}
+				if !absent {
+					out.Outputs[key] = value
+				}
+				continue
+			}
 			value, err := template.EvalTemplateValue(wf.Outputs[key], scope)
 			if err != nil {
 				// AWF4006 (EvalCodeRefAbsent): the binding names a step under a
@@ -92,6 +103,44 @@ func EvaluateExports(rs *RunState, wf *ir.Workflow, ctxPath string, input map[st
 	}
 
 	return out, nil
+}
+
+// firstOfRefs recognizes the reserved `first_of` directive: a single-key object
+// {"first_of": [ <templateValue>, ... ]} at an outputs-value ROOT. Returns the
+// element raw messages and ok=true only for that exact shape (so an author object
+// merely containing a "first_of" key among others is NOT a directive).
+func firstOfRefs(raw ir.TemplateValue) ([]json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || len(obj) != 1 {
+		return nil, false
+	}
+	inner, ok := obj["first_of"]
+	if !ok {
+		return nil, false
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(inner, &arr); err != nil {
+		return nil, false
+	}
+	return arr, true
+}
+
+// evalFirstOf resolves refs left-to-right: first non-ABSENT wins; all ABSENT →
+// absent=true (caller omits the key). A non-ABSENT EvalError (or any other error)
+// fails the export.
+func evalFirstOf(refs []json.RawMessage, scope *Scope) (any, bool, error) {
+	for _, r := range refs {
+		v, err := template.EvalTemplateValue(r, scope)
+		if err != nil {
+			var ee *template.EvalError
+			if errors.As(err, &ee) && ee.Code == template.EvalCodeRefAbsent {
+				continue
+			}
+			return nil, false, err
+		}
+		return v, false, nil
+	}
+	return nil, true, nil
 }
 
 // evaluateWorkflowExports is the sub-workflow-CALL path: build the child

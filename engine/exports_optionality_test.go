@@ -103,6 +103,92 @@ func TestExports_AbsentRequiredFieldFails(t *testing.T) {
 	}
 }
 
+// firstOfDef builds a workflow with two independent if-branches (no else) each
+// producing `answer`. Outputs binds `answer` via the first_of: directive.
+// Inputs: {fast bool, thorough bool}.
+func firstOfDef() *ir.LoadedDefinition {
+	answerSchema := func() *ir.JSONSchema {
+		return &ir.JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"answer"},
+			"properties":           map[string]any{"answer": map[string]any{"type": "string"}},
+		}
+	}
+	wf := &ir.Workflow{
+		Graph: ir.NodeList{
+			&ir.If{
+				Cond: ir.Expr("{{ input.fast }}"),
+				Then: ir.NodeList{
+					&ir.CodeStep{ID: "quick", Container: "lab", Run: "./quick.sh", OutputSchema: answerSchema()},
+				},
+			},
+			&ir.If{
+				Cond: ir.Expr("{{ input.thorough }}"),
+				Then: ir.NodeList{
+					&ir.CodeStep{ID: "thorough", Container: "lab", Run: "./thorough.sh", OutputSchema: answerSchema()},
+				},
+			},
+		},
+		Outputs: map[string]ir.TemplateValue{
+			"answer": json.RawMessage(`{"first_of":["{{ step.quick.answer }}","{{ step.thorough.answer }}"]}`),
+		},
+	}
+	return &ir.LoadedDefinition{Workflow: wf}
+}
+
+// runFirstOf runs firstOfDef with the given input and evaluates exports.
+// The run must complete with OutcomeOK; this helper fatals the test if not.
+func runFirstOf(t *testing.T, input map[string]any) (engine.WorkflowExportResult, error) {
+	t.Helper()
+	def := firstOfDef()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./quick.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"answer":"quick-answer"}`)}, nil)
+	fake.ProgramExec("./thorough.sh", container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"answer":"thorough-answer"}`)}, nil)
+	rs.Input = input
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run: oc=%v err=%v", oc, err)
+	}
+	return engine.EvaluateExports(rs, def.Workflow, "", nil, blobs)
+}
+
+// (d1) fast=false, thorough=true → first_of picks second (thorough).
+func TestExports_FirstOfElseBranchWins(t *testing.T) {
+	t.Parallel()
+	res, err := runFirstOf(t, map[string]any{"fast": false, "thorough": true})
+	if err != nil {
+		t.Fatalf("EvaluateExports: %v", err)
+	}
+	if res.Outputs["answer"] != "thorough-answer" {
+		t.Fatalf("answer=%v, want thorough-answer (thorough branch ran)", res.Outputs["answer"])
+	}
+}
+
+// (d2) fast=true, thorough=false → first_of picks first (quick).
+func TestExports_FirstOfThenBranchWins(t *testing.T) {
+	t.Parallel()
+	res, err := runFirstOf(t, map[string]any{"fast": true, "thorough": false})
+	if err != nil {
+		t.Fatalf("EvaluateExports: %v", err)
+	}
+	if res.Outputs["answer"] != "quick-answer" {
+		t.Fatalf("answer=%v, want quick-answer (quick branch ran)", res.Outputs["answer"])
+	}
+}
+
+// (d3) fast=false, thorough=false → all refs absent → answer key omitted.
+func TestExports_FirstOfAllAbsentOmitsKey(t *testing.T) {
+	t.Parallel()
+	res, err := runFirstOf(t, map[string]any{"fast": false, "thorough": false})
+	if err != nil {
+		t.Fatalf("EvaluateExports: %v", err)
+	}
+	if _, present := res.Outputs["answer"]; present {
+		t.Fatalf("answer should be OMITTED when both branches skipped; got %v", res.Outputs)
+	}
+}
+
 // (e) AWF4006 in a NON-outputs position (a later code step's run: substitutes
 // the under-if ref) → that node is permanent_failure with code AWF4006, NOT
 // silently substituted.
