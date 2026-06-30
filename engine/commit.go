@@ -62,7 +62,7 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 	}
 
 	if dr.Outputs != nil {
-		outBytes, err := json.Marshal(dr.Outputs)
+		outBytes, err := marshalCanonicalJSON(dr.Outputs)
 		if err != nil {
 			return NodeResult{}, fmt.Errorf("engine.Commit: marshal outputs at path %q: %w", path, err)
 		}
