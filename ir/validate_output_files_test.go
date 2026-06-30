@@ -2,9 +2,9 @@ package ir
 
 import "testing"
 
-// ---- output_artifact validation (AWF3010) ----
+// ---- output_artifact validation (AWF3014) ----
 
-// TestValidateOutputArtifact_OnContainerAgent: output_artifact on a container-backed agent step → AWF3010.
+// TestValidateOutputArtifact_OnContainerAgent: output_artifact on a container-backed agent step → AWF3014.
 func TestValidateOutputArtifact_OnContainerAgent(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -14,10 +14,10 @@ func TestValidateOutputArtifact_OnContainerAgent(t *testing.T) {
 				OutputArtifact: "result", OutputSchema: &JSONSchema{"type": "object"}},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF3010", "gen")
+	assertErrorAt(t, Validate(ld), "AWF3014", "gen")
 }
 
-// TestValidateOutputArtifact_WithOutputFiles: output_artifact mutually exclusive with output_files → AWF3010.
+// TestValidateOutputArtifact_WithOutputFiles: output_artifact mutually exclusive with output_files → AWF3014.
 func TestValidateOutputArtifact_WithOutputFiles(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -29,10 +29,10 @@ func TestValidateOutputArtifact_WithOutputFiles(t *testing.T) {
 			},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF3010", "gen")
+	assertErrorAt(t, Validate(ld), "AWF3014", "gen")
 }
 
-// TestValidateOutputArtifact_NoOutputSchema: output_artifact requires output_schema → AWF3010.
+// TestValidateOutputArtifact_NoOutputSchema: output_artifact requires output_schema → AWF3014.
 func TestValidateOutputArtifact_NoOutputSchema(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -40,10 +40,10 @@ func TestValidateOutputArtifact_NoOutputSchema(t *testing.T) {
 			&AgentStep{ID: "gen", Uses: "awf/llm", OutputArtifact: "result"},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF3010", "gen")
+	assertErrorAt(t, Validate(ld), "AWF3014", "gen")
 }
 
-// TestValidateOutputArtifact_BadName: output_artifact name must match stepIDPattern → AWF3010.
+// TestValidateOutputArtifact_BadName: output_artifact name must match stepIDPattern → AWF3014.
 func TestValidateOutputArtifact_BadName(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -52,10 +52,10 @@ func TestValidateOutputArtifact_BadName(t *testing.T) {
 				OutputArtifact: "bad name!", OutputSchema: &JSONSchema{"type": "object"}},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF3010", "gen")
+	assertErrorAt(t, Validate(ld), "AWF3014", "gen")
 }
 
-// TestValidateOutputArtifact_Valid: a containerless agent step with a valid output_artifact → no AWF3010.
+// TestValidateOutputArtifact_Valid: a containerless agent step with a valid output_artifact → no AWF3014.
 func TestValidateOutputArtifact_Valid(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -64,7 +64,7 @@ func TestValidateOutputArtifact_Valid(t *testing.T) {
 				OutputArtifact: "result", OutputSchema: &JSONSchema{"type": "object"}},
 		},
 	})
-	assertNoErrorCode(t, Validate(ld), "AWF3010")
+	assertNoErrorCode(t, Validate(ld), "AWF3014")
 }
 
 func TestValidateOutputFileContractRequiresPath(t *testing.T) {

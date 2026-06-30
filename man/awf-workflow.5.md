@@ -547,7 +547,7 @@ silently break a gate.
     `output_files` alias map. The behavior is identical to a named `output_files`
     entry in a container-backed step.
 
-    Two constraints are enforced at validation (**AWF3010**):
+    Two constraints are enforced at validation (**AWF3014**):
 
     - `output_artifact` requires `output_schema` — the artifact is the serialized
       typed output, so there is nothing to emit without a schema.

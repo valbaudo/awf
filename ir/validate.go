@@ -29,7 +29,8 @@ package ir
 //     package (Slots → ParseRef per Template; ParseExpr → References per Expr)
 //   - input_files (AWF3007) — every input_files value is a static step.<id>.files.<name>
 //     ref naming a prior in-scope step's NAMED output_files artifact (dst absolute + clean)
-//   - output_files (AWF3009) — named output_files contract metadata shape and schema_ref assets
+//   - output_files (AWF3009, AWF3014) — named output_files contract metadata shape and schema_ref
+//     assets; AWF3014 is the containerless output_artifact (typed-output → artifact) rule set
 //   - schema     (AWF2001/2) — JSON Schema well-formedness + §7 floor (warning, agents only)
 //   - compose    (AWF3003/4/5) — compose-go/v2 parse + digest-pinning of every inner image
 //
