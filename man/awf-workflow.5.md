@@ -1313,8 +1313,8 @@ artifacts); non-UTF-8 output is referenced by size, not inlined.
 
 **Scope.** `react:` requires an `awf/llm` (containerless, threaded) adapter; v1 is OpenAI-compat
 only (a `structured_output: ollama_format` config is rejected). A top-level `react:` is referenceable
-via `{{ <id>.* }}`; a `react:` nested in `loop`/`gate`/`map` is readable via `awf outputs --step`
-only.
+via `{{ <id>.* }}`; a `react:` nested in `loop`/`gate`/`map` is readable via its runtime address
+with `awf outputs --step` only — e.g. `awf outputs <run> --step gate[0].attempt-2.generate.react[0]`.
 
 ## awf/llm providers
 
@@ -1682,6 +1682,9 @@ joined from the root: `try[0].catch`, `if[1].then`, `loop[0].body.iter-3`,
 `recon_result.workflow.extract`. The runtime computes every address, including
 call paths, through the single `engine/path` function; implementations must not
 construct journal keys or `awf.node.path` values ad hoc.
+`awf outputs --step` accepts exactly these runtime addresses verbatim; unlike a `{{ step.<id> }}`
+reference (which obeys the scope-multiplicity rules above), `--step` performs no instance resolution —
+the caller names the attempt, item, or iteration.
 
 # EXTERNAL EFFECTS AND IDEMPOTENCY
 
