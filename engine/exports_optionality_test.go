@@ -189,6 +189,77 @@ func TestExports_FirstOfAllAbsentOmitsKey(t *testing.T) {
 	}
 }
 
+// ifArtifactDef builds a workflow with an if-gated step `deep` that produces
+// a named output_files artifact, and a workflow-level output_files entry
+// aliasing it. When the cond (input.deep) is false the then-branch is skipped →
+// the artifact ref is ABSENT (AWF4006) and the key must be OMITTED (not
+// hard-failed), symmetric with outputs:.
+func ifArtifactDef() *ir.LoadedDefinition {
+	wf := &ir.Workflow{
+		Graph: ir.NodeList{
+			&ir.If{
+				Cond: ir.Expr("{{ input.deep }}"),
+				Then: ir.NodeList{
+					&ir.CodeStep{
+						ID:          "deep",
+						Container:   "lab",
+						Run:         "./deep.sh",
+						OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.md"}},
+					},
+				},
+			},
+		},
+		ArtifactExports: ir.ArtifactExports{
+			"report": "step.deep.files.report",
+		},
+	}
+	return &ir.LoadedDefinition{Workflow: wf}
+}
+
+// (f) non-taken-branch → output_files key OMITTED, export OK.
+func TestExports_ArtifactExportAbsentOnNonTakenBranch(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExecWithFiles("./deep.sh", container.ExecResult{ExitCode: 0}, nil, map[string][]byte{
+		"/out/report.md": []byte("report bytes"),
+	})
+	rs.Input = map[string]any{"deep": false}
+	def := ifArtifactDef()
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run: oc=%v err=%v", oc, err)
+	}
+	res, err := engine.EvaluateExports(rs, def.Workflow, "", nil, blobs)
+	if err != nil {
+		t.Fatalf("EvaluateExports should succeed (absent artifact omit): %v", err)
+	}
+	if _, present := res.Files["report"]; present {
+		t.Fatalf("report should be OMITTED when then-branch skipped; got %v", res.Files)
+	}
+}
+
+// (g) taken-branch → output_files key PRESENT (positive control).
+func TestExports_ArtifactExportPresentOnTakenBranch(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExecWithFiles("./deep.sh", container.ExecResult{ExitCode: 0}, nil, map[string][]byte{
+		"/out/report.md": []byte("report bytes"),
+	})
+	rs.Input = map[string]any{"deep": true}
+	def := ifArtifactDef()
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run: oc=%v err=%v", oc, err)
+	}
+	res, err := engine.EvaluateExports(rs, def.Workflow, "", nil, blobs)
+	if err != nil {
+		t.Fatalf("EvaluateExports: %v", err)
+	}
+	if res.Files["report"] == "" {
+		t.Fatalf("report should be PRESENT when then-branch taken; got %v", res.Files)
+	}
+}
+
 // (e) AWF4006 in a NON-outputs position (a later code step's run: substitutes
 // the under-if ref) → that node is permanent_failure with code AWF4006, NOT
 // silently substituted.

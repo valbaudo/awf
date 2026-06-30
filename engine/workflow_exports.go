@@ -91,6 +91,10 @@ func EvaluateExports(rs *RunState, wf *ir.Workflow, ctxPath string, input map[st
 			}
 			ref, err := resolveNamedArtifactRef(scope, wf, id, name)
 			if err != nil {
+				var ee *template.EvalError
+				if errors.As(err, &ee) && ee.Code == template.EvalCodeRefAbsent {
+					continue // omit, symmetric with outputs:
+				}
 				return WorkflowExportResult{}, fmt.Errorf("workflow output_files.%s: %w", key, err)
 			}
 			if blobs != nil {
