@@ -432,3 +432,11 @@ func TestEvalBoolRefOversizeIsAWF4001(t *testing.T) {
 		t.Errorf("err = %v, want AWF4001", err)
 	}
 }
+
+func TestEvalCodeRefAbsentValue(t *testing.T) {
+	// AWF4006 is the typed-ABSENT sentinel for a ref to a step under a non-taken
+	// if branch (B2b if-optionality); it is distinct from AWF4002 (genuinely missing).
+	if EvalCodeRefAbsent != "AWF4006" {
+		t.Fatalf("EvalCodeRefAbsent=%q, want AWF4006", EvalCodeRefAbsent)
+	}
+}
