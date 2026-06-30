@@ -70,14 +70,95 @@ func TestOutputsStepSucceedsWhenUnrelatedBlobMissing(t *testing.T) {
 	}
 }
 
-func TestOutputsStepRejectsRuntimePath(t *testing.T) {
-	var out, errb bytes.Buffer
-	rc := cliOutputs([]string{"r1", "--step", "gate[0].generate", "--state-dir", t.TempDir()}, &out, &errb)
-	if rc != ExitUsage {
-		t.Fatalf("rc = %d (want %d)", rc, ExitUsage)
+// helper: seed a run with one committed node at `path` carrying a typed-output blob.
+func seedNodeAt(t *testing.T, stateDir, runID, path, jsonBody string) {
+	t.Helper()
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
+	if err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
 	}
-	if !strings.Contains(errb.String(), "top-level node ids") {
-		t.Fatalf("stderr = %q, want top-level-ids message", errb.String())
+	ref, err := blobs.Put([]byte(jsonBody))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	writeRunLog(t, stateDir, runID,
+		state.Event{Type: engine.EventRunStarted, Data: marshal(t, engine.RunStartedData{RunID: runID, WorkflowDigest: "d"})},
+		state.Event{Type: engine.EventNodeCompleted, Path: path, Data: marshal(t, engine.NodeCompletedData{Outcome: "ok", OutputsRef: ref})},
+	)
+}
+
+func TestOutputsStepReadsNestedGatePath(t *testing.T) {
+	dir := t.TempDir()
+	seedNodeAt(t, dir, "r1", "gate[0].attempt-2.generate.extract", `{"finding":"x"}`)
+	var out, errb bytes.Buffer
+	if rc := cliOutputs([]string{"r1", "--step", "gate[0].attempt-2.generate.extract", "--state-dir", dir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("rc=%d (want %d); stderr=%s", rc, ExitOK, errb.String())
+	}
+	if !strings.Contains(out.String(), `"finding"`) {
+		t.Fatalf("stdout=%q, want finding JSON", out.String())
+	}
+}
+
+func TestOutputsStepReadsMapItemPath(t *testing.T) {
+	dir := t.TempDir()
+	seedNodeAt(t, dir, "r1", "map[0].item-3.scan", `{"ok":true}`)
+	var out, errb bytes.Buffer
+	if rc := cliOutputs([]string{"r1", "--step", "map[0].item-3.scan", "--state-dir", dir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("rc=%d; stderr=%s", rc, errb.String())
+	}
+}
+
+func TestOutputsStepReadsLoopIterPath(t *testing.T) {
+	dir := t.TempDir()
+	seedNodeAt(t, dir, "r1", "loop[0].body.iter-3.summarize", `{"n":3}`)
+	var out, errb bytes.Buffer
+	if rc := cliOutputs([]string{"r1", "--step", "loop[0].body.iter-3.summarize", "--state-dir", dir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("rc=%d; stderr=%s", rc, errb.String())
+	}
+}
+
+// Replaces TestOutputsStepRejectsRuntimePath: a suffix-less / never-committed nested
+// path is an honest READ miss (exit 1), not a usage error (exit 2).
+func TestOutputsStepNestedAbsentIsReadFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeRunLog(t, dir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: marshal(t, engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})},
+	)
+	var out, errb bytes.Buffer
+	rc := cliOutputs([]string{"r1", "--step", "gate[0].generate", "--state-dir", dir}, &out, &errb)
+	if rc != ExitRunFailed {
+		t.Fatalf("rc=%d (want %d); stderr=%s", rc, ExitRunFailed, errb.String())
+	}
+	if !strings.Contains(errb.String(), "no committed step") {
+		t.Fatalf("stderr=%q, want 'no committed step'", errb.String())
+	}
+}
+
+func TestOutputsStepWrongInstanceIsReadFailure(t *testing.T) {
+	dir := t.TempDir()
+	seedNodeAt(t, dir, "r1", "gate[0].attempt-1.generate.extract", `{"finding":"x"}`)
+	var out, errb bytes.Buffer
+	if rc := cliOutputs([]string{"r1", "--step", "gate[0].attempt-9.generate.extract", "--state-dir", dir}, &out, &errb); rc != ExitRunFailed {
+		t.Fatalf("rc=%d (want %d)", rc, ExitRunFailed)
+	}
+}
+
+func TestOutputsStepNestedLastWriterWins(t *testing.T) {
+	dir := t.TempDir()
+	blobs, _ := state.OpenBlobs(filepath.Join(dir, "blobs"))
+	r1, _ := blobs.Put([]byte(`{"v":1}`))
+	r2, _ := blobs.Put([]byte(`{"v":2}`))
+	writeRunLog(t, dir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: marshal(t, engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})},
+		state.Event{Type: engine.EventNodeCompleted, Path: "gate[0].attempt-1.generate.x", Data: marshal(t, engine.NodeCompletedData{Outcome: "ok", OutputsRef: r1})},
+		state.Event{Type: engine.EventNodeCompleted, Path: "gate[0].attempt-1.generate.x", Data: marshal(t, engine.NodeCompletedData{Outcome: "ok", OutputsRef: r2})},
+	)
+	var out, errb bytes.Buffer
+	if rc := cliOutputs([]string{"r1", "--step", "gate[0].attempt-1.generate.x", "--state-dir", dir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("rc=%d; stderr=%s", rc, errb.String())
+	}
+	if !strings.Contains(out.String(), `"v": 2`) && !strings.Contains(out.String(), `"v":2`) {
+		t.Fatalf("stdout=%q, want v=2 (last writer wins)", out.String())
 	}
 }
 

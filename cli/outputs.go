@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/pflag"
 
@@ -22,9 +21,12 @@ func printOutputsUsage(w io.Writer) {
 	fprintln(w, "  read a completed run's typed outputs as JSON. Pass exactly one of:")
 	fprintln(w, "  --workflow <path>  evaluate that workflow's outputs: contract (digest-checked")
 	fprintln(w, "                     against the run, like `awf resume`)")
-	fprintln(w, "  --step <node-id>   emit one top-level code/agent step's typed output (no")
-	fprintln(w, "                     workflow file needed). Map aggregates and sub-workflow")
-	fprintln(w, "                     results are read via --workflow, not --step.")
+	fprintln(w, "  --step <path>     emit one committed step's typed output, read directly from")
+	fprintln(w, "                    the log + blobs (no workflow file). <path> is a step's full")
+	fprintln(w, "                    runtime address: a top-level id, or a nested form like")
+	fprintln(w, "                    gate[0].attempt-2.generate.<id> / map[0].item-3.<id> /")
+	fprintln(w, "                    loop[0].body.iter-3.<id>. Map aggregates and sub-workflow")
+	fprintln(w, "                    results are read via --workflow, not --step.")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 	fprintln(w, "")
 	fprintln(w, "  Exit reflects the READ, not the run: 0 ok, 2 bad invocation, 1 read failed.")
@@ -36,7 +38,7 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
 	stateDir := fs0.String("state-dir", defaultStateDir(), "base directory for runs/ and blobs/")
-	step := fs0.String("step", "", "emit one top-level code/agent step's typed output")
+	step := fs0.String("step", "", "emit one committed step's typed output by runtime address")
 	workflow := fs0.String("workflow", "", "workflow file: evaluate its outputs: contract")
 	runID, code, ok := parseSinglePositional(fs0, args, "awf outputs", printOutputsUsage, stdout, stderr)
 	if !ok {
@@ -51,11 +53,6 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf outputs: provide --workflow <path> (to read the outputs: contract) or --step <node-id>\n")
 		return ExitUsage
 	}
-	if *step != "" && isRuntimeSuffixedPath(*step) {
-		fprintf(stderr, "awf outputs: %q is a runtime-internal path; P1 reads top-level node ids. Use `awf inspect`/`awf trace` for gate/map-internal outputs.\n", *step)
-		return ExitUsage
-	}
-
 	logPath := filepath.Join(*stateDir, "runs", runID, "log")
 	events, err := state.FoldFile(logPath)
 	if err != nil {
@@ -84,10 +81,6 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 // missing). Map aggregates and sub-workflow call products commit different events
 // (map.item / call product) and are read via the outputs: form, not --step.
 func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout, stderr io.Writer) int {
-	if isRuntimeSuffixedPath(nodeID) {
-		fprintf(stderr, "awf outputs: %q is a runtime-internal path; P1 reads top-level node ids. Use `awf inspect`/`awf trace` for gate/map-internal outputs.\n", nodeID)
-		return ExitUsage
-	}
 	ref := ""
 	found := false
 	// Last node.completed for this id wins (a resumed run may re-commit it).
@@ -103,7 +96,7 @@ func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout,
 		}
 	}
 	if !found {
-		fprintf(stderr, "awf outputs: no committed step at %q (map aggregates / sub-workflow results are read via --workflow, not --step)\n", nodeID)
+		fprintf(stderr, "awf outputs: no committed step at %q (use the full runtime address, e.g. gate[0].attempt-2.generate.<id>; map aggregates / sub-workflow results are read via --workflow)\n", nodeID)
 		return ExitRunFailed
 	}
 	if ref == "" {
@@ -123,15 +116,6 @@ func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout,
 		return ExitRunFailed
 	}
 	return emitJSON(stdout, stderr, out)
-}
-
-// isRuntimeSuffixedPath rejects gate/map-internal runtime paths: only top-level
-// node ids are addressable in P1.
-func isRuntimeSuffixedPath(p string) bool {
-	return strings.Contains(p, "[") ||
-		strings.Contains(p, ".iter-") ||
-		strings.Contains(p, ".attempt-") ||
-		strings.Contains(p, ".item-")
 }
 
 // emitJSON pretty-prints v (matching inspect/trace/ls/graph: NewEncoder +
