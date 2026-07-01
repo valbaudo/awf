@@ -8,6 +8,52 @@ While `awf` is pre-1.0, the workflow format and CLI may still change between
 minor versions. The workflow-format version (`version: 1` in a workflow file)
 is tracked independently of the `awf` tool version.
 
+## [0.2.0] - 2026-07-01
+
+New workflow-format capabilities for typed-output artifacts, conditional-branch
+optionality, and nested output addressing. Backward-compatible — existing
+workflows are unaffected and the workflow-format version (`version: 1`) is
+unchanged.
+
+### Added
+
+- **`output_artifact:` on containerless agent steps.** A containerless `awf/llm`
+  step can declare `output_artifact: <name>` to publish its validated
+  `output_schema` object as a first-class, content-addressed artifact
+  `step.<id>.files.<name>`. The dispatcher serializes the typed output to
+  canonical JSON (byte-identical to the step's own typed-output blob — one blob,
+  two references), so it flows through the existing artifact machinery: a
+  deterministic gate evaluator reads it via `input_files`, and it forwards out of
+  a gate to a workflow-level `output_files:` alias. Validated by `AWF3014`
+  (containerless-only; requires `output_schema`; mutually exclusive with
+  `output_files`). `react` is excluded in this release.
+- **`if`-branch optionality.** A reference from outside an `if` to a step whose
+  branch was *not* taken now resolves to a distinct ABSENT sentinel (`AWF4006`)
+  instead of failing the run. In `outputs:` — and symmetrically in a workflow
+  `output_files:` alias — the bound key is simply omitted; a `required`
+  `output_schema` field still fails on omission. Omission composes across a
+  sub-workflow `call`: a child that omits an optional output makes the parent's
+  binding omit too. Referencing an absent step anywhere else (a `run:`
+  substitution, a gate `until`, another step's input) remains an author error.
+- **`first_of:` output selection.** A workflow output may bind
+  `first_of: [ <ref>, <ref>, ... ]` to select the first present (non-absent)
+  reference — the "read whichever `if` branch ran" pattern — as a structured
+  directive, without adding an operator to the templating language.
+- **`awf outputs --step` reads nested runtime paths.** `--step` now accepts a
+  step's full runtime address verbatim (e.g.
+  `gate[0].attempt-2.generate.<id>`, `map[0].item-3.<id>`,
+  `loop[0].body.iter-3.<id>`), honoring the documented promise. The caller names
+  the instance; a path that names no committed step (including a step under a
+  non-taken `if` branch, or a path missing its suffix) is a read failure
+  (exit 1), not a usage error.
+
+### Changed
+
+- **`AWF3012` warning wording.** The conditional-scope-output validation warning
+  now describes the new omit / required-fail semantics — an output bound to a
+  non-taken `if` branch is omitted (and only *required* schema fields then fail),
+  rather than claiming `awf outputs` will error.
+
 ## [0.1.3] - 2026-06-26
 
 Fixes concurrent `anthropic/claude-code` runs on the `native` backend that failed
@@ -112,6 +158,7 @@ independent acceptance gate and content-addressed checkpoint/resume.
 - **Documentation.** `awf(1)` command reference and `awf-workflow(5)`
   workflow-format reference (the stable format contract).
 
+[0.2.0]: https://github.com/valbaudo/awf/releases/tag/v0.2.0
 [0.1.3]: https://github.com/valbaudo/awf/releases/tag/v0.1.3
 [0.1.1]: https://github.com/valbaudo/awf/releases/tag/v0.1.1
 [0.1.0]: https://github.com/valbaudo/awf/releases/tag/v0.1.0
