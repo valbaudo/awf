@@ -234,6 +234,179 @@ func awfHasDiagnostic(diags []ir.Diagnostic, code, path string) bool {
 	return false
 }
 
+// TestEvaluateExportsResumeIsDeterministic pins the determinism/resume invariant:
+// folding the committed log into a FRESH RunState and re-running EvaluateExports
+// produces an IDENTICAL omit/value decision. Specifically, rs.Branches is
+// reproduced from EventBranchTaken so the taken/non-taken branch distinction
+// round-trips through the log faithfully (the invariant that makes AWF4006 absent
+// detection safe on resume — it cannot flip between runs).
+func TestEvaluateExportsResumeIsDeterministic(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+
+	// Commit the typed-outputs blob that Fold will materialise from OutputsRef.
+	outputsRaw, err := json.Marshal(map[string]any{"summary": "deep-value"})
+	if err != nil {
+		t.Fatalf("marshal outputs: %v", err)
+	}
+	outputsRef, err := blobs.Put(outputsRaw)
+	if err != nil {
+		t.Fatalf("blobs.Put outputs: %v", err)
+	}
+
+	// Workflow: if[0].then.deep → optional summary binding {{ step.deep.summary }}.
+	// summary is optional in the workflow output_schema so the non-taken case would
+	// omit it; here we exercise the taken case to confirm the value is reproduced.
+	wf := &ir.Workflow{
+		OutputSchema: &ir.JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			// summary is optional — not in "required" — so a non-taken branch omits
+			// the key rather than hard-failing (symmetric with exports_optionality_test.go).
+			"properties": map[string]any{"summary": map[string]any{"type": "string"}},
+		},
+		Outputs: map[string]ir.TemplateValue{
+			"summary": json.RawMessage(`"{{ step.deep.summary }}"`),
+		},
+		Graph: ir.NodeList{
+			&ir.If{
+				Cond: ir.Expr("{{ input.deep }}"),
+				Then: ir.NodeList{
+					&ir.CodeStep{
+						ID:           "deep",
+						Container:    "c0",
+						Run:          "./deep.sh",
+						OutputSchema: awfStringObjectSchema("summary"),
+					},
+				},
+			},
+		},
+	}
+
+	// Synthesise the committed event sequence:
+	//   run.started → branch.taken(if[0],"then") → node.completed(if[0].then.deep)
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r1", WorkflowDigest: "d1"})},
+		{Seq: 2, TS: fixedTS, Path: "if[0]", Type: EventBranchTaken,
+			Data: marshalOrFatal(t, BranchTakenData{Which: "then"})},
+		{Seq: 3, TS: fixedTS, Path: "if[0].then.deep", Type: EventNodeCompleted,
+			Data: marshalOrFatal(t, NodeCompletedData{Outcome: "ok", OutputsRef: outputsRef})},
+	}
+
+	// Fold 1 — simulate the end of the original run.
+	rs1, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold (first): %v", err)
+	}
+	result1, err := EvaluateExports(rs1, wf, "", nil, blobs)
+	if err != nil {
+		t.Fatalf("EvaluateExports (first): %v", err)
+	}
+
+	// Fold 2 — simulate a fresh resume from the SAME log (determinism invariant).
+	rs2, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold (second): %v", err)
+	}
+	result2, err := EvaluateExports(rs2, wf, "", nil, blobs)
+	if err != nil {
+		t.Fatalf("EvaluateExports (second): %v", err)
+	}
+
+	// Pin: Branches reproduced from EventBranchTaken on both folds.
+	if rs1.Branches["if[0]"] != "then" {
+		t.Errorf("rs1.Branches[if[0]] = %q, want then", rs1.Branches["if[0]"])
+	}
+	if rs2.Branches["if[0]"] != "then" {
+		t.Errorf("rs2.Branches[if[0]] = %q, want then", rs2.Branches["if[0]"])
+	}
+
+	// Pin: EvaluateExports produces identical results across both folds.
+	if result1.Outputs["summary"] != result2.Outputs["summary"] {
+		t.Errorf("determinism violated: fold1=%v fold2=%v", result1.Outputs["summary"], result2.Outputs["summary"])
+	}
+	if v := result1.Outputs["summary"]; v != "deep-value" {
+		t.Errorf("Outputs[summary] = %v, want deep-value", v)
+	}
+}
+
+// TestEvaluateExportsResumeOmitIsDeterministic pins the ABSENT/omit half of the
+// determinism invariant: when the log records branch.taken(if[0],"else") and NO
+// node.completed for the under-if step "deep", both folds reproduce
+// Branches["if[0]"]=="else" → the {{ step.deep.summary }} binding resolves to
+// AWF4006 → the optional summary key is OMITTED. This proves resume reproduces
+// the omit DECISION, not just the value path (the sister test above).
+func TestEvaluateExportsResumeOmitIsDeterministic(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+
+	// summary is OPTIONAL (not in required) so the absent binding omits the key
+	// rather than hard-failing.
+	wf := &ir.Workflow{
+		OutputSchema: &ir.JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"summary": map[string]any{"type": "string"}},
+		},
+		Outputs: map[string]ir.TemplateValue{
+			"summary": json.RawMessage(`"{{ step.deep.summary }}"`),
+		},
+		Graph: ir.NodeList{
+			&ir.If{
+				Cond: ir.Expr("{{ input.deep }}"),
+				Then: ir.NodeList{
+					&ir.CodeStep{
+						ID:           "deep",
+						Container:    "c0",
+						Run:          "./deep.sh",
+						OutputSchema: awfStringObjectSchema("summary"),
+					},
+				},
+			},
+		},
+	}
+
+	// Committed sequence: run.started → branch.taken(if[0],"else"). The else
+	// branch is empty, so NO node.completed for "deep" — it is absent (AWF4006).
+	events := []state.Event{
+		{Seq: 1, TS: fixedTS, Type: EventRunStarted,
+			Data: marshalOrFatal(t, RunStartedData{RunID: "r1", WorkflowDigest: "d1"})},
+		{Seq: 2, TS: fixedTS, Path: "if[0]", Type: EventBranchTaken,
+			Data: marshalOrFatal(t, BranchTakenData{Which: "else"})},
+	}
+
+	// Two independent folds simulate original-run-end and fresh-resume.
+	rs1, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold (first): %v", err)
+	}
+	result1, err := EvaluateExports(rs1, wf, "", nil, blobs)
+	if err != nil {
+		t.Fatalf("EvaluateExports (first) should succeed (optional omit): %v", err)
+	}
+
+	rs2, err := Fold(events, blobs)
+	if err != nil {
+		t.Fatalf("Fold (second): %v", err)
+	}
+	result2, err := EvaluateExports(rs2, wf, "", nil, blobs)
+	if err != nil {
+		t.Fatalf("EvaluateExports (second) should succeed (optional omit): %v", err)
+	}
+
+	// Pin: Branches reproduced as "else" on both folds.
+	if rs1.Branches["if[0]"] != "else" || rs2.Branches["if[0]"] != "else" {
+		t.Errorf("Branches[if[0]] = (%q, %q), want (else, else)", rs1.Branches["if[0]"], rs2.Branches["if[0]"])
+	}
+
+	// Pin: BOTH folds OMIT the summary key (the ABSENT/omit decision is deterministic).
+	if _, present := result1.Outputs["summary"]; present {
+		t.Errorf("fold1: summary should be OMITTED when else-branch taken; got %v", result1.Outputs)
+	}
+	if _, present := result2.Outputs["summary"]; present {
+		t.Errorf("fold2: summary should be OMITTED when else-branch taken; got %v", result2.Outputs)
+	}
+}
+
 func TestEvaluateExportsTopLevel(t *testing.T) {
 	// Top-level run: the producer is keyed at its BARE id "summarize" (no prefix),
 	// ctxPath is "", input is nil. This is the shape cli/outputs.go uses.
