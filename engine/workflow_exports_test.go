@@ -17,7 +17,7 @@ func TestEvaluateWorkflowOutputsAgainstChildScope(t *testing.T) {
 		Outputs: map[string]any{"summary": "child-only"},
 	})
 
-	got, err := evaluateWorkflowExports(rs, wf, "scan", map[string]any{"query": "CVE-1"}, state.NewInMemoryBlobs())
+	got, err := evaluateWorkflowExports(nil, "", rs, wf, "scan", map[string]any{"query": "CVE-1"}, state.NewInMemoryBlobs())
 	if err != nil {
 		t.Fatalf("evaluateWorkflowExports: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestEvaluateWorkflowOutputsRejectsParentStepRef(t *testing.T) {
 		Outputs: map[string]any{"summary": "parent-only"},
 	})
 
-	_, err := evaluateWorkflowExports(rs, wf, "scan", nil, state.NewInMemoryBlobs())
+	_, err := evaluateWorkflowExports(nil, "", rs, wf, "scan", nil, state.NewInMemoryBlobs())
 	if err == nil {
 		t.Fatal("evaluateWorkflowExports succeeded, want child-scope unresolved ref error")
 	}
@@ -57,7 +57,7 @@ func TestEvaluateWorkflowOutputFilesAliasChildArtifacts(t *testing.T) {
 		Files:   map[string]string{"/out/report.md": ref},
 	})
 
-	got, err := evaluateWorkflowExports(rs, wf, "scan", nil, blobs)
+	got, err := evaluateWorkflowExports(nil, "", rs, wf, "scan", nil, blobs)
 	if err != nil {
 		t.Fatalf("evaluateWorkflowExports: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestEvaluateWorkflowOutputsSchemaFailure(t *testing.T) {
 		Outputs: map[string]any{"summary": 42},
 	})
 
-	_, err := evaluateWorkflowExports(rs, wf, "scan", nil, state.NewInMemoryBlobs())
+	_, err := evaluateWorkflowExports(nil, "", rs, wf, "scan", nil, state.NewInMemoryBlobs())
 	if err == nil {
 		t.Fatal("evaluateWorkflowExports succeeded, want schema failure")
 	}
@@ -141,7 +141,7 @@ func TestEvaluateWorkflowOutputsSchemaFailureWhenOutputsEmpty(t *testing.T) {
 			wf.Outputs = tt.outputs
 			rs := NewRunState("run-1", "digest-1", nil)
 
-			_, err := evaluateWorkflowExports(rs, wf, "scan", nil, state.NewInMemoryBlobs())
+			_, err := evaluateWorkflowExports(nil, "", rs, wf, "scan", nil, state.NewInMemoryBlobs())
 			if err == nil {
 				t.Fatal("evaluateWorkflowExports succeeded, want output_schema required-field failure")
 			}

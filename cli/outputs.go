@@ -132,9 +132,11 @@ func emitJSON(stdout, stderr io.Writer, v any) int {
 
 // outputsContract evaluates the workflow's outputs: contract against the run.
 // Folds the log to a *RunState, re-loads + digest-checks the workflow (spec §8
-// pinning, like awf resume), then runs the shared engine.EvaluateExports with a
-// top-level scope (ctxPath="", input=nil → input.* resolves against the run's
-// own input, matching the engine).
+// pinning, like awf resume), then runs the shared engine.EvaluateExportsInDef
+// (def-aware so a parent {{ step.<call>.<field> }} bound to a child-omitted
+// optional output omits rather than hard-fails) with a top-level scope
+// (ctxPath="", input=nil → input.* resolves against the run's own input,
+// matching the engine).
 func outputsContract(events []state.Event, blobs state.Blobs, runID, wfPath string, stdout, stderr io.Writer) int {
 	rs, err := engine.Fold(events, blobs)
 	if err != nil {
@@ -163,7 +165,7 @@ func outputsContract(events []state.Event, blobs state.Blobs, runID, wfPath stri
 		fprintf(stderr, "awf outputs: workflow %q declares no outputs:; use --step <node-id>\n", wfPath)
 		return ExitUsage
 	}
-	res, err := engine.EvaluateExports(rs, ld.Workflow, "", nil, blobs)
+	res, err := engine.EvaluateExportsInDef(ld, "", rs, ld.Workflow, "", nil, blobs)
 	if err != nil {
 		// A referenced step did not commit (skipped or never ran), or a schema
 		// mismatch — a data condition (the run did not produce this output),

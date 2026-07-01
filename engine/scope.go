@@ -40,6 +40,13 @@ type Scope struct {
 	hasInputOverride bool
 	inputFiles       map[string]string
 	wfRef            *ir.Workflow // slice 3.4 — needed by resolveAsBinding's mapPathIndex
+	// callChildSchemas maps a call step id in wfRef to the OUTPUT_SCHEMA of the
+	// child workflow it invokes (nil value = child declares none). Populated only
+	// where the LoadedDefinition is available (EvaluateExportsInDef); nil map keeps
+	// the historic behavior. Consumed by callFieldDeclaredButAbsent to distinguish
+	// a child-declared-but-omitted optional output (AWF4006 ABSENT → parent omits)
+	// from a genuine typo (AWF4002). See Part C C6.
+	callChildSchemas map[string]*ir.JSONSchema
 }
 
 // NewScope wires the inputs into a Scope. ctxPath is the runtime path of the
@@ -253,8 +260,43 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 		if nr.Outputs == nil {
 			return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "field %q: step has no typed outputs", fieldSeg.Ident)
 		}
-		return descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
+		v, derr := descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
+		if derr != nil {
+			// C6: the producer is a call whose CHILD workflow declared this output
+			// optional but OMITTED it (its producer sat under a non-taken if branch,
+			// per C3). Propagate ABSENT (AWF4006) so the parent's outputs: /
+			// output_files: / first_of: arms omit the key, composing the omit across
+			// the call. A field the child never declared stays AWF4002 (derr).
+			if s.callFieldDeclaredButAbsent(idSeg.Ident, fieldSeg.Ident, nr.Outputs) {
+				return nil, template.EvalErrf(template.EvalCodeRefAbsent, "field %q: child workflow call %q declared this output optional but omitted it", fieldSeg.Ident, idSeg.Ident)
+			}
+			return nil, derr
+		}
+		return v, nil
 	}
+}
+
+// callFieldDeclaredButAbsent reports whether callID names a call step whose child
+// workflow DECLARES field in its output_schema.properties but the committed call
+// product (outputs) does not carry it — i.e. a legitimately-omitted optional output
+// (AWF4006 ABSENT), as opposed to a genuine typo (AWF4002). Read-only. Returns false
+// when callChildSchemas is nil/absent (no LoadedDefinition threaded), when field is
+// actually PRESENT at the top level of outputs (the descend miss was deeper — a
+// genuine error), or when the child declares no output_schema.
+func (s *Scope) callFieldDeclaredButAbsent(callID, field string, outputs map[string]any) bool {
+	schema, isCall := s.callChildSchemas[callID]
+	if !isCall {
+		return false
+	}
+	if _, present := outputs[field]; present {
+		return false
+	}
+	if schema == nil {
+		return false
+	}
+	props, _ := (*schema)["properties"].(map[string]any)
+	_, declared := props[field]
+	return declared
 }
 
 // absentDueToUntakenIf reports whether runtimePath names a step lexically under

@@ -48,6 +48,9 @@ func testSubworkflow(t *testing.T, factory BackendFactory) {
 	t.Run("nested_call_path", func(t *testing.T) {
 		testSubworkflowNestedCallPath(t, factory)
 	})
+	t.Run("cross_call_omits_child_omitted_optional", func(t *testing.T) {
+		testSubworkflowCrossCallOmitsChildOmittedOptional(t, factory)
+	})
 	t.Run("digest_drift", func(t *testing.T) {
 		testSubworkflowDigestDrift(t, factory)
 	})
@@ -614,6 +617,51 @@ func testSubworkflowNestedCallPath(t *testing.T, factory BackendFactory) {
 	}
 	if _, ok := rs.LookupCompleted("outer_call"); !ok {
 		t.Fatal("missing outer call boundary completion")
+	}
+}
+
+// testSubworkflowCrossCallOmitsChildOmittedOptional pins C6: a parent output
+// bound to {{ step.<call>.<field> }} where the CHILD declared that output optional
+// but OMITTED it (its producer sat under a non-taken if branch) resolves to ABSENT
+// (AWF4006), so the parent OMITS the key — export OK, composing the single-workflow
+// omit across a sub-workflow call. deep=false steers the child's branch off; the
+// child's ./deep.sh therefore never runs (no program needed).
+func testSubworkflowCrossCallOmitsChildOmittedOptional(t *testing.T, factory BackendFactory) {
+	t.Helper()
+
+	h := newHarness(t, func() container.Backend {
+		return factory().(*container.Fake)
+	}, subworkflowOptionalOutputRootWorkflow)
+	writeSubworkflowFile(t, h, "child.awf.yaml", subworkflowOptionalOutputChildWorkflow)
+
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("outcome = %q, want ok", oc)
+	}
+
+	ld := loadSubworkflowDefinition(t, h)
+	rs, err := engine.Fold(mustFoldEvents(t, h), h.blobs)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	// The child committed its call product with summary OMITTED.
+	call, ok := rs.LookupCompleted("child_call")
+	if !ok {
+		t.Fatal("missing child_call completion")
+	}
+	if _, present := call.Outputs["summary"]; present {
+		t.Fatalf("child_call.summary should be OMITTED by the child; got %v", call.Outputs)
+	}
+	// The parent's top-level outputs must OMIT childSummary (not hard-fail).
+	res, err := engine.EvaluateExportsInDef(ld, "", rs, ld.Workflow, "", nil, h.blobs)
+	if err != nil {
+		t.Fatalf("EvaluateExportsInDef should succeed (child-omitted optional → parent omits): %v", err)
+	}
+	if _, present := res.Outputs["childSummary"]; present {
+		t.Fatalf("childSummary should be OMITTED across the call; got %v", res.Outputs)
 	}
 }
 

@@ -58,6 +58,31 @@ func callStepPathIndex(wf *ir.Workflow) map[string]string {
 	return out
 }
 
+// callChildOutputSchemas maps each call step id in wf to the OUTPUT_SCHEMA of the
+// child workflow it invokes (value nil when the child declares none). Resolves
+// each call target through def's import edges from the evaluating moduleID — the
+// same lookup runCallStep uses. def==nil (no LoadedDefinition available) yields a
+// nil map, which callFieldDeclaredButAbsent treats as "no cross-call classification"
+// (historic AWF4002 behavior). Part C C6.
+func callChildOutputSchemas(def *ir.LoadedDefinition, moduleID string, wf *ir.Workflow) map[string]*ir.JSONSchema {
+	if def == nil || wf == nil {
+		return nil
+	}
+	out := map[string]*ir.JSONSchema{}
+	ir.WalkNodes(wf.Graph, "", func(n ir.Node, _ string) {
+		call, ok := n.(*ir.CallStep)
+		if !ok {
+			return
+		}
+		child, ok := callTargetModule(def, moduleID, call.Call)
+		if !ok || child == nil || child.Workflow == nil {
+			return
+		}
+		out[call.ID] = child.Workflow.OutputSchema
+	})
+	return out
+}
+
 func resolveReducedBodyArtifactRef(scope *Scope, wf *ir.Workflow, id, name string) (string, bool, error) {
 	if scope == nil {
 		return "", false, nil

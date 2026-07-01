@@ -24,8 +24,27 @@ type WorkflowExportResult struct {
 // directly with ctxPath="" and input=nil. Shared so both paths are one
 // implementation (mirrors the engine's top-level-vs-call split in
 // interpreter_context.go).
+//
+// This def-unaware entry does NOT classify cross-call ABSENT (a parent output
+// bound to a child-omitted optional output resolves to AWF4002). Callers that
+// hold the LoadedDefinition should use EvaluateExportsInDef so that a
+// {{ step.<call>.<field> }} ref to a child-declared-but-omitted output resolves
+// to AWF4006 (parent omits) instead — Part C C6.
 func EvaluateExports(rs *RunState, wf *ir.Workflow, ctxPath string, input map[string]any, blobs state.Blobs) (WorkflowExportResult, error) {
+	return EvaluateExportsInDef(nil, "", rs, wf, ctxPath, input, blobs)
+}
+
+// EvaluateExportsInDef is EvaluateExports with the LoadedDefinition + evaluating
+// module id threaded in, so a parent {{ step.<call>.<field> }} ref can reach the
+// child workflow's output_schema. When the child DECLARED that field optional but
+// OMITTED it (its producer sat under a non-taken if branch, per C3), the ref
+// resolves to AWF4006 and the parent OMITS the key — composing the single-workflow
+// omit across a sub-workflow call. A field the child never declared stays AWF4002
+// (a genuine typo). def==nil disables the classification (identical to the historic
+// EvaluateExports behavior).
+func EvaluateExportsInDef(def *ir.LoadedDefinition, moduleID string, rs *RunState, wf *ir.Workflow, ctxPath string, input map[string]any, blobs state.Blobs) (WorkflowExportResult, error) {
 	scope := NewScopeWithInput(rs, wf, ctxPath, input)
+	scope.callChildSchemas = callChildOutputSchemas(def, moduleID, wf)
 
 	var out WorkflowExportResult
 	if wf.OutputSchema != nil {
@@ -152,10 +171,12 @@ func evalFirstOf(refs []json.RawMessage, scope *Scope) (any, bool, error) {
 
 // evaluateWorkflowExports is the sub-workflow-CALL path: build the child
 // RunState (prefix-strip the parent's keys) then delegate to the shared
-// EvaluateExports. Call-specific construction stays here.
-func evaluateWorkflowExports(parent *RunState, wf *ir.Workflow, callPath string, input map[string]any, blobs state.Blobs) (WorkflowExportResult, error) {
+// EvaluateExportsInDef. Call-specific construction stays here. def + moduleID are
+// the CHILD's (so a child forwarding ITS OWN call's omitted optional output
+// composes too — C6).
+func evaluateWorkflowExports(def *ir.LoadedDefinition, moduleID string, parent *RunState, wf *ir.Workflow, callPath string, input map[string]any, blobs state.Blobs) (WorkflowExportResult, error) {
 	child := childRunStateForCall(parent, callPath, input)
-	return EvaluateExports(child, wf, ir.CallWorkflowParentPath(callPath), input, blobs)
+	return EvaluateExportsInDef(def, moduleID, child, wf, ir.CallWorkflowParentPath(callPath), input, blobs)
 }
 
 func childRunStateForCall(parent *RunState, callPath string, input map[string]any) *RunState {
