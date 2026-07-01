@@ -200,3 +200,26 @@ func TestOutputFilesByStepID(t *testing.T) {
 		t.Fatalf("hunt findings = %q,%v, want /out/f.md,true", p, ok)
 	}
 }
+
+func TestOutputFilesByStepID_SyntheticForOutputArtifact(t *testing.T) {
+	wf := &Workflow{Graph: []Node{
+		&AgentStep{ID: "draft", Uses: "awf/llm", Container: "", OutputArtifact: "result",
+			OutputSchema: &JSONSchema{"type": "object"}},
+	}}
+	idx := OutputFilesByStepID(wf)
+	p, ok := idx["draft"].PathForName("result")
+	if !ok || p != "result" {
+		t.Fatalf("PathForName(result) = %q,%v; want \"result\",true", p, ok)
+	}
+}
+
+func TestOutputFilesByStepID_NoSyntheticForContainerBacked(t *testing.T) {
+	// A container-backed agent step never gets a synthetic entry even if (somehow)
+	// OutputArtifact is set — guarded on Container=="" && OutputArtifact!="".
+	wf := &Workflow{Graph: []Node{
+		&AgentStep{ID: "x", Uses: "anthropic/claude-code", Container: "lab", OutputArtifact: "result"},
+	}}
+	if _, ok := OutputFilesByStepID(wf)["x"].PathForName("result"); ok {
+		t.Fatal("container-backed step must not get a synthetic output_artifact entry")
+	}
+}

@@ -1,0 +1,46 @@
+workflow: awf-llm-gate-extract
+version: 1
+input:
+  type: object
+  additionalProperties: false
+  properties: {}
+containers:
+  scorer:
+    image: oci://example.com/scorer@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - gate:
+      max_attempts: 3
+      generate:
+        - id: draft
+          uses: awf/llm
+          with:
+            provider: anthropic
+            model: claude-sonnet-4-6
+            max_tokens: 1024
+            prompt: "Extract a list of key points from the provided text."
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [punti]
+            properties:
+              punti:
+                type: array
+                items: { type: string }
+          output_artifact: result
+      evaluate:
+        - id: judge
+          container: scorer
+          uses: example/scorer
+          input_files:
+            /in/draft.json: step.draft.files.result
+          with:
+            prompt: "score"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties:
+              ok: { type: boolean }
+      until: "{{ evaluate.ok }}"
+output_files:
+  final: step.draft.files.result

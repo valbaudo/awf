@@ -374,12 +374,18 @@ error (exit 2).
     `outputs:` block is evaluated and emitted as a JSON object on standard
     output. If the workflow declares no `outputs:` block the command exits 2.
 
-**--step** _node-id_
-:   Emit one top-level code or agent step's typed output, read directly from
-    the log and blob store. No workflow file is needed. _node-id_ must be a
-    top-level node id in the run's addressing tree; gate-internal and
-    map-internal runtime paths are not addressable (exit 2). Map aggregates
-    and sub-workflow results are accessed via **--workflow**, not **--step**.
+**--step** _path_
+:   Emit one committed step's typed output, read directly from the log and blob
+    store. No workflow file is needed. _path_ is a step's runtime address: a
+    top-level node id, or a full nested runtime path exactly as it appears in
+    the addressing tree — e.g. `gate[0].attempt-2.generate.extract`,
+    `map[0].item-3.scan`, `loop[0].body.iter-3.summarize`. Unlike a
+    `{{ step.<id> }}` template reference (which obeys scope multiplicity),
+    **--step** performs no instance resolution: the caller names the
+    attempt/item/iteration. A path that names no committed step — including a
+    step under a non-taken `if` branch, or a path missing its
+    attempt-/item-/iter- suffix — is a read failure (exit 1), not a usage
+    error. Map aggregates and sub-workflow results are read via **--workflow**.
 
 **--state-dir** _dir_
 :   Base directory holding `runs/` and `blobs/` (default `./.awf`).
@@ -403,10 +409,13 @@ reflects the *read*, not the run's outcome.
 Note: a workflow whose `outputs:` binds a step inside a transparent
 conditional scope (an `if` branch or `loop` body) produces an **awf
 validate** warning — the output may not be producible if that branch was
-not taken. Binding a gate- or map-internal step is a hard validation error
-(**awf validate** rejects it as exit 1). Use **awf ls** or check the run's
-terminal status to determine whether the run itself succeeded before
-reading outputs.
+not taken. When an `if` branch was not taken, the bound output key is
+**omitted** from the emitted JSON and the command exits 0; omission is not
+an error. If `output_schema` marks the omitted field `required`, the
+schema check then fails and the command exits 1 instead. Binding a gate-
+or map-internal step is a hard validation error (**awf validate** rejects
+it as exit 1). Use **awf ls** or check the run's terminal status to
+determine whether the run itself succeeded before reading outputs.
 
 ## awf graph _path_
 

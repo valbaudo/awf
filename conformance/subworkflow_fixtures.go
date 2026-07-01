@@ -401,3 +401,60 @@ graph:
       properties:
         summary: { type: string }
 `, fakeImageDigest)
+
+// subworkflowOptionalOutputRootWorkflow (C6): the parent binds its OWN optional
+// output `childSummary` to a child output the child DECLARES optional but OMITS
+// (its producer sits under a non-taken if branch). The parent must OMIT
+// childSummary — export OK — composing the single-workflow if-branch omit (C3)
+// across a call. `deep: false` steers the child's producing branch off.
+var subworkflowOptionalOutputRootWorkflow = `workflow: conformance-subworkflow-optional-output-root
+version: 1
+imports:
+  child: child.awf.yaml
+containers: {}
+output_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    childSummary: { type: string }
+outputs:
+  childSummary: "{{ step.child_call.summary }}"
+graph:
+  - id: child_call
+    call: child
+    input:
+      deep: false
+`
+
+var subworkflowOptionalOutputChildWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-optional-output-child
+version: 1
+input:
+  type: object
+  additionalProperties: false
+  properties:
+    deep: { type: boolean }
+output_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    summary: { type: string }
+outputs:
+  summary: "{{ step.deep.summary }}"
+containers:
+  lab:
+    image: %[1]s
+graph:
+  - if:
+      cond: "{{ input.deep }}"
+      then:
+        - id: deep
+          container: lab
+          run: "./deep.sh"
+          retry: { attempts: 1 }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [summary]
+            properties:
+              summary: { type: string }
+`, fakeImageDigest)

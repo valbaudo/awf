@@ -465,6 +465,7 @@ format never hard-codes one harness's options.
       continues: <id>                # optional; id of a prior agent turn this turn continues
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
+      output_artifact: <name>        # containerless only; mutually exclusive with output_files
       output_files: [<path>, ...]    # optional; or { <name>: <path|contract> } -> named
       input_files: { <label>: step.<id>.files.<name> }  # or asset.<id>; optional; label is an in-container path (container) or a logical name forwarded inline (containerless)
       skills:
@@ -535,6 +536,53 @@ constrained/structured-output mode or schema-aligned parsing of the final messag
 value within the retry budget the step is a `retryable_failure`. References bind
 only to typed fields, so `**verdict: pass**` versus `verdict: pass` can never
 silently break a gate.
+
+**output_artifact**
+:   Optional. **Agent-only; valid only on a containerless agent step** (one that
+    omits `container:`). When set, the engine serializes the step's fully-validated
+    `output_schema` object as canonical JSON at commit time and publishes the
+    result as a named artifact with the handle `step.<id>.files.<name>`.
+    Consumers reference it with the same `step.<id>.files.<name>` syntax used for
+    `output_files` artifacts — via a later step's `input_files` or the workflow-level
+    `output_files` alias map. The behavior is identical to a named `output_files`
+    entry in a container-backed step.
+
+    Two constraints are enforced at validation (**AWF3014**):
+
+    - `output_artifact` requires `output_schema` — the artifact is the serialized
+      typed output, so there is nothing to emit without a schema.
+    - `output_artifact` and `output_files` are **mutually exclusive** on the same
+      step (a containerless step has no container paths to capture via
+      `output_files`; use `output_artifact` instead).
+
+    Setting `output_artifact` on a code (`run:`) step has no effect and is
+    silently ignored — `output_artifact` is an agent-only field. Authors should
+    not rely on this behavior; a future validator revision may warn.
+
+    **Known limitation (v1):** `react:` steps (the other containerless producer)
+    cannot emit `output_artifact`. A `react:` step's structured output is not
+    yet exposed as a whole-object artifact; individual typed fields remain
+    referenceable via `step.<id>.<field>` as usual.
+
+    Example — a containerless `awf/llm` extract step that exposes its typed
+    output as a named artifact:
+
+        - id: draft
+          uses: awf/llm
+          with:
+            provider: anthropic
+            model: claude-sonnet-4-6
+            max_tokens: 1024
+            prompt: "Extract key points from the text."
+          output_schema:
+            type: object
+            required: [points]
+            properties:
+              points: { type: array, items: { type: string } }
+          output_artifact: result
+
+    A downstream `input_files` or the workflow's `output_files` then binds
+    `step.draft.files.result`.
 
 **input_files**
 :   Optional. Stages prior artifacts for the step. The key semantics depend on
@@ -656,7 +704,7 @@ or child artifacts except through those exports. Mechanical failures inside the
 imported workflow propagate as the call node's mechanical outcome; quality
 decisions remain the called workflow's own gate responsibility.
 
-## Artifact channel (output_files, input_files)
+## Artifact channel (output_files, input_files, output_artifact)
 
 `output_files` and `input_files` hand a file produced by one step to a *later*
 step — across **distinct** containers, content-addressed and resume-safe. The
@@ -665,6 +713,14 @@ runtime stages the bytes in before the consumer runs. This is the file-handoff
 seam between black boxes: an agent writes a report in one workspace, a code step
 verifies it in a clean one. Both fields appear on code (`run:`) and agent
 (`uses:`) steps.
+
+Containerless agent steps (those that omit `container:`, such as `awf/llm`)
+cannot use `output_files` — there is no container file system to capture from.
+They use `output_artifact` instead: the engine serializes the step's fully-typed
+`output_schema` object as canonical JSON and injects it into the same artifact
+channel under `step.<id>.files.<name>`. From a consumer's perspective the handle
+is indistinguishable from a named `output_files` artifact produced by a
+container-backed step.
 
 The name shape depends on the surface:
 
@@ -840,6 +896,11 @@ explicitly through typed references (see **TEMPLATING AND TYPED OUTPUTS**).
 Branches on a typed condition. A false `cond` with no `else` is a no-op. Combined
 with `skip`, this routes a stage out of a pipeline without nesting everything
 after it.
+
+For the absent-reference semantics (AWF4006) when a downstream step or an
+`outputs:` binding names a step whose branch was not taken, see the
+scope-rules paragraph in **TEMPLATING AND TYPED OUTPUTS** and **Workflow
+Exports**.
 
 ## loop
 
@@ -1313,8 +1374,8 @@ artifacts); non-UTF-8 output is referenced by size, not inlined.
 
 **Scope.** `react:` requires an `awf/llm` (containerless, threaded) adapter; v1 is OpenAI-compat
 only (a `structured_output: ollama_format` config is rejected). A top-level `react:` is referenceable
-via `{{ <id>.* }}`; a `react:` nested in `loop`/`gate`/`map` is readable via `awf outputs --step`
-only.
+via `{{ <id>.* }}`; a `react:` nested in `loop`/`gate`/`map` is readable via its runtime address
+with `awf outputs --step` only — e.g. `awf outputs <run> --step gate[0].attempt-2.generate.react[0]`.
 
 ## awf/llm providers
 
@@ -1448,6 +1509,21 @@ instance* — the same gate attempt, or the same map item — because from outsi
 there is no single attempt or item to resolve to; a cross-scope reference is
 rejected at validation. Read a gate's product through `{{ evaluate.<field> }}`.
 
+An `if` branch introduces *optionality* rather than multiplicity: a step inside
+an `if` body has exactly one runtime instance or none. A reference to such a
+step from outside the `if` resolves to the step's typed output when the branch
+was taken and to **ABSENT** (**AWF4006**) when the other branch ran. ABSENT is
+distinct from AWF4002 (a genuinely unresolved or out-of-scope reference): the
+reference is syntactically valid, it just points at a step that did not execute.
+ABSENT is neither an error nor a null value. Inside `outputs:` it silently omits
+the bound field — the enclosing `output_schema`'s `required`/optional designation
+then decides whether omission is acceptable (omitting a `required` field is a
+hard validation error). In any other position — a `run:` substitution, a
+condition (`if.cond`, `gate.until`), or another step's `with:` prompt — an
+absent reference is an author error, **unless** the reference is wrapped in a
+`first_of:` selection directive at an `outputs:` value (see **Workflow
+Exports**).
+
 A `step.<map-id>` reference to a map aggregate, evaluated from *outside* that
 map, reads the map product. When the map has `reduce:`, `step.<map-id>.<field>`
 binds the reducer's typed output fields and `step.<map-id>.files.<name>` binds
@@ -1575,6 +1651,58 @@ must resolve to an in-scope named artifact (`step.<id>.files.<name>` or another
 valid aggregate artifact reference); aliases cannot expose bare capture-only
 artifacts or arbitrary paths.
 
+**If-branch optionality: omit on ABSENT**
+
+When an `outputs:` value binds a step inside an `if` branch that was not taken,
+the reference resolves to ABSENT (AWF4006) at export time. The runtime **omits**
+that key from the exported object entirely — it is not set to null and no error
+is raised. Whether omission is valid then depends on `output_schema`:
+
+- An **optional** field (absent from `required`) silently tolerates the missing
+  key; the caller receives an object without that property.
+- A **required** field whose binding resolves to ABSENT causes the schema check
+  to fail — this is a hard validation error and the export is rejected.
+
+`output_files:` follows the **same rule** symmetrically: an artifact-export
+entry bound to a step whose `if` branch was not taken is omitted from the
+exported file map. No error is raised; the key simply does not appear in the
+exported artifact map (artifact-export keys have no `required` gate, so — unlike
+a required `output_schema` field — an omitted artifact never fails the export).
+
+**`first_of:` selection**
+
+When two or more `if` branches each produce a field of the same name and exactly
+one branch will run, use `first_of:` to pick the first present value:
+
+    output_schema:
+      type: object
+      required: [answer]
+      additionalProperties: false
+      properties:
+        answer: { type: string }
+    outputs:
+      answer:
+        first_of:
+          - "{{ step.quick.answer }}"
+          - "{{ step.thorough.answer }}"
+
+`first_of:` is recognized only when the `outputs:` value is a **single-key
+object** whose sole key is `first_of` and whose value is a non-empty JSON array
+of template strings. Alternatives are evaluated left-to-right; the first
+non-ABSENT value wins. When all alternatives are ABSENT the key is omitted
+(subject to the same `required`/optional rule above). A multi-key object that
+merely *contains* a `first_of` property among others is **not** treated as the
+directive — it is evaluated as a plain typed value.
+
+**Composition across sub-workflow calls**
+
+The omit-on-ABSENT behavior composes across `call` nodes. When a sub-workflow
+omits an optional output field (because the `if` branch producing it was not
+taken), the parent workflow's `{{ step.<call-id>.<field> }}` reference to that
+field also resolves to ABSENT, causing the parent's own `outputs:` binding for
+that field to be omitted in turn. A field that the sub-workflow's `output_schema`
+never declared at all remains AWF4002 (a genuine typo), not AWF4006.
+
 # CHECKPOINTING AND RESUME
 
 AWF persists progress so a re-run does not redo expensive stages — *not* to
@@ -1682,6 +1810,9 @@ joined from the root: `try[0].catch`, `if[1].then`, `loop[0].body.iter-3`,
 `recon_result.workflow.extract`. The runtime computes every address, including
 call paths, through the single `engine/path` function; implementations must not
 construct journal keys or `awf.node.path` values ad hoc.
+`awf outputs --step` accepts exactly these runtime addresses verbatim; unlike a `{{ step.<id> }}`
+reference (which obeys the scope-multiplicity rules above), `--step` performs no instance resolution —
+the caller names the attempt, item, or iteration.
 
 # EXTERNAL EFFECTS AND IDEMPOTENCY
 

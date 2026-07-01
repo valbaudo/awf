@@ -118,7 +118,7 @@ func runCallStep(ctx context.Context, call *ir.CallStep, path string, ictx inter
 		return failStep(ictx.log, path, boundaryOutcome, fmt.Errorf("child workflow failed at %s: %w", childPath, cause))
 	}
 
-	product, err := evaluateWorkflowExports(ictx.runstate, child.Workflow, path, callInput, ictx.blobs)
+	product, err := evaluateWorkflowExports(ictx.def, child.ID, ictx.runstate, child.Workflow, path, callInput, ictx.blobs)
 	if err != nil {
 		return failStep(ictx.log, path, OutcomePermanentFailure, err)
 	}

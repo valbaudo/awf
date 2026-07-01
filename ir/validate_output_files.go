@@ -18,6 +18,7 @@ func validateOutputFiles(ld *LoadedDefinition, c *collector) {
 			validateOutputFileContracts(ld, c, nodePath, s.OutputFiles)
 		case *AgentStep:
 			validateOutputFileContracts(ld, c, nodePath, s.OutputFiles)
+			validateOutputArtifact(ld, c, nodePath, s)
 		case *Map:
 			if s.Reduce != nil {
 				validateOutputFileContracts(ld, c, nodePath+".reduce", s.Reduce.OutputFiles)
@@ -84,6 +85,27 @@ func validateArtifactContractMetadata(ld *LoadedDefinition, c *collector, nodePa
 	}
 	if contract.SchemaRef != "" {
 		validateSchemaRefAsset(ld, c, nodePath, code, label, contract.SchemaRef, schemaPath+".schema_ref")
+	}
+}
+
+// validateOutputArtifact enforces the output_artifact rules (AWF3014): containerless agent
+// steps only; name matches stepIDPattern; mutually exclusive with output_files; requires
+// output_schema. All violations share code AWF3014.
+func validateOutputArtifact(_ *LoadedDefinition, c *collector, nodePath string, s *AgentStep) {
+	if s.OutputArtifact == "" {
+		return
+	}
+	if s.Container != "" {
+		c.errf(nodePath, "AWF3014", "output_artifact is valid only on a containerless agent step (this step declares container:)")
+	}
+	if !stepIDPattern.MatchString(s.OutputArtifact) {
+		c.errf(nodePath, "AWF3014", "output_artifact: name must match "+stepIDPattern.String())
+	}
+	if len(s.OutputFiles) > 0 {
+		c.errf(nodePath, "AWF3014", "output_artifact and output_files are mutually exclusive on the same step")
+	}
+	if s.OutputSchema == nil {
+		c.errf(nodePath, "AWF3014", "output_artifact requires output_schema (the artifact is the serialized typed output)")
 	}
 }
 

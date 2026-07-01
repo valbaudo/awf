@@ -31,6 +31,7 @@ const (
 	EvalCodeTypeMismatch  = "AWF4003" // operator's operand types don't match (no coercion per §7)
 	EvalCodeInvalidScalar = "AWF4004" // a {{ }} slot resolved to a non-scalar (map/slice/nil)
 	EvalCodeSyntax        = "AWF4005" // {{ }} slot or ref-grammar syntax error in the host template (slot scan / ParseRef failure; the ref never reached the scope)
+	EvalCodeRefAbsent     = "AWF4006" // ref is a step under a non-taken if branch — legitimately absent, distinct from AWF4002 missing
 	EvalCodeDeferred      = "AWF4099" // ref shape valid but resolution lands in a later slice (slice 2.4 for stdout, etc.)
 )
 

@@ -331,6 +331,27 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}
 	}
 
+	// output_artifact (B1): a containerless agent step serializes its validated
+	// typed Output as canonical JSON into Files[name], so it flows through the
+	// normal artifact machinery. The container-capture output_files rejection
+	// above (bare=="" guard, line ~163) is untouched — output_artifact is a
+	// distinct field. init-then-insert (never replace: a future adapter may
+	// return its own Files); skip when Output is nil (null artifact is useless
+	// and defends against a validator bypass).
+	if bare == "" && intent.ResolvedInputs.OutputArtifact != "" && launchOutcome.Result.Output != nil {
+		blob, mErr := marshalCanonicalJSON(launchOutcome.Result.Output)
+		if mErr != nil {
+			return DispatchResult{
+				Outcome: OutcomePermanentFailure,
+				Err:     fmt.Errorf("engine.LocalDispatcher.runAgent: marshal output_artifact at %q: %w", intent.Path, mErr),
+			}, closedChunks(), nil
+		}
+		if launchOutcome.Result.Files == nil {
+			launchOutcome.Result.Files = map[string][]byte{}
+		}
+		launchOutcome.Result.Files[intent.ResolvedInputs.OutputArtifact] = blob
+	}
+
 	files := packFiles(launchOutcome.Result.Files)
 	if len(intent.ResolvedInputs.OutputFiles) > 0 {
 		captured, captureErr := d.Backend.CaptureFiles(ctx, h, intent.ResolvedInputs.OutputFiles)

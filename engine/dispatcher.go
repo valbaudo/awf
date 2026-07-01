@@ -59,9 +59,12 @@ type NodeIntent struct {
 // slice 2.4 plan for what each field carries. The dispatcher consumes
 // verbatim; no template.Substitute call happens inside.
 type ResolvedInputs struct {
-	Command               string
-	Env                   map[string]string
-	OutputFiles           []string
+	Command     string
+	Env         map[string]string
+	OutputFiles []string
+	// OutputArtifact: when non-empty on a containerless agent step, the dispatcher
+	// serializes the validated typed Output as canonical JSON into Files[name].
+	OutputArtifact        string
 	OutputFileContracts   map[string]OutputFileContract
 	OutputSchema          *ir.JSONSchema
 	NonRetryableExitCodes []int

@@ -79,6 +79,9 @@ func (s *Scope) ResolveArtifactPath(id, containerPath string) (string, error) {
 	}
 	nr, ok := s.rs.LookupCompleted(rp)
 	if !ok {
+		if s.absentDueToUntakenIf(rp) {
+			return "", template.EvalErrf(template.EvalCodeRefAbsent, "artifact ref: step %q is under a non-taken if branch (%s)", id, rp)
+		}
 		return "", template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step %q not yet committed (%s)", id, rp)
 	}
 	cas, ok := nr.Files[containerPath]

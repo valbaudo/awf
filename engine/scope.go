@@ -40,6 +40,13 @@ type Scope struct {
 	hasInputOverride bool
 	inputFiles       map[string]string
 	wfRef            *ir.Workflow // slice 3.4 — needed by resolveAsBinding's mapPathIndex
+	// callChildSchemas maps a call step id in wfRef to the OUTPUT_SCHEMA of the
+	// child workflow it invokes (nil value = child declares none). Populated only
+	// where the LoadedDefinition is available (EvaluateExportsInDef); nil map keeps
+	// the historic behavior. Consumed by callFieldDeclaredButAbsent to distinguish
+	// a child-declared-but-omitted optional output (AWF4006 ABSENT → parent omits)
+	// from a genuine typo (AWF4002). See Part C C6.
+	callChildSchemas map[string]*ir.JSONSchema
 }
 
 // NewScope wires the inputs into a Scope. ctxPath is the runtime path of the
@@ -229,6 +236,9 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 	}
 	nr, ok := s.rs.LookupCompleted(runtimePath)
 	if !ok {
+		if s.absentDueToUntakenIf(runtimePath) {
+			return nil, template.EvalErrf(template.EvalCodeRefAbsent, "step %q is under a non-taken if branch (runtime path %q)", idSeg.Ident, runtimePath)
+		}
 		return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "step %q not yet committed (runtime path %q)", idSeg.Ident, runtimePath)
 	}
 	switch fieldSeg.Ident {
@@ -250,8 +260,80 @@ func (s *Scope) resolveStep(ref *template.Ref) (any, error) {
 		if nr.Outputs == nil {
 			return nil, template.EvalErrf(template.EvalCodeRefUnresolved, "field %q: step has no typed outputs", fieldSeg.Ident)
 		}
-		return descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
+		v, derr := descendPath(nr.Outputs, ref.Segments[2:], "step."+idSeg.Ident+".")
+		if derr != nil {
+			// C6: the producer is a call whose CHILD workflow declared this output
+			// optional but OMITTED it (its producer sat under a non-taken if branch,
+			// per C3). Propagate ABSENT (AWF4006) so the parent's outputs: /
+			// output_files: / first_of: arms omit the key, composing the omit across
+			// the call. A field the child never declared stays AWF4002 (derr).
+			if s.callFieldDeclaredButAbsent(idSeg.Ident, fieldSeg.Ident, nr.Outputs) {
+				return nil, template.EvalErrf(template.EvalCodeRefAbsent, "field %q: child workflow call %q declared this output optional but omitted it", fieldSeg.Ident, idSeg.Ident)
+			}
+			return nil, derr
+		}
+		return v, nil
 	}
+}
+
+// callFieldDeclaredButAbsent reports whether callID names a call step whose child
+// workflow DECLARES field in its output_schema.properties but the committed call
+// product (outputs) does not carry it — i.e. a legitimately-omitted optional output
+// (AWF4006 ABSENT), as opposed to a genuine typo (AWF4002). Read-only. Returns false
+// when callChildSchemas is nil/absent (no LoadedDefinition threaded), when field is
+// actually PRESENT at the top level of outputs (the descend miss was deeper — a
+// genuine error), or when the child declares no output_schema.
+func (s *Scope) callFieldDeclaredButAbsent(callID, field string, outputs map[string]any) bool {
+	schema, isCall := s.callChildSchemas[callID]
+	if !isCall {
+		return false
+	}
+	if _, present := outputs[field]; present {
+		return false
+	}
+	if schema == nil {
+		return false
+	}
+	props, _ := (*schema)["properties"].(map[string]any)
+	_, declared := props[field]
+	return declared
+}
+
+// absentDueToUntakenIf reports whether runtimePath names a step lexically under
+// an `if` branch that was NOT taken (→ legitimately ABSENT, AWF4006), as opposed
+// to a genuinely-uncommitted step (→ AWF4002). It scans `if[K].then|else` pairs
+// OUTERMOST→innermost using the guarded-pair technique (segments[i] is then|else
+// AND segments[i-1] starts with "if[", so a step literally named then/else can't
+// false-match — same guard as enclosingMapForBinding). Read-only.
+//
+// Outermost-first is REQUIRED: for a step under a nested if where an OUTER branch
+// was skipped, the inner if was never decided (LookupBranch !recorded). Inner-first
+// would return "genuine" on that unrecorded inner if before ever seeing the outer
+// if that actually routed away.
+func (s *Scope) absentDueToUntakenIf(runtimePath string) bool {
+	segments := strings.Split(runtimePath, ".")
+	for i := 1; i < len(segments); i++ {
+		seg := segments[i]
+		if seg != "then" && seg != "else" {
+			continue
+		}
+		if !strings.HasPrefix(segments[i-1], "if[") {
+			continue
+		}
+		ifPath := strings.Join(segments[:i], ".")
+		taken, recorded := s.rs.LookupBranch(ifPath)
+		if !recorded {
+			// Every OUTER if on the path was confirmed taken (we only reach here
+			// by continuing through them), so this if is the genuine unreached
+			// frontier — NOT absent.
+			return false
+		}
+		if taken != seg {
+			return true // outermost mismatch wins → ABSENT
+		}
+		// taken == seg: this if is satisfied; continue inward.
+	}
+	return false
 }
 
 // resolveEvaluate handles `evaluate.<field>` refs. Per Phase 3 slice 3.3
