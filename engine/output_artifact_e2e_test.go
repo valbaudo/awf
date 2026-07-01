@@ -121,7 +121,7 @@ func TestOutputArtifact_InGateAndForwardOut(t *testing.T) {
 		Script(0, fake.Result{Output: map[string]any{"punti": []any{"a"}}})); err != nil {
 		t.Fatalf("Register awf/llm: %v", err)
 	}
-	// Container-backed evaluator: scorer-agent returns {ok: true} → gate passes on attempt-1.
+	// Container-backed evaluator: example/scorer returns {ok: true} → gate passes on attempt-1.
 	if err := reg.Register(fake.New("example/scorer").
 		Script(0, fake.Result{Output: map[string]any{"ok": true}})); err != nil {
 		t.Fatalf("Register example/scorer: %v", err)

@@ -150,7 +150,7 @@ func TestRunGateAbsentIfRefInUntilDoesNotConsumeAttempt(t *testing.T) {
 	}
 
 	// The genuine crash≠verdict pin: the until WAS reached (generate + evaluate
-	// succeeded), but the mechanical error branched off BEFORE step 6
+	// succeeded), but the mechanical error branched off BEFORE step 5
 	// (RecordGateAttempt) — no attempt consumed.
 	if got := rs.LookupGateAttempts("gate[1]"); len(got) != 0 {
 		t.Errorf("GateAttempts len = %d, want 0 (crash≠verdict — AWF4006 in until must not consume an attempt)", len(got))
