@@ -1665,7 +1665,9 @@ is raised. Whether omission is valid then depends on `output_schema`:
 
 `output_files:` follows the **same rule** symmetrically: an artifact-export
 entry bound to a step whose `if` branch was not taken is omitted from the
-exported file map. No error is raised unless a caller expected that artifact.
+exported file map. No error is raised; the key simply does not appear in the
+exported artifact map (artifact-export keys have no `required` gate, so — unlike
+a required `output_schema` field — an omitted artifact never fails the export).
 
 **`first_of:` selection**
 
