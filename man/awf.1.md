@@ -409,10 +409,13 @@ reflects the *read*, not the run's outcome.
 Note: a workflow whose `outputs:` binds a step inside a transparent
 conditional scope (an `if` branch or `loop` body) produces an **awf
 validate** warning — the output may not be producible if that branch was
-not taken. Binding a gate- or map-internal step is a hard validation error
-(**awf validate** rejects it as exit 1). Use **awf ls** or check the run's
-terminal status to determine whether the run itself succeeded before
-reading outputs.
+not taken. When an `if` branch was not taken, the bound output key is
+**omitted** from the emitted JSON and the command exits 0; omission is not
+an error. If `output_schema` marks the omitted field `required`, the
+schema check then fails and the command exits 1 instead. Binding a gate-
+or map-internal step is a hard validation error (**awf validate** rejects
+it as exit 1). Use **awf ls** or check the run's terminal status to
+determine whether the run itself succeeded before reading outputs.
 
 ## awf graph _path_
 
