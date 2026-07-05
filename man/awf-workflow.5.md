@@ -89,6 +89,15 @@ A workflow document has the following top-level shape:
     step inherits the host environment on the native backend but not on docker —
     so do not rely on `env:` to reach a `run:` step.)
 
+Unknown workflow and step keys are rejected (**AWF1062**). The loader tolerates
+keys it does not recognize, so a typo (`ouput_files:`) or a GHA muscle-memory key
+(`working-directory:`, a step-level `env:`) would otherwise silently do nothing;
+the validator flags any key that is not part of the workflow or step schema.
+Top-level `x-*` keys are exempt — they are reserved for YAML-anchor holders (for
+example `x-defaults: &defaults …`). Opaque and free-form value subtrees are not
+inspected: an agent step's `with:` block, JSON-Schema values (`output_schema`,
+`input`, a tool's `input_schema`), and `outputs:` values may contain any keys.
+
 ## Imports
 
 `imports:` maps local import ids to relative `.awf.yaml` files. Import paths are

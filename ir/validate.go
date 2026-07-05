@@ -57,6 +57,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 		prevSource := c.source
 		c.source = mod.Source
 		modLD := loadedDefinitionForValidationModule(mod)
+		validateUnknownKeys(mod, c)
 		validateStructural(modLD, c)
 		validateAgents(modLD, c)
 		validateSkills(modLD, c)
@@ -86,6 +87,10 @@ type validationModule struct {
 
 	WorkflowPath string
 	ComposeFiles map[string][]byte
+
+	// RawDoc is the raw top-level YAML mapping (pre-typed-unmarshal), used by the
+	// strict unknown-key pass (AWF1062). nil → no strict check for this module.
+	RawDoc map[string]any
 }
 
 func validationModules(ld *LoadedDefinition) []validationModule {
@@ -108,6 +113,7 @@ func validationModules(ld *LoadedDefinition) []validationModule {
 			Source:       source,
 			WorkflowPath: mod.WorkflowPath,
 			ComposeFiles: mod.ComposeFiles,
+			RawDoc:       mod.RawDoc,
 		})
 		return nil
 	})
