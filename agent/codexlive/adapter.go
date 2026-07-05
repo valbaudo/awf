@@ -180,7 +180,7 @@ func parseConfig(with ir.RawConfig) (config, error) {
 	}
 	for k := range with {
 		if _, ok := allowed[k]; !ok {
-			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: k, Reason: "unknown with-key"}
+			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: k, Reason: "unknown with-key", KeyUnknown: true}
 		}
 	}
 	prompt, err := requiredString(with, "prompt")

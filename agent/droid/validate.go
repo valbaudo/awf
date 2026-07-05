@@ -75,7 +75,8 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		if _, ok := allowedKeys[k]; !ok {
 			return &agent.ErrInvalidConfig{
 				Ref: AdapterRef, Key: k,
-				Reason: fmt.Sprintf("unknown with-key (allowed: %v)", slices.Sorted(maps.Keys(allowedKeys))),
+				Reason:     fmt.Sprintf("unknown with-key (allowed: %v)", slices.Sorted(maps.Keys(allowedKeys))),
+				KeyUnknown: true,
 			}
 		}
 	}
