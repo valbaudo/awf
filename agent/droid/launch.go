@@ -207,12 +207,9 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("agent/droid: assembleCommand: with.prompt missing or non-string")
 	}
-	if len(inv.Feedback) > 0 {
-		fb, ferr := json.Marshal(inv.Feedback)
-		if ferr != nil {
-			return "", fmt.Errorf("agent/droid: marshal Feedback: %w", ferr)
-		}
-		prompt = fmt.Sprintf("<previous verdict>\n%s\n\n%s", string(fb), prompt)
+	prompt, err := agent.PrependFeedback(prompt, inv.Feedback)
+	if err != nil {
+		return "", fmt.Errorf("agent/droid: prepend gate feedback: %w", err)
 	}
 	if inv.OutputSchema != nil {
 		schemaBytes, serr := json.Marshal(*inv.OutputSchema)
