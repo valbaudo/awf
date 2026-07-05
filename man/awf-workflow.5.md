@@ -440,6 +440,14 @@ inside. A node with more than one, or none, is invalid.
 - Signal step (`await:`) — block until an external signal.
 - Call step (`call:`) — run an imported workflow.
 
+**Durations.** Every `timeout:` and `retry: { initial, max }` value (step-level,
+and on a `tools:` entry's `impl:`) is a quoted Go duration string — `"300s"`,
+`"5m"`, `"1h30m"` — never a bare integer. A bare integer is rejected at
+`awf validate` (**AWF1063**): the field's Go type also accepts a bare integer as
+nanoseconds for JSON round-tripping (internal to the runtime), so an unquoted
+YAML integer like `timeout: 300` would otherwise parse silently as 300
+nanoseconds — a step that times out instantly with no error.
+
 ## Code step (run)
 
     - id: <id>

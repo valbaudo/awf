@@ -58,6 +58,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 		c.source = mod.Source
 		modLD := loadedDefinitionForValidationModule(mod)
 		validateUnknownKeys(mod, c)
+		validateDurationScalars(mod, c)
 		validateStructural(modLD, c)
 		validateAgents(modLD, c)
 		validateSkills(modLD, c)
