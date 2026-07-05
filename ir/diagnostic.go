@@ -218,7 +218,7 @@ var catalog = map[string]string{
 	"AWF1061": "a reserved step-level key is nested inside with: (it will be ignored by the engine); move it to the step level (sibling of with:)",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
-	"AWF_IMPORT_DECODE":         "imported workflow failed to decode",
+	"AWF_IMPORT_DECODE":         "workflow failed to decode",
 	"AWF_IMPORT_DEPTH":          "workflow import graph exceeds maximum depth",
 	"AWF_IMPORT_ID_INVALID":     "workflow import id is invalid",
 	"AWF_IMPORT_PATH_ABSOLUTE":  "workflow import path must be relative",
