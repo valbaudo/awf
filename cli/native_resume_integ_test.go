@@ -177,10 +177,12 @@ graph:
 	}
 
 	// DELETE the native workdir BEFORE resume. native Create/Restore use
-	// filepath.Join(workdirRoot, name); workdirRoot is <stateDir>/work and name
-	// is the (top-level, unqualified) container name "ws". After this, Restore
-	// is the SOLE source of marker.txt — if it no-ops, step_b's cat fails.
-	workdir := filepath.Join(stateDir, "work", "ws")
+	// filepath.Join(workdirRoot, name); U3/F26 made workdirRoot per-run
+	// (<stateDir>/work/<run-id>) — run.go and resume.go both compute
+	// filepath.Join(stateDir, "work", runID) — and name is the (top-level,
+	// unqualified) container name "ws". After this, Restore is the SOLE
+	// source of marker.txt — if it no-ops, step_b's cat fails.
+	workdir := filepath.Join(stateDir, "work", runID, "ws")
 	if _, err := os.Stat(workdir); err != nil {
 		t.Fatalf("native workdir %q not present before delete (path layout wrong?): %v", workdir, err)
 	}
