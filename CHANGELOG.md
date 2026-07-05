@@ -10,6 +10,16 @@ is tracked independently of the `awf` tool version.
 
 ## [Unreleased]
 
+### Added
+
+- **`awf validate` strictly rejects unknown workflow/step keys (`AWF1062`).** A
+  stray or typo'd key anywhere in a workflow document — previously silently
+  tolerated — is now a hard validation error.
+- **`awf validate` strictly rejects bare-integer durations (`AWF1063`).** A
+  `timeout` or `retry.initial`/`retry.max` value must be a quoted duration
+  string (e.g. `"300s"`, not `300`) — a bare integer previously parsed as
+  nanoseconds with no error, causing the step to time out instantly.
+
 ### Changed
 
 - **Breaking (native backend):** run workdirs moved from `work/` to `work/<run-id>/`

@@ -142,6 +142,12 @@ func checkDurationKey(m map[string]any, key, path string, c *collector) {
 	if !ok {
 		return
 	}
+	if v == nil {
+		// Explicit YAML `null` (e.g. `timeout: null`) decodes to a present key
+		// with a nil RawDoc value — semantically identical to the field being
+		// omitted (a nil *Duration). Not a violation.
+		return
+	}
 	if _, isStr := v.(string); !isStr {
 		c.errf(path, "AWF1063", key+": "+catalog["AWF1063"])
 	}

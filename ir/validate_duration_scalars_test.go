@@ -79,6 +79,19 @@ func TestDurationScalars_WithSubtreeSkipped(t *testing.T) {
 	}
 }
 
+// TestDurationScalars_ExplicitNullNotFlagged confirms an explicit YAML `null`
+// at a duration position is not flagged. `timeout: null` decodes to a PRESENT
+// key with a nil RawDoc value — semantically identical to the field being
+// omitted (a nil *Duration) — so checkDurationKey must not treat it as a
+// bare-int violation.
+func TestDurationScalars_ExplicitNullNotFlagged(t *testing.T) {
+	src := "workflow: x\nversion: 1\ngraph:\n  - run: echo hi\n    timeout: null\n"
+	diags := validateForTest(t, src)
+	if hasCode(diags, "AWF1063") {
+		t.Fatalf("explicit null duration must not be flagged, got %v", diags)
+	}
+}
+
 // TestDurationScalars_CorpusZeroFalsePositives loads every examples/**/*.yaml and
 // asserts ZERO AWF1063 diagnostics. This is the objective safety net: a false
 // positive means a corpus workflow has a genuine bare-int duration — a latent bug
