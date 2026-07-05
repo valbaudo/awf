@@ -91,7 +91,7 @@ func (*Adapter) Ref() string { return AdapterRef }
 // Capabilities: layer-2 typed output (NativeSchema:false) + no container needed +
 // threading supported (engine-supplied continues: message history prepended by launch).
 func (*Adapter) Capabilities() agent.Caps {
-	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true}
+	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true, InlineInputFiles: true}
 }
 
 // RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var

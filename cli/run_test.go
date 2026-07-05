@@ -2260,6 +2260,76 @@ func TestRun_WithConfigGuard_TypoKeyFailsFast(t *testing.T) {
 	}
 }
 
+// writeInputFilesGuardWorkflow writes a workflow with a container-backed
+// producer step (recon, declaring a named output_files artifact "report")
+// followed by a CONTAINERLESS agent step (draft, no container:) that
+// declares input_files referencing that artifact by label — the F31b shape
+// the run-start input_files guard must reject when draft's adapter does not
+// inline input_files.
+func writeInputFilesGuardWorkflow(t *testing.T, dir, adapterRef string) string {
+	t.Helper()
+	path := filepath.Join(dir, "input-files-guard-wf.yaml")
+	content := `workflow: input-files-guard-test
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: recon
+    container: lab
+    run: "true"
+    output_files:
+      report: /out/report.md
+  - id: draft
+    uses: ` + adapterRef + `
+    input_files:
+      doc: step.recon.files.report
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write input-files-guard workflow: %v", err)
+	}
+	return path
+}
+
+// TestRun_InputFilesGuard_ContainerlessNonInlineFailsFast is the F31b
+// end-to-end test: `awf run` against a workflow whose CONTAINERLESS agent
+// step declares input_files, resolved against an adapter that does NOT
+// inline input_files (codexlive-like) rejects with ExitUsage BEFORE the log
+// opens — no run dir/journal is left on disk (mirrors
+// TestRun_WithConfigGuard_TypoKeyFailsFast's assertion shape for the
+// with:-config guard).
+func TestRun_InputFilesGuard_ContainerlessNonInlineFailsFast(t *testing.T) {
+	t.Parallel()
+	const ref = "test/codexlive-like"
+	fk := agentfake.New(ref).WithCaps(agent.Caps{Containerless: true, InlineInputFiles: false})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	tmp := t.TempDir()
+	wfPath := writeInputFilesGuardWorkflow(t, tmp, ref)
+	stateDir := t.TempDir()
+
+	r := &cli.Runner{
+		Backend:  container.NewFake(),
+		IDGen:    &clock.Fake{IDs: []string{"test-input-files-guard-run"}},
+		Resolver: &reg,
+	}
+	var stdout, stderr bytes.Buffer
+	rc := r.Run([]string{"run", "--backend", "fake", "--state-dir", stateDir, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage (%d); stderr: %s", rc, cli.ExitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "draft") || !strings.Contains(stderr.String(), ref) {
+		t.Fatalf("stderr = %q, want it to name the offending step %q and adapter %q", stderr.String(), "draft", ref)
+	}
+	// Guard fires BEFORE the log is opened: no state should be on disk.
+	if _, err := os.Stat(filepath.Join(stateDir, "runs", "test-input-files-guard-run", "log")); !os.IsNotExist(err) {
+		t.Errorf("orphan log exists after input-files-guard rejection; err = %v, want ErrNotExist", err)
+	}
+}
+
 // TestRun_WorkdirIsPerRun (the F26/U3 per-run native workdir regression) drives
 // a REAL --backend native run, so it lives in run_workdir_integ_test.go under
 // `//go:build integ` — see that file's header for why it cannot run in the

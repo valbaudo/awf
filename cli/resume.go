@@ -431,6 +431,13 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
+	// Run-start containerless-input_files guard, same as run-start (F31b).
+	// Runs before preflightLiveResume / run.resumed so a rejected resume is a
+	// no-op on the log.
+	if err := checkInputFilesForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
 
 	if err := preflightLiveResume(ctx, ld, rs, resolverOrEmpty(resolver)); err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)

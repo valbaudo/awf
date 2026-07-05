@@ -48,6 +48,14 @@ type Caps struct {
 	// remaining allowed elsewhere, including gate.generate.
 	PersistentSession bool `json:"persistent_session,omitempty"`
 
+	// InlineInputFiles reports that a Containerless adapter delivers a step's
+	// input_files to the model as inline message parts (agent.InputFile) rather
+	// than staging into a container. awf/llm does this; codex-live does not.
+	// Zero value false FAILS CLOSED: the run-start guard rejects a containerless
+	// step declaring input_files against a non-inline adapter instead of
+	// silently dropping the files.
+	InlineInputFiles bool `json:"inline_input_files,omitempty"`
+
 	// IsolatedConfigDir reports that this adapter benefits from a per-run,
 	// RunID-keyed isolated config directory (mapped to its config-dir env var,
 	// e.g. CLAUDE_CONFIG_DIR) so concurrent runs do not collide on shared host
