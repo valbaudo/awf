@@ -217,6 +217,15 @@ type Caps struct {
 	// via the AWF_STAGING_ROOT env var so the author's run: can reference
 	// staged files portably.
 	StagingRoot string
+
+	// OutputRoot is the directory under which the engine derives the
+	// $AWF_OUTPUT tempfile path (OutputRoot/<sanitized-node>.json, see
+	// engine/awf_output.go). Docker/fake: "/tmp/awf" (an absolute in-container
+	// path; each container's /tmp is private). Native: ".awf/output"
+	// (workdir-relative — Exec runs at cwd=workdir and CaptureFiles joins
+	// relative paths to the workdir, exactly like StagingRoot). One source so
+	// the engine's derivation and each backend's write location cannot drift.
+	OutputRoot string
 }
 
 // SnapshotMode is the snapshot capability a backend supports.
