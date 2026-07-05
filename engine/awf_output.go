@@ -1,19 +1,20 @@
 package engine
 
-import (
-	"strings"
-
-	"github.com/valbaudo/awf/container"
-)
+import "strings"
 
 // awfOutputTempPath returns the per-step path the Backend's Exec reads
 // $AWF_OUTPUT from, per AWF spec §4.1. Format:
 //
-//	/tmp/awf/<sanitized-node-path>.json
+//	<outputRoot>/<sanitized-node-path>.json
 //
-// where sanitize replaces any character outside [a-zA-Z0-9_-] with "_". The
-// sanitization is one-way (we never reverse-parse this string) and preserves
-// hyphens since the spec §8 addressing form uses them (e.g. `iter-3`).
+// outputRoot is the caller-supplied backend.Capabilities().OutputRoot —
+// "/tmp/awf" (absolute) for docker/fake, ".awf/output" (workdir-relative) for
+// native (U3: closes F25 — the Linux bwrap sandbox tmpfs-mounts over /tmp,
+// erasing a process-global /tmp/awf write; a workdir-relative root is real
+// bind-mounted and survives). sanitize replaces any character outside
+// [a-zA-Z0-9_-] with "_". The sanitization is one-way (we never reverse-parse
+// this string) and preserves hyphens since the spec §8 addressing form uses
+// them (e.g. `iter-3`).
 //
 // Deterministic per node path — each retry attempt of the same step writes to
 // the same file, the previous attempt's content is overwritten. The capture
@@ -25,8 +26,8 @@ import (
 // dispatcher's source of truth on the fake path — see local_dispatcher.go
 // runCode). The Docker Backend's Exec passes Env through to the container
 // unchanged; the author's script writes to "$AWF_OUTPUT".
-func awfOutputTempPath(nodePath string) string {
-	return container.AWFOutputDir + "/" + sanitizeForFilename(nodePath) + ".json"
+func awfOutputTempPath(outputRoot, nodePath string) string {
+	return outputRoot + "/" + sanitizeForFilename(nodePath) + ".json"
 }
 
 // sanitizeForFilename returns s with every rune outside [a-zA-Z0-9_-] replaced

@@ -38,21 +38,42 @@ func TestNativeWithSnapshotMaxBlobBytesRejectsNonPositive(t *testing.T) {
 	}
 }
 
-func TestNewBootstrapsTmpAwf(t *testing.T) {
-	t.Parallel()
-	// native.New must create /tmp/awf/ (host) so the dispatcher's
-	// AWF_OUTPUT path (/tmp/awf/<step>.json) is writable by the user's
-	// step on first run. Decision 5 + N11 in the spec.
-	_, err := native.New(t.TempDir())
+// TestNative_AWFOutput_UnderWorkdir is the U3/F25 round-trip: AWF_OUTPUT is
+// now workdir-relative (Caps.OutputRoot == ".awf/output"), not the old
+// process-global host /tmp/awf (see the deleted TestNewBootstrapsTmpAwf and
+// the removed New() bootstrap). Create must pre-create <workdir>/.awf/output
+// so the author's `> $AWF_OUTPUT` redirect succeeds, and the write must
+// survive to a subsequent CaptureFiles call.
+func TestNative_AWFOutput_UnderWorkdir(t *testing.T) {
+	root := t.TempDir()
+	b, err := native.New(root)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatal(err)
 	}
-	info, err := os.Stat("/tmp/awf")
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "workspace"})
 	if err != nil {
-		t.Fatalf("/tmp/awf should exist after New: %v", err)
+		t.Fatal(err)
 	}
-	if !info.IsDir() {
-		t.Errorf("/tmp/awf is not a directory")
+	// Emulate the dispatcher: AWF_OUTPUT is the workdir-relative rooted path.
+	rel := ".awf/output/step.json"
+	chunks, resCh, err := b.Exec(context.Background(), h, container.Cmd{
+		Run: `echo '{"ok":true}' > "$AWF_OUTPUT"`,
+		Env: map[string]string{"AWF_OUTPUT": rel},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range chunks {
+	}
+	if r := <-resCh; r.ExitCode != 0 {
+		t.Fatalf("exit=%d", r.ExitCode)
+	}
+	got, err := b.CaptureFiles(context.Background(), h, []string{rel})
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if string(got[0].Content) != "{\"ok\":true}\n" {
+		t.Fatalf("content=%q", got[0].Content)
 	}
 }
 

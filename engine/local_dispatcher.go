@@ -170,7 +170,7 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 	}
 	var awfOutputPath string
 	if intent.ResolvedInputs.OutputSchema != nil {
-		awfOutputPath = awfOutputTempPath(intent.Path)
+		awfOutputPath = awfOutputTempPath(d.Backend.Capabilities().OutputRoot, intent.Path)
 		env["AWF_OUTPUT"] = awfOutputPath
 	}
 

@@ -2179,3 +2179,137 @@ func TestRun_ContinuesAgainstThreadedAdapter_OK(t *testing.T) {
 		t.Fatalf("Threaded adapter incorrectly rejected by guard; stderr: %s", stderr.String())
 	}
 }
+
+// typoRejectingAdapter wraps *agentfake.Fake and rejects any with: key not
+// in its allowlist as agent.ErrInvalidConfig{KeyUnknown: true} — mirroring a
+// real adapter's strict, unknown-key-rejecting ValidateConfig — for the U1
+// run-start with:-config guard's end-to-end test.
+type typoRejectingAdapter struct {
+	*agentfake.Fake
+	allowed map[string]bool
+}
+
+func (f *typoRejectingAdapter) ValidateConfig(with ir.RawConfig) error {
+	for k := range with {
+		if !f.allowed[k] {
+			return &agent.ErrInvalidConfig{Ref: f.Ref(), Key: k, Reason: "unknown key", KeyUnknown: true}
+		}
+	}
+	return nil
+}
+
+// writeWithTypoWorkflow writes a single-agent-step workflow whose with:
+// declares a typo'd key ("promt" instead of "prompt").
+func writeWithTypoWorkflow(t *testing.T, dir, adapterRef string) string {
+	t.Helper()
+	path := filepath.Join(dir, "with-typo-wf.yaml")
+	content := `workflow: with-typo-test
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    uses: ` + adapterRef + `
+    container: lab
+    with:
+      promt: do the thing
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write with-typo workflow: %v", err)
+	}
+	return path
+}
+
+// TestRun_WithConfigGuard_TypoKeyFailsFast is the U1 end-to-end test: `awf
+// run` against a workflow whose agent step has a typo'd with: key rejects
+// with ExitUsage BEFORE the log opens — no run dir/journal is left on disk
+// (mirrors TestRun_ContinuesAgainstNonThreadedAdapter_FailsFast's assertion
+// shape for the Threaded guard).
+func TestRun_WithConfigGuard_TypoKeyFailsFast(t *testing.T) {
+	t.Parallel()
+	fk := &typoRejectingAdapter{
+		Fake:    agentfake.New("anthropic/claude-code"),
+		allowed: map[string]bool{"prompt": true},
+	}
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	tmp := t.TempDir()
+	wfPath := writeWithTypoWorkflow(t, tmp, "anthropic/claude-code")
+	stateDir := t.TempDir()
+
+	r := &cli.Runner{
+		Backend:  container.NewFake(),
+		IDGen:    &clock.Fake{IDs: []string{"test-with-guard-run"}},
+		Resolver: &reg,
+	}
+	var stdout, stderr bytes.Buffer
+	rc := r.Run([]string{"run", "--backend", "fake", "--state-dir", stateDir, wfPath}, &stdout, &stderr)
+	if rc != cli.ExitUsage {
+		t.Fatalf("rc = %d, want ExitUsage (%d); stderr: %s", rc, cli.ExitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "promt") {
+		t.Fatalf("stderr = %q, want it to name the offending key %q", stderr.String(), "promt")
+	}
+	// Guard fires BEFORE the log is opened: no state should be on disk.
+	if _, err := os.Stat(filepath.Join(stateDir, "runs", "test-with-guard-run", "log")); !os.IsNotExist(err) {
+		t.Errorf("orphan log exists after with-guard rejection; err = %v, want ErrNotExist", err)
+	}
+}
+
+// TestRun_WorkdirIsPerRun is the F26/U3 regression: two real `awf run`
+// invocations against the same --state-dir must get disjoint native workdir
+// roots (work/<run-id>/...), not a single shared work/ subtree. This is only
+// observable on the PRODUCTION newBackend construction path — r.Backend
+// (test-injected fake) ignores workdirRoot entirely, and resolveBackend
+// returns an injected Backend as-is without ever consulting workdirRoot. So
+// this test deliberately does NOT use newTestRunner: it leaves Runner.Backend
+// nil and drives --backend native so cli/run.go actually constructs a native
+// container.Backend rooted at the workdirRoot this test is asserting on.
+//
+// The workflow's single step ("true") does no filesystem work of its own;
+// the assertion is purely on the on-disk workdir layout newBackend/native.Create
+// leave behind. Native's Destroy (deferred teardown) os.RemoveAlls only the
+// per-CONTAINER dir (workdirRoot/<container>), not the per-RUN workdirRoot
+// itself, so work/<run-id>/ survives a normal run's cleanup as an (empty)
+// directory — see container/native/backend.go Create/Destroy.
+func TestRun_WorkdirIsPerRun(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	wfPath := writeMinimalWorkflow(t, t.TempDir())
+	runner := &cli.Runner{IDGen: &clock.Fake{IDs: []string{"test-run-1", "test-run-2"}}}
+
+	for _, runID := range []string{"test-run-1", "test-run-2"} {
+		var stdout, stderr bytes.Buffer
+		rc := runner.Run(
+			[]string{"run", "--state-dir", stateDir, "--backend", "native", wfPath},
+			&stdout, &stderr,
+		)
+		if rc != cli.ExitOK {
+			t.Fatalf("run (want id %s): rc = %d, want ExitOK; stderr: %s", runID, rc, stderr.String())
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join(stateDir, "work"))
+	if err != nil {
+		t.Fatalf("ReadDir(work): %v", err)
+	}
+	if len(entries) < 2 {
+		t.Fatalf("expected per-run workdirs under work/, got %d entries: %v", len(entries), entries)
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			t.Errorf("work/%s is not a per-run dir", e.Name())
+		}
+		seen[e.Name()] = true
+	}
+	for _, want := range []string{"test-run-1", "test-run-2"} {
+		if !seen[want] {
+			t.Errorf("work/%s missing; got entries %v (per-run-id roots not disjoint)", want, entries)
+		}
+	}
+}

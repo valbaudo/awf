@@ -216,9 +216,11 @@ var catalog = map[string]string{
 	"AWF1059": "container name uses an unsupported charset (must be a path-safe identifier)",
 	"AWF1060": "cmd:/keepalive: is image-mode only; it has no meaning on a compose: container (a service's command lives in the Compose file)",
 	"AWF1061": "a reserved step-level key is nested inside with: (it will be ignored by the engine); move it to the step level (sibling of with:)",
+	"AWF1062": "unknown key (not part of the workflow or step schema; typo'd keys silently do nothing — remove or correct it)",
+	"AWF1063": "duration must be a quoted string (e.g. \"300s\", \"5m\"); a bare integer is not accepted (it would be read as nanoseconds)",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
-	"AWF_IMPORT_DECODE":         "imported workflow failed to decode",
+	"AWF_IMPORT_DECODE":         "workflow failed to decode",
 	"AWF_IMPORT_DEPTH":          "workflow import graph exceeds maximum depth",
 	"AWF_IMPORT_ID_INVALID":     "workflow import id is invalid",
 	"AWF_IMPORT_PATH_ABSOLUTE":  "workflow import path must be relative",

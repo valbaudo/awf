@@ -89,6 +89,15 @@ A workflow document has the following top-level shape:
     step inherits the host environment on the native backend but not on docker —
     so do not rely on `env:` to reach a `run:` step.)
 
+Unknown workflow and step keys are rejected (**AWF1062**). The loader tolerates
+keys it does not recognize, so a typo (`ouput_files:`) or a GHA muscle-memory key
+(`working-directory:`, a step-level `env:`) would otherwise silently do nothing;
+the validator flags any key that is not part of the workflow or step schema.
+Top-level `x-*` keys are exempt — they are reserved for YAML-anchor holders (for
+example `x-defaults: &defaults …`). Opaque and free-form value subtrees are not
+inspected: an agent step's `with:` block, JSON-Schema values (`output_schema`,
+`input`, a tool's `input_schema`), and `outputs:` values may contain any keys.
+
 ## Imports
 
 `imports:` maps local import ids to relative `.awf.yaml` files. Import paths are
@@ -430,6 +439,14 @@ inside. A node with more than one, or none, is invalid.
 - Agent step (`uses:`) — an external agent-runtime invocation.
 - Signal step (`await:`) — block until an external signal.
 - Call step (`call:`) — run an imported workflow.
+
+**Durations.** Every `timeout:` and `retry: { initial, max }` value (step-level,
+and on a `tools:` entry's `impl:`) is a quoted Go duration string — `"300s"`,
+`"5m"`, `"1h30m"` — never a bare integer. A bare integer is rejected at
+`awf validate` (**AWF1063**): the field's Go type also accepts a bare integer as
+nanoseconds for JSON round-tripping (internal to the runtime), so an unquoted
+YAML integer like `timeout: 300` would otherwise parse silently as 300
+nanoseconds — a step that times out instantly with no error.
 
 ## Code step (run)
 

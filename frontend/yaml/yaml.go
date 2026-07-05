@@ -22,23 +22,33 @@ import (
 // parse error (with line:column) on syntax failures; downstream errors include the failing stage
 // for attribution.
 func Decode(yamlBytes []byte) (*ir.Workflow, error) {
+	wf, _, err := DecodeWithRaw(yamlBytes)
+	return wf, err
+}
+
+// DecodeWithRaw parses a YAML workflow document into an *ir.Workflow, same as Decode, and also
+// returns the top-level raw mapping from stage 1 of the decode pipeline (nil if the document's
+// top level isn't a mapping). The raw tree lets a validator detect keys/values the typed
+// unmarshal silently discarded — Decode itself doesn't need it, so it stays a thin wrapper.
+func DecodeWithRaw(yamlBytes []byte) (*ir.Workflow, map[string]any, error) {
 	// Stage 1: YAML → any. goccy unmarshals YAML mappings into map[string]any, which is exactly
 	// what encoding/json round-trips through.
 	var raw any
 	if err := goyaml.Unmarshal(yamlBytes, &raw); err != nil {
-		return nil, fmt.Errorf("yaml parse: %w", err)
+		return nil, nil, fmt.Errorf("yaml parse: %w", err)
 	}
 	// Stage 2: any → JSON. json.Marshal of map[string]any sorts keys, so the intermediate
 	// JSON is deterministic for diagnostics.
 	jsonBytes, err := json.Marshal(raw)
 	if err != nil {
-		return nil, fmt.Errorf("yaml→json: %w", err)
+		return nil, nil, fmt.Errorf("yaml→json: %w", err)
 	}
 	// Stage 3: JSON → IR. Reuses every existing unmarshaler in ir/ (Node key-presence, Skip
 	// string-form, Parallel array-form, Duration int/string, JSONSchema map, etc.).
 	var wf ir.Workflow
 	if err := json.Unmarshal(jsonBytes, &wf); err != nil {
-		return nil, fmt.Errorf("json→ir: %w", err)
+		return nil, nil, fmt.Errorf("json→ir: %w", err)
 	}
-	return &wf, nil
+	rawMap, _ := raw.(map[string]any)
+	return &wf, rawMap, nil
 }

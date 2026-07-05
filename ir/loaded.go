@@ -42,6 +42,12 @@ type LoadedModule struct {
 	WorkflowPath string
 	ComposeFiles map[string][]byte
 	Assets       map[string]LoadedAsset
+
+	// RawDoc is the raw top-level YAML mapping for this module's workflow file, from the
+	// pre-typed-unmarshal decode stage. nil if the document's top level wasn't a mapping.
+	// A future strict-key validator uses it to detect keys the typed unmarshal silently
+	// discarded; nil means "no strict check available" for this module.
+	RawDoc map[string]any
 }
 
 type LoadedImportEdge struct {

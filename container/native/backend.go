@@ -7,10 +7,13 @@
 //
 // Design: docs/superpowers/specs/2026-04-20-awf-phase4-slice-4-7-design.md
 //
-// /tmp/awf bootstrap: New() creates host /tmp/awf because the engine
-// dispatcher writes AWF_OUTPUT to /tmp/awf/<step>.json (engine/awf_output.go:24-26)
-// and the author's shell step `... > $AWF_OUTPUT` requires the directory
-// to exist. Docker doesn't need this (each container's /tmp is fresh).
+// $AWF_OUTPUT (U3/F25): Create pre-creates <workdir>/.awf/output (workdir-
+// relative, per Caps.OutputRoot) because the engine dispatcher writes
+// AWF_OUTPUT there (engine/awf_output.go) and the author's shell step
+// `... > $AWF_OUTPUT` requires the directory to exist. Workdir-relative
+// (rather than a process-global host path) so the Linux sandbox's real
+// bind-mount of the workdir — not its tmpfs-over-/tmp — is what backs the
+// write. Docker doesn't need this (each container's /tmp is fresh).
 //
 // CaptureFiles `..` traversal: resolves via filepath.Join's cleaning
 // rules. A path like ../etc/passwd reads from the host literally.
@@ -40,7 +43,7 @@ const (
 // Backend implements container.Backend by spawning host processes via
 // os/exec. Single concrete impl; not safe for concurrent runs of the
 // same workflow (see slice 4.7 design spec Appendix E for the
-// /tmp/awf/<step>.json clobber failure mode).
+// <workdir>/.awf/output/<step>.json clobber failure mode).
 type Backend struct {
 	workdirRoot string
 
@@ -66,19 +69,16 @@ type nativeHandle struct {
 }
 
 // New constructs a Backend with workdirRoot as the parent for per-
-// container workdirs. Also bootstraps host /tmp/awf (idempotent).
-// Validates only nil/empty workdirRoot — filesystem errors surface
-// lazily from Create's MkdirAll, matching docker's pattern.
+// container workdirs. Validates only nil/empty workdirRoot — filesystem
+// errors surface lazily from Create's MkdirAll, matching docker's pattern.
 //
-// Edge case: pre-existing /tmp/awf with restrictive perms (e.g.,
-// root-owned 0o700) is NOT detected here — first Exec fails with
-// shell "permission denied" instead.
+// $AWF_OUTPUT (U3/F25): unlike the pre-U3 design, New no longer bootstraps a
+// process-global host directory — Create pre-creates <workdir>/.awf/output
+// per container instead (see Create), so AWF_OUTPUT lands under the
+// per-container workdir rather than a shared host path.
 func New(workdirRoot string, opts ...Option) (*Backend, error) {
 	if workdirRoot == "" {
 		return nil, errors.New("container/native: New: workdirRoot is required")
-	}
-	if err := os.MkdirAll(container.AWFOutputDir, 0o755); err != nil {
-		return nil, err
 	}
 	b := &Backend{
 		workdirRoot:             workdirRoot,
@@ -184,7 +184,13 @@ func (b *Backend) Capabilities() container.Caps {
 	// paths to the container's workdir (r.workdir), so a relative root lands
 	// under the per-container workdir instead of the literal host path
 	// "/work/.awf" (which does not exist on the host).
-	return container.Caps{Snapshot: snap, RuntimeImage: false, RuntimeCompose: false, StagingRoot: ".awf"}
+	//
+	// OutputRoot is ".awf/output" (workdir-relative, U3/F25): Exec runs with
+	// cwd=workdir and CaptureFiles joins relative paths to the workdir, so
+	// $AWF_OUTPUT lands under the per-container workdir — a real bind-mounted
+	// directory the Linux sandbox's tmpfs-over-/tmp cannot erase, unlike the
+	// old process-global /tmp/awf.
+	return container.Caps{Snapshot: snap, RuntimeImage: false, RuntimeCompose: false, StagingRoot: ".awf", OutputRoot: ".awf/output"}
 }
 
 // Create rejects compose-mode (no service-routing on host), ignores
@@ -201,6 +207,9 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	}
 	workdir := filepath.Join(b.workdirRoot, spec.Name)
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		return container.Handle{}, err
+	}
+	if err := os.MkdirAll(filepath.Join(workdir, ".awf", "output"), 0o755); err != nil {
 		return container.Handle{}, err
 	}
 	b.mu.Lock()

@@ -29,12 +29,15 @@ import (
 // teardown site shares one deadline.
 const TeardownGrace = 30 * time.Second
 
-// AWFOutputDir is the base directory the engine dispatcher derives AWF_OUTPUT
-// tempfile paths under — AWFOutputDir/<sanitized-step>.json (see
-// engine/awf_output.go) — and that the native Backend pre-creates at New() so
-// the author's `> $AWF_OUTPUT` redirect can write the file. Docker containers
-// get a fresh /tmp and don't need it. One source so the engine's derivation and
-// the native bootstrap cannot drift.
+// AWFOutputDir is the docker/fake Backend's Caps.OutputRoot value: the
+// directory under which the engine dispatcher derives AWF_OUTPUT tempfile
+// paths — AWFOutputDir/<sanitized-step>.json (see engine/awf_output.go) —
+// inside a container's own private /tmp, so it needs no pre-creation there
+// (each container's /tmp is fresh). Native does NOT use this constant: since
+// U3, native's Caps.OutputRoot is ".awf/output" (workdir-relative), pre-created
+// per container by native's Backend.Create, not by a process-global
+// bootstrap. There is no longer a single native/docker OutputRoot to keep in
+// sync — each backend reports its own via Caps.OutputRoot.
 const AWFOutputDir = "/tmp/awf"
 
 // Backend executes commands inside long-lived containers. One concrete impl
@@ -217,6 +220,15 @@ type Caps struct {
 	// via the AWF_STAGING_ROOT env var so the author's run: can reference
 	// staged files portably.
 	StagingRoot string
+
+	// OutputRoot is the directory under which the engine derives the
+	// $AWF_OUTPUT tempfile path (OutputRoot/<sanitized-node>.json, see
+	// engine/awf_output.go). Docker/fake: "/tmp/awf" (an absolute in-container
+	// path; each container's /tmp is private). Native: ".awf/output"
+	// (workdir-relative — Exec runs at cwd=workdir and CaptureFiles joins
+	// relative paths to the workdir, exactly like StagingRoot). One source so
+	// the engine's derivation and each backend's write location cannot drift.
+	OutputRoot string
 }
 
 // SnapshotMode is the snapshot capability a backend supports.

@@ -131,12 +131,14 @@ func (l sandboxExecLauncher) prepend(scratchDir string, _ []string) []string {
 		tmpdir = rawTmpdir
 	}
 
-	// AWF_OUTPUT (spec §4.1) lives under AWFOutputDir (/tmp/awf) — the engine's
-	// typed-output capture path. A sandboxed step that declares output_schema MUST be
-	// able to write it, or its typed output comes back empty. Grant write to that dir,
-	// resolving symlinks so the SBPL subpath matches the real path the kernel sees
-	// (macOS /tmp -> /private/tmp). New() bootstraps the dir, but fall back to resolving
-	// the parent so the rule is correct even before the dir exists.
+	// AWF_OUTPUT (spec §4.1) is the engine's typed-output capture path. Since U3,
+	// native's AWF_OUTPUT lives at <workdir>/.awf/output (workdir-relative, per
+	// Caps.OutputRoot), pre-created by Backend.Create — not container.AWFOutputDir
+	// (docker/fake's container-private /tmp/awf). The workdir is already granted via
+	// the SCRATCH param above, so this AWFOUT grant against container.AWFOutputDir is
+	// vestigial for native; kept as a defensive extra allow, not the load-bearing
+	// grant. Resolving symlinks keeps the SBPL subpath matching the real path the
+	// kernel sees (macOS /tmp -> /private/tmp) even so.
 	awfOut, err := filepath.EvalSymlinks(container.AWFOutputDir)
 	if err != nil {
 		if parent, perr := filepath.EvalSymlinks(filepath.Dir(container.AWFOutputDir)); perr == nil {

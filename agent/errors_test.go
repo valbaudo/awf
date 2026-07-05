@@ -40,6 +40,13 @@ func TestErrInvalidConfig_AsAndMessage(t *testing.T) {
 	}
 }
 
+func TestErrInvalidConfig_KeyUnknownFlag(t *testing.T) {
+	e := &agent.ErrInvalidConfig{Ref: "x/y", Key: "promt", Reason: "unknown with-key", KeyUnknown: true}
+	if !e.KeyUnknown {
+		t.Fatal("KeyUnknown not settable")
+	}
+}
+
 func TestErrUnparseableOutput_AsAndMessage(t *testing.T) {
 	err := &agent.ErrUnparseableOutput{NodePath: "graph[0]"}
 	want := `agent: unparseable output at node "graph[0]"`

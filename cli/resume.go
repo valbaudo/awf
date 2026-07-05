@@ -195,7 +195,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	if kind == engine.BackendNative {
 		fprintf(stderr, "awf resume: native backend — committed work is replayed and snapshot: workspace workdirs are restored, but the host base environment is not pinned; shell-step tooling runs against the current host.\n")
 	}
-	workdirRoot := filepath.Join(*stateDir, "work")
+	workdirRoot := filepath.Join(*stateDir, "work", runID)
 	backend, cleanup, err := r.resolveBackend(ctx, kind, runID, workdirRoot, blobs, stderr)
 	if err != nil {
 		fprintf(stderr, "awf resume: construct backend %q: %v\n", kind, err)
@@ -421,6 +421,13 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// Advisory credential-presence preflight (same as run-start). Warns when
 	// none of an adapter's credential env vars is set; never fails.
 	if err := checkCredentialPresenceForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
+	// Run-start with:-config guard, same as run-start (U1). Runs before
+	// preflightLiveResume / run.resumed so a rejected resume is a no-op on
+	// the log.
+	if err := checkWithConfigForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}

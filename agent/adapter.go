@@ -16,8 +16,10 @@ import (
 // Lifecycle in slice 5.2 dispatcher (runAgentStep):
 //
 //  1. resolver.Lookup(node.Uses) → Adapter (else *ErrAdapterNotFound)
-//  2. adapter.ValidateConfig(with) once per node, at run-start (CLI walk)
-//     and at dispatch time (defensive) — strict schema validation.
+//  2. adapter.ValidateConfig(with) once per node, at run-start (U1's CLI walk,
+//     cli/with_guard.go's checkWithConfigForLoadedDefinition — ExitUsage on
+//     rejection, before the log opens) and again at dispatch time (defensive,
+//     local_dispatcher_agent.go) — strict schema validation.
 //  3. adapter.Launch(ctx, handle, inv) per attempt (one per gate attempt;
 //     one per retry). The returned <-chan AgentEvent stays open while the
 //     harness produces events; it MUST be drained by the caller (the
@@ -65,10 +67,11 @@ type Adapter interface {
 	// fake adapter ignores handle.
 	Version(ctx context.Context, handle container.Handle) (string, error)
 
-	// ValidateConfig is called once per node at run start AND defensively
-	// at dispatch (slice 5.2). Returns *ErrInvalidConfig with a path-aware
-	// message on rejection. Strict by default: unknown keys are errors
-	// (slice 5.3 enforces this for the Claude Code adapter).
+	// ValidateConfig is called once per node at run start (U1's cli/with_guard.go
+	// walk) AND defensively at dispatch (slice 5.2, local_dispatcher_agent.go).
+	// Returns *ErrInvalidConfig with a path-aware message on rejection. Strict
+	// by default: unknown keys are errors (slice 5.3 enforces this for the
+	// Claude Code adapter).
 	ValidateConfig(with ir.RawConfig) error
 
 	// Launch runs the agent inside the supplied handle. Slice 5.3 γ contract:

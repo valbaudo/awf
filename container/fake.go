@@ -205,10 +205,11 @@ func (f *Fake) Capabilities() Caps {
 	// advertises RuntimeImage (P6a). Snapshot still depends on an injected CAS.
 	// StagingRoot mirrors Docker: "/work/.awf" (the Fake is a Docker-equivalent
 	// in-mem backend; tests that simulate native override this via a thin wrapper).
+	// OutputRoot mirrors Docker: AWFOutputDir ("/tmp/awf").
 	if f.blobs != nil {
-		return Caps{Snapshot: SnapshotFSCoW, RuntimeImage: true, RuntimeCompose: true, StagingRoot: "/work/.awf"}
+		return Caps{Snapshot: SnapshotFSCoW, RuntimeImage: true, RuntimeCompose: true, StagingRoot: "/work/.awf", OutputRoot: AWFOutputDir}
 	}
-	return Caps{Snapshot: SnapshotNone, RuntimeImage: true, RuntimeCompose: true, StagingRoot: "/work/.awf"}
+	return Caps{Snapshot: SnapshotNone, RuntimeImage: true, RuntimeCompose: true, StagingRoot: "/work/.awf", OutputRoot: AWFOutputDir}
 }
 
 func (f *Fake) Create(_ context.Context, spec ContainerSpec) (Handle, error) {

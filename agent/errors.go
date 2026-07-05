@@ -38,6 +38,11 @@ type ErrInvalidConfig struct {
 	Ref    string // adapter ref (e.g. "anthropic/claude-code")
 	Key    string // the with-key that caused the error (e.g. "session_id"); empty if the whole config is bad
 	Reason string // human-readable reason
+
+	// KeyUnknown is true when the rejection is an unknown with-key (a typo'd
+	// or wrong-adapter key name). The run-start guard always surfaces these;
+	// value-shape errors are suppressed for templated ("{{...}}") values.
+	KeyUnknown bool
 }
 
 func (e *ErrInvalidConfig) Error() string {

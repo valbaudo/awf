@@ -159,7 +159,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// set, else constructs via newBackend using the --backend flag value.
 	// The result is held in a LOCAL variable (NEVER assigned to r.Backend)
 	// so sequential runner.Run(...) calls don't leak a constructed Backend.
-	workdirRoot := filepath.Join(*stateDir, "work")
+	workdirRoot := filepath.Join(*stateDir, "work", id)
 	backend, cleanup, err := r.resolveBackend(ctx, concreteBackendKind, id, workdirRoot, blobs, stderr)
 	if err != nil {
 		fprintf(stderr, "awf run: construct backend %q: %v\n", concreteBackendKind, err)
@@ -267,6 +267,14 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// before any container boots, without reversing the "auth fails at Launch"
 	// contract.
 	if err := checkCredentialPresenceForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
+	// Run-start with:-config guard: validate each agent step's adapter config
+	// before the log opens, so config errors fail pre-spend (ExitUsage) rather
+	// than mid-run (permanent_failure). Delegates to each adapter's
+	// ValidateConfig through the Adapter seam (with: stays opaque to the core).
+	if err := checkWithConfigForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}

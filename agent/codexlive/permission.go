@@ -30,7 +30,7 @@ func parsePermissionPolicy(raw any) (permissionPolicy, error) {
 	}
 	for k := range m {
 		if k != "allow" {
-			return permissionPolicy{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "permission_policy." + k, Reason: "unknown key"}
+			return permissionPolicy{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "permission_policy." + k, Reason: "unknown key", KeyUnknown: true}
 		}
 	}
 	allow, ok := m["allow"]
@@ -63,7 +63,7 @@ func parsePermissionRule(i int, raw any) (permissionRule, error) {
 		case "command_prefix", "command_prefixes":
 			return permissionRule{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: fmt.Sprintf("permission_policy.allow[%d].%s", i, k), Reason: "command prefixes are not a security boundary"}
 		default:
-			return permissionRule{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: fmt.Sprintf("permission_policy.allow[%d].%s", i, k), Reason: "unknown key"}
+			return permissionRule{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: fmt.Sprintf("permission_policy.allow[%d].%s", i, k), Reason: "unknown key", KeyUnknown: true}
 		}
 	}
 	kind, ok := m["kind"].(string)
