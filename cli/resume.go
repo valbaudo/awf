@@ -424,6 +424,13 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
+	// Run-start with:-config guard, same as run-start (U1). Runs before
+	// preflightLiveResume / run.resumed so a rejected resume is a no-op on
+	// the log.
+	if err := checkWithConfigForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
 
 	if err := preflightLiveResume(ctx, ld, rs, resolverOrEmpty(resolver)); err != nil {
 		fprintf(stderr, "awf resume: %v\n", err)

@@ -176,9 +176,10 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	}
 	defer cancel()
 
-	// Validate config defensively (the interpreter-level engine/agent_step.go
-	// also validates at run start — this is double-checked at dispatch time per
-	// the Phase 5 design slice 5.2 row "Calls Adapter.ValidateConfig (defensively)").
+	// Validate config defensively — the run-start walk (U1, cli/with_guard.go's
+	// checkWithConfigForLoadedDefinition) already validated every agent step's
+	// with: before the log opened; this is the double-check at dispatch time per
+	// the Phase 5 design slice 5.2 row "Calls Adapter.ValidateConfig (defensively)".
 	if err := adapter.ValidateConfig(intent.ResolvedInputs.With); err != nil {
 		// Permanent failure: bad config won't fix itself on retry.
 		return DispatchResult{

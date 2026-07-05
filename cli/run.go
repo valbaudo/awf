@@ -270,6 +270,14 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
+	// Run-start with:-config guard: validate each agent step's adapter config
+	// before the log opens, so config errors fail pre-spend (ExitUsage) rather
+	// than mid-run (permanent_failure). Delegates to each adapter's
+	// ValidateConfig through the Adapter seam (with: stays opaque to the core).
+	if err := checkWithConfigForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
 
 	// Step 8: put input into Blobs (after validation, before log creation).
 	var inputRef string
