@@ -88,7 +88,7 @@ func loadModuleFromRoot(
 	if err != nil {
 		return nil, &LoadError{Code: "AWF_IMPORT_READ", Source: abs, Path: "workflow", Message: "read workflow", Err: err}
 	}
-	wf, err := yaml.Decode(wfBytes)
+	wf, raw, err := yaml.DecodeWithRaw(wfBytes)
 	if err != nil {
 		return nil, &LoadError{Code: "AWF_IMPORT_DECODE", Source: abs, Message: "decode workflow YAML", Err: err}
 	}
@@ -112,6 +112,7 @@ func loadModuleFromRoot(
 		WorkflowPath: abs,
 		ComposeFiles: compose,
 		Assets:       assets,
+		RawDoc:       raw,
 	}
 	modules[moduleID] = module
 	nextStack := append(append([]string(nil), stack...), abs)

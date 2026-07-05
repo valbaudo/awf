@@ -212,6 +212,19 @@ graph:
 	}
 }
 
+func TestDecodeWithRaw_ReturnsTopLevelKeys(t *testing.T) {
+	wf, raw, err := DecodeWithRaw([]byte("workflow: x\nversion: 1\ngraph: []\nbogus_top: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf == nil {
+		t.Fatal("nil workflow")
+	}
+	if _, ok := raw["bogus_top"]; !ok {
+		t.Fatalf("raw missing bogus_top: %v", raw)
+	}
+}
+
 func TestDecodeWorkflowArtifactExportsKeepsStepOutputFiles(t *testing.T) {
 	wf, err := Decode([]byte(`
 workflow: exports
