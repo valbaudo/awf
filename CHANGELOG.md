@@ -8,6 +8,15 @@ While `awf` is pre-1.0, the workflow format and CLI may still change between
 minor versions. The workflow-format version (`version: 1` in a workflow file)
 is tracked independently of the `awf` tool version.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking (native backend):** run workdirs moved from `work/` to `work/<run-id>/`
+  to isolate concurrent native runs. A native run started before this change
+  cannot be resumed after upgrading (its workdir path moved). Docker runs are
+  unaffected (already run-id namespaced). Start affected native runs fresh.
+
 ## [0.2.0] - 2026-07-01
 
 New workflow-format capabilities for typed-output artifacts, conditional-branch
