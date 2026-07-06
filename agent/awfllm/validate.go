@@ -29,6 +29,18 @@ const (
 	keyGeminiCache      = "gemini_cache"
 )
 
+// cacheBoolKeys — the provider-scoped boolean cache-hint with-keys, each
+// paired with the sole provider it is valid on (F13 uniformity: one policy
+// for all three, enforced by the loop in validateConfigCommon).
+var cacheBoolKeys = []struct {
+	key      string
+	provider string
+}{
+	{keyCacheSystem, providerAnthropic},
+	{keyCacheDocuments, providerAnthropic},
+	{keyCacheContext, providerAnthropic},
+}
+
 var allowedKeys = map[string]struct{}{
 	keyModel: {}, keyPrompt: {}, keyBaseURL: {}, keyAPIKeyEnv: {},
 	keySystemPrompt: {}, keyTemperature: {}, keyMaxTokens: {}, keyStructuredOutput: {},
@@ -138,13 +150,24 @@ func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyTLSInsecure)
 		}
 	}
-	if v, ok := with[keyCacheContext]; ok {
+	// Provider-scoped boolean cache-hint keys — uniform policy (F13): all three
+	// are Anthropic-only (cfg.CacheSystem/CacheDocuments/CacheContext only ever
+	// affect anthropic requests — transport_anthropic.go and, for CacheContext,
+	// the context-evidence check in launch.go). A non-bool value (e.g. the
+	// string "true") is a type error — never silently coerced to false by
+	// boolOr. A `true` value on any other provider is rejected; `false` (the
+	// zero value) is a no-op and passes on every provider.
+	for _, ck := range cacheBoolKeys {
+		v, ok := with[ck.key]
+		if !ok {
+			continue
+		}
 		b, ok := v.(bool)
 		if !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyCacheContext)
+			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), ck.key)
 		}
-		if b && effectiveProvider(with) != providerAnthropic {
-			return wrapInvalidConfig("cache_context is only valid with provider: anthropic", keyCacheContext)
+		if b && effectiveProvider(with) != ck.provider {
+			return wrapInvalidConfig(fmt.Sprintf("%s is only valid with provider: %s", ck.key, ck.provider), ck.key)
 		}
 	}
 	if v, ok := with[keyGeminiCache]; ok {

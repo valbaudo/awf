@@ -99,8 +99,10 @@ func (*Adapter) Capabilities() agent.Caps {
 // compatible endpoint, ANTHROPIC_API_KEY for provider: anthropic, and
 // GEMINI_API_KEY for provider: gemini. These are provider-alternatives — a
 // single-provider user with only one of the three set must not false-warn.
+// Returns a COPY — DefaultEnvAllowlist is a shared package var; returning it
+// by reference would let a caller's append corrupt it for every other caller.
 func (*Adapter) RequiredEnv() []string {
-	return DefaultEnvAllowlist
+	return append([]string(nil), DefaultEnvAllowlist...)
 }
 
 // RunToolLoop executes ONE model call with tools attached (P3 A3 — the engine-
