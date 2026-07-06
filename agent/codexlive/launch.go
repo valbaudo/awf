@@ -43,6 +43,19 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 	if err != nil {
 		return nil, nil, err
 	}
+	// F33: session/cwd are optional with-keys; default them from run context
+	// here (parseConfig only sees `with`, not RunID/NodePath/WorkflowDir).
+	// See defaultSessionKey's doc comment for why this default is
+	// epoch-stable, unlike agent/claudesession's sessionUUID.
+	if cfg.session == "" {
+		cfg.session = defaultSessionKey(inv.RunContext.RunID, inv.NodePath)
+	}
+	if cfg.cwd == "" {
+		if inv.WorkflowDir == "" {
+			return nil, nil, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "cwd", Reason: "required: no workflow directory available to default to"}
+		}
+		cfg.cwd = inv.WorkflowDir
+	}
 	cfg, err = withCanonicalCWD(cfg)
 	if err != nil {
 		return nil, nil, err

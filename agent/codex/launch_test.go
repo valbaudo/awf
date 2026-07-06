@@ -95,7 +95,7 @@ func TestLaunch_CommandLine_SchemaPrelude_Flags_Env(t *testing.T) {
 	a := codexLaunchAdapter(t, f)
 	inv := agent.AgentInvocation{
 		NodePath: "graph[0]", Uses: codex.AdapterRef,
-		With:           ir.RawConfig{"prompt": "do it", "model": "gpt-5-codex", "reasoning_effort": "high", "sandbox": "workspace-write"},
+		With:           ir.RawConfig{"prompt": "do it", "model": "gpt-5-codex", "effort": "high", "sandbox": "workspace-write"},
 		OutputSchema:   &ir.JSONSchema{"type": "object"},
 		IdempotencyKey: "idem-123",
 	}

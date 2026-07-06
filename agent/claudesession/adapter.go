@@ -104,8 +104,10 @@ func (*Adapter) Capabilities() agent.Caps {
 	}
 }
 
-// RequiredEnv implements agent.CredentialNamer.
-func (*Adapter) RequiredEnv() []string { return DefaultEnvAllowlist }
+// RequiredEnv implements agent.CredentialNamer. Returns a copy so a caller's
+// append cannot alias and mutate the shared DefaultEnvAllowlist backing array
+// (same bug class fixed in agent/awfllm).
+func (*Adapter) RequiredEnv() []string { return append([]string(nil), DefaultEnvAllowlist...) }
 
 // Version delegates to the base claude adapter.
 func (a *Adapter) Version(ctx context.Context, handle container.Handle) (string, error) {
@@ -172,8 +174,14 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		}
 	}
 	if v, ok := with[keyAllowedTools]; ok {
-		if _, ok := v.([]any); !ok {
+		arr, ok := v.([]any)
+		if !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be array of strings, got %T", v), keyAllowedTools)
+		}
+		for i, elem := range arr {
+			if _, ok := elem.(string); !ok {
+				return wrapInvalidConfig(fmt.Sprintf("element %d must be string, got %T", i, elem), keyAllowedTools)
+			}
 		}
 	}
 	if v, ok := with[keyBare]; ok {

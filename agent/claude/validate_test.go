@@ -33,6 +33,17 @@ func TestValidateConfig_HappyPath_AllOptionalKeys(t *testing.T) {
 	}
 }
 
+// F19: a non-string entry in allowed_tools must be rejected element-wise, not
+// silently dropped (the old behavior filtered it out at launch time).
+func TestClaude_ToolsElementNonStringRejected(t *testing.T) {
+	a, _ := New(WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "allowed_tools": []any{"Bash", 1}})
+	var bad *agent.ErrInvalidConfig
+	if !errors.As(err, &bad) || bad.Key != "allowed_tools" {
+		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:allowed_tools}", err)
+	}
+}
+
 func TestValidateConfig_EffortEnum(t *testing.T) {
 	a, _ := New(WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
 	for _, ok := range []string{"low", "medium", "high", "xhigh", "max"} {

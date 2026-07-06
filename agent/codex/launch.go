@@ -275,7 +275,7 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	if model, ok := inv.With[keyModel].(string); ok && model != "" {
 		parts = append(parts, "-m", shellQuote(model))
 	}
-	if re, ok := inv.With[keyReasoningEffort].(string); ok && re != "" {
+	if re, ok := inv.With[keyEffort].(string); ok && re != "" {
 		parts = append(parts, "-c", shellQuote("model_reasoning_effort="+re))
 	}
 	parts = append(parts, "--", shellQuote(prompt))

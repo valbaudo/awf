@@ -69,8 +69,21 @@ func parseStreamEvent(b []byte) (*streamEvent, error) {
 // event. With a schema, parses a JSON object out of finalText (layer-2);
 // non-parseable → *agent.ErrUnparseableOutput{NodePath}. Without a schema,
 // Output is nil (the transcript lives in the streamed AgentEvents). Cost zero
-// (droid reports no USD).
-func resultFromCompletion(ev *streamEvent, inv agent.AgentInvocation) (agent.AgentResult, error) {
+// (droid reports no USD — see the Model comment below for the roll-up story).
+//
+// model is the value captured from the "system"/init event's "model" field
+// (Launch threads it through, mirroring agent/claude's ExtractResult(msg,
+// model)). The completion event itself carries no model.
+//
+// F35: model is surfaced on Metrics.Model so it shows up in obs/cost roll-ups
+// even though droid's step stays unpriced (Cost.Source == ""). Deriving a
+// dollar cost from it (pricing.Table.Derive, the way agent/codex prices its
+// requested with:{model} — see agent/codex/result.go buildResult) is
+// DEFERRED: droid's resolved model ids need a live droid run to confirm which
+// pricing-table keys they actually match — tracked as a cve-runner follow-up,
+// NOT implemented here. Wiring Metrics.Model now is what makes that follow-up
+// a pure pricing-table change later, with no further adapter change needed.
+func resultFromCompletion(ev *streamEvent, inv agent.AgentInvocation, model string) (agent.AgentResult, error) {
 	var output map[string]any
 	if inv.OutputSchema != nil {
 		parsed, perr := extractJSONObject(ev.FinalText)
@@ -86,7 +99,7 @@ func resultFromCompletion(ev *streamEvent, inv agent.AgentInvocation) (agent.Age
 		tokens.CacheReadInput = ev.Usage.CacheReadInputTokens
 		tokens.CacheCreationInput = ev.Usage.CacheCreationInputTokens
 	}
-	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: agent.MetricSet{Tokens: tokens, Turns: ev.NumTurns}}, nil
+	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: agent.MetricSet{Tokens: tokens, Turns: ev.NumTurns, Model: model}}, nil
 }
 
 // errorFromEvent maps a terminal "error" event to an outcome error. Auth
@@ -100,53 +113,13 @@ func errorFromEvent(ev *streamEvent) error {
 	return fmt.Errorf("agent/droid: droid exec error (%s): %s", ev.Source, ev.Message)
 }
 
-// extractJSONObject pulls a JSON object out of droid's free-text result. droid
-// has no native schema mode, so finalText may wrap the JSON in prose or a fence.
-// Strategy (stdlib only, STRING-AWARE via json.Decoder so braces/quotes inside
-// strings and escaped quotes don't fool it): strip a ```json fence → strict
-// whole-text decode → else scan each '{' start, decode with json.Decoder (which
-// consumes exactly one well-formed value), returning the LAST object that
-// decodes (right bias for an agent that reasons before its final JSON). We do
-// NOT schema-validate here (the engine's ValidateOutputMap does, so a
-// wrong-but-valid object becomes a retryable schema failure) and do NOT pull in
-// a json-repair dependency (it could fabricate a valid-but-wrong object).
+// extractJSONObject delegates to the shared agent.ExtractJSONObject (F37 —
+// hoisted from three byte-identical per-adapter copies; see agent/schema.go).
+// Kept as a local name (rather than calling agent.ExtractJSONObject inline)
+// because it is called unqualified by this package's in-package tests
+// (stream_test.go) and exported for white-box tests via export_test.go.
 func extractJSONObject(s string) (map[string]any, error) {
-	s = stripJSONFence(agent.StripThinkTags(strings.TrimSpace(s)))
-	var whole map[string]any
-	if err := json.Unmarshal([]byte(s), &whole); err == nil {
-		return whole, nil
-	}
-	var last map[string]any
-	found := false
-	for i := 0; i < len(s); i++ {
-		if s[i] != '{' {
-			continue
-		}
-		dec := json.NewDecoder(strings.NewReader(s[i:]))
-		var cand map[string]any
-		if err := dec.Decode(&cand); err == nil {
-			last = cand
-			found = true
-		}
-	}
-	if found {
-		return last, nil
-	}
-	return nil, fmt.Errorf("agent/droid: no JSON object found in result")
-}
-
-// stripJSONFence removes a single leading ```json / ``` fence line and a
-// trailing ``` if present.
-func stripJSONFence(s string) string {
-	if !strings.HasPrefix(s, "```") {
-		return s
-	}
-	if nl := strings.IndexByte(s, '\n'); nl >= 0 {
-		s = s[nl+1:]
-	}
-	s = strings.TrimSpace(s)
-	s = strings.TrimSuffix(s, "```")
-	return strings.TrimSpace(s)
+	return agent.ExtractJSONObject(s)
 }
 
 // displayForDroid maps one droid stream-json event to the normalized

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/live"
@@ -163,17 +164,24 @@ func (r *Runner) runAndFinish(
 // dollar split; InUSD/OutUSD accumulate that split across all derived steps.
 // ReportedUSD accumulates reported-source step costs and is shown in the
 // parenthetical split only when HasSplit is also true.
+// UnpricedSteps (F35) counts agent steps whose Metrics.Cost.Source is empty —
+// the same absent-source signal HasCost is derived from, but per-step instead
+// of run-wide. A run can have HasCost==true (SOME step priced) while
+// UnpricedSteps > 0 (other steps weren't): TotalUSD then silently undercounts,
+// so printRunCostSummary surfaces UnpricedSteps to make that visible instead
+// of printing a `$X` that reads as complete.
 type runMetrics struct {
-	TotalUSD    float64
-	HasCost     bool
-	InUSD       float64
-	OutUSD      float64
-	ReportedUSD float64
-	HasSplit    bool
-	InTok       int
-	OutTok      int
-	Turns       int
-	AgentSteps  int
+	TotalUSD      float64
+	HasCost       bool
+	InUSD         float64
+	OutUSD        float64
+	ReportedUSD   float64
+	HasSplit      bool
+	InTok         int
+	OutTok        int
+	Turns         int
+	AgentSteps    int
+	UnpricedSteps int
 }
 
 // foldRunMetrics sums per-step agent metrics across a run's folded events
@@ -193,6 +201,8 @@ func foldRunMetrics(events []state.Event) runMetrics {
 		m.TotalUSD += d.Metrics.Cost.Total
 		if d.Metrics.Cost.Source != "" {
 			m.HasCost = true
+		} else {
+			m.UnpricedSteps++
 		}
 		switch d.Metrics.Cost.Source {
 		case agent.CostSourceDerived:
@@ -214,6 +224,12 @@ func foldRunMetrics(events []state.Event) runMetrics {
 // metrics, so code-step-only runs print nothing. Sibling of the Phase-5 live
 // tap: never routes through obs (keeps obs off the hot path). Best-effort — a
 // fold error just suppresses the summary.
+//
+// F35: when UnpricedSteps > 0, the total gets a trailing "+" (TotalUSD is a
+// floor, not the true total — some steps contributed no cost source at all)
+// and the line gets a "(N of M steps unpriced)" marker, so the number never
+// reads as a complete `$X` when it silently undercounts. Additive only: a
+// fully-priced run (UnpricedSteps == 0) prints byte-identical to before.
 func printRunCostSummary(stdout io.Writer, log state.Log) {
 	events, err := log.Fold()
 	if err != nil {
@@ -223,13 +239,20 @@ func printRunCostSummary(stdout io.Writer, log state.Log) {
 	if m.AgentSteps == 0 {
 		return
 	}
-	costStr := formatUSD(m.TotalUSD)
+	totalStr := formatUSD(m.TotalUSD)
+	if m.UnpricedSteps > 0 {
+		totalStr += "+"
+	}
+	costStr := totalStr
 	if m.HasSplit {
 		split := "in " + formatUSD(m.InUSD) + " / out " + formatUSD(m.OutUSD)
 		if m.ReportedUSD > 0 {
 			split += " + reported " + formatUSD(m.ReportedUSD)
 		}
-		costStr = formatUSD(m.TotalUSD) + " (" + split + ")"
+		costStr = totalStr + " (" + split + ")"
+	}
+	if m.UnpricedSteps > 0 {
+		costStr += " (" + strconv.Itoa(m.UnpricedSteps) + " of " + strconv.Itoa(m.AgentSteps) + " steps unpriced)"
 	}
 	fprintf(stdout, "  cost: %s · %d tok (%d in / %d out) · %d turns across %d agent step(s)\n",
 		costStr, m.InTok+m.OutTok, m.InTok, m.OutTok, m.Turns, m.AgentSteps)

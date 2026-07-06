@@ -122,6 +122,17 @@ func TestValidateConfig_UnknownKey_Rejects(t *testing.T) {
 	}
 }
 
+// F19: a non-string entry in allowed_tools must be rejected element-wise, not
+// silently dropped (the old behavior filtered it out at launch time).
+func TestClaudeSession_ToolsElementNonStringRejected(t *testing.T) {
+	a, _ := claudesession.New(claudesession.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "allowed_tools": []any{"Bash", 1}})
+	var bad *agent.ErrInvalidConfig
+	if !errors.As(err, &bad) || bad.Key != "allowed_tools" {
+		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:allowed_tools}", err)
+	}
+}
+
 func TestValidateConfig_BareTrue_NoAPIKey_Rejects(t *testing.T) {
 	a, _ := claudesession.New(claudesession.WithEnv(map[string]string{"OTHER": "v"}))
 	err := a.ValidateConfig(ir.RawConfig{"prompt": "p", "bare": true})
@@ -600,5 +611,20 @@ func TestLaunch_ConcurrentEnvMutation(t *testing.T) {
 		if _, ok := env[key]; ok {
 			t.Errorf("a.env contains %q after concurrent launches; shared env was mutated", key)
 		}
+	}
+}
+
+// TestClaudesession_RequiredEnvReturnsCopy: RequiredEnv must return a COPY,
+// not the shared DefaultEnvAllowlist package var — a caller must not be able
+// to corrupt it via append. Same bug class fixed in agent/awfllm (F13);
+// checks backing-array identity directly (deterministic; no reliance on
+// append's capacity-dependent realloc behavior).
+func TestClaudesession_RequiredEnvReturnsCopy(t *testing.T) {
+	got := (&claudesession.Adapter{}).RequiredEnv()
+	if len(got) == 0 {
+		t.Fatal("RequiredEnv returned empty")
+	}
+	if &got[0] == &claudesession.DefaultEnvAllowlist[0] {
+		t.Fatal("RequiredEnv aliases DefaultEnvAllowlist's backing array; must return a copy")
 	}
 }

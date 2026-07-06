@@ -96,6 +96,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		var capturedResult agent.AgentResult
 		var kind string // "" none | "ok" | "unparseable" | "fatal"
 		var captureErr error
+		var initModel string // model from the "system"/init event, for Metrics.Model (F35)
 
 		scanner := bufio.NewScanner(pr)
 		scanner.Buffer(make([]byte, 64*1024), 1<<20)
@@ -111,6 +112,11 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			if perr != nil {
 				continue // tolerate a stray non-JSON line
 			}
+			// Capture the model reported in the system/init event for auditability
+			// (F35 — surfaced on the result even though droid stays unpriced).
+			if ev.Type == "system" && ev.Model != "" {
+				initModel = ev.Model
+			}
 			select {
 			case events <- agent.AgentEvent{Kind: ev.Type, Payload: raw, Stream: "stdout", Display: displayForDroid(ev)}:
 			case <-ctx.Done():
@@ -119,7 +125,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			}
 			switch ev.Type {
 			case "completion":
-				res, eerr := resultFromCompletion(ev, inv)
+				res, eerr := resultFromCompletion(ev, inv, initModel)
 				var unparseable *agent.ErrUnparseableOutput
 				switch {
 				case eerr == nil:
@@ -246,7 +252,7 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 		}
 		parts = append(parts, "--model", shellQuote(ref))
 	}
-	if re, ok := inv.With[keyReasoningEffort].(string); ok && re != "" {
+	if re, ok := inv.With[keyEffort].(string); ok && re != "" {
 		parts = append(parts, "--reasoning-effort", re) // value validated against a fixed enum
 	}
 	autonomy := "skip" // default: --skip-permissions-unsafe (isolated container)
@@ -257,10 +263,10 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	if sp, ok := inv.With[keySystemPrompt].(string); ok && sp != "" {
 		parts = append(parts, "--append-system-prompt", shellQuote(sp))
 	}
-	if tools := toStringSlice(inv.With[keyEnabledTools]); len(tools) > 0 {
+	if tools := toStringSlice(inv.With[keyAllowedTools]); len(tools) > 0 {
 		parts = append(parts, "--enabled-tools", shellQuote(strings.Join(tools, ",")))
 	}
-	if tools := toStringSlice(inv.With[keyDisabledTools]); len(tools) > 0 {
+	if tools := toStringSlice(inv.With[keyDisallowedTools]); len(tools) > 0 {
 		parts = append(parts, "--disabled-tools", shellQuote(strings.Join(tools, ",")))
 	}
 	parts = append(parts, shellQuote(prompt)) // positional prompt LAST

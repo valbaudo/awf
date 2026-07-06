@@ -153,8 +153,8 @@ func TestLaunch_CommandLine_Flags_And_OpsecEnv(t *testing.T) {
 	inv := agent.AgentInvocation{
 		NodePath: "graph[0]", Uses: droid.AdapterRef,
 		With: ir.RawConfig{
-			"prompt": "do it", "model": "gpt-5.5", "reasoning_effort": "high", "autonomy": "high",
-			"system_prompt": "be terse", "enabled_tools": []any{"Read", "Edit"}, "disabled_tools": []any{"Execute"},
+			"prompt": "do it", "model": "gpt-5.5", "effort": "high", "autonomy": "high",
+			"system_prompt": "be terse", "allowed_tools": []any{"Read", "Edit"}, "disallowed_tools": []any{"Execute"},
 		},
 		IdempotencyKey: "idem-123",
 		OutputSchema:   &ir.JSONSchema{"type": "object", "required": []string{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}},

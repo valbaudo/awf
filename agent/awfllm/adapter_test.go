@@ -129,3 +129,18 @@ func TestRequiredEnv_ReturnsFullAllowlist(t *testing.T) {
 		t.Fatalf("RequiredEnv() = %v, want len == len(DefaultEnvAllowlist) = %v", got, awfllm.DefaultEnvAllowlist)
 	}
 }
+
+// TestAwfllm_RequiredEnvReturnsCopy (F13): RequiredEnv must return a COPY, not
+// the shared DefaultEnvAllowlist package var — a caller must not be able to
+// corrupt it. Checks backing-array identity directly (deterministic; no
+// reliance on append's capacity-dependent realloc behavior).
+func TestAwfllm_RequiredEnvReturnsCopy(t *testing.T) {
+	got := (&awfllm.Adapter{}).RequiredEnv()
+	if len(got) == 0 {
+		t.Fatal("RequiredEnv returned empty")
+	}
+	// A copy must NOT share DefaultEnvAllowlist's backing array.
+	if &got[0] == &awfllm.DefaultEnvAllowlist[0] {
+		t.Fatal("RequiredEnv aliases DefaultEnvAllowlist's backing array; must return a copy")
+	}
+}

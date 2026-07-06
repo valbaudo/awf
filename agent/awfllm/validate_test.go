@@ -2,6 +2,7 @@ package awfllm_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -271,6 +272,46 @@ func TestValidateConfigToolLoopExemptsPrompt(t *testing.T) {
 	// ValidateConfig (the agent: path) STILL requires prompt:
 	if err := a.ValidateConfig(ir.RawConfig{"model": "m"}); err == nil {
 		t.Fatal("ValidateConfig must still require prompt")
+	}
+}
+
+// TestAwfllm_CacheKeyWrongProviderRejected (F13): every provider-scoped
+// boolean cache-hint key (cache_system/cache_documents/cache_context, all
+// anthropic-only) follows the SAME uniform policy — true on the wrong
+// provider is *agent.ErrInvalidConfig; false (the zero value) is valid on
+// any provider (a no-op), including cache_context which already had this
+// check (must not regress).
+func TestAwfllm_CacheKeyWrongProviderRejected(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"OPENAI_API_KEY": "k"}))
+	for _, key := range []string{"cache_system", "cache_documents", "cache_context"} {
+		err := a.ValidateConfig(ir.RawConfig{"provider": "openai", "model": "gpt", "prompt": "p", key: true})
+		var ic *agent.ErrInvalidConfig
+		if !errors.As(err, &ic) {
+			t.Errorf("%s:true on provider:openai must be *agent.ErrInvalidConfig, got %v", key, err)
+		}
+		if err := a.ValidateConfig(ir.RawConfig{"provider": "openai", "model": "gpt", "prompt": "p", key: false}); err != nil {
+			t.Errorf("%s:false (zero value) must be a no-op on any provider: %v", key, err)
+		}
+	}
+}
+
+// TestAwfllm_CacheSystemStringIsTypeError (F13): cache_system: "true" (a
+// string) must be a type error, not silently coerced to false by boolOr.
+func TestAwfllm_CacheSystemStringIsTypeError(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+	err := a.ValidateConfig(ir.RawConfig{"provider": "anthropic", "model": "claude", "prompt": "p", "cache_system": "true"})
+	if err == nil || !strings.Contains(err.Error(), "bool") {
+		t.Fatalf("err = %v, want a type error mentioning bool", err)
+	}
+}
+
+// TestAwfllm_CacheDocumentsStringIsTypeError — same coercion fix for
+// cache_documents (the other previously-unchecked key).
+func TestAwfllm_CacheDocumentsStringIsTypeError(t *testing.T) {
+	a, _ := awfllm.New(awfllm.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "k"}))
+	err := a.ValidateConfig(ir.RawConfig{"provider": "anthropic", "model": "claude", "prompt": "p", "cache_documents": "true"})
+	if err == nil || !strings.Contains(err.Error(), "bool") {
+		t.Fatalf("err = %v, want a type error mentioning bool", err)
 	}
 }
 
