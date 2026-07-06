@@ -2062,6 +2062,52 @@ graph:
 	return path
 }
 
+// TestRunNativeWarnsResourcesIgnored verifies the F5 (U4) extension to the
+// non-silent ignored-key warning: a container declaring resources: under
+// explicit --backend native prints a stderr line naming "resources" (in
+// addition to the pre-existing "container image" name), so a declared
+// resource limit is never silently dropped. The run executes against the
+// injected fake backend.
+func TestRunNativeWarnsResourcesIgnored(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	wfPath := writeWorkflowWithResources(t, t.TempDir())
+	fake := container.NewFake()
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	runner := newTestRunner(t, fake)
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--backend", "native", "--state-dir", stateDir, wfPath},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ignores declared container image(s) and resources") {
+		t.Errorf("stderr must enumerate BOTH ignored image and resources, got:\n%s", stderr.String())
+	}
+}
+
+func writeWorkflowWithResources(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "wf.yaml")
+	content := `workflow: minimal
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    resources: { cpu: "2", mem: "4Gi" }
+graph:
+  - id: noop
+    container: lab
+    run: "true"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	return path
+}
+
 // newRegistryWith builds an *agent.Registry containing fk; fails the test on
 // Register error. Used by T8 tests below.
 func newRegistryWith(t *testing.T, fk *agentfake.Fake) *agent.Registry {

@@ -372,12 +372,24 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	if autoSelectedNative {
 		fprintf(stderr, "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline.\n")
 	}
-	// Non-silent image warning: native ignores any declared container image and
-	// runs steps on the host. Fires for explicit --backend native too (auto
-	// never lands here with an image — image-mode routes to docker above), so
-	// native never silently drops a declared image.
-	if concreteBackendKind == engine.BackendNative && workflowHasStaticImage(ld) {
-		fprintf(stderr, "awf run: --backend native ignores declared container image(s); steps run on the host.\n")
+	// Non-silent ignored-key warning: native runs steps directly on the host,
+	// so it cannot honor a declared container image or resource limits — it
+	// ignores both rather than emulating them. Fires for explicit --backend
+	// native too (auto never lands here with either — image-mode and
+	// docker-preferred features route to docker above), so native never
+	// silently drops a declared key (F5, U4: enumerates every ignored key
+	// detected, not just the image).
+	if concreteBackendKind == engine.BackendNative {
+		var ignored []string
+		if workflowHasStaticImage(ld) {
+			ignored = append(ignored, "container image(s)")
+		}
+		if workflowHasResources(ld) {
+			ignored = append(ignored, "resources")
+		}
+		if len(ignored) > 0 {
+			fprintf(stderr, "awf run: --backend native ignores declared %s; steps run on the host.\n", strings.Join(ignored, " and "))
+		}
 	}
 	// WS-6a: compute the root workflow's structural digest (topology-only,
 	// body-invariant). Root-only: imported modules are not folded in (T6b).
