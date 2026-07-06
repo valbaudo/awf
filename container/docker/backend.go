@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -74,6 +75,11 @@ type Backend struct {
 	blobs state.Blobs
 
 	snapshotMaxBlobBytes int64
+
+	// execSeq gives each Exec a unique in-container pidfile path so a
+	// timed-out step's process tree can be reaped on ctx-cancel. Runtime-only
+	// (never journaled/hashed), so a plain counter is fine and avoids rand.
+	execSeq atomic.Uint64
 
 	mu      sync.Mutex
 	handles map[string]registeredContainer
