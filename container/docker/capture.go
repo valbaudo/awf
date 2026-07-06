@@ -13,7 +13,9 @@ import (
 
 // CaptureFiles reads each in-container path and returns one CapturedFile per
 // path in the input order. Missing-path is a hard error (no partial returns —
-// matches the fake / Phase 2 invariant).
+// matches the fake / Phase 2 invariant). A relative path resolves against the
+// container's WORKDIR (F8; resolveCapturePath) — an absolute path is used
+// unchanged.
 //
 // Implementation: one CopyFromContainer call per path. The SDK returns a tar
 // archive containing the file at path's basename; we iterate the entries,
@@ -37,15 +39,44 @@ func (b *Backend) CaptureFiles(ctx context.Context, h container.Handle, paths []
 		return nil, fmt.Errorf("container/docker: CaptureFiles: %w", err)
 	}
 
+	// F8: docker exec sets no explicit WorkingDir (exec.go), so a run: step's
+	// cwd is the container's Config.WorkingDir — but CopyFromContainer
+	// resolves a relative archive path against "/", not that WorkingDir. One
+	// ContainerInspect here (not one per path) gives every path in this call
+	// the same WORKDIR to join against, matching container/native's
+	// filepath.Join(r.workdir, p) so write-base == capture-base on both
+	// backends.
+	info, err := b.cli.ContainerInspect(ctx, dockerID)
+	if err != nil {
+		return nil, fmt.Errorf("container/docker: CaptureFiles: ContainerInspect: %w", err)
+	}
+	if info.Config == nil {
+		return nil, fmt.Errorf("container/docker: CaptureFiles: ContainerInspect returned nil Config (daemon bug)")
+	}
+	workdir := info.Config.WorkingDir
+
 	out := make([]container.CapturedFile, 0, len(paths))
 	for _, p := range paths {
-		content, err := b.captureOne(ctx, dockerID, p)
+		content, err := b.captureOne(ctx, dockerID, resolveCapturePath(workdir, p))
 		if err != nil {
 			return nil, fmt.Errorf("container/docker: CaptureFiles: %q: %w", p, err)
 		}
 		out = append(out, container.CapturedFile{Path: p, Content: content})
 	}
 	return out, nil
+}
+
+// resolveCapturePath resolves an output_files capture path against the
+// container's WORKDIR (F8): a relative p joins workdir; an absolute p is
+// used unchanged. Containers are POSIX (path, not filepath) regardless of
+// host OS — mirrors container/native's CaptureFiles resolution
+// (filepath.Join(r.workdir, p) for relative, literal for absolute) so a
+// relative output_files.path resolves the same way on both backends.
+func resolveCapturePath(workdir, p string) string {
+	if path.IsAbs(p) {
+		return p
+	}
+	return path.Join(workdir, p)
 }
 
 // captureOne reads one file from the container and returns its bytes. The

@@ -16,12 +16,65 @@ import (
 
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
+	"github.com/valbaudo/awf/container/native"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/loader"
 	awfsignal "github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
+
+// resolveWorkflowRunEnv resolves the workflow's own declared env: allowlist
+// (module-recursive; awf-workflow(5)) against the host into a name→value map
+// for engine.RunOptions.RunEnv (F15: env: also reaches run: steps, not just
+// agents). Reuses mergeLoadedWorkflowEnv with a nil base — the --agent-env
+// allowlist is agent-only and must NOT leak into this channel — so the
+// returned names are exactly (and only) what the workflow itself declares.
+// Each name is resolved via os.LookupEnv here, at the CLI layer: the engine
+// itself never reads host env (determinism invariant). A name absent from the
+// host is silently omitted, mirroring buildAgentRegistryWithLiveRoot's
+// resolution loop. nil when the workflow declares no env: names — preserves
+// pre-F15 behavior (code steps get an empty Env).
+func resolveWorkflowRunEnv(ld *ir.LoadedDefinition) map[string]string {
+	names := mergeLoadedWorkflowEnv(nil, ld)
+	if len(names) == 0 {
+		return nil
+	}
+	env := make(map[string]string, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			env[name] = v
+		}
+	}
+	return env
+}
+
+// nativeSandboxModeOf returns backend's resolved sandbox mode when it is a
+// concrete *native.Backend, or "" for every other backend kind (docker, fake,
+// including a test-injected fake standing in for a "selected native"
+// backend-selection test that never constructs a real native.Backend). ""
+// only ever means "not native" — a real native.Backend's SandboxMode() is
+// always non-empty ("none" at minimum). native.Backend.SandboxMode is a pure
+// getter (no exec), so calling it here does not drive a real sandboxed
+// execution.
+func nativeSandboxModeOf(backend container.Backend) string {
+	if nb, ok := backend.(*native.Backend); ok {
+		return nb.SandboxMode()
+	}
+	return ""
+}
+
+// printNativeSandboxMode writes the resolved native sandbox mode to stderr
+// (F30) when backend is a concrete *native.Backend. A no-op for every other
+// backend kind (nativeSandboxModeOf returns "").
+func printNativeSandboxMode(backend container.Backend, stderr io.Writer) {
+	if mode := nativeSandboxModeOf(backend); mode != "" {
+		fprintf(stderr, "awf run: native sandbox: %s\n", mode)
+	}
+}
 
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
@@ -166,6 +219,12 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitInfra
 	}
 	defer cleanup()
+
+	// F30: surface the resolved native sandbox mode at run start. No-op for
+	// non-native backends (the type assertion fails for docker/fake, including
+	// test-injected fakes used to drive native backend-selection logic without
+	// an actual native.Backend).
+	printNativeSandboxMode(backend, stderr)
 
 	if err := checkWorkflowBackendCapabilities(ld, concreteBackendKind, backend); err != nil {
 		fprintf(stderr, "awf run: %v\n", err)
@@ -370,14 +429,26 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// Step 10: append run.started + fsync. Backend field carries the selected
 	// concrete backend kind so resume can pick the same backend without a flag.
 	if autoSelectedNative {
-		fprintf(stderr, "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline.\n")
+		fprintf(stderr, "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline.\n")
 	}
-	// Non-silent image warning: native ignores any declared container image and
-	// runs steps on the host. Fires for explicit --backend native too (auto
-	// never lands here with an image — image-mode routes to docker above), so
-	// native never silently drops a declared image.
-	if concreteBackendKind == engine.BackendNative && workflowHasStaticImage(ld) {
-		fprintf(stderr, "awf run: --backend native ignores declared container image(s); steps run on the host.\n")
+	// Non-silent ignored-key warning: native runs steps directly on the host,
+	// so it cannot honor a declared container image or resource limits — it
+	// ignores both rather than emulating them. Fires for explicit --backend
+	// native too (auto never lands here with either — image-mode and
+	// docker-preferred features route to docker above), so native never
+	// silently drops a declared key (F5, U4: enumerates every ignored key
+	// detected, not just the image).
+	if concreteBackendKind == engine.BackendNative {
+		var ignored []string
+		if workflowHasStaticImage(ld) {
+			ignored = append(ignored, "container image(s)")
+		}
+		if workflowHasResources(ld) {
+			ignored = append(ignored, "resources")
+		}
+		if len(ignored) > 0 {
+			fprintf(stderr, "awf run: --backend native ignores declared %s; steps run on the host.\n", strings.Join(ignored, " and "))
+		}
 	}
 	// WS-6a: compute the root workflow's structural digest (topology-only,
 	// body-invariant). Root-only: imported modules are not folded in (T6b).
@@ -397,8 +468,9 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		Assets:           assetSnapshots,
 		InputFiles:       inputFileRefs,
 		LiveHome:         engineLiveHomePin(liveRoot.Pin),
-		Runtimes:         resolvedRuntimes, // Phase 5 slice 5.1
-		DefinitionRef:    definitionRef,    // view-only snapshot of the run's canonical definition
+		Runtimes:         resolvedRuntimes,             // Phase 5 slice 5.1
+		DefinitionRef:    definitionRef,                // view-only snapshot of the run's canonical definition
+		SandboxMode:      nativeSandboxModeOf(backend), // F30; "" for non-native backends
 	})
 	if err != nil {
 		fprintf(stderr, "awf run: marshal run.started: %v\n", err)

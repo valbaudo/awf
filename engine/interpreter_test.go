@@ -187,6 +187,61 @@ func TestRunCodeStepIdempotencyKeySubstituted(t *testing.T) {
 	}
 }
 
+// TestRun_CodeStepReceivesWorkflowEnv is F15: a code step's dispatched env
+// includes a forwarded workflow env: value when RunOptions.RunEnv is set. The
+// engine only copies the CLI-resolved map — see TestRunCodeStepDoesNotLeakRunEnvAcrossSteps
+// below for the no-aliasing guarantee.
+func TestRun_CodeStepReceivesWorkflowEnv(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./use-var.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	wf := &ir.Workflow{
+		Env: []string{"MY_VAR"},
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "use_var", Container: "lab", Run: "./use-var.sh"},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	opts := engine.RunOptions{RunEnv: map[string]string{"MY_VAR": "hello"}}
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, opts)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Errorf("Outcome = %v, want ok", oc)
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatalf("fake.Calls len = %d, want 1", len(fake.Calls))
+	}
+	got := fake.Calls[0].Env["MY_VAR"]
+	if got != "hello" {
+		t.Errorf("Backend.Exec received MY_VAR = %q, want %q", got, "hello")
+	}
+}
+
+// TestRunCodeStepDoesNotLeakRunEnvAcrossSteps is the additive/no-aliasing half
+// of F15: RunOptions.RunEnv is nil (pre-F15 behavior) — a code step's
+// dispatched env must stay empty, exactly like before RunEnv existed.
+func TestRunCodeStepDoesNotLeakRunEnvAcrossSteps(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./no-env.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.CodeStep{ID: "no_env", Container: "lab", Run: "./no-env.sh"},
+	}}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	if _, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fake.Calls[0].Env) != 0 {
+		t.Errorf("fake.Calls[0].Env = %+v, want empty (RunOptions.RunEnv unset)", fake.Calls[0].Env)
+	}
+}
+
 func TestRunCodeStepFailureAppendsNodeFailed(t *testing.T) {
 	t.Parallel()
 	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)

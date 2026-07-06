@@ -65,6 +65,16 @@ type RunOptions struct {
 	// first run — on resume it is nil and runstate.InputFiles is fold-restored.
 	InputFiles map[string]string
 
+	// RunEnv is the resolved workflow env: allowlist (F15): name → value, for
+	// every name the workflow declares in its top-level env: list. The CLI
+	// resolves each name via os.LookupEnv at run start (and identically on
+	// resume — host values are runtime, not part of the definition digest) and
+	// passes the result here; the engine only COPIES this map into each code
+	// step's dispatched Env — it never calls os.LookupEnv/os.Getenv itself
+	// (determinism: no host env read inside engine/). nil means no names
+	// forwarded (pre-F15 behavior: code steps get an empty Env).
+	RunEnv map[string]string
+
 	// LiveFinalizer, if non-nil, is called after a successful live agent step's
 	// node.completed event has been appended and synced.
 	LiveFinalizer func(context.Context, LiveDispatchRecord) error
@@ -136,6 +146,7 @@ func Run(
 		wf:            def.Workflow,
 		runstate:      runstate,
 		inputFiles:    runstate.InputFiles,
+		runEnv:        opts.RunEnv,
 		dispatcher:    dispatcher,
 		log:           log,
 		blobs:         blobs,
@@ -353,9 +364,16 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		return failStep(ictx.log, path, OutcomePermanentFailure, fmt.Errorf("engine.Run: substitute output_files at %q: %w", path, err))
 	}
 	snapBare, _ := SplitContainerRef(cs.Container)
+	// F15: copy the resolved workflow env: allowlist into this step's Env — a
+	// fresh map every call so ictx.runEnv (shared across every code step in the
+	// run) is never itself mutated or aliased out to a dispatcher/backend.
+	env := make(map[string]string, len(ictx.runEnv))
+	for k, v := range ictx.runEnv {
+		env[k] = v
+	}
 	resolved := ResolvedInputs{
 		Command:               command,
-		Env:                   map[string]string{},
+		Env:                   env,
 		OutputFiles:           outputFiles,
 		OutputFileContracts:   outputFileContracts,
 		OutputSchema:          cs.OutputSchema,

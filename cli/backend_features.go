@@ -58,12 +58,16 @@ func firstDockerOnlyFeatureForLoadedDefinition(ld *ir.LoadedDefinition) (dockerF
 
 // firstNativeIncompatibleFeature detects only the features native genuinely
 // cannot run — static compose (native Create refuses compose), runtime compose
-// (ir.FirstRuntimeComposePath), and runtime map image (native Caps.RuntimeImage
-// is false). Unlike firstDockerOnlyFeature it deliberately does NOT flag a
-// static c.Image or snapshot: workspace: native CAN run those, just without
-// isolation — it ignores the declared image, runs steps on the host, and
-// snapshots the workdir. The "docker-preferred but native-runnable" set is left
-// for auto (which still prefers docker for reproducibility).
+// (ir.FirstRuntimeComposePath), runtime map image (native Caps.RuntimeImage is
+// false), cmd: (an explicit standing service command — a keepalive sidecar),
+// and keepalive: false (F5, U4: neither has a host equivalent — native has no
+// container to run a standing command in, or to not keep alive). Unlike
+// firstDockerOnlyFeature it deliberately does NOT flag a static c.Image,
+// c.Resources, or snapshot: workspace: native CAN run those, just without
+// isolation or resource limits — it ignores the declared image/resources,
+// runs steps on the host, and snapshots the workdir. The "docker-preferred but
+// native-runnable" set is left for auto (which still prefers docker for
+// reproducibility).
 func firstNativeIncompatibleFeature(wf *ir.Workflow) (dockerFeature, bool) {
 	if wf == nil {
 		return dockerFeature{}, false
@@ -77,6 +81,17 @@ func firstNativeIncompatibleFeature(wf *ir.Workflow) (dockerFeature, bool) {
 		c := wf.Containers[name]
 		if c.Compose != "" {
 			return dockerFeature{Kind: "static compose", Path: fmt.Sprintf("containers.%s.compose", name)}, true
+		}
+		// F5 (U4): cmd: (an explicit service command — a keepalive sidecar)
+		// and keepalive: false (asking native to not keep a container alive)
+		// both have no host equivalent — native has no container to run a
+		// standing command in, or to not keep alive. Fail closed rather than
+		// silently no-op them.
+		if len(c.Cmd) > 0 {
+			return dockerFeature{Kind: "cmd", Path: fmt.Sprintf("containers.%s.cmd", name)}, true
+		}
+		if c.Keepalive != nil && !*c.Keepalive {
+			return dockerFeature{Kind: "keepalive", Path: fmt.Sprintf("containers.%s.keepalive", name)}, true
 		}
 	}
 	if path, ok := ir.FirstRuntimeComposePath(wf); ok {
@@ -150,6 +165,31 @@ func workflowHasStaticImage(ld *ir.LoadedDefinition) bool {
 	return found
 }
 
+// workflowHasResources reports whether any module declares container
+// resources: (cpu/mem). Native ignores resource limits (steps run directly
+// on the host, no cgroup/isolation layer to apply them to), so the run path
+// uses this — alongside workflowHasStaticImage — to enumerate every key the
+// non-silent native warning names (F5, U4).
+func workflowHasResources(ld *ir.LoadedDefinition) bool {
+	if ld == nil {
+		return false
+	}
+	var found bool
+	_ = ld.WalkModules(func(module *ir.LoadedModule) error {
+		if found || module == nil || module.Workflow == nil {
+			return nil
+		}
+		for _, c := range module.Workflow.Containers {
+			if c.Resources != nil {
+				found = true
+				return nil
+			}
+		}
+		return nil
+	})
+	return found
+}
+
 func selectRunBackend(requested string, wf *ir.Workflow) (string, error) {
 	return selectRunBackendForLoadedDefinition(requested, &ir.LoadedDefinition{Workflow: wf})
 }
@@ -166,8 +206,8 @@ func selectRunBackendForLoadedDefinition(requested string, ld *ir.LoadedDefiniti
 		// snapshot: workspace workflows on the host (ignoring the declared
 		// image, snapshotting the workdir). It still refuses the features
 		// native genuinely cannot do — compose, runtime compose, runtime map
-		// image. (Auto, above, still routes image/snapshot to docker for
-		// reproducibility.)
+		// image, cmd:, and keepalive: false (F5, U4). (Auto, above, still
+		// routes image/snapshot to docker for reproducibility.)
 		if feature, ok := firstNativeIncompatibleFeatureForLoadedDefinition(ld); ok {
 			return "", fmt.Errorf("--backend native cannot run %q at %s; use --backend docker", feature.Kind, feature.Path)
 		}

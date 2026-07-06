@@ -18,6 +18,7 @@ type interpreterContext struct {
 	wf            *ir.Workflow
 	input         map[string]any
 	inputFiles    map[string]string
+	runEnv        map[string]string // resolved workflow env: name→value (F15); injected into code-step Env, never read from the host here
 	runtimeParent string
 	runstate      *RunState
 	dispatcher    Dispatcher
@@ -29,6 +30,20 @@ type interpreterContext struct {
 	broker        *signal.Broker
 	liveFinalizer func(context.Context, LiveDispatchRecord) error
 	resume        bool // true when re-entering a folded log (awf resume); gates map-item re-run
+}
+
+// copyRunEnv returns a FRESH copy of runEnv (F15's resolved workflow env:
+// allowlist, already resolved CLI-side — engine/ never calls os.LookupEnv).
+// Every injection site (graph code steps, reduce.run, react tool impls) must
+// copy rather than alias: runEnv is shared across every step in the run, so
+// handing out the same map would let one dispatcher/backend mutation leak
+// into another step's env. A nil runEnv yields an empty (non-nil) map.
+func copyRunEnv(runEnv map[string]string) map[string]string {
+	env := make(map[string]string, len(runEnv))
+	for k, v := range runEnv {
+		env[k] = v
+	}
+	return env
 }
 
 func (ictx interpreterContext) scope(path string) *Scope {

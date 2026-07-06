@@ -68,7 +68,7 @@ func TestRunReduceQuorumMet(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestQuorumReduceOutputMatchesVerdictFields(t *testing.T) {
 	q := ir.Ratio("1")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	if _, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{}); err != nil {
+	if _, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{}); err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
 	nr, ok := rig.rs.LookupCompleted(testMapPath)
@@ -130,7 +130,7 @@ func TestRunReduceQuorumNotMet(t *testing.T) {
 	q := ir.Ratio("3")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if oc != OutcomeRetryableFailure {
 		t.Fatalf("Outcome = %q (err=%v), want retryable_failure", oc, err)
 	}
@@ -157,7 +157,7 @@ func TestRunReduceQuorumThresholdIsCohortNotSurvivors(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if oc != OutcomeRetryableFailure {
 		t.Fatalf("quorum 2 over cohort 3 with 1 agreeing survivor: outcome = %q (err=%v), want retryable_failure", oc, err)
 	}
@@ -178,7 +178,7 @@ func TestRunReduceQuorumAllBranchesCrashedIsNotVacuousPass(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, nil /* all crashed */, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	oc, err := runReduce(context.Background(), r, testMapPath, nil /* all crashed */, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if oc != OutcomeRetryableFailure {
 		t.Fatalf("quorum 2 over cohort 3 with 0 survivors: outcome = %q (err=%v), want retryable_failure", oc, err)
 	}
@@ -197,7 +197,7 @@ func TestRunReduceResumeReplays(t *testing.T) {
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, nil, 0, minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	oc, err := runReduce(context.Background(), r, testMapPath, nil, 0, minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if err != nil {
 		t.Fatalf("runReduce (resume): %v", err)
 	}
@@ -254,7 +254,7 @@ func TestRunReduceCommandStagesManifestAndArtifacts(t *testing.T) {
 		OutputFiles:  ir.OutputFiles{{Name: "csv", Path: "/out/versions.csv"}},
 	}
 
-	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if err != nil {
 		t.Fatalf("runReduce (run): %v", err)
 	}
@@ -358,7 +358,7 @@ func TestRunReduceTemplatesBodyStepRefsAsJSON(t *testing.T) {
 		OutputSchema: reduceSchema,
 		OutputFiles:  ir.OutputFiles{{Name: "json", Path: "/out/{{ step.scan.k }}.json"}},
 	}
-	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), wf, RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	oc, err := runReduce(context.Background(), r, mapPath, branches, len(branches), wf, RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestRunCommandReduceTemplatesRun(t *testing.T) {
 	r := &ir.Reduce{Run: "echo {{ input.cve_id }}", Container: reduceContainer}
 	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"k": "a"}}}
 
-	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), wf, RootModuleID, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), wf, RootModuleID, rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if oc != OutcomeOK || err != nil {
 		t.Fatalf("runReduce: (%q, %v), want (ok, nil)", oc, err)
 	}
@@ -471,7 +471,7 @@ func TestRunReduceNativeStagingRoot(t *testing.T) {
 	rig.fake.ProgramExec("./merge.sh", container.ExecResult{ExitCode: 0}, nil)
 
 	r := &ir.Reduce{Run: "./merge.sh", Container: reduceContainer}
-	_, err = runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	_, err = runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestRunReduceDockerStagingRoot(t *testing.T) {
 	rig.fake.ProgramExec("./merge.sh", container.ExecResult{ExitCode: 0}, nil)
 
 	r := &ir.Reduce{Run: "./merge.sh", Container: reduceContainer}
-	_, err := runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	_, err := runReduce(context.Background(), r, mapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if err != nil {
 		t.Fatalf("runReduce: %v", err)
 	}
@@ -532,5 +532,77 @@ func TestRunReduceDockerStagingRoot(t *testing.T) {
 	}
 	if gotRoot != "/work/.awf" {
 		t.Errorf("AWF_STAGING_ROOT = %q, want %q", gotRoot, "/work/.awf")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// I1: env: forwarding into the reduce.run reducer (mirrors F15 for graph run:
+// steps) — a resolved workflow env: name reaches the reducer's Exec env on
+// EVERY backend, and the engine-injected AWF_STAGING_ROOT key wins a name
+// collision (the reducer is a `run:`-shaped step exactly like a graph code
+// step; F15 wired the graph step, not this one).
+// ---------------------------------------------------------------------------
+
+// TestRunReduceCommandForwardsWorkflowEnv is the RED test for the missing
+// half of I1: before the fix, runCommandReduce hardcoded
+// Env: map[string]string{"AWF_STAGING_ROOT": stagingRoot}, dropping any
+// forwarded workflow env: value.
+func TestRunReduceCommandForwardsWorkflowEnv(t *testing.T) {
+	rig := newReduceRig(t)
+	rig.fake.ProgramExec("./merge.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	r := &ir.Reduce{Run: "./merge.sh", Container: reduceContainer}
+	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"k": "v"}}}
+	runEnv := map[string]string{"MY_VAR": "hello"}
+
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, runEnv, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
+	}
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want ok", oc)
+	}
+
+	got := map[string]string(nil)
+	for _, c := range rig.fake.Calls {
+		if c.Run == "./merge.sh" {
+			got = c.Env
+		}
+	}
+	if got["MY_VAR"] != "hello" {
+		t.Errorf("reducer Env[MY_VAR] = %q, want %q (forwarded workflow env:)", got["MY_VAR"], "hello")
+	}
+	if got["AWF_STAGING_ROOT"] != "/work/.awf" {
+		t.Errorf("reducer Env[AWF_STAGING_ROOT] = %q, want %q", got["AWF_STAGING_ROOT"], "/work/.awf")
+	}
+	// Fresh-copy invariant (F15): the caller's runEnv map must never be mutated.
+	if _, leaked := runEnv["AWF_STAGING_ROOT"]; leaked {
+		t.Errorf("runEnv mutated in place: AWF_STAGING_ROOT leaked into the caller's map %v", runEnv)
+	}
+}
+
+// TestRunReduceCommandEngineEnvWinsCollision asserts the engine-injected
+// AWF_STAGING_ROOT wins over a workflow env: declaration of the same name —
+// the author cannot override the engine's staging contract via env:.
+func TestRunReduceCommandEngineEnvWinsCollision(t *testing.T) {
+	rig := newReduceRig(t)
+	rig.fake.ProgramExec("./merge.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	r := &ir.Reduce{Run: "./merge.sh", Container: reduceContainer}
+	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"k": "v"}}}
+	runEnv := map[string]string{"AWF_STAGING_ROOT": "author-supplied-value"}
+
+	if _, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, runEnv, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{}); err != nil {
+		t.Fatalf("runReduce: %v", err)
+	}
+
+	got := ""
+	for _, c := range rig.fake.Calls {
+		if c.Run == "./merge.sh" {
+			got = c.Env["AWF_STAGING_ROOT"]
+		}
+	}
+	if got != "/work/.awf" {
+		t.Errorf("AWF_STAGING_ROOT = %q, want %q (engine key must win a name collision with env:)", got, "/work/.awf")
 	}
 }

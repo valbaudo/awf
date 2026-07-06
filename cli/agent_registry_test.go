@@ -92,6 +92,56 @@ func TestMergeLoadedWorkflowEnvIncludesImportedModulesInWalkOrder(t *testing.T) 
 	}
 }
 
+// TestResolveWorkflowRunEnv_OnlyDeclaredNames is F15's CLI-layer resolution
+// test: the workflow declares one env: name; the host also has an undeclared
+// var set. resolveWorkflowRunEnv must read ONLY the declared name — never the
+// whole host environment.
+func TestResolveWorkflowRunEnv_OnlyDeclaredNames(t *testing.T) {
+	t.Setenv("AWF_F15_TEST_DECLARED", "declared-value")
+	t.Setenv("AWF_F15_TEST_UNDECLARED", "undeclared-value")
+	ld := &ir.LoadedDefinition{
+		Workflow: &ir.Workflow{Env: []string{"AWF_F15_TEST_DECLARED"}},
+	}
+
+	got := resolveWorkflowRunEnv(ld)
+
+	if len(got) != 1 || got["AWF_F15_TEST_DECLARED"] != "declared-value" {
+		t.Errorf("resolveWorkflowRunEnv = %v, want {AWF_F15_TEST_DECLARED: declared-value}", got)
+	}
+	if _, present := got["AWF_F15_TEST_UNDECLARED"]; present {
+		t.Errorf("resolveWorkflowRunEnv leaked an undeclared host var: %v", got)
+	}
+}
+
+// TestResolveWorkflowRunEnv_MissingHostValueOmitted mirrors
+// buildAgentRegistryWithLiveRoot's resolution loop: a declared name absent
+// from the host is silently omitted, not zero-valued.
+func TestResolveWorkflowRunEnv_MissingHostValueOmitted(t *testing.T) {
+	if _, present := os.LookupEnv("AWF_F15_TEST_MISSING_NAME"); present {
+		t.Fatal("test fixture var AWF_F15_TEST_MISSING_NAME unexpectedly present on host")
+	}
+	ld := &ir.LoadedDefinition{
+		Workflow: &ir.Workflow{Env: []string{"AWF_F15_TEST_MISSING_NAME"}},
+	}
+
+	got := resolveWorkflowRunEnv(ld)
+
+	if len(got) != 0 {
+		t.Errorf("resolveWorkflowRunEnv = %v, want empty (name absent from host)", got)
+	}
+}
+
+// TestResolveWorkflowRunEnv_NoEnvDeclared_ReturnsNil is the additive/no-op
+// case: a workflow with no env: declaration must resolve to nil, matching
+// RunOptions.RunEnv's documented "nil means no names forwarded" contract.
+func TestResolveWorkflowRunEnv_NoEnvDeclared_ReturnsNil(t *testing.T) {
+	ld := &ir.LoadedDefinition{Workflow: &ir.Workflow{}}
+
+	if got := resolveWorkflowRunEnv(ld); got != nil {
+		t.Errorf("resolveWorkflowRunEnv = %v, want nil", got)
+	}
+}
+
 func TestBuildAgentRegistry_EmptyAllowlist_NoAdapter(t *testing.T) {
 	be := container.NewFake()
 	reg, err := buildAgentRegistry(nil, be)

@@ -1209,7 +1209,7 @@ func TestCLIRunWritesBackendNativeOnRunStartedByDefault(t *testing.T) {
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q (default auto selection)", backendField, engine.BackendNative)
 	}
-	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline."
+	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline."
 	if got := strings.Count(stderr.String(), wantWarning); got != 1 {
 		t.Errorf("native auto warning count = %d, want 1; stderr:\n%s", got, stderr.String())
 	}
@@ -1232,7 +1232,7 @@ func TestCLIRunBackendAutoFlagAcceptedAndRecordsConcreteBackend(t *testing.T) {
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
 	}
-	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline."
+	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline."
 	if got := strings.Count(stderr.String(), wantWarning); got != 1 {
 		t.Errorf("native auto warning count = %d, want 1; stderr:\n%s", got, stderr.String())
 	}
@@ -1887,6 +1887,51 @@ graph:
 	}
 }
 
+// TestCLIRun_WorkflowEnv_ReachesRunStep is F15's end-to-end proof: a workflow
+// env: name declared alongside a `run:` (code) step. Full `awf run` CLI path
+// (loader → validate → engine.Run against the fake backend) — the dispatched
+// code step must see the forwarded value, proving the CLI's resolveWorkflowRunEnv
+// → engine.RunOptions.RunEnv → interpreter → ResolvedInputs.Env wiring holds
+// together end-to-end, not just at the unit level.
+func TestCLIRun_WorkflowEnv_ReachesRunStep(t *testing.T) {
+	t.Setenv("MY_RUN_ENV", "hello-from-host")
+	tmpDir := t.TempDir()
+	wfPath := filepath.Join(tmpDir, "wf.yaml")
+	content := `workflow: wf-run-env
+version: 1
+env: [MY_RUN_ENV]
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: use_var
+    container: lab
+    run: "./use-var.sh"
+`
+	if err := os.WriteFile(wfPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	stateDir := filepath.Join(tmpDir, ".awf")
+
+	fake := container.NewFake()
+	fake.ProgramExec("./use-var.sh", container.ExecResult{ExitCode: 0}, nil)
+	var stdout, stderr bytes.Buffer
+	r := &cli.Runner{
+		IDGen:   &clock.Fake{IDs: []string{"run-env-run"}},
+		Backend: fake,
+	}
+	exit := r.Run([]string{"run", "--state-dir", stateDir, "--backend", "fake", wfPath}, &stdout, &stderr)
+	if exit != cli.ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatalf("fake.Calls len = %d, want 1", len(fake.Calls))
+	}
+	if got := fake.Calls[0].Env["MY_RUN_ENV"]; got != "hello-from-host" {
+		t.Errorf("run: step's dispatched env MY_RUN_ENV = %q, want %q; calls=%+v", got, "hello-from-host", fake.Calls)
+	}
+}
+
 func TestCLIRun_ReusedRunnerBuildsFreshProductionRegistryPerInvocation(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
 	tmpDir := t.TempDir()
@@ -2051,6 +2096,52 @@ version: 1
 containers:
   lab:
     image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: noop
+    container: lab
+    run: "true"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	return path
+}
+
+// TestRunNativeWarnsResourcesIgnored verifies the F5 (U4) extension to the
+// non-silent ignored-key warning: a container declaring resources: under
+// explicit --backend native prints a stderr line naming "resources" (in
+// addition to the pre-existing "container image" name), so a declared
+// resource limit is never silently dropped. The run executes against the
+// injected fake backend.
+func TestRunNativeWarnsResourcesIgnored(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	wfPath := writeWorkflowWithResources(t, t.TempDir())
+	fake := container.NewFake()
+	fake.ProgramExec("true", container.ExecResult{ExitCode: 0}, nil)
+	runner := newTestRunner(t, fake)
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--backend", "native", "--state-dir", stateDir, wfPath},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ignores declared container image(s) and resources") {
+		t.Errorf("stderr must enumerate BOTH ignored image and resources, got:\n%s", stderr.String())
+	}
+}
+
+func writeWorkflowWithResources(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "wf.yaml")
+	content := `workflow: minimal
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    resources: { cpu: "2", mem: "4Gi" }
 graph:
   - id: noop
     container: lab

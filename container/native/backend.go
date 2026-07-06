@@ -58,6 +58,16 @@ type Backend struct {
 	// fallback if no platform sandbox was available).
 	sandbox sandboxLauncher
 
+	// sandboxMode is the concise status token SandboxMode() returns (F30):
+	// "none" when sandbox was not requested, or when it was requested but no
+	// platform sandbox was available (the no-op fallback); otherwise the real
+	// launcher's label ("bwrap", "landlock-trampoline", "sandbox-exec").
+	// Defaults to "none" in New(); WithSandbox(true) may overwrite it with a
+	// real label. Distinct from SandboxWarnLabel(), which is "" except in the
+	// requested-but-unavailable case (loud warning text for a different
+	// purpose — this field is always non-empty).
+	sandboxMode string
+
 	mu      sync.Mutex
 	handles map[string]nativeHandle
 }
@@ -86,6 +96,7 @@ func New(workdirRoot string, opts ...Option) (*Backend, error) {
 		snapshotMaxBlobBytes:    snapshotDefaultMaxBlobBytes,
 		snapshotMaxRestoreBytes: snapshotDefaultMaxRestoreBytes,
 		maxEntries:              snapshotMaxEntries,
+		sandboxMode:             "none",
 	}
 	for _, opt := range opts {
 		if err := opt(b); err != nil {
@@ -114,12 +125,26 @@ func WithBlobs(b state.Blobs) Option {
 // When disabled (or not supplied), sandbox detection is skipped entirely and
 // SandboxWarnLabel returns "".
 func WithSandbox(enabled bool) Option {
+	return withSandboxLookPath(enabled, exec.LookPath)
+}
+
+// withSandboxLookPath is WithSandbox's lookPath-injectable core, split out so
+// unit tests can drive sandbox-mode capture deterministically without
+// depending on what's actually installed on the host running the test (same
+// seam pattern detectSandbox itself already uses — see sandbox.go). Production
+// code only ever calls WithSandbox, which pins lookPath to exec.LookPath.
+func withSandboxLookPath(enabled bool, lookPath func(string) (string, error)) Option {
 	return func(b *Backend) error {
 		if !enabled {
 			return nil
 		}
-		l, _ := detectSandbox(exec.LookPath)
+		l, label := detectSandbox(lookPath)
 		b.sandbox = l
+		if _, ok := l.(noOpLauncher); ok {
+			b.sandboxMode = "none"
+		} else {
+			b.sandboxMode = label
+		}
 		return nil
 	}
 }
@@ -141,6 +166,21 @@ func (b *Backend) SandboxWarnLabel() string {
 		return noSandboxWarnLabel
 	}
 	return "" // real launcher — no warning
+}
+
+// SandboxMode returns the resolved sandbox status token (F30): "none" when
+// sandboxing was not requested (WithSandbox(false) or not supplied) or when
+// it was requested but no platform sandbox was available (the no-op
+// fallback); otherwise the real launcher's label — "bwrap",
+// "landlock-trampoline", or "sandbox-exec". Always non-empty. A pure getter
+// over state resolved at construction time — no exec calls.
+//
+// Complements SandboxWarnLabel: that method returns "" in every case except
+// the requested-but-unavailable one (where it carries a loud warning string);
+// this one is a concise, always-populated token meant for the CLI's run-start
+// status line (cli/run.go), independent of whether a warning fires.
+func (b *Backend) SandboxMode() string {
+	return b.sandboxMode
 }
 
 // WithSnapshotMaxBlobBytes overrides the compressed snapshot-blob cap (default

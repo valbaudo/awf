@@ -79,7 +79,8 @@ type reactTestHarness struct {
 	blobs  *state.InMemoryBlobs
 	rs     *RunState
 	ld     *LocalDispatcher
-	input  map[string]any // run input bound into the node scope ({{ input.* }}); nil → no input
+	input  map[string]any    // run input bound into the node scope ({{ input.* }}); nil → no input
+	runEnv map[string]string // resolved workflow env: allowlist (F15/I1); nil → none declared
 }
 
 func newReactTestHarness(t *testing.T, r *ir.React, wf *ir.Workflow, runner *scriptedToolLoop) *reactTestHarness {
@@ -120,6 +121,7 @@ func (h *reactTestHarness) ictx() interpreterContext {
 		blobs:      h.blobs,
 		clk:        h.clk,
 		input:      h.input,
+		runEnv:     h.runEnv,
 	}
 }
 
@@ -314,6 +316,44 @@ func TestRunReactDispatchesToolThenAnswers(t *testing.T) {
 	tnr, _ := h.rs.LookupCompleted("react[0].round-1.tool-0")
 	if tnr.Outputs["stdout"] != "RESULT-OK" {
 		t.Fatalf("tool leaf stdout = %v", tnr.Outputs["stdout"])
+	}
+}
+
+// I1: a react tool's impl.run is a `run:`-shaped step, exactly like a graph
+// code step (F15) or a reduce.run reducer — a resolved workflow env: name
+// must reach its Exec env on EVERY backend, not just leak in on native via
+// the inherited shell environment. Before the I1 fix, dispatchOneTool set
+// Env: map[string]string{} unconditionally, so this failed (empty env).
+func TestRunReactToolImplForwardsWorkflowEnv(t *testing.T) {
+	wf := reactWorkflow("./check {{ args_file }}")
+	r := &ir.React{
+		ID:     "answer",
+		Prompt: "use the tool",
+		Tools:  []string{"check"},
+		With:   ir.RawConfig{"uses": "awf/llm", "model": "m"},
+	}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "check", Arguments: `{"x":1}`}}, FinishReason: "tool_calls"},
+		{Text: "done", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+	h.runEnv = map[string]string{"MY_VAR": "hello"}
+	wantArgs := argsFilePath("react[0].round-1.tool-0", "/work/.awf")
+	h.programTool("./check "+wantArgs, container.ExecResult{ExitCode: 0, Stdout: []byte("RESULT-OK")})
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+
+	got := ""
+	for _, c := range h.fake.Calls {
+		if c.Run == "./check "+wantArgs {
+			got = c.Env["MY_VAR"]
+		}
+	}
+	if got != "hello" {
+		t.Errorf("tool impl Env[MY_VAR] = %q, want %q (forwarded workflow env:)", got, "hello")
 	}
 }
 

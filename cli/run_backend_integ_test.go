@@ -444,6 +444,10 @@ func TestCLIRunNativeBackendContainerlessRunRecordsNative(t *testing.T) {
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
 	}
+	// F30: a real native backend prints its resolved sandbox mode at run start.
+	if !strings.Contains(stderr.String(), "awf run: native sandbox: ") {
+		t.Errorf("stderr missing native sandbox mode line: %s", stderr.String())
+	}
 }
 
 // Native resume is now admitted (mirror-Docker: the run already proved no

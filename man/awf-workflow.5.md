@@ -31,7 +31,7 @@ A workflow document has the following top-level shape:
     version: 1
     input: <json-schema>          # optional; run parameters
     input_files: { <name>: <contract> }  # optional; imported workflow file inputs
-    env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent steps
+    env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent AND run: steps
     imports:                      # optional; local subworkflows
       <id>: <relative-path.awf.yaml>
     assets:                       # optional; local files/dirs folded into the definition
@@ -84,10 +84,13 @@ A workflow document has the following top-level shape:
     host on every run and resume and are never written to the log, blobs, or
     traces. A secret value therefore never appears in the workflow file (list its
     name, not its value). Names must be valid environment-variable identifiers
-    (`[A-Za-z_][A-Za-z0-9_]*`). `env:` forwards into agent (`uses:`) invocations
-    only; it does not inject into `run:` steps. (Independently of `env:`, a `run:`
-    step inherits the host environment on the native backend but not on docker —
-    so do not rely on `env:` to reach a `run:` step.)
+    (`[A-Za-z_][A-Za-z0-9_]*`). `env:` forwards into both agent (`uses:`)
+    invocations and `run:` (code) steps: each declared name's resolved value is
+    set in the step's process environment on both the docker and native
+    backends. (Independently of `env:`, a `run:` step also inherits the full
+    host environment on the native backend but not on docker; `env:` is the one
+    channel guaranteed to reach a `run:` step on either backend. See
+    **STEP EXECUTION CONTRACT** for the full per-backend table.)
 
 Unknown workflow and step keys are rejected (**AWF1062**). The loader tolerates
 keys it does not recognize, so a typo (`ouput_files:`) or a GHA muscle-memory key
@@ -246,12 +249,15 @@ Docker-only workflow features are present; static image-backed containers,
 Compose containers, workspace snapshots, and runtime `map.image` route to docker
 for a pinned, reproducible baseline. An explicit
 **--backend native** instead runs static image-mode and `snapshot: workspace`
-workflows directly on the host, ignoring the declared container image (printing a
-no-isolation warning); it still rejects Compose containers, runtime Compose, and
-runtime map images, which have no host equivalent. **awf resume** uses the
+workflows directly on the host, ignoring the declared container image and any
+`resources:` (printing a warning that enumerates every ignored key); it still
+rejects Compose containers, runtime Compose, runtime map images, an explicit
+`cmd:`, and `keepalive: false`, none of which have a host equivalent (see
+**STEP EXECUTION CONTRACT**). **awf resume** uses the
 concrete backend recorded in `run.started`. Native runs are resumable: committed
 steps are replayed, `snapshot: workspace` workdirs are restored from their last
-committed diff, and other containers are recreated fresh. Resume preserves
+committed snapshot (a gzip-tar workdir archive on native, a copy-on-write diff
+on docker), and other containers are recreated fresh. Resume preserves
 checkpoint integrity (committed replay plus digest and runtime-version pins) but
 does not pin the host base environment, so shell-step tooling runs against the
 current host; use **--backend docker** for a fully reproducible baseline.
@@ -261,7 +267,9 @@ directly on the host but may only write to the per-run scratch directory and
 **TMPDIR**; all other host paths are read-only or inaccessible for writes.
 Credential directories — **~/.claude**, **$CODEX\_HOME** (or **~/.codex**),
 **~/.factory**, **~/.config/goose**, and **~/.config** — are readable so
-agents can authenticate. The sandbox tool is selected by availability, in order:
+agents can authenticate. The resolved sandbox mode is never left implicit: it
+is printed to stderr at run start and recorded in the `run.started` event (see
+**STEP EXECUTION CONTRACT**). The sandbox tool is selected by availability, in order:
 
 **bwrap** (bubblewrap)
 :   Default on Linux when **bwrap**(1) is on `PATH`. Wraps the step in a new
@@ -330,11 +338,16 @@ filesystem snapshot:
 
     workspace:
       image: oci://...@sha256:...
-      snapshot: workspace        # capture a copy-on-write FS diff at each commit; restore on resume
+      snapshot: workspace        # capture the workdir at each commit; restore on resume
 
-The runtime then captures a copy-on-write diff (not a squashed commit) at each
-commit boundary and restores it instead of rebuilding from the recipe. It is off
-by default and scoped to mutable-workspace containers.
+The runtime then captures the container's workdir (not a squashed commit) at
+each commit boundary and restores it instead of rebuilding from the recipe.
+On the docker backend this is a copy-on-write FS diff against the base
+image; the native backend has no image layers to diff against, so it
+captures a full gzip-tar archive of the workdir instead — both are
+content-addressed and restored the same way from the caller's point of view
+(see **STEP EXECUTION CONTRACT**). It is off by default and scoped to
+mutable-workspace containers.
 
 Two consequences to keep in mind:
 
@@ -343,6 +356,83 @@ Two consequences to keep in mind:
 - Loop and repair iterations accumulate state in the same container — usually
   what you want (the lab stays up), occasionally not (reset explicitly with a
   step).
+
+## STEP EXECUTION CONTRACT
+
+What a `run:` (code) step executes under is mostly, but not entirely, the same
+across the docker and native backends. This section is the single reference
+for the cwd, environment, and staging paths a `run:` script sees, and for the
+container declarations (`resources:`, `cmd:`, `keepalive:`) native cannot
+honor — the other mentions of these topics throughout this page point back
+here rather than repeating it.
+
+| Aspect | docker | native |
+|---|---|---|
+| cwd | image `WORKDIR` | per-run workdir `<state>/work/<run-id>/<container>` |
+| `$AWF_OUTPUT` | `/tmp/awf/<node>.json` (container-private) | `.awf/output/<node>.json` (workdir-relative) |
+| `$AWF_STAGING_ROOT` | `/work/.awf` (absolute in-container) | `.awf` (workdir-relative) |
+| `env:` | workflow `env:` names forwarded | workflow `env:` names forwarded; host env also visible via `sh -c` |
+| resource limits | `resources:` honored | `resources:` ignored (documented) |
+
+**cwd.** docker `exec` sets no explicit working directory, so a `run:` step
+inherits the image's `WORKDIR`; a *relative* `output_files` path is captured
+against that same `WORKDIR` (docker's capture joins a relative path to the
+container's `Config.WorkingDir` before reading it back, so the write base and
+the capture base match — an absolute path is used unchanged either way).
+Native runs a `run:` step in a per-run, per-container workdir,
+`<state>/work/<run-id>/<container>` (`<state>` defaults to `.awf`, or
+`AWF_STATE_DIR`), and resolves a relative `output_files` path against that same
+directory. Either way "relative" means relative to the step's actual cwd — an
+author does not special-case one backend over the other.
+
+**`$AWF_OUTPUT` / `$AWF_STAGING_ROOT` portability.** Both variables' values are
+backend-dependent by design (see the table). A `run:` or `reduce.run` command
+that hardcodes the docker-only literal `/work/.awf` instead of referencing
+`$AWF_STAGING_ROOT` validates cleanly but silently breaks under
+`--backend native`, whose staging root is the workdir-relative `.awf`, not
+that absolute path. `awf validate` catches this: a literal `/work/.awf` in
+`run:`/`reduce.run` draws warning **AWF3015**, pointing the author at
+`$AWF_STAGING_ROOT` instead. Always reference the env var; never the literal.
+
+**`env:`.** The workflow's top-level `env:` allowlist (see **TOP LEVEL**)
+forwards to both agent (`uses:`) and code (`run:`) steps, on both backends.
+Native additionally leaks the *entire* host environment into a `run:` step via
+`sh -c`, which docker does not — `env:` is the one channel a `run:` step can
+rely on being forwarded on either backend, so declare a name there rather than
+depending on native's incidental leak.
+
+**docker cold-cache pull.** `Create` pulls a static digest-pinned image
+automatically when the local cache misses it: on a not-found error from the
+docker daemon, it pulls the image by its pinned digest and retries `Create`
+once. This is infra rebuilt from the recipe, not a live-state restore, so it
+stays resume-safe — the digest pin, not the local cache, is what guarantees
+reproducibility.
+
+**native ignored/rejected keys.** Under `--backend native` (any static
+`image:` already routes `auto` to docker, so this only bites an explicit
+`--backend native`), a declared `image:` and any `resources:` are ignored: the step runs
+directly on the host, unconfined by either, and `awf run` prints a
+non-silent warning at run start naming every ignored key it finds. `cmd:` and
+`keepalive: false` are different in kind — neither has any host equivalent (a
+standing keepalive sidecar, or asking native not to keep alive a container it
+never had) — so an explicit `cmd:` or `keepalive: false` is rejected outright
+at run start (`ExitUsage`) rather than silently ignored.
+
+**snapshot scope.** A `snapshot: workspace` container's captured state is the
+workdir itself (not a squashed image commit), and the two backends capture it
+differently: a copy-on-write FS diff against the base image on docker, a full
+gzip-tar archive of the workdir on native (native has no image layers to diff
+against). Both are content-addressed and restored the same way from the
+caller's point of view.
+
+**native sandbox mode surfaced.** The native backend's resolved
+write-confinement launcher — `bwrap`, `landlock-trampoline`, `sandbox-exec`,
+or `none` when no platform sandbox was available — is never left implicit: it
+is printed to stderr at run start (`awf run: native sandbox: <mode>`) and
+recorded as `sandbox_mode` in the `run.started` journal event, so which
+confinement actually applied is always determinable after the fact, not just
+at the terminal (the sandbox tools themselves — `bwrap`, the Landlock
+trampoline, `sandbox-exec` — are described above).
 
 # TOOLS
 
@@ -469,6 +559,9 @@ is a `retryable_failure`, not a typed verdict);
 `output_files` captures artifacts and `input_files` stages prior artifacts in
 (see **Artifact channel** below). A nonzero exit is a `retryable_failure`
 unless its code is declared permanent (see **OUTCOMES, RETRY, AND REPAIR**).
+`run:`'s cwd, `$AWF_OUTPUT`/`$AWF_STAGING_ROOT` paths, `env:` forwarding, and
+resource-limit handling all differ by backend — see
+**STEP EXECUTION CONTRACT**.
 
 ## Agent step (uses)
 
@@ -795,7 +888,9 @@ step `input_files` because those bindings provide a destination tree.
     `/work/records/{{ input.cve_id }}.json` captures — and, for a named form, is
     referenced — under its substituted name. This is the path on the *producer's*
     side; the `input_files` reference itself stays a static
-    `step.<id>.files.<name>` handle, never a `{{ }}` template (see below).
+    `step.<id>.files.<name>` handle, never a `{{ }}` template (see below). A
+    *relative* `output_files` path captures against the step's cwd, which
+    differs by backend — see **STEP EXECUTION CONTRACT**.
 
 **input_files**
 :   A map of *in-container destination path* -> *artifact reference* —
@@ -1176,9 +1271,11 @@ An `if`/`then`/`else` branch adds no runtime multiplicity and does not count.
 The engine injects `AWF_STAGING_ROOT` into the reducer's environment. Its value
 is backend-dependent: **docker** uses `/work/.awf` (an absolute in-container
 path, the historical value); **native** uses `.awf` (workdir-relative, resolved
-by the runtime to the container's per-run workdir). Author `run:` reducers MUST
+by the runtime to the container's per-run workdir) — see
+**STEP EXECUTION CONTRACT**. Author `run:` reducers MUST
 reference staged files via `$AWF_STAGING_ROOT` rather than the literal
-`/work/.awf` path to remain portable across backends.
+`/work/.awf` path to remain portable across backends; a hardcoded literal
+draws validate warning **AWF3015**.
 
 The reducer reads the staged files and writes its declared `output_files` and
 `$AWF_OUTPUT`, which become the reduced node's artifacts and typed output. If a
@@ -1731,12 +1828,15 @@ content-addressed artifact, never a live container's process state.
     `output_files` are written to the artifact store, then a journal entry
     pointing at them is appended (content-address-then-pointer-swap, so a "done"
     record never references a missing artifact). For a `snapshot: workspace`
-    container, a copy-on-write FS diff is captured in the same commit.
+    container, its workdir is captured in the same commit — a copy-on-write FS
+    diff on the docker backend, a full gzip-tar workdir archive on native (see
+    **STEP EXECUTION CONTRACT**).
 
 **Resume**
 :   Folds the journal, then: recreates each live container from its image/Compose
     recipe (readiness re-runs via the entrypoint or `up --wait`; a
-    `snapshot: workspace` container restores its last committed diff instead);
+    `snapshot: workspace` container restores its last committed workdir
+    snapshot instead — the diff on docker, the archive on native);
     *replays committed steps from the journal* — recorded outputs and
     `output_files` are reused, not recomputed; and re-executes only the
     *uncommitted frontier* — the in-flight step on each active branch. A
