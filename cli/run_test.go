@@ -1887,6 +1887,51 @@ graph:
 	}
 }
 
+// TestCLIRun_WorkflowEnv_ReachesRunStep is F15's end-to-end proof: a workflow
+// env: name declared alongside a `run:` (code) step. Full `awf run` CLI path
+// (loader → validate → engine.Run against the fake backend) — the dispatched
+// code step must see the forwarded value, proving the CLI's resolveWorkflowRunEnv
+// → engine.RunOptions.RunEnv → interpreter → ResolvedInputs.Env wiring holds
+// together end-to-end, not just at the unit level.
+func TestCLIRun_WorkflowEnv_ReachesRunStep(t *testing.T) {
+	t.Setenv("MY_RUN_ENV", "hello-from-host")
+	tmpDir := t.TempDir()
+	wfPath := filepath.Join(tmpDir, "wf.yaml")
+	content := `workflow: wf-run-env
+version: 1
+env: [MY_RUN_ENV]
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: use_var
+    container: lab
+    run: "./use-var.sh"
+`
+	if err := os.WriteFile(wfPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	stateDir := filepath.Join(tmpDir, ".awf")
+
+	fake := container.NewFake()
+	fake.ProgramExec("./use-var.sh", container.ExecResult{ExitCode: 0}, nil)
+	var stdout, stderr bytes.Buffer
+	r := &cli.Runner{
+		IDGen:   &clock.Fake{IDs: []string{"run-env-run"}},
+		Backend: fake,
+	}
+	exit := r.Run([]string{"run", "--state-dir", stateDir, "--backend", "fake", wfPath}, &stdout, &stderr)
+	if exit != cli.ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr=%s", exit, cli.ExitOK, stderr.String())
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatalf("fake.Calls len = %d, want 1", len(fake.Calls))
+	}
+	if got := fake.Calls[0].Env["MY_RUN_ENV"]; got != "hello-from-host" {
+		t.Errorf("run: step's dispatched env MY_RUN_ENV = %q, want %q; calls=%+v", got, "hello-from-host", fake.Calls)
+	}
+}
+
 func TestCLIRun_ReusedRunnerBuildsFreshProductionRegistryPerInvocation(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test-fixture")
 	tmpDir := t.TempDir()

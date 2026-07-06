@@ -18,6 +18,7 @@ type interpreterContext struct {
 	wf            *ir.Workflow
 	input         map[string]any
 	inputFiles    map[string]string
+	runEnv        map[string]string // resolved workflow env: name→value (F15); injected into code-step Env, never read from the host here
 	runtimeParent string
 	runstate      *RunState
 	dispatcher    Dispatcher

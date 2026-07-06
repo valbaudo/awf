@@ -23,6 +23,34 @@ import (
 	"github.com/valbaudo/awf/state"
 )
 
+// resolveWorkflowRunEnv resolves the workflow's own declared env: allowlist
+// (module-recursive; awf-workflow(5)) against the host into a name→value map
+// for engine.RunOptions.RunEnv (F15: env: also reaches run: steps, not just
+// agents). Reuses mergeLoadedWorkflowEnv with a nil base — the --agent-env
+// allowlist is agent-only and must NOT leak into this channel — so the
+// returned names are exactly (and only) what the workflow itself declares.
+// Each name is resolved via os.LookupEnv here, at the CLI layer: the engine
+// itself never reads host env (determinism invariant). A name absent from the
+// host is silently omitted, mirroring buildAgentRegistryWithLiveRoot's
+// resolution loop. nil when the workflow declares no env: names — preserves
+// pre-F15 behavior (code steps get an empty Env).
+func resolveWorkflowRunEnv(ld *ir.LoadedDefinition) map[string]string {
+	names := mergeLoadedWorkflowEnv(nil, ld)
+	if len(names) == 0 {
+		return nil
+	}
+	env := make(map[string]string, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			env[name] = v
+		}
+	}
+	return env
+}
+
 // printRunUsage writes the run-subcommand usage line.
 func printRunUsage(w io.Writer) {
 	fprintln(w, "usage: awf run [--input <json>|--input-file <path>] [--input-files <name=path>]... [--run-id <id>] [--state-dir <dir>] [--backend <auto|native|docker|fake>] [--agent-env <CSV>] <path>")

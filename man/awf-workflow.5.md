@@ -84,10 +84,12 @@ A workflow document has the following top-level shape:
     host on every run and resume and are never written to the log, blobs, or
     traces. A secret value therefore never appears in the workflow file (list its
     name, not its value). Names must be valid environment-variable identifiers
-    (`[A-Za-z_][A-Za-z0-9_]*`). `env:` forwards into agent (`uses:`) invocations
-    only; it does not inject into `run:` steps. (Independently of `env:`, a `run:`
-    step inherits the host environment on the native backend but not on docker —
-    so do not rely on `env:` to reach a `run:` step.)
+    (`[A-Za-z_][A-Za-z0-9_]*`). `env:` forwards into both agent (`uses:`)
+    invocations and `run:` (code) steps: each declared name's resolved value is
+    set in the step's process environment on both the docker and native
+    backends. (Independently of `env:`, a `run:` step also inherits the full
+    host environment on the native backend but not on docker; `env:` is the one
+    channel guaranteed to reach a `run:` step on either backend.)
 
 Unknown workflow and step keys are rejected (**AWF1062**). The loader tolerates
 keys it does not recognize, so a typo (`ouput_files:`) or a GHA muscle-memory key

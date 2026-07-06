@@ -88,11 +88,16 @@ func (r *Runner) runAndFinish(
 		RunState:         rs,
 		Blobs:            blobs,
 	}
+	// F15: resolve the workflow's own env: allowlist fresh here — same on `awf
+	// run` and `awf resume` (env names are part of the definition; the host
+	// values they resolve to are a runtime input, not part of the digest, so
+	// re-resolving on resume is the same model as the agent-env path).
 	outcome, runErr := engine.Run(ctx, ld, rs, dispatcher, log, blobs, clock.System{}, engine.RunOptions{
 		Tap:           stdout,
 		Broker:        broker,
 		Assets:        assets,
 		InputFiles:    inputFiles,
+		RunEnv:        resolveWorkflowRunEnv(ld),
 		LiveFinalizer: liveDispatchFinalizer(liveRoot),
 		Resume:        resume,
 		RerunFrom:     rerunFrom,
