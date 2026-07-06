@@ -91,7 +91,7 @@ func TestValidatePruneScoreNotNumeric(t *testing.T) {
 }
 
 func TestValidatePruneValidKeep(t *testing.T) {
-	// Valid keep: top(2) over a declared numeric score field → no error.
+	// Valid keep: 2 over a declared numeric score field → no error.
 	p := &Prune{Score: "score", Keep: &PruneKeep{K: 2}}
 	diags := Validate(mapWithPrune(p, numScoreSchema("score")))
 	assertNoErrorCode(t, diags, "AWF1037")

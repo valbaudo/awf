@@ -17,9 +17,9 @@ import (
 // search-then-fold path is exercised once both clauses land on the same map; the
 // man page (awf-workflow.5) documents the intended composition.
 
-// pruneKeepWorkflow — SP5 keep: top(k). A map over 4 items; each body is one
+// pruneKeepWorkflow — SP5 keep: <k>. A map over 4 items; each body is one
 // code step `hyp` declaring a numeric `score` output the frontier reads. keep:
-// top(2) keeps the two highest scorers (item_passed) and prunes the other two
+// 2 keeps the two highest scorers (item_passed) and prunes the other two
 // (item_pruned) — a pruned item is NEITHER a pass NOR a failure, so the map ends
 // ok even with min_success UNSET (= all NON-pruned passed). concurrency: 2 — the
 // in-mem fake's shared Blobs serialize output_schema commits (the aggregation
@@ -58,7 +58,7 @@ graph:
               score: { type: number }
       prune:
         score: score
-        keep: top(2)
+        keep: 2
 `, fakeImageDigest)
 
 // pruneStopWhenWorkflow — SP5 stop_when over the running best. concurrency: 1
@@ -105,7 +105,7 @@ graph:
         stop_when: "{{ best.score >= 0.9 }}"
 `, fakeImageDigest)
 
-// prunePartialCrashWorkflow — keep: top(1) at concurrency 1, used by the
+// prunePartialCrashWorkflow — keep: 1 at concurrency 1, used by the
 // partial-crash resume test. concurrency 1 runs the four bodies STRICTLY
 // sequentially, so the body-append count is deterministic and the crash can be
 // aimed precisely at the single map.frontier append. Scores [0.9,0.1,0.2,0.3]
@@ -144,14 +144,14 @@ graph:
               score: { type: number }
       prune:
         score: score
-        keep: top(1)
+        keep: 1
 `, fakeImageDigest)
 
 // pruneTryWorkflow — SP5 a prune map nested in a try.do. A pruned item is NOT a
 // failure, so the frontier discarding losers must NOT raise an error into the
 // enclosing try → catch must NOT run. The catch step `sentinel` is deliberately
 // NOT programmed: if a pruned item tripped catch, the fake's ProgramExec-miss
-// would fire and the run would not be ok. Same keep: top(2) body as
+// would fire and the run would not be ok. Same keep: 2 body as
 // pruneKeepWorkflow.
 var pruneTryWorkflow = fmt.Sprintf(`workflow: conformance-prune-try
 version: 1
@@ -187,7 +187,7 @@ graph:
                     score: { type: number }
             prune:
               score: score
-              keep: top(2)
+              keep: 2
       catch:
         - id: sentinel
           container: c0
@@ -216,7 +216,7 @@ func scoreAgreeProgram(item string, v float64, agree bool) execProgram {
 	}
 }
 
-// pruneQuorumWorkflow — the prune: + reduce:{quorum} composition. keep: top(2)
+// pruneQuorumWorkflow — the prune: + reduce:{quorum} composition. keep: 2
 // over 4 items, then a quorum: 1.0 (unanimous) reduce over the SURVIVORS' `agree`
 // field. The quorum cohort must be the NON-PRUNED count (2 survivors), not the
 // full fan-out (4): with cohort=2 the two unanimous survivors meet quorum (need
@@ -256,7 +256,7 @@ graph:
               agree: { type: boolean }
       prune:
         score: score
-        keep: top(2)
+        keep: 2
       reduce:
         quorum: 1.0
         over: agree
@@ -266,7 +266,7 @@ graph:
 // the fake backend (the "definition of done"). Sub-tests pin each load-bearing
 // invariant from spec §3.2b + §7:
 //
-//   - prune_keep_top_k: 4 items, scores [0.1,0.9,0.5,0.7], keep: top(2); the two
+//   - prune_keep_top_k: 4 items, scores [0.1,0.9,0.5,0.7], keep: 2; the two
 //     highest (indices 1,3) commit item_passed, the two lowest (0,2) commit
 //     item_pruned; the map ends ok.
 //   - prune_not_counted_by_min_success: the same workflow with min_success UNSET
@@ -518,7 +518,7 @@ func testPruneResume(t *testing.T, factory BackendFactory) {
 	// assertions below catch both — the committed map.item{item_pruned} events are
 	// authoritative.
 
-	// Round 1: program all 4 scores; keep: top(2). Run completes ok with 4
+	// Round 1: program all 4 scores; keep: 2. Run completes ok with 4
 	// map.item events ({1,3}=passed, {0,2}=pruned).
 	factory1 := preProgramFake(t, factory, keepTopKPrograms())
 	h := newHarnessWithInput(t, factory1, pruneKeepWorkflow,
@@ -590,7 +590,7 @@ func testPrunePartialCrashFrontier(t *testing.T, factory BackendFactory) {
 	// frontier has not. Under a (buggy) per-item commit a crash here would leave a
 	// PARTIAL frontier — resume would skip the committed survivor (its score never
 	// re-fed) and re-derive the rest against an EMPTY controller, keeping MORE
-	// survivors than keep: top(1) allows. The atomic event makes that impossible: a
+	// survivors than keep: 1 allows. The atomic event makes that impossible: a
 	// crash before it leaves ZERO committed dispositions, so resume re-derives the
 	// WHOLE frontier over the full (replayed) score set — exactly one survivor.
 	scores := []execProgram{
@@ -650,7 +650,7 @@ func testPrunePartialCrashFrontier(t *testing.T, factory BackendFactory) {
 		}
 	}
 	if survivors != 1 {
-		t.Errorf("prune_partial_crash: %d survivors after resume, want exactly 1 (keep top(1) — the frontier must not be re-derived against a partial score set)", survivors)
+		t.Errorf("prune_partial_crash: %d survivors after resume, want exactly 1 (keep: 1 — the frontier must not be re-derived against a partial score set)", survivors)
 	}
 
 	// Commit-once: the resumed run emits exactly one disposition per item (one
@@ -665,7 +665,7 @@ func testPrunePartialCrashFrontier(t *testing.T, factory BackendFactory) {
 func testPruneQuorumCohort(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	// prune: + reduce:{quorum} composition (the cohort-denominator fix). keep:
-	// top(2) over 4 items prunes the two lowest scorers; a quorum: 1.0 reduce then
+	// 2 over 4 items prunes the two lowest scorers; a quorum: 1.0 reduce then
 	// folds the SURVIVORS' `agree` votes. The quorum threshold must be measured
 	// against the NON-PRUNED cohort (2 survivors), exactly as min_success excludes
 	// pruned items. The two survivors (b=0.9, d=0.7) both agree, so the unanimous

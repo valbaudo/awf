@@ -21,8 +21,8 @@ package ir
 //     container:) and quorum/over aggregation scope (over: names a real body field;
 //     min_success and reduce:{quorum} are mutually exclusive)
 //   - prune      (AWF1037, AWF5008) — map prune: frontier shape (a `score` field +
-//     exactly one of keep: top(<k>) / stop_when:) and score-field binding (score
-//     names a numeric field in the body's last step's output_schema)
+//     exactly one of keep: <positive int> / stop_when:) and score-field binding
+//     (score names a numeric field in the body's last step's output_schema)
 //   - misplaced_with (AWF1061) — reserved step-level key names nested inside an
 //     agent step's with: block (silently ignored by the engine; advisory warning)
 //   - refs       (AWF3001/2) — output_schema-iff-referenced cross-walk via the template

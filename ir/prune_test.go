@@ -2,45 +2,101 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
-func TestParsePruneKeep(t *testing.T) {
+// TestPruneKeepUnmarshalPlainInt: F21 — the wire form is a plain positive
+// integer. Valid values parse straight into K; non-positive values are
+// rejected (AWF1037's "keep must be a positive integer").
+func TestPruneKeepUnmarshalPlainInt(t *testing.T) {
 	cases := []struct {
 		raw     string
 		wantK   int
 		wantErr bool
 	}{
-		{"top(5)", 5, false},
-		{"top(1)", 1, false},
-		{"  top( 3 )  ", 3, false}, // surrounding + inner whitespace trimmed
-		{"top(0)", 0, true},        // k must be positive
-		{"top(-1)", 0, true},       // k must be positive
-		{"top()", 0, true},         // missing k
-		{"top(5", 0, true},         // unbalanced paren
-		{"keep(5)", 0, true},       // wrong head
-		{"top(abc)", 0, true},      // non-int k
+		{"5", 5, false},
+		{"1", 1, false},
+		{"100", 100, false},
+		{"0", 0, true},    // k must be positive
+		{"-1", 0, true},   // k must be positive
+		{"-100", 0, true}, // k must be positive
 	}
 	for _, tc := range cases {
-		got, err := ParsePruneKeep(tc.raw)
+		var pk PruneKeep
+		err := json.Unmarshal([]byte(tc.raw), &pk)
 		if tc.wantErr {
 			if err == nil {
-				t.Errorf("ParsePruneKeep(%q): want error, got K=%d nil", tc.raw, got.K)
+				t.Errorf("Unmarshal(%q): want error, got K=%d nil", tc.raw, pk.K)
+				continue
+			}
+			if !strings.Contains(err.Error(), "keep must be a positive integer") {
+				t.Errorf("Unmarshal(%q): err = %q, want it to mention %q", tc.raw, err.Error(), "keep must be a positive integer")
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("ParsePruneKeep(%q): unexpected error: %v", tc.raw, err)
+			t.Errorf("Unmarshal(%q): unexpected error: %v", tc.raw, err)
 			continue
 		}
-		if got.K != tc.wantK {
-			t.Errorf("ParsePruneKeep(%q): K=%d, want %d", tc.raw, got.K, tc.wantK)
+		if pk.K != tc.wantK {
+			t.Errorf("Unmarshal(%q): K=%d, want %d", tc.raw, pk.K, tc.wantK)
 		}
 	}
 }
 
+// TestPruneKeepUnmarshalTopRejected: the removed top(<k>) function-call-shaped
+// literal (F21) is a hard rejection with a migration-specific message, not a
+// silent alias for the plain integer form.
+func TestPruneKeepUnmarshalTopRejected(t *testing.T) {
+	cases := []string{`"top(3)"`, `"top(1)"`, `"  top( 3 )  "`}
+	for _, raw := range cases {
+		var pk PruneKeep
+		err := json.Unmarshal([]byte(raw), &pk)
+		if err == nil {
+			t.Fatalf("Unmarshal(%s): want error (top(k) was removed), got K=%d nil", raw, pk.K)
+		}
+		if !strings.Contains(err.Error(), "use a plain positive integer") {
+			t.Errorf("Unmarshal(%s): err = %q, want it to mention %q", raw, err.Error(), "use a plain positive integer")
+		}
+		if !strings.Contains(err.Error(), "top(<k>)") {
+			t.Errorf("Unmarshal(%s): err = %q, want it to mention %q", raw, err.Error(), "top(<k>)")
+		}
+	}
+}
+
+// TestPruneKeepUnmarshalOtherBadShapes covers non-integer, non-top(...)
+// shapes: they all get the general AWF1037 "keep must be a positive integer"
+// message rather than the top(<k>)-specific one.
+func TestPruneKeepUnmarshalOtherBadShapes(t *testing.T) {
+	cases := []string{`"bogus"`, `"3"`, `null`, `3.5`, `[1,2]`, `{}`}
+	for _, raw := range cases {
+		var pk PruneKeep
+		err := json.Unmarshal([]byte(raw), &pk)
+		if err == nil {
+			t.Errorf("Unmarshal(%s): want error, got K=%d nil", raw, pk.K)
+			continue
+		}
+		if strings.Contains(err.Error(), "top(<k>)") {
+			t.Errorf("Unmarshal(%s): err = %q should NOT mention top(<k>) — that message is reserved for the removed top(...) literal", raw, err.Error())
+		}
+	}
+}
+
+// TestPruneKeepMarshalPlainInt: MarshalJSON re-emits the plain integer, not
+// the removed "top(<k>)" string form (digest stability for the new syntax).
+func TestPruneKeepMarshalPlainInt(t *testing.T) {
+	b, err := json.Marshal(PruneKeep{K: 3})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if got, want := string(b), "3"; got != want {
+		t.Errorf("Marshal(PruneKeep{K:3}) = %q, want %q", got, want)
+	}
+}
+
 func TestMapUnmarshalPruneKeep(t *testing.T) {
-	raw := []byte(`{"map":{"over":"input.items","as":"item","container":"lab","body":[{"id":"b","run":"x"}],"prune":{"score":"s","keep":"top(3)"}}}`)
+	raw := []byte(`{"map":{"over":"input.items","as":"item","container":"lab","body":[{"id":"b","run":"x"}],"prune":{"score":"s","keep":3}}}`)
 	var nl NodeList
 	if err := json.Unmarshal([]byte("["+string(raw)+"]"), &nl); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -56,13 +112,28 @@ func TestMapUnmarshalPruneKeep(t *testing.T) {
 		t.Errorf("Prune.Score = %q, want %q", m.Prune.Score, "s")
 	}
 	if m.Prune.Keep == nil {
-		t.Fatal("Prune.Keep is nil, want top(3)")
+		t.Fatal("Prune.Keep is nil, want K=3")
 	}
 	if m.Prune.Keep.K != 3 {
 		t.Errorf("Prune.Keep.K = %d, want 3", m.Prune.Keep.K)
 	}
 	if m.Prune.StopWhen != "" {
 		t.Errorf("Prune.StopWhen = %q, want empty", m.Prune.StopWhen)
+	}
+}
+
+// TestMapUnmarshalPruneKeepTopRejectedEndToEnd confirms the rejection reaches
+// all the way through the full node-decode path (NodeList -> Map -> Prune ->
+// PruneKeep), not just the PruneKeep type in isolation.
+func TestMapUnmarshalPruneKeepTopRejectedEndToEnd(t *testing.T) {
+	raw := []byte(`{"map":{"over":"input.items","as":"item","container":"lab","body":[{"id":"b","run":"x"}],"prune":{"score":"s","keep":"top(3)"}}}`)
+	var nl NodeList
+	err := json.Unmarshal([]byte("["+string(raw)+"]"), &nl)
+	if err == nil {
+		t.Fatal("unmarshal: want error (keep: top(3) was removed), got nil")
+	}
+	if !strings.Contains(err.Error(), "use a plain positive integer") {
+		t.Errorf("unmarshal err = %q, want it to mention %q", err.Error(), "use a plain positive integer")
 	}
 }
 
@@ -175,9 +246,9 @@ func TestDigestFoldsPrune(t *testing.T) {
 	if dStop == dPrune {
 		t.Fatalf("different prune policies hashed equal: %s", dPrune)
 	}
-	// The k of keep: top(k) folds in too — PruneKeep.K has no json tag (its custom
-	// marshaler owns the "top(<k>)" wire form), so this guards that the k actually
-	// reaches the hash: top(2) and top(3) must differ.
+	// The k of keep: <k> folds in too — PruneKeep.K has no json tag (its custom
+	// marshaler owns the plain-integer wire form), so this guards that the k
+	// actually reaches the hash: keep: 2 and keep: 3 must differ.
 	withK3 := sampleWorkflow()
 	withK3.Graph = append(withK3.Graph,
 		&Map{Over: "input.items", As: "item", Container: "lab",
@@ -189,7 +260,7 @@ func TestDigestFoldsPrune(t *testing.T) {
 		t.Fatal(err)
 	}
 	if dK3 == dPrune {
-		t.Fatalf("keep: top(k) k value did not fold into the digest (top(2)==top(3): %s)", dPrune)
+		t.Fatalf("keep: <k> value did not fold into the digest (keep:2==keep:3: %s)", dPrune)
 	}
 }
 

@@ -5,8 +5,8 @@ import "strings"
 // validatePrune checks every map `prune:` clause (SP5, spec §3.2b). prune is a
 // map-only clause — parallel has no Prune field and no wire surface (Task 2/5),
 // so this pass only switches on *Map.
-//   - shape (AWF1037): exactly one of keep/stop_when; non-empty score; positive
-//     top(k); non-empty stop_when.
+//   - shape (AWF1037): exactly one of keep/stop_when; non-empty score; keep is a
+//     positive integer; non-empty stop_when.
 //   - score binding (AWF5008): score must name a numeric field in the body's
 //     last step's output_schema (the engine reads it as a typed number).
 //

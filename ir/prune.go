@@ -3,7 +3,6 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -20,7 +19,10 @@ type Prune struct {
 	// its output_schema. The engine reads it from the committed item's typed
 	// outputs (never parses text). Required (AWF1037 / AWF5008).
 	Score string `json:"score"`
-	// Keep is the "keep the top k scorers" policy. Wire form: keep: top(<k>).
+	// Keep is the "keep the top k scorers" policy. Wire form: keep: <k> (a
+	// plain positive integer; F21 dropped the earlier top(<k>) wrapper — it
+	// was the format's only function-call-shaped literal and top-k was
+	// always the only mode, so the wrapper carried zero information).
 	// Mutually exclusive with StopWhen (AWF1037).
 	Keep *PruneKeep `json:"keep,omitempty"`
 	// StopWhen is a bounded boolean expression over `best.score` (the running
@@ -29,32 +31,43 @@ type Prune struct {
 	StopWhen string `json:"stop_when,omitempty"`
 }
 
-// PruneKeep is the parsed top(k) policy. Custom (un)marshal so the wire form is
-// the string "top(<k>)" while the in-memory form is a typed K — mirroring how
-// Skip/Parallel carry a non-object scalar through custom (un)marshalers. NOTE:
-// K has no json tag (the custom marshaler owns the wire form), so PruneKeep is
-// deliberately NOT in ir/tags_test.go's irTypes() list (Task 2 Step 5).
+// PruneKeep is the "keep the top k scorers" policy. Custom (un)marshal so the
+// wire form is a plain positive JSON integer while the in-memory form is a
+// typed K — mirroring how Skip/Parallel carry a non-object scalar through
+// custom (un)marshalers. NOTE: K has no json tag (the custom marshaler owns
+// the wire form), so PruneKeep is deliberately NOT in ir/tags_test.go's
+// irTypes() list (Task 2 Step 5).
+//
+// F21: the wire form used to be the function-call-shaped string "top(<k>)" —
+// the format's only literal of that shape, and pure noise since top-k was
+// always the only mode. It is now a plain positive integer; the removed
+// string form is a hard validate-time rejection, not a silent alias.
 type PruneKeep struct {
 	K int
 }
 
-// UnmarshalJSON parses the wire string "top(<k>)" into K (AWF1037 on bad shape).
+// UnmarshalJSON accepts a plain positive JSON integer. The removed top(<k>)
+// string form gets a migration-specific message; any other non-integer or
+// non-positive value gets AWF1037's "keep must be a positive integer".
 func (p *PruneKeep) UnmarshalJSON(b []byte) error {
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return fmt.Errorf("prune.keep must be the string top(<k>): %w", err)
+	var k int
+	if err := json.Unmarshal(b, &k); err != nil {
+		var s string
+		if json.Unmarshal(b, &s) == nil && strings.HasPrefix(strings.TrimSpace(s), "top(") {
+			return fmt.Errorf("keep: use a plain positive integer (`top(<k>)` was removed)")
+		}
+		return fmt.Errorf("prune.keep: keep must be a positive integer")
 	}
-	pk, err := ParsePruneKeep(s)
-	if err != nil {
-		return err
+	if k <= 0 {
+		return fmt.Errorf("prune.keep %d: keep must be a positive integer", k)
 	}
-	*p = pk
+	p.K = k
 	return nil
 }
 
-// MarshalJSON re-emits the canonical "top(<k>)" wire form (digest-stable).
+// MarshalJSON re-emits the canonical plain-integer wire form (digest-stable).
 func (p PruneKeep) MarshalJSON() ([]byte, error) {
-	return json.Marshal(fmt.Sprintf("top(%d)", p.K))
+	return json.Marshal(p.K)
 }
 
 // LastStepID returns the id of the body's LAST node when that node is a
@@ -77,23 +90,4 @@ func LastStepID(body NodeList) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-// ParsePruneKeep parses "top(<k>)" into a PruneKeep with a positive K. Trims
-// surrounding and inner whitespace. Any other shape (wrong head, non-int,
-// k <= 0, unbalanced parens) is an error — the validator surfaces it as AWF1037.
-func ParsePruneKeep(raw string) (PruneKeep, error) {
-	s := strings.TrimSpace(raw)
-	if !strings.HasPrefix(s, "top(") || !strings.HasSuffix(s, ")") {
-		return PruneKeep{}, fmt.Errorf("prune.keep %q: expected top(<k>)", raw)
-	}
-	inner := strings.TrimSpace(s[len("top(") : len(s)-1])
-	k, err := strconv.Atoi(inner)
-	if err != nil {
-		return PruneKeep{}, fmt.Errorf("prune.keep %q: top(<k>) needs an integer k: %w", raw, err)
-	}
-	if k <= 0 {
-		return PruneKeep{}, fmt.Errorf("prune.keep %q: k must be a positive integer", raw)
-	}
-	return PruneKeep{K: k}, nil
 }
