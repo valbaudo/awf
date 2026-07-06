@@ -215,7 +215,10 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 		case *Map:
 			path := PathFor(parent, "map", "", i)
 			checkMapID(v, path, c, seen)
-			if string(v.Over) == "" || v.As == "" || v.Container == "" || v.Concurrency == 0 {
+			// F51: `over:` is satisfied by either arm — the `{{ }}` expression (Over) or
+			// the literal sequence (OverItems, non-nil even for an empty `[]`).
+			overPresent := string(v.Over) != "" || v.OverItems != nil
+			if !overPresent || v.As == "" || v.Container == "" || v.Concurrency == 0 {
 				c.errf(path, "AWF1012", catalog["AWF1012"])
 			}
 			if v.Over != "" {

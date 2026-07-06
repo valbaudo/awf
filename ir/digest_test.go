@@ -238,6 +238,91 @@ func TestDigestChangesWhenSkillCorpusChanges(t *testing.T) {
 	}
 }
 
+// mapOverExprWorkflow / mapOverLiteralWorkflow are the two F51 arm fixtures. They are
+// byte-for-byte identical except for the `over:` value — one an expression string, the
+// other a literal sequence — so any digest divergence between them is attributable solely
+// to the arm. ID is set on the map node deliberately: it exercises the raw pre-JCS key
+// ordering in Map.MarshalJSON (the shadowing `over` field is emitted before the alias's
+// promoted `id`), which JCS re-sorts downstream — see the note in ir/node_marshal.go.
+func mapOverExprWorkflow() *Workflow {
+	return &Workflow{
+		ID:         "f51-map",
+		Version:    1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				ID: "m", Over: "{{ input.items }}", As: "item", Container: "c", Concurrency: 1,
+				Body: NodeList{&CodeStep{ID: "b", Container: "c", Run: "echo {{ item }}"}},
+			},
+		},
+	}
+}
+
+func mapOverLiteralWorkflow() *Workflow {
+	wf := mapOverExprWorkflow()
+	m := wf.Graph[0].(*Map)
+	m.Over = ""
+	m.OverItems = []any{"a", "b", "c"}
+	return wf
+}
+
+// TestDigestF51ExpressionArmGolden pins the F51 expression-arm digest — must not change
+// without a deliberate format-version bump (digest stability is load-bearing for
+// resume/pin-on-drift). This is the exact "critical risk" invariant: an expression-arm map's
+// canonical form must survive the F51 change (adding the OverItems field + custom
+// Map.(Un)MarshalJSON) byte-identically. If a future edit to Map.MarshalJSON shifts a value,
+// this fails loudly instead of silently changing every existing expression-arm map's digest.
+func TestDigestF51ExpressionArmGolden(t *testing.T) {
+	const want = "awf-d1:sha256:c1435084c6e5e880ddcc459081c1d9c8b5d518abff6fcdb4c4c0967c3cf092b3"
+	got, err := mapOverExprWorkflow().ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("F51 expression-arm digest changed:\n got  = %s\n want = %s\n(if this change is intentional, it needs a deliberate format-version bump)", got, want)
+	}
+}
+
+// TestDigestF51LiteralArmGolden pins the F51 literal-arm digest AND asserts it differs from
+// the equivalent expression-arm map (the two arms are distinct definitions — a literal
+// [a,b,c] is NOT the same workflow as `over: {{ input.items }}`, so they must not collide).
+func TestDigestF51LiteralArmGolden(t *testing.T) {
+	const want = "awf-d1:sha256:a39ee081b278a82844492e67c63f189f4b5cefe75f0859aa0914121d26c86fdc"
+	lit, err := mapOverLiteralWorkflow().ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lit != want {
+		t.Fatalf("F51 literal-arm digest changed:\n got  = %s\n want = %s\n(if this change is intentional, it needs a deliberate format-version bump)", lit, want)
+	}
+	expr, err := mapOverExprWorkflow().ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lit == expr {
+		t.Fatalf("literal-arm and expression-arm maps hashed equal (%s) — distinct definitions must differ", lit)
+	}
+}
+
+// TestDigestF51LiteralItemContentFolds asserts two literal maps differing ONLY in item
+// content produce different digests — the literal items are part of the definition and must
+// fold into the digest (strictly more resume-friendly than a bootstrap workaround).
+func TestDigestF51LiteralItemContentFolds(t *testing.T) {
+	a, err := mapOverLiteralWorkflow().ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := mapOverLiteralWorkflow()
+	changed.Graph[0].(*Map).OverItems = []any{"a", "b", "d"} // c -> d
+	b, err := changed.ComputeDigest(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatalf("digest ignored literal over: item content (got %s for both)", a)
+	}
+}
+
 func TestDigestFoldsReduce(t *testing.T) {
 	// A reduce: clause on a map is part of the definition: declaring it changes
 	// the digest (so resume hard-errors on a changed reducer), while a nil

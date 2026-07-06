@@ -251,6 +251,89 @@ func TestMapMinSuccessAcceptsNumber(t *testing.T) {
 	}
 }
 
+// F51: map `over:` accepts a literal YAML/JSON sequence in addition to the `{{ }}`
+// expression string — a two-arm union (Over / OverItems) with shape-dispatch in
+// Map.UnmarshalJSON (node_unmarshal.go) and Map.MarshalJSON (node_marshal.go).
+
+func TestMapOverLiteralDecodesAndIterates(t *testing.T) {
+	in := `{"map":{"over":["a","b","c"],"as":"x","container":"c","concurrency":2,"body":[]}}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatalf("literal over must decode: %v", err)
+	}
+	m, ok := n.(*Map)
+	if !ok {
+		t.Fatalf("got %T, want *Map", n)
+	}
+	if m.Over != "" {
+		t.Errorf("Over = %q, want empty (literal arm live)", m.Over)
+	}
+	want := []any{"a", "b", "c"}
+	if len(m.OverItems) != len(want) {
+		t.Fatalf("OverItems = %+v, want %+v", m.OverItems, want)
+	}
+	for i, v := range want {
+		if m.OverItems[i] != v {
+			t.Errorf("OverItems[%d] = %v, want %v", i, m.OverItems[i], v)
+		}
+	}
+	// Marshal direction: "over" must re-emit as the literal array, not split into a
+	// separate "over_items" key.
+	out, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
+func TestMapOverExpressionUnchanged(t *testing.T) {
+	in := `{"map":{"over":"{{ step.x.items }}","as":"x","container":"c","concurrency":1,"body":[]}}`
+	n, err := unmarshalNode(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := n.(*Map)
+	if !ok {
+		t.Fatalf("got %T, want *Map", n)
+	}
+	if string(m.Over) != "{{ step.x.items }}" {
+		t.Errorf("Over = %q, want the expression string unchanged", m.Over)
+	}
+	if m.OverItems != nil {
+		t.Errorf("OverItems = %+v, want nil (expression arm live)", m.OverItems)
+	}
+	out, err := json.Marshal(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip: got %s want %s", out, in)
+	}
+}
+
+func TestMapOverLiteralRejectsTemplateItem(t *testing.T) {
+	in := `{"map":{"over":["a","{{ step.x }}"],"as":"x","container":"c","concurrency":1,"body":[]}}`
+	_, err := unmarshalNode(json.RawMessage(in))
+	if err == nil {
+		t.Fatal("want error rejecting a {{ }} template inside a literal over: item, got nil")
+	}
+	if !strings.Contains(err.Error(), "over[1]") {
+		t.Errorf("error = %v, want it to identify the offending index (over[1])", err)
+	}
+}
+
+func TestMapOverLiteralRejectsTemplateInNestedObjectItem(t *testing.T) {
+	// A flat-object item's value may also carry a template — must be caught too, not
+	// just top-level string items.
+	in := `{"map":{"over":[{"name":"a"},{"name":"{{ step.x }}"}],"as":"x","container":"c","concurrency":1,"body":[]}}`
+	_, err := unmarshalNode(json.RawMessage(in))
+	if err == nil {
+		t.Fatal("want error rejecting a {{ }} template inside a nested literal item field, got nil")
+	}
+}
+
 func TestAgentStepRoundTrip(t *testing.T) {
 	in := `{"id":"triage","container":"lab","uses":"anthropic/claude-code","with":{"skill":"cve-triage"}}`
 	n, err := unmarshalNode(json.RawMessage(in))

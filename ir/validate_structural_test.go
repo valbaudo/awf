@@ -167,6 +167,25 @@ func TestStructuralMapRequiresAllFields(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF1012", "map[0]")
 }
 
+func TestStructuralMapLiteralOverSatisfiesAWF1012(t *testing.T) {
+	// F51: the literal-sequence arm (OverItems) satisfies the `over:` requirement just
+	// like the {{ }} expression arm (Over) did before — no AWF1012 "missing over" error.
+	ld := makeLD(&Workflow{
+		ID: "map-literal-over", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				OverItems:   []any{"a", "b", "c"},
+				As:          "item",
+				Container:   "c",
+				Concurrency: 2,
+				Body:        NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+			},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF1012")
+}
+
 func TestStructuralMapContainerMustResolve(t *testing.T) {
 	// I5: Map.Container is treated like any step's container ref — must resolve.
 	ld := makeLD(&Workflow{

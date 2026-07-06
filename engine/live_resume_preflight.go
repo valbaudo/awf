@@ -250,7 +250,7 @@ func (w *liveResumePreflightWalker) walkMap(n *ir.Map, path string, ictx interpr
 	if _, done := ictx.runstate.LookupCompleted(path); done {
 		return false, nil
 	}
-	overVal, err := evalOver(string(n.Over), ictx.scope(path+".over"))
+	overVal, err := resolveOverItems(n, ictx.scope(path+".over"))
 	if err != nil {
 		return false, fmt.Errorf("engine.LiveResumePreflightRequests: evaluate map over at %q: %w", path, err)
 	}

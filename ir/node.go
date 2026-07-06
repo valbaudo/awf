@@ -128,8 +128,21 @@ type Skip struct {
 	Reason string `json:"-"`
 }
 type Map struct {
-	ID          string   `json:"id,omitempty"`
-	Over        Expr     `json:"over"`
+	ID string `json:"id,omitempty"`
+	// Over carries the `{{ }}` expression arm of the two-arm `over:` union (F51): a JSON
+	// string on the wire. Empty when the literal-sequence arm (OverItems) is populated
+	// instead — exactly one of Over/OverItems is live on a decoded Map, never both. The
+	// shape-dispatch lives in Map.UnmarshalJSON/MarshalJSON (node_unmarshal.go /
+	// node_marshal.go); engine/map.go picks the arm to iterate.
+	Over Expr `json:"over"`
+	// OverItems carries the literal-sequence arm of `over:` (F51): a plain JSON array
+	// instead of a `{{ }}` expression (e.g. an inline matrix `over: [a, b, c]`). Each item
+	// is a scalar or flat object/array with NO `{{ }}` templates — the literal arm is
+	// fully static, no engine-scope substitution. json:"-" because it is folded manually
+	// into the wire "over" key (never a separate "over_items" key) by Map's custom
+	// MarshalJSON; that also keeps TestEveryExportedFieldHasNonEmptyJSONTag happy the same
+	// way Parallel.Children and Skip.Reason already do.
+	OverItems   []any    `json:"-"`
 	As          string   `json:"as"`
 	Container   string   `json:"container"`
 	Image       Template `json:"image,omitempty"`

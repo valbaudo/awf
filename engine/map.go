@@ -77,10 +77,12 @@ func runMapWithContext(
 		return "", fmt.Errorf("engine.runMap: map at %q requires *LocalDispatcher for per-item container provisioning (got %T)", mapPath, ictx.dispatcher)
 	}
 
-	// 1. Evaluate `over`. Design Q1: bare reference; the resolved value must
-	//    be a []any. Empty/nil → ok with zero items.
+	// 1. Resolve `over`. F51: the literal-sequence arm (n.OverItems) is used directly, no
+	//    scope evaluation; the `{{ }}` expression arm (Design Q1: bare reference) is
+	//    resolved via evalOver. Either way the resolved value must be a []any. Empty/nil →
+	//    ok with zero items.
 	overScope := ictx.scope(mapPath + ".over")
-	overVal, err := evalOver(string(n.Over), overScope)
+	overVal, err := resolveOverItems(n, overScope)
 	if err != nil {
 		return failStep(ictx.log, mapPath, OutcomePermanentFailure, fmt.Errorf("evaluate over: %w", err))
 	}
@@ -619,6 +621,19 @@ func updateMapItemStatus(rs *RunState, mapPath string, n int, status string) {
 			return
 		}
 	}
+}
+
+// resolveOverItems resolves a Map's `over:` to its typed item list, picking whichever arm
+// of F51's two-arm union is live: the literal sequence (n.OverItems, decoded and
+// template-checked already at IR unmarshal time — used directly, no scope evaluation) or,
+// for the `{{ }}` expression arm, evalOver against scope as before. Shared by
+// runMapWithContext and the live-resume preflight walker (live_resume_preflight.go) so both
+// stay in lockstep.
+func resolveOverItems(n *ir.Map, scope template.Scope) (any, error) {
+	if n.OverItems != nil {
+		return []any(n.OverItems), nil
+	}
+	return evalOver(string(n.Over), scope)
 }
 
 // evalOver evaluates `over` per Design Q1: parse as envelope, unwrap, expect a

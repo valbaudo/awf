@@ -211,6 +211,47 @@ func TestRunMapMultipleItemsAllPass(t *testing.T) {
 	}
 }
 
+// TestRunMapLiteralOverIterates is F51's engine-side test: a Map whose `over:` is the
+// literal-sequence arm (OverItems, no {{ }} expression) must iterate its items exactly
+// like the expression arm does — same As-binding, same per-item dispatch, no evalOver
+// call at all (n.Over is empty here; resolveOverItems in map.go picks OverItems directly).
+func TestRunMapLiteralOverIterates(t *testing.T) {
+	rig := newMapRig(t, ok("echo a"), ok("echo b"), ok("echo c"))
+	mapNode := &ir.Map{
+		OverItems:   []any{"a", "b", "c"},
+		As:          "x",
+		Container:   testMapContainer,
+		Concurrency: 2,
+		Body:        echoStep("x", nil),
+	}
+	wf := &ir.Workflow{
+		ID: "lit-over", Version: 1,
+		Containers: map[string]ir.Container{
+			testMapContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
+		},
+		Graph: ir.NodeList{mapNode},
+	}
+	rs := NewRunState(testRunID, testDigest, nil)
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("got (%q, %v), want (ok, nil)", oc, err)
+	}
+	items := rs.LookupMapItems(testMapPath)
+	if len(items) != 3 {
+		t.Fatalf("MapItems len = %d, want 3", len(items))
+	}
+	want := []any{"a", "b", "c"}
+	for _, mr := range items {
+		if mr.Status != ItemPassed {
+			t.Errorf("item N=%d status=%q, want item_passed", mr.N, mr.Status)
+		}
+		if mr.ItemValue != want[mr.N] {
+			t.Errorf("item N=%d ItemValue = %v, want %v", mr.N, mr.ItemValue, want[mr.N])
+		}
+	}
+}
+
 func TestRunMapConcurrencyCapEnforced(t *testing.T) {
 	// concurrency: 2; 5 items, each item's exec blocks until released.
 	// Assert at most 2 concurrent in-flight at any time.
