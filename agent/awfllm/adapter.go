@@ -91,15 +91,16 @@ func (*Adapter) Ref() string { return AdapterRef }
 // Capabilities: layer-2 typed output (NativeSchema:false) + no container needed +
 // threading supported (engine-supplied continues: message history prepended by launch).
 func (*Adapter) Capabilities() agent.Caps {
-	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true}
+	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true, InlineInputFiles: true}
 }
 
-// RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var
-// names this adapter authenticates with (provider-alternatives: OPENAI_API_KEY
-// for the default OpenAI/compatible endpoint, ANTHROPIC_API_KEY for provider:
-// anthropic). Both names are defined in DefaultEnvAllowlist.
+// RequiredEnv implements agent.CredentialNamer. Returns the full forward-
+// allowlist (DefaultEnvAllowlist): OPENAI_API_KEY for the default OpenAI/
+// compatible endpoint, ANTHROPIC_API_KEY for provider: anthropic, and
+// GEMINI_API_KEY for provider: gemini. These are provider-alternatives — a
+// single-provider user with only one of the three set must not false-warn.
 func (*Adapter) RequiredEnv() []string {
-	return []string{defaultAPIKeyEnv, defaultAnthropicAPIKeyEnv}
+	return DefaultEnvAllowlist
 }
 
 // RunToolLoop executes ONE model call with tools attached (P3 A3 — the engine-

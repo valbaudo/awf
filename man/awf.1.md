@@ -170,10 +170,13 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 **--agent-env** _csv_
 :   Comma-separated allowlist of environment-variable *names* forwarded into
     agent runtime CLIs (default
-    `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN,FACTORY_API_KEY,GOOSE_PROVIDER,GOOSE_MODEL,OPENAI_API_KEY,CODEX_HOME`).
+    `ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_OAUTH_TOKEN,FACTORY_API_KEY,GOOSE_PROVIDER,GOOSE_MODEL,OPENAI_API_KEY,CODEX_HOME,GEMINI_API_KEY`).
     The same allowlist applies to every registered adapter, including
     `uses: anthropic/claude-code`, `uses: factory/droid`, `uses: block/goose`,
-    `uses: openai/codex`, and `uses: awf/llm`.
+    `uses: openai/codex`, and `uses: awf/llm`. **GEMINI_API_KEY** is the default
+    `api_key_env` for an `awf/llm` step with `with: provider: gemini` (see
+    **awf-workflow**(5)); it must appear on this allowlist (or the workflow
+    `env:` field) or the step fails at launch with no credential.
     Names not on the list are not passed through. A workflow can extend this
     allowlist from inside its definition with the top-level `env:` field (see
     **awf-workflow**(5)); names declared there are forwarded in addition to this
@@ -741,6 +744,14 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
 
     **Streaming.** The adapter always streams token-by-token deltas (one event
     per chunk). Backends without streaming support are unsupported in v1.
+
+**GEMINI_API_KEY** (awf/llm)
+:   API key for an `awf/llm` step with `with: provider: gemini` — the default
+    `api_key_env` when the step omits `api_key_env` (see **awf-workflow**(5)).
+    **awf** does not read this itself; it forwards the name when it appears in
+    **--agent-env** (included in the default allowlist). An `awf/llm` step
+    using `provider: gemini` with no `GEMINI_API_KEY` set (and no overriding
+    `with: api_key_env`) fails at launch with no credential.
 
 **DOCKER_HOST**, **DOCKER_TLS_VERIFY**, **DOCKER_CERT_PATH**
 :   Honored by the _docker_ backend through the standard Docker client

@@ -278,6 +278,14 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
+	// Run-start containerless-input_files guard (F31b): a containerless agent
+	// step's input_files are resolved and handed to the adapter as inline
+	// message parts; an adapter that does not inline them would silently drop
+	// the files at Launch. Fail fast, pre-spend, instead of that silent drop.
+	if err := checkInputFilesForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
 
 	// Step 8: put input into Blobs (after validation, before log creation).
 	var inputRef string

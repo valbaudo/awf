@@ -47,6 +47,10 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 	if err != nil {
 		return nil, nil, err
 	}
+	cfg.prompt, err = agent.PrependFeedback(cfg.prompt, inv.Feedback)
+	if err != nil {
+		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
+	}
 	policy, err := parsePermissionPolicy(cfg.permissionRaw)
 	if err != nil {
 		return nil, nil, err

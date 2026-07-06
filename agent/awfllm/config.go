@@ -180,13 +180,13 @@ func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 
 // assemblePrompt prepends the gate's prior verdict on repair attempts, VERBATIM
 // parity with goose (agent/goose/launch.go — same "<previous verdict>" wrapper
-// and json.Marshal of the Feedback map), then the user prompt.
-func assemblePrompt(inv agent.AgentInvocation) string {
+// and json.Marshal of the Feedback map, now the shared agent.PrependFeedback),
+// then the user prompt.
+func assemblePrompt(inv agent.AgentInvocation) (string, error) {
 	prompt := stringOr(inv.With, keyPrompt, "")
-	if len(inv.Feedback) > 0 {
-		if fb, err := json.Marshal(inv.Feedback); err == nil {
-			prompt = fmt.Sprintf("<previous verdict>\n%s\n\n%s", string(fb), prompt)
-		}
+	prompt, err := agent.PrependFeedback(prompt, inv.Feedback)
+	if err != nil {
+		return "", fmt.Errorf("agent/awfllm: prepend gate feedback: %w", err)
 	}
 	// N2: restate the schema in the prompt whenever a typed output is required —
 	// ESSENTIAL for structured_output:off (no API JSON signal) and ollama_format (the
@@ -196,7 +196,7 @@ func assemblePrompt(inv agent.AgentInvocation) string {
 	if inv.OutputSchema != nil {
 		prompt = appendSchemaDirective(prompt, inv.OutputSchema)
 	}
-	return prompt
+	return prompt, nil
 }
 
 func renderContextEvidence(turns []agent.ThreadTurn) string {

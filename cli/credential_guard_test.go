@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/awfllm"
 	"github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/ir"
 )
@@ -129,5 +130,65 @@ func TestCredentialGuard_SameAdapterMultipleSteps_DedupsWarning(t *testing.T) {
 	// Count occurrences of the ref in the warning output — should be exactly 1.
 	if count := strings.Count(out, ref); count != 1 {
 		t.Errorf("expected exactly 1 warning for deduped adapter %q; got %d occurrences in %q", ref, count, out)
+	}
+}
+
+// TestCredentialGuard_GeminiOnly_NoWarn (F36): the real awf/llm adapter, with
+// only GEMINI_API_KEY set, must NOT warn — GEMINI_API_KEY is now part of
+// RequiredEnv() (previously the preflight false-warned a Gemini-only user
+// even with the documented default key exported).
+func TestCredentialGuard_GeminiOnly_NoWarn(t *testing.T) {
+	a, err := awfllm.New()
+	if err != nil {
+		t.Fatalf("awfllm.New: %v", err)
+	}
+	var reg agent.Registry
+	if err := reg.Register(a); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	wf := oneStepWF(awfllm.AdapterRef)
+	ld := &ir.LoadedDefinition{Workflow: wf}
+
+	// Blank the other candidate keys in case the test host has them set, then
+	// set only GEMINI_API_KEY.
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "gk-test")
+
+	var stderr bytes.Buffer
+	if err := checkCredentialPresence(ld, &reg, &stderr); err != nil {
+		t.Fatalf("checkCredentialPresence returned non-nil error %v, want nil", err)
+	}
+	if out := stderr.String(); out != "" {
+		t.Errorf("expected no warning when GEMINI_API_KEY is set; got: %q", out)
+	}
+}
+
+// TestCredentialGuard_NoneSet_RemedyMentionsAgentEnv (F36): when no credential
+// env is set, the warning must name the remedy (--agent-env) so the author
+// knows how to forward a key.
+func TestCredentialGuard_NoneSet_RemedyMentionsAgentEnv(t *testing.T) {
+	a, err := awfllm.New()
+	if err != nil {
+		t.Fatalf("awfllm.New: %v", err)
+	}
+	var reg agent.Registry
+	if err := reg.Register(a); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	wf := oneStepWF(awfllm.AdapterRef)
+	ld := &ir.LoadedDefinition{Workflow: wf}
+
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+
+	var stderr bytes.Buffer
+	if err := checkCredentialPresence(ld, &reg, &stderr); err != nil {
+		t.Fatalf("checkCredentialPresence returned non-nil error %v, want nil", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "--agent-env") {
+		t.Errorf("warning missing remedy %q; got: %q", "--agent-env", out)
 	}
 }

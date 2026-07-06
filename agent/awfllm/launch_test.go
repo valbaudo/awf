@@ -159,7 +159,10 @@ func TestAssemblePrompt_InjectsSchemaDirective(t *testing.T) {
 		With:         ir.RawConfig{"prompt": "hi"},
 		OutputSchema: &ir.JSONSchema{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}},
 	}
-	got := awfllm.AssemblePromptForTest(inv)
+	got, err := awfllm.AssemblePromptForTest(inv)
+	if err != nil {
+		t.Fatalf("assemblePrompt err: %v", err)
+	}
 	if !strings.Contains(got, "hi") || !strings.Contains(got, "JSON object conforming") || !strings.Contains(got, "answer") {
 		t.Errorf("assemblePrompt must keep prompt + add schema directive + schema, got %q", got)
 	}
@@ -167,7 +170,11 @@ func TestAssemblePrompt_InjectsSchemaDirective(t *testing.T) {
 
 func TestAssemblePrompt_NoSchema_Unchanged(t *testing.T) {
 	inv := agent.AgentInvocation{With: ir.RawConfig{"prompt": "hi"}}
-	if got := awfllm.AssemblePromptForTest(inv); got != "hi" {
+	got, err := awfllm.AssemblePromptForTest(inv)
+	if err != nil {
+		t.Fatalf("assemblePrompt err: %v", err)
+	}
+	if got != "hi" {
 		t.Errorf("no schema → prompt unchanged, got %q", got)
 	}
 }
@@ -177,7 +184,10 @@ func TestAssemblePrompt_PrependsFeedback(t *testing.T) {
 		With:     ir.RawConfig{"prompt": "fix it"},
 		Feedback: ir.RawConfig{"verdict": "missing field answer"},
 	}
-	got := awfllm.AssemblePromptForTest(inv)
+	got, err := awfllm.AssemblePromptForTest(inv)
+	if err != nil {
+		t.Fatalf("assemblePrompt err: %v", err)
+	}
 	if !strings.Contains(got, "<previous verdict>") || !strings.Contains(got, "missing field answer") || !strings.Contains(got, "fix it") {
 		t.Errorf("repair attempt must prepend prior verdict + keep prompt, got %q", got)
 	}

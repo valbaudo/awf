@@ -64,7 +64,7 @@ func walkCredentialNodes(wf *ir.Workflow, moduleID string, nodes ir.NodeList, re
 				continue // at least one credential env is set — OK
 			}
 			warned[ref] = true
-			_, _ = fmt.Fprintf(stderr, "Warning: agent step %q: adapter %q — none of its credential env vars %v is set; the run will likely fail at Launch\n", v.ID, ref, envs)
+			_, _ = fmt.Fprintf(stderr, "Warning: agent step %q: adapter %q — none of its credential env vars %v is set; the run will likely fail at Launch (forward one via workflow env: or `awf run --agent-env <NAME>`)\n", v.ID, ref, envs)
 		case *ir.CodeStep, *ir.SignalStep, *ir.CallStep, *ir.Skip, *ir.React:
 			// no agent step; no credential check needed
 		case *ir.If:

@@ -104,3 +104,28 @@ func TestRunToolLoop_RejectsAnthropic(t *testing.T) {
 		t.Fatalf("react: on provider: anthropic must be rejected in v1, got %v", err)
 	}
 }
+
+// TestDefaultEnvAllowlist_IncludesGemini (F36): GEMINI_API_KEY is the documented
+// default api_key_env for provider: gemini — it must be forwarded to the
+// containerless HTTP call like OPENAI_API_KEY/ANTHROPIC_API_KEY are.
+func TestDefaultEnvAllowlist_IncludesGemini(t *testing.T) {
+	found := false
+	for _, k := range awfllm.DefaultEnvAllowlist {
+		if k == "GEMINI_API_KEY" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("DefaultEnvAllowlist must include GEMINI_API_KEY, got %v", awfllm.DefaultEnvAllowlist)
+	}
+}
+
+// TestRequiredEnv_ReturnsFullAllowlist (F36): RequiredEnv must return the same
+// full forward-allowlist as DefaultEnvAllowlist, so the credential-presence
+// preflight does not false-warn for a Gemini-only (or Anthropic-only) user.
+func TestRequiredEnv_ReturnsFullAllowlist(t *testing.T) {
+	got := (&awfllm.Adapter{}).RequiredEnv()
+	if len(got) != len(awfllm.DefaultEnvAllowlist) {
+		t.Fatalf("RequiredEnv() = %v, want len == len(DefaultEnvAllowlist) = %v", got, awfllm.DefaultEnvAllowlist)
+	}
+}

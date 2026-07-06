@@ -30,7 +30,10 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 	if cfg.CacheContext && len(inv.ContextEvidence) == 0 {
 		return nil, nil, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: keyCacheContext, Reason: "requires evaluator context evidence"}
 	}
-	prompt := assemblePrompt(inv)
+	prompt, err := assemblePrompt(inv)
+	if err != nil {
+		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
+	}
 
 	events := make(chan agent.AgentEvent, eventsBuffer)
 	outcomeCh := make(chan agent.AgentOutcome, 1)
