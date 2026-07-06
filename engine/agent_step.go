@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 	"unicode/utf8"
 
@@ -250,9 +251,22 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		}
 	}
 
+	// WorkflowDir: the absolute directory containing the step's own module's
+	// workflow file — same directory the loader resolves imports/assets
+	// relative to (ir.LoadedModule.WorkflowPath). Consumed by a Containerless
+	// PersistentSession adapter (agent/codexlive, F33) to default a host-side
+	// `cwd` when the workflow author omits it. Best-effort: an unresolvable
+	// module (defensive; module lookup always succeeds for a validated
+	// definition) leaves it empty rather than failing the step.
+	var workflowDir string
+	if mod, ok := ictx.def.Module(ictx.moduleID); ok && mod != nil {
+		workflowDir = filepath.Dir(mod.WorkflowPath)
+	}
+
 	resolved := ResolvedInputs{
 		Uses:                  uses,
 		With:                  resolvedWith,
+		WorkflowDir:           workflowDir,
 		OutputFiles:           outputFiles,
 		OutputArtifact:        as.OutputArtifact,
 		OutputSchema:          as.OutputSchema,

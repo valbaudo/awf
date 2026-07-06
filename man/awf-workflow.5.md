@@ -1744,6 +1744,38 @@ because the judge must always start in a fresh, independent context (see
 content-addressed subtree artifact, never from live container state, so it survives
 checkpoint/resume like any other committed output.
 
+## openai/codex-live
+
+`openai/codex-live` is a persistent-session runtime for the codex app-server. Unlike
+`anthropic/claude-code-session`, it is **containerless**: there is no container
+filesystem to capture, so the session is addressed directly — AWF keeps a durable
+session record (`with.session`) that maps to the app-server's own thread, and resumes
+that thread (rather than starting a new one) whenever the same key is used again.
+
+The `with:` schema accepts `prompt` (required), plus `cwd`, `session`, `model`,
+`effort`, and `permission_policy` — all optional except `prompt`.
+
+- **`session`**, if given, must pass the same format check as any other session key
+  (`live.ValidateSessionKey`). If omitted, AWF derives a deterministic default from
+  the run identity and the step's own node path. This default is **stable across
+  `awf resume`**: unlike `anthropic/claude-code-session`'s per-turn session id (which
+  intentionally varies by repair epoch — see that runtime's `sessionUUID`), a
+  `codex-live` session key must resolve to the *same* session record before and after
+  a resume (which opens a new epoch), or the resumed run would silently start a new
+  provider thread instead of continuing the existing one. The default therefore
+  depends only on the run id and node path, never on epoch.
+- **`cwd`**, if given, must be an absolute, clean path with no control characters
+  (`validateCWDValue`). If omitted, it defaults to the directory containing the
+  step's own workflow file — the same directory the loader resolves that module's
+  imports and assets relative to.
+
+Explicit `session` and `cwd` values, when given, are validated exactly as before —
+only their *requiredness* changed; a bad explicit value is still rejected at
+validate time.
+
+**Constraints.** Like `anthropic/claude-code-session`, this runtime is
+**generator-only** (rejected as a gate evaluator) for the same independence reason.
+
 ## Workflow Exports
 
 Imported workflows return explicit typed outputs and named artifact aliases.

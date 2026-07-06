@@ -450,6 +450,155 @@ func TestCodexLiveValidateConfigRejectsRelativeOrControlCWD(t *testing.T) {
 	}
 }
 
+// F33: `session` is optional. When omitted, Launch derives a deterministic
+// default from (RunID, NodePath) — same inputs give the same session key,
+// and it is stable ACROSS EPOCHS (unlike agent/claudesession's sessionUUID,
+// which folds epoch in). Epoch-stability is load-bearing: the default must
+// address the same live.SessionRecord before and after an awf resume, which
+// opens a new epoch — see defaultSessionKey's doc comment in adapter.go.
+func TestCodexlive_SessionDefaultsDeterministic(t *testing.T) {
+	newOutcome := func(t *testing.T, runID, nodePath string, curEpoch, nextEpoch uint32) agent.AgentOutcome {
+		t.Helper()
+		root := testRoot(t)
+		fake := &fakeClient{
+			info:        ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"},
+			startThread: ThreadInfo{ID: "thread-1"},
+			turns:       []fakeTurn{{turnID: "turn-1", events: []ProviderEvent{{Type: EventTurnCompleted, Output: map[string]any{"ok": true}}}}},
+		}
+		a := newTestAdapter(t, root, fake)
+		inv := agent.AgentInvocation{
+			NodePath: nodePath,
+			Uses:     AdapterRef,
+			RunContext: agent.RunContext{
+				RunID:        runID,
+				CurrentEpoch: curEpoch,
+				NextEpoch:    nextEpoch,
+			},
+			With: ir.RawConfig{
+				"prompt": "please build",
+				"cwd":    t.TempDir(), // explicit; only `session` is under test here
+			},
+		}
+		return drainLaunch(t, a, inv)
+	}
+
+	base := newOutcome(t, "run-1", "node-a", 1, 1)
+	if base.Err != nil {
+		t.Fatalf("Launch outcome err: %v", base.Err)
+	}
+	if base.Result.Live == nil || base.Result.Live.SessionKey == "" {
+		t.Fatalf("Live = %+v, want a derived SessionKey", base.Result.Live)
+	}
+	want := base.Result.Live.SessionKey
+
+	t.Run("stable across calls with same run/node", func(t *testing.T) {
+		again := newOutcome(t, "run-1", "node-a", 1, 1)
+		if again.Err != nil {
+			t.Fatalf("Launch outcome err: %v", again.Err)
+		}
+		if got := again.Result.Live.SessionKey; got != want {
+			t.Fatalf("SessionKey = %q, want %q (stable default)", got, want)
+		}
+	})
+
+	t.Run("epoch-independent (resume must find the same session)", func(t *testing.T) {
+		resumed := newOutcome(t, "run-1", "node-a", 5, 6)
+		if resumed.Err != nil {
+			t.Fatalf("Launch outcome err: %v", resumed.Err)
+		}
+		if got := resumed.Result.Live.SessionKey; got != want {
+			t.Fatalf("SessionKey = %q, want %q (must not vary with epoch)", got, want)
+		}
+	})
+
+	t.Run("nodePath-sensitive", func(t *testing.T) {
+		other := newOutcome(t, "run-1", "node-b", 1, 1)
+		if other.Err != nil {
+			t.Fatalf("Launch outcome err: %v", other.Err)
+		}
+		if got := other.Result.Live.SessionKey; got == want {
+			t.Fatalf("SessionKey = %q, want different key for a different NodePath", got)
+		}
+	})
+
+	t.Run("runID-sensitive", func(t *testing.T) {
+		other := newOutcome(t, "run-2", "node-a", 1, 1)
+		if other.Err != nil {
+			t.Fatalf("Launch outcome err: %v", other.Err)
+		}
+		if got := other.Result.Live.SessionKey; got == want {
+			t.Fatalf("SessionKey = %q, want different key for a different RunID", got)
+		}
+	})
+}
+
+// F33: `cwd` is optional. When omitted, Launch defaults it to WorkflowDir —
+// the absolute directory of the step's own workflow file, which the engine
+// threads through AgentInvocation.WorkflowDir (engine/agent_step.go). A
+// codexlive step has no container filesystem, so `cwd` is a real host path;
+// the workflow-file directory is the same "relative-to" anchor the loader
+// already uses for imports/assets.
+func TestCodexlive_CwdDefaultsToWorkflowDir(t *testing.T) {
+	root := testRoot(t)
+	workflowDir := t.TempDir()
+	fake := &fakeClient{
+		info:        ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"},
+		startThread: ThreadInfo{ID: "thread-1"},
+		turns:       []fakeTurn{{turnID: "turn-1", events: []ProviderEvent{{Type: EventTurnCompleted, Output: map[string]any{"ok": true}}}}},
+	}
+	a := newTestAdapter(t, root, fake)
+	inv := agent.AgentInvocation{
+		NodePath: "node-1",
+		Uses:     AdapterRef,
+		RunContext: agent.RunContext{
+			RunID:        "run-1",
+			CurrentEpoch: 1,
+			NextEpoch:    1,
+		},
+		With: ir.RawConfig{
+			"prompt":  "please build",
+			"session": "cwd-default-session", // explicit; only `cwd` is under test here
+		},
+		WorkflowDir: workflowDir,
+	}
+	outcome := drainLaunch(t, a, inv)
+	if outcome.Err != nil {
+		t.Fatalf("Launch outcome err: %v", outcome.Err)
+	}
+	rec, err := live.ReadSessionRecord(root, AdapterRef, "cwd-default-session")
+	if err != nil {
+		t.Fatalf("ReadSessionRecord: %v", err)
+	}
+	if rec.CWD != workflowDir {
+		t.Fatalf("session record CWD = %q, want WorkflowDir %q", rec.CWD, workflowDir)
+	}
+}
+
+// F33: with no `cwd` with-key AND no WorkflowDir (a caller building
+// AgentInvocation directly, e.g. a unit test, without wiring it), Launch must
+// fail loudly rather than silently resolving `cwd` to "." (the process's own
+// working directory) via filepath.Clean("").
+func TestCodexlive_CwdMissingWithNoWorkflowDirIsError(t *testing.T) {
+	a := newTestAdapter(t, testRoot(t), &fakeClient{info: ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"}})
+	inv := agent.AgentInvocation{
+		NodePath:   "node-1",
+		Uses:       AdapterRef,
+		RunContext: agent.RunContext{RunID: "run-1", CurrentEpoch: 1, NextEpoch: 1},
+		With: ir.RawConfig{
+			"prompt":  "please build",
+			"session": "no-cwd-no-workflowdir",
+		},
+	}
+	_, _, err := a.Launch(context.Background(), container.Handle{}, inv)
+	if err == nil {
+		t.Fatal("Launch succeeded, want cwd-missing error")
+	}
+	var cfgErr *agent.ErrInvalidConfig
+	if !errors.As(err, &cfgErr) || cfgErr.Key != "cwd" {
+		t.Fatalf("Launch err = %v, want cwd ErrInvalidConfig", err)
+	}
+}
+
 // F12: codexlive wraps the same codex CLI, so it shares codex's six-value
 // model_reasoning_effort enum — this validation did not exist before (a bad
 // value used to reach the app-server and fail mid-run rather than at

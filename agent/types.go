@@ -173,6 +173,16 @@ type AgentInvocation struct {
 	// for non-claude / containerless steps.
 	// Engine-set, like ResumeSession — keep it out of the journal.
 	SessionConfigDir string `json:"-"`
+	// WorkflowDir is the absolute directory containing the step's own module's
+	// workflow file (ir.LoadedModule.WorkflowPath's directory — the loader
+	// resolves imports/assets relative to this same directory). The engine sets
+	// it for every agent step (engine/agent_step.go, from ictx.def.Module).
+	// Consumed by a Containerless PersistentSession adapter (agent/codexlive,
+	// F33) to default a host-side `cwd` when the workflow author omits it —
+	// codexlive has no container filesystem, so its `cwd` is a real host path
+	// the harness operates in. Engine-set, like SessionConfigDir; empty only
+	// when a caller builds an AgentInvocation directly (tests) without wiring it.
+	WorkflowDir string `json:"-"`
 }
 
 // AgentResult is the synchronous return of Adapter.Launch. Output is the

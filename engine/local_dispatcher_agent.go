@@ -239,6 +239,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		InputFiles:       intent.ResolvedInputs.ContainerlessFiles, // resolved input_files for containerless steps; nil for container-backed (those use stageInputFiles)
 		ResumeSession:    sessionRestored,                          // M2 task: true when session subtree was written back for this node
 		SessionConfigDir: sessionConfigDir,                         // absolute per-run CLAUDE_CONFIG_DIR; adapter sets it on the exec env
+		WorkflowDir:      intent.ResolvedInputs.WorkflowDir,        // absolute workflow-file directory; codexlive defaults `cwd` to it (F33)
 	}
 
 	// γ contract: Launch returns immediately with events + outcome channels

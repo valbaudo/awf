@@ -104,8 +104,10 @@ func (*Adapter) Capabilities() agent.Caps {
 	}
 }
 
-// RequiredEnv implements agent.CredentialNamer.
-func (*Adapter) RequiredEnv() []string { return DefaultEnvAllowlist }
+// RequiredEnv implements agent.CredentialNamer. Returns a copy so a caller's
+// append cannot alias and mutate the shared DefaultEnvAllowlist backing array
+// (same bug class fixed in agent/awfllm).
+func (*Adapter) RequiredEnv() []string { return append([]string(nil), DefaultEnvAllowlist...) }
 
 // Version delegates to the base claude adapter.
 func (a *Adapter) Version(ctx context.Context, handle container.Handle) (string, error) {

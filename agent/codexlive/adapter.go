@@ -2,6 +2,7 @@ package codexlive
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -151,6 +152,12 @@ func (a *Adapter) PreflightResume(ctx context.Context, req agent.LiveResumePrefl
 	if err != nil {
 		return err
 	}
+	if cfg.session == "" {
+		// Must reproduce the EXACT default Launch would have derived for this
+		// node (epoch-stable — see defaultSessionKey) so this preflight reads
+		// the same live session record the pre-resume run wrote.
+		cfg.session = defaultSessionKey(req.RunID, req.NodePath)
+	}
 	rec, err := live.ReadSessionRecord(a.root, AdapterRef, cfg.session)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -202,19 +209,28 @@ func parseConfig(with ir.RawConfig) (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	cwd, err := requiredString(with, "cwd")
+	// cwd and session are OPTIONAL (F33): when the author omits either, Launch
+	// (and PreflightResume for session) fills in a deterministic default —
+	// this function only knows `with`, not the run identity or workflow path a
+	// default needs, so it validates the AUTHOR-SUPPLIED value's format when
+	// present and otherwise leaves the field zero for the caller to default.
+	cwd, err := optionalString(with, "cwd")
 	if err != nil {
 		return config{}, err
 	}
-	if err := validateCWDValue(cwd); err != nil {
-		return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "cwd", Reason: err.Error()}
+	if cwd != "" {
+		if err := validateCWDValue(cwd); err != nil {
+			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "cwd", Reason: err.Error()}
+		}
 	}
-	session, err := requiredString(with, "session")
+	session, err := optionalString(with, "session")
 	if err != nil {
 		return config{}, err
 	}
-	if err := live.ValidateSessionKey(session); err != nil {
-		return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "session", Reason: err.Error()}
+	if session != "" {
+		if err := live.ValidateSessionKey(session); err != nil {
+			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "session", Reason: err.Error()}
+		}
 	}
 	cfg := config{prompt: prompt, cwd: cwd, session: session}
 	if v, ok := with["model"]; ok {
@@ -289,4 +305,50 @@ func cloneRawConfig(in ir.RawConfig) ir.RawConfig {
 	out := make(ir.RawConfig, len(in))
 	maps.Copy(out, in)
 	return out
+}
+
+// optionalString reads an optional string with-key. Absent → ("", nil): the
+// caller (Launch / PreflightResume) fills in a default. Present but wrong
+// type or empty → the same typed errors requiredString would give, so a
+// mistyped optional key still fails loudly instead of silently defaulting.
+func optionalString(with ir.RawConfig, key string) (string, error) {
+	v, ok := with[key]
+	if !ok {
+		return "", nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", &agent.ErrInvalidConfig{Ref: AdapterRef, Key: key, Reason: fmt.Sprintf("must be string, got %T", v)}
+	}
+	if s == "" {
+		return "", &agent.ErrInvalidConfig{Ref: AdapterRef, Key: key, Reason: "must not be empty"}
+	}
+	return s, nil
+}
+
+// defaultSessionKey derives the session key codexlive uses when the workflow
+// author omits `with.session`. It is EPOCH-STABLE — deliberately NOT the same
+// scheme as agent/claudesession's sessionUUID, which folds in
+// RunContext.CurrentEpoch.
+//
+// Why the schemes differ: claudesession's session-id is a CLI resume token
+// for a fresh conversational turn — each repair/retry epoch legitimately
+// wants its own value there (see agent/claudesession/session.go). codexlive's
+// session key instead ADDRESSES a durable live.SessionRecord on disk
+// (live.ReadSessionRecord/WriteSessionRecord, PersistentSession) that must be
+// findable by the SAME key across an awf resume, which opens a new epoch
+// (RunContext.NextEpoch). If this key included epoch, a resumed run would
+// compute a different default than the original run used, so prepareSession
+// (launch.go) would silently start a brand-new provider thread instead of
+// finding and continuing the existing one — and PreflightResume's
+// ErrLiveReplayRequired detection would never find the record it must find.
+// So the default is a pure function of (runID, nodePath) only — no epoch, no
+// clock, no rand.
+func defaultSessionKey(runID, nodePath string) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%s|%s", runID, nodePath)
+	sum := h.Sum(nil) // 32 bytes
+	b := sum[:16]
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

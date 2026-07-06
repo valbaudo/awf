@@ -130,6 +130,13 @@ type ResolvedInputs struct {
 	// interpreter. It is copied into AgentInvocation.ContextEvidence by runAgent
 	// and must not be rendered as active prior conversation.
 	ContextEvidence []agent.ThreadTurn
+
+	// WorkflowDir is the absolute directory containing the step's own module's
+	// workflow file — engine/agent_step.go resolves it from
+	// ictx.def.Module(ictx.moduleID).WorkflowPath. Copied into
+	// AgentInvocation.WorkflowDir by runAgent for every agent step (code steps
+	// ignore it). See AgentInvocation.WorkflowDir for the consuming use case.
+	WorkflowDir string
 }
 
 type OutputFileContract struct {

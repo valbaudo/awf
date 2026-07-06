@@ -613,3 +613,18 @@ func TestLaunch_ConcurrentEnvMutation(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudesession_RequiredEnvReturnsCopy: RequiredEnv must return a COPY,
+// not the shared DefaultEnvAllowlist package var — a caller must not be able
+// to corrupt it via append. Same bug class fixed in agent/awfllm (F13);
+// checks backing-array identity directly (deterministic; no reliance on
+// append's capacity-dependent realloc behavior).
+func TestClaudesession_RequiredEnvReturnsCopy(t *testing.T) {
+	got := (&claudesession.Adapter{}).RequiredEnv()
+	if len(got) == 0 {
+		t.Fatal("RequiredEnv returned empty")
+	}
+	if &got[0] == &claudesession.DefaultEnvAllowlist[0] {
+		t.Fatal("RequiredEnv aliases DefaultEnvAllowlist's backing array; must return a copy")
+	}
+}
