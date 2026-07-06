@@ -7,10 +7,10 @@ import (
 
 // validateReduce checks the reduce: clause on every Map. (Parallel is deferred;
 // it has no reduce: field — SP2 Task 8.) Exactly one of Quorum/Run; quorum needs
-// over:; a run: reducer needs a resolvable container:; quorum's over: must name
+// field:; a run: reducer needs a resolvable container:; quorum's field: must name
 // a real body output field; min_success and quorum are mutually exclusive.
 //
-// The validator owns AWF1035 (reduce shape) and AWF5006 (quorum/over aggregation
+// The validator owns AWF1035 (reduce shape) and AWF5006 (quorum/field aggregation
 // scope). The run: reducer's container resolution reuses checkContainerRef, so an
 // undeclared container surfaces as AWF1009 — the same code a code step's bad
 // container yields. The reducer has no id and is not in the graph, so its
@@ -73,15 +73,15 @@ func validateMapReduce(m *Map, nodePath string, wf *Workflow, scoped map[string]
 		c.errf(rp, "AWF1035", "reduce: must declare exactly one of run: or quorum:")
 		return
 	case hasQuorum:
-		if strings.TrimSpace(r.Over) == "" {
-			c.errf(rp, "AWF1035", "reduce: quorum requires over: (the per-branch boolean field)")
+		if strings.TrimSpace(r.Field) == "" {
+			c.errf(rp, "AWF1035", "reduce: quorum requires field: (the per-branch boolean field)")
 			return
 		}
 		if m.MinSuccess != nil {
 			c.errf(rp, "AWF5006", "reduce:{quorum} and min_success are mutually exclusive (quorum generalizes min_success)")
 		}
-		if !bodyDeclaresField(m.Body, r.Over) {
-			c.errf(rp, "AWF5006", "reduce: quorum over: "+r.Over+" is not declared in any body step's output_schema")
+		if !bodyDeclaresField(m.Body, r.Field) {
+			c.errf(rp, "AWF5006", "reduce: quorum field: "+r.Field+" is not declared in any body step's output_schema")
 		}
 	case hasRun:
 		if strings.TrimSpace(r.Container) == "" {

@@ -945,7 +945,7 @@ func reducedMapWorkflow() *ir.Workflow {
 		Graph: ir.NodeList{
 			&ir.Map{ // index 0
 				Body:   ir.NodeList{&ir.CodeStep{ID: "scan", Container: "lab", Run: "echo scan"}},
-				Reduce: &ir.Reduce{Quorum: &q, Over: "ok"},
+				Reduce: &ir.Reduce{Quorum: &q, Field: "ok"},
 			},
 		},
 	}

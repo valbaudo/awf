@@ -105,7 +105,7 @@ func TestReducedMapQuorumReducerFieldsAccepted(t *testing.T) {
 				aggFindURLs(),
 				&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1,
 					Body:   body(),
-					Reduce: &Reduce{Quorum: reduceRatio("2"), Over: "agree"},
+					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
 				},
 				&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.scan." + field + " }}"},
 			}})
@@ -130,7 +130,7 @@ func TestReducedMapQuorumNonDeclaredFieldErrors(t *testing.T) {
 							"required":   []any{"agree"},
 							"properties": map[string]any{"agree": map[string]any{"type": "boolean"}}}},
 				},
-				Reduce: &Reduce{Quorum: reduceRatio("2"), Over: "agree"},
+				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
 			},
 			// `summary` is not in the quorum verdict's fixed shape → AWF3001.
 			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.scan.summary }}"},

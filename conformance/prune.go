@@ -259,7 +259,7 @@ graph:
         keep: 2
       reduce:
         quorum: 1.0
-        over: agree
+        field: agree
 `, fakeImageDigest)
 
 // testPrune is the SP5 conformance bucket — the prune: frontier on map against

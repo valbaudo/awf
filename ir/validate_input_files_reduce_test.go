@@ -70,7 +70,7 @@ func TestInputFilesQuorumReducerHasNoArtifactsErrors(t *testing.T) {
 							"required": []any{"agree"}, "properties": map[string]any{"agree": map[string]any{"type": "boolean"}}},
 						OutputFiles: OutputFiles{{Name: "leaf", Path: "/out/leaf.txt"}}},
 				},
-				Reduce: &Reduce{Quorum: reduceRatio("2"), Over: "agree"},
+				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
 			},
 			&CodeStep{ID: "hunt", Container: "c", Run: "true",
 				InputFiles: map[string]string{"/work/leaf.txt": "step.scan.files.leaf"}},

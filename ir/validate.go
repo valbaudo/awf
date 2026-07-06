@@ -17,8 +17,8 @@ package ir
 //   - calls      (AWF1046-51) — imported workflow call targets, input contracts,
 //     workflow outputs, and workflow artifact exports
 //   - reduce     (AWF1035, AWF5006, AWF1009) — map reduce: fan-in shape (exactly one
-//     of run:/quorum:; quorum needs over:; a run: reducer needs a resolvable
-//     container:) and quorum/over aggregation scope (over: names a real body field;
+//     of run:/quorum:; quorum needs field:; a run: reducer needs a resolvable
+//     container:) and quorum/field aggregation scope (field: names a real body field;
 //     min_success and reduce:{quorum} are mutually exclusive)
 //   - prune      (AWF1037, AWF5008) — map prune: frontier shape (a `score` field +
 //     exactly one of keep: <positive int> / stop_when:) and score-field binding

@@ -195,7 +195,7 @@ var catalog = map[string]string{
 	"AWF5003": "reference to a step inside a gate or map body from outside that scope — gate/map-internal steps resolve only within the same attempt/item (read a gate's product via evaluate.<field>)",
 	"AWF5004": "map output aggregation reference is only usable as another map's `over:` (an aggregate is an array; templating renders scalars only)",
 	"AWF5005": "exit_code/stdout are not defined on map aggregates (a map-internal step aggregates to []outputs or []field only)",
-	"AWF1035": "reduce: must declare exactly one of run: or quorum: (quorum requires over:; a run: reducer requires container:)",
+	"AWF1035": "reduce: must declare exactly one of run: or quorum: (quorum requires field:; a run: reducer requires container:)",
 	"AWF1036": "where: clause is not a valid bounded boolean expression (after `{{ }}` slot scan / parse)",
 	"AWF1037": "prune must declare a `score` field name and exactly one of `keep`/`stop_when` (`keep` must be a positive integer, `stop_when` must be a non-empty bounded boolean expression)",
 	"AWF1038": "compose block is invalid (requires static as/from/service/body, non-empty body, and a scoped handle that does not collide)",
@@ -219,6 +219,7 @@ var catalog = map[string]string{
 	"AWF1061": "a reserved step-level key is nested inside with: (it will be ignored by the engine); move it to the step level (sibling of with:)",
 	"AWF1062": "unknown key (not part of the workflow or step schema; typo'd keys silently do nothing — remove or correct it)",
 	"AWF1063": "duration must be a quoted string (e.g. \"300s\", \"5m\"); a bare integer is not accepted (it would be read as nanoseconds)",
+	"AWF1064": "wire key renamed; see the diagnostic message for the old and new spelling",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
 	"AWF_IMPORT_DECODE":         "workflow failed to decode",

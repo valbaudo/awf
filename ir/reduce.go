@@ -7,15 +7,21 @@ package ir
 // prefers the node-path NodeResult when Reduce != nil).
 //
 //   - Quorum form: the node succeeds iff at least Quorum branches produced a
-//     true Over field. Quorum reuses Ratio (= json.Number) — an int count or a
+//     true Field. Quorum reuses Ratio (= json.Number) — an int count or a
 //     (0,1] fraction — exactly like Map.MinSuccess, which it generalizes.
 //   - Run form: an author shell reducer. The engine stages every branch's named
 //     output_files artifact + a canonical-JSON manifest of all branch typed
 //     outputs into Container via Backend.CopyTo (the SP1 artifact channel), then
 //     runs Run and commits OutputSchema/OutputFiles at the node path.
+//
+// Field was named Over through v0.2.0 (json:"over"); renamed (F16) because it
+// collides in spelling — but not in meaning — with Map.Over (the fan-out
+// expression). The old `over:` spelling under reduce: is now a hard rename,
+// detected position-aware by validateUnknownKeys (AWF1064): Map's own `over:`
+// is unaffected since the renamed-key set is registered per Go struct type.
 type Reduce struct {
 	Quorum       *Ratio      `json:"quorum,omitempty"`
-	Over         string      `json:"over,omitempty"`
+	Field        string      `json:"field,omitempty"`
 	Run          string      `json:"run,omitempty"`
 	Container    string      `json:"container,omitempty"`
 	OutputSchema *JSONSchema `json:"output_schema,omitempty"`

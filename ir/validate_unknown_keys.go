@@ -30,21 +30,61 @@ import (
 // RawDoc is nil for a module whose top level was not a mapping and for the
 // unreachable Root() fallback — nil means "no strict check available", so the pass
 // no-ops.
+//
+// Hard renames (AWF1064): a wire key that moved to a new spelling is a special
+// case of "unknown key" — the tolerant unmarshal layer drops it exactly like a
+// typo would, but the author's intent is unambiguous, so it gets a specific
+// "renamed to X" message instead of the generic AWF1062 one. renamedKeysByType
+// registers the old->new mapping PER GO STRUCT TYPE (not globally by key name),
+// which is what makes the check position-aware: `over` is a hard rename on
+// Reduce (F16) but remains a perfectly valid key on Map (Map.Over, the fan-out
+// expression) — the same string means two different things depending on which
+// shape it is a sibling of, and reflect.Type is the natural scope boundary
+// since allowedJSONKeys is already computed per-type at every call site.
 func validateUnknownKeys(mod validationModule, c *collector) {
 	raw := mod.RawDoc
 	if raw == nil {
 		return
 	}
-	wfAllowed := allowedJSONKeys(reflect.TypeOf(Workflow{}))
+	wfType := reflect.TypeOf(Workflow{})
+	wfAllowed := allowedJSONKeys(wfType)
 	// Top-level x-* keys are reserved for YAML-anchor holders (spec-level convention),
 	// so they are tolerated here even though the typed Workflow has no such field.
-	checkUnknownKeys(c, "", raw, wfAllowed, true, "top-level key")
+	checkUnknownKeys(c, "", raw, wfAllowed, renamedKeysFor(wfType), true, "top-level key")
 
 	graph, ok := raw["graph"].([]any)
 	if !ok {
 		return
 	}
 	walkRawNodeList("", graph, c)
+}
+
+// renamedKey describes one hard-renamed wire key: the struct's new field name
+// (informational — nothing here reads it back out, but it documents the
+// registry entry for anyone grepping) and the full AWF1064 diagnostic message.
+type renamedKey struct {
+	NewName string
+	Message string
+}
+
+// renamedKeysByType registers, per reflected Go struct type, the set of old
+// keys that have been hard-renamed on THAT shape. Keyed by reflect.Type (not
+// by key string) so the same wire spelling can be a rename on one struct and a
+// perfectly valid, unrelated key on another (Reduce.over vs Map.over).
+//
+// Register a new hard rename here when retiring a wire key: this single entry
+// both suppresses the generic AWF1062 for the old spelling and emits the
+// specific AWF1064 message instead — see validateUnknownKeys' doc comment.
+var renamedKeysByType = map[reflect.Type]map[string]renamedKey{
+	reflect.TypeOf(Reduce{}): {
+		"over": {NewName: "field", Message: "reduce over: renamed to field:"},
+	},
+}
+
+// renamedKeysFor returns the renamed-key set registered for t (or nil if t has
+// none), dereferencing pointer types the same way allowedJSONKeys' callers do.
+func renamedKeysFor(t reflect.Type) map[string]renamedKey {
+	return renamedKeysByType[derefType(t)]
 }
 
 // allowedJSONKeys returns the set of json-tag names on t's exported fields.
@@ -64,15 +104,22 @@ func allowedJSONKeys(t reflect.Type) map[string]struct{} {
 	return out
 }
 
-// checkUnknownKeys emits AWF1062 for every key in m not present in allowed. label
-// names the kind of key for the message ("top-level key", "step key", "key",
-// "reduce key"). When tolerateX is set, x-* keys are skipped (YAML-anchor holders).
-func checkUnknownKeys(c *collector, path string, m map[string]any, allowed map[string]struct{}, tolerateX bool, label string) {
+// checkUnknownKeys emits AWF1062 for every key in m not present in allowed, or
+// AWF1064 (checked FIRST, so a renamed key never also gets the generic message)
+// for a key registered in renamed — see renamedKeysByType. label names the kind
+// of key for the message ("top-level key", "step key", "key", "reduce key").
+// When tolerateX is set, x-* keys are skipped (YAML-anchor holders). renamed may
+// be nil (most call sites have no hard renames registered for their type).
+func checkUnknownKeys(c *collector, path string, m map[string]any, allowed map[string]struct{}, renamed map[string]renamedKey, tolerateX bool, label string) {
 	for k := range m {
 		if tolerateX && strings.HasPrefix(k, "x-") {
 			continue
 		}
 		if _, ok := allowed[k]; ok {
+			continue
+		}
+		if rk, ok := renamed[k]; ok {
+			c.errf(path, "AWF1064", rk.Message)
 			continue
 		}
 		c.errf(path, "AWF1062", "unknown "+label+" "+quoteKey(k)+didYouMean(k, allowed))
@@ -99,20 +146,21 @@ func walkRawNode(parent string, index int, m map[string]any, c *collector) {
 		return // zero or multiple kind keys — parse/structural layer already reports this
 	}
 	if factory, isStep := stepKeys[kind]; isStep {
-		allowed := allowedJSONKeys(derefType(reflect.TypeOf(factory())))
+		stepType := derefType(reflect.TypeOf(factory()))
 		path := PathFor(parent, "", rawStepID(m), index)
 		// Step nodes are flat: the discriminator (run/uses/…) and every sibling
 		// field are keys of m itself. None of the fields are node lists, so there
 		// is nothing to recurse into (with:/output_schema/input_files are skipped
 		// by not descending into their values).
-		checkUnknownKeys(c, path, m, allowed, false, "step key")
+		checkUnknownKeys(c, path, m, allowedJSONKeys(stepType), renamedKeysFor(stepType), false, "step key")
 		return
 	}
 	factory := controlKeys[kind]
 	path := PathFor(parent, kind, "", index)
 	// A control node is a single-key wrapper ({if: {...}}). Only the keyword is
-	// allowed at the wrapper level; a stray sibling is an author mistake.
-	checkUnknownKeys(c, path, m, map[string]struct{}{kind: {}}, false, "key")
+	// allowed at the wrapper level; a stray sibling is an author mistake. There is
+	// no backing struct for the wrapper shape itself, so no renamed-key set applies.
+	checkUnknownKeys(c, path, m, map[string]struct{}{kind: {}}, nil, false, "key")
 	switch kind {
 	case "parallel":
 		// Wire form is {parallel: [<node>, ...]} — the value is the child list
@@ -128,7 +176,8 @@ func walkRawNode(parent string, index int, m map[string]any, c *collector) {
 	if !ok {
 		return // malformed inner; the structural pass reports it
 	}
-	checkUnknownKeys(c, path, inner, allowedJSONKeys(derefType(reflect.TypeOf(factory()))), false, "key")
+	controlType := derefType(reflect.TypeOf(factory()))
+	checkUnknownKeys(c, path, inner, allowedJSONKeys(controlType), renamedKeysFor(controlType), false, "key")
 	recurseControlChildren(kind, path, inner, c)
 }
 
@@ -156,9 +205,14 @@ func recurseControlChildren(kind, path string, inner map[string]any, c *collecto
 		child("evaluate")
 	case "map":
 		child("body")
-		// reduce is a nested object (no child node list); check its own keys.
+		// reduce is a nested object (no child node list); check its own keys. This is
+		// the F16 hard-rename site: reduce's `over:` (renamed to `field:`) is caught
+		// here via renamedKeysFor(Reduce{}) — position-aware because Map's OWN
+		// `over:` (the fan-out expression, checked above at the map-node level, a
+		// different call site with a different type) is untouched by this lookup.
 		if red, ok := inner["reduce"].(map[string]any); ok {
-			checkUnknownKeys(c, path+".reduce", red, allowedJSONKeys(reflect.TypeOf(Reduce{})), false, "reduce key")
+			reduceType := reflect.TypeOf(Reduce{})
+			checkUnknownKeys(c, path+".reduce", red, allowedJSONKeys(reduceType), renamedKeysFor(reduceType), false, "reduce key")
 		}
 	case "compose":
 		child("body")

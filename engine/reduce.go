@@ -188,7 +188,7 @@ func runReduce(
 func runQuorumReduce(r *ir.Reduce, nodePath string, branches []reduceBranch, cohort int, log state.Log, blobs state.Blobs, rs *RunState) (Outcome, error) {
 	agree := 0
 	for _, b := range branches {
-		if v, ok := b.Outputs[r.Over].(bool); ok && v {
+		if v, ok := b.Outputs[r.Field].(bool); ok && v {
 			agree++
 		}
 	}

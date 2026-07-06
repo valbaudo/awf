@@ -10,7 +10,7 @@ import (
 )
 
 // reduceQuorumWorkflow — C2a (Task 12) quorum form. A map over 3 items, each
-// body emitting a typed {vulnerable: bool} verdict; reduce: {quorum: 2, over:
+// body emitting a typed {vulnerable: bool} verdict; reduce: {quorum: 2, field:
 // vulnerable} collapses the 3 branches into ONE — the node succeeds iff ≥ 2
 // branches voted vulnerable=true. A downstream code step `gate` reads
 // {{ step.scan.passed }} — proving the reduced output (NOT the per-item array)
@@ -50,7 +50,7 @@ graph:
               vulnerable: { type: boolean }
       reduce:
         quorum: 2
-        over: vulnerable
+        field: vulnerable
   - id: gate
     container: c0
     run: "./gate.sh {{ step.scan.passed }}"

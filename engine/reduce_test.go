@@ -66,7 +66,7 @@ func TestRunReduceQuorumMet(t *testing.T) {
 		{N: 2, Outputs: map[string]any{"vulnerable": false}},
 	}
 	q := ir.Ratio("2")
-	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if err != nil {
@@ -99,7 +99,7 @@ func TestQuorumReduceOutputMatchesVerdictFields(t *testing.T) {
 	rig := newReduceRig(t)
 	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"vulnerable": true}}}
 	q := ir.Ratio("1")
-	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	if _, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{}); err != nil {
 		t.Fatalf("runReduce: %v", err)
@@ -128,7 +128,7 @@ func TestRunReduceQuorumNotMet(t *testing.T) {
 		{N: 2, Outputs: map[string]any{"vulnerable": false}},
 	}
 	q := ir.Ratio("3")
-	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if oc != OutcomeRetryableFailure {
@@ -155,7 +155,7 @@ func TestRunReduceQuorumThresholdIsCohortNotSurvivors(t *testing.T) {
 		// items 1 and 2 crashed → no committed body output → absent.
 	}
 	q := ir.Ratio("2")
-	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	oc, err := runReduce(context.Background(), r, testMapPath, branches, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if oc != OutcomeRetryableFailure {
@@ -176,7 +176,7 @@ func TestRunReduceQuorumAllBranchesCrashedIsNotVacuousPass(t *testing.T) {
 	// need=min(2,0)=0, agree=0 → passed with votes=0).
 	rig := newReduceRig(t)
 	q := ir.Ratio("2")
-	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	oc, err := runReduce(context.Background(), r, testMapPath, nil /* all crashed */, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if oc != OutcomeRetryableFailure {
@@ -195,7 +195,7 @@ func TestRunReduceResumeReplays(t *testing.T) {
 	// Pre-seed a committed reduced result at the node path.
 	rig.rs.RecordCompleted(testMapPath, NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"passed": true}})
 	q := ir.Ratio("2")
-	r := &ir.Reduce{Quorum: &q, Over: "vulnerable"}
+	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	oc, err := runReduce(context.Background(), r, testMapPath, nil, 0, minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
 	if err != nil {

@@ -332,7 +332,7 @@ func TestDigestFoldsReduce(t *testing.T) {
 	withReduce.Graph = append(withReduce.Graph,
 		&Map{Over: "input.items", As: "item", Container: "lab",
 			Body:   NodeList{&CodeStep{ID: "b", Run: "x"}},
-			Reduce: &Reduce{Quorum: &quorum, Over: "vulnerable"}},
+			Reduce: &Reduce{Quorum: &quorum, Field: "vulnerable"}},
 	)
 	dReduce, err := withReduce.ComputeDigest(nil, nil)
 	if err != nil {

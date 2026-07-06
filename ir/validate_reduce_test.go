@@ -3,14 +3,14 @@ package ir
 import "testing"
 
 // Tests for the reduce: fan-in shape pass — see validate_reduce.go (AWF1035 =
-// reduce shape fault; AWF5006 = quorum/over aggregation-scope fault).
+// reduce shape fault; AWF5006 = quorum/field aggregation-scope fault).
 
 // reduceRatio builds a *Ratio (= *json.Number) from a literal, the form a
 // parsed quorum/min_success carries.
 func reduceRatio(s string) *Ratio { r := Ratio(s); return &r }
 
 // boolSchema is a body output_schema declaring one boolean field — the per-branch
-// vote a quorum's over: counts.
+// vote a quorum's field: counts.
 func boolSchema(field string) *JSONSchema {
 	s := JSONSchema(map[string]any{
 		"type": "object",
@@ -48,12 +48,12 @@ func TestValidateReduceNeither(t *testing.T) {
 
 func TestValidateReduceBoth(t *testing.T) {
 	// reduce declaring BOTH quorum: and run: → AWF1035.
-	r := &Reduce{Quorum: reduceRatio("2"), Over: "votes", Run: "./m.sh", Container: "lab"}
+	r := &Reduce{Quorum: reduceRatio("2"), Field: "votes", Run: "./m.sh", Container: "lab"}
 	assertErrorAt(t, Validate(mapWithReduce(r, nil)), "AWF1035", "map[0].reduce")
 }
 
 func TestValidateReduceQuorumNoOver(t *testing.T) {
-	// quorum without over: → AWF1035.
+	// quorum without field: → AWF1035.
 	r := &Reduce{Quorum: reduceRatio("2")}
 	assertErrorAt(t, Validate(mapWithReduce(r, nil)), "AWF1035", "map[0].reduce")
 }
@@ -71,20 +71,20 @@ func TestValidateReduceRunUndeclaredContainer(t *testing.T) {
 }
 
 func TestValidateReduceQuorumOverNotDeclared(t *testing.T) {
-	// quorum over: a field no body step declares → AWF5006.
-	r := &Reduce{Quorum: reduceRatio("2"), Over: "ghost"}
+	// quorum field: names a field no body step declares → AWF5006.
+	r := &Reduce{Quorum: reduceRatio("2"), Field: "ghost"}
 	assertErrorAt(t, Validate(mapWithReduce(r, nil)), "AWF5006", "map[0].reduce")
 }
 
 func TestValidateReduceQuorumAndMinSuccess(t *testing.T) {
 	// min_success AND reduce:{quorum} on the same map → AWF5006 (mutually exclusive).
-	r := &Reduce{Quorum: reduceRatio("2"), Over: "votes"}
+	r := &Reduce{Quorum: reduceRatio("2"), Field: "votes"}
 	assertErrorAt(t, Validate(mapWithReduce(r, reduceRatio("2"))), "AWF5006", "map[0].reduce")
 }
 
 func TestValidateReduceValidQuorum(t *testing.T) {
 	// Valid quorum over a declared body field → no error.
-	r := &Reduce{Quorum: reduceRatio("2"), Over: "votes"}
+	r := &Reduce{Quorum: reduceRatio("2"), Field: "votes"}
 	diags := Validate(mapWithReduce(r, nil))
 	assertNoErrorCode(t, diags, "AWF1035")
 	assertNoErrorCode(t, diags, "AWF5006")

@@ -167,7 +167,7 @@ func TestComposeServiceOverridesIgnoresQuorumReduceContainer(t *testing.T) {
 			Body: ir.NodeList{
 				&ir.CodeStep{ID: "vote", Container: "lab", Run: "true"},
 			},
-			Reduce: &ir.Reduce{Quorum: &quorum, Over: "passed", Container: "lab:api"},
+			Reduce: &ir.Reduce{Quorum: &quorum, Field: "passed", Container: "lab:api"},
 		},
 	})
 	if len(got) != 0 {

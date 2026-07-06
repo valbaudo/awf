@@ -121,6 +121,87 @@ func TestUnknownKeys_OutputSchemaValueNotWalked(t *testing.T) {
 	}
 }
 
+// reduceMapWorkflowSrc builds a one-map workflow whose reduce: clause is exactly
+// reduceKV (e.g. `field: vulnerable` or `over: vulnerable`), for the F16 hard-
+// rename tests below.
+func reduceMapWorkflowSrc(reduceKV string) string {
+	return "workflow: x\nversion: 1\ngraph:\n" +
+		"  - map:\n" +
+		"      over: \"{{ input.items }}\"\n" +
+		"      as: item\n" +
+		"      container: c\n" +
+		"      concurrency: 1\n" +
+		"      body:\n" +
+		"        - id: vote\n" +
+		"          container: c\n" +
+		"          run: \"true\"\n" +
+		"          output_schema: {type: object, properties: {vulnerable: {type: boolean}}}\n" +
+		"      reduce:\n" +
+		"        quorum: 2\n" +
+		"        " + reduceKV + "\n" +
+		"containers:\n  c: {image: \"oci://x@sha256:abc\"}\n"
+}
+
+// TestUnknownKeys_ReduceFieldAccepted confirms reduce's renamed `field:` key
+// (F16) decodes clean — no AWF1062, no AWF1064.
+func TestUnknownKeys_ReduceFieldAccepted(t *testing.T) {
+	diags := validateForTest(t, reduceMapWorkflowSrc("field: vulnerable"))
+	if hasCode(diags, "AWF1062") {
+		t.Fatalf("reduce field: must not be flagged unknown, got %v", diags)
+	}
+	if hasCode(diags, "AWF1064") {
+		t.Fatalf("reduce field: must not be flagged renamed, got %v", diags)
+	}
+}
+
+// TestUnknownKeys_ReduceOverRenamed confirms the OLD reduce `over:` spelling
+// (retired F16) is caught as a specific hard rename (AWF1064), not the generic
+// unknown-key AWF1062.
+func TestUnknownKeys_ReduceOverRenamed(t *testing.T) {
+	diags := validateForTest(t, reduceMapWorkflowSrc("over: vulnerable"))
+	if !hasCode(diags, "AWF1064") {
+		t.Fatalf("expected AWF1064 for reduce over:, got %v", diags)
+	}
+	if hasCode(diags, "AWF1062") {
+		t.Fatalf("reduce over: must get the specific AWF1064, not also the generic AWF1062, got %v", diags)
+	}
+	var msg string
+	for _, d := range diags {
+		if d.Code == "AWF1064" {
+			msg = d.Message
+		}
+	}
+	if msg != "reduce over: renamed to field:" {
+		t.Errorf("AWF1064 message = %q, want %q", msg, "reduce over: renamed to field:")
+	}
+}
+
+// TestUnknownKeys_MapOverStillValid is the position-awareness proof: a Map's
+// OWN `over:` (the fan-out expression, unrelated to Reduce's renamed field) must
+// NOT be flagged by either AWF1062 or AWF1064 — the renamed-key registry is
+// scoped per Go struct type (Reduce), not by bare key string, so Map.over is
+// untouched.
+func TestUnknownKeys_MapOverStillValid(t *testing.T) {
+	src := "workflow: x\nversion: 1\ngraph:\n" +
+		"  - map:\n" +
+		"      over: \"{{ input.items }}\"\n" +
+		"      as: item\n" +
+		"      container: c\n" +
+		"      concurrency: 1\n" +
+		"      body:\n" +
+		"        - id: vote\n" +
+		"          container: c\n" +
+		"          run: \"true\"\n" +
+		"containers:\n  c: {image: \"oci://x@sha256:abc\"}\n"
+	diags := validateForTest(t, src)
+	if hasCode(diags, "AWF1062") {
+		t.Fatalf("map over: must not be flagged unknown, got %v", diags)
+	}
+	if hasCode(diags, "AWF1064") {
+		t.Fatalf("map over: must not be flagged renamed (position-aware: only Reduce.over is a hard rename), got %v", diags)
+	}
+}
+
 // TestUnknownKeys_CorpusZeroFalsePositives loads every examples/**/*.yaml and
 // asserts ZERO AWF1062 diagnostics. This is the objective safety net: a false
 // positive means the walker is missing a real allowed key or a skip rule — fix the

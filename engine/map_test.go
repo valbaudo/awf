@@ -989,7 +989,7 @@ func TestRunMapAggregateChainResume(t *testing.T) {
 }
 
 // okSchema is the output_schema for the reduce-quorum body step: a single
-// required boolean `ok` that quorum counts via reduce.over.
+// required boolean `ok` that quorum counts via reduce.field.
 var okSchema = &ir.JSONSchema{
 	"type":                 "object",
 	"additionalProperties": false,
@@ -998,7 +998,7 @@ var okSchema = &ir.JSONSchema{
 }
 
 func TestRunMapQuorumReducePrefersReducedOutput(t *testing.T) {
-	// Task 11: a map declaring reduce: {quorum: 2, over: ok} over 3 items
+	// Task 11: a map declaring reduce: {quorum: 2, field: ok} over 3 items
 	// (2 true) commits a node.completed at the MAP path (map[0]) with the
 	// reduced {passed:true,...} output and runMap returns ok. A downstream
 	// step.<bodyId> ref from OUTSIDE the map then resolves to the REDUCED
@@ -1010,7 +1010,7 @@ func TestRunMapQuorumReducePrefersReducedOutput(t *testing.T) {
 	q := ir.Ratio("2")
 	wf := staticOverWorkflow("x", body, 1, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Field: "ok"}
 
 	rig := newMapRig(t,
 		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
@@ -1058,7 +1058,7 @@ func TestRunMapQuorumReduceNotMetIsRetryable(t *testing.T) {
 	q := ir.Ratio("3") // need all 3 true, only 2 are
 	wf := staticOverWorkflow("x", body, 1, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Field: "ok"}
 
 	rig := newMapRig(t,
 		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
@@ -1094,7 +1094,7 @@ func TestRunMapQuorumReduceThresholdIsCohortWhenBranchCrashes(t *testing.T) {
 	q := ir.Ratio("3") // unanimous over the 3-item cohort
 	wf := staticOverWorkflow("x", body, 1, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Field: "ok"}
 
 	rig := newMapRig(t,
 		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
@@ -1132,7 +1132,7 @@ func TestRunMapReduceResumeQuorumRecovers(t *testing.T) {
 	q := ir.Ratio("3") // unanimous over 3 items
 	wf := staticOverWorkflow("x", body, 1, nil)
 	mapNode := wf.Graph[0].(*ir.Map)
-	mapNode.Reduce = &ir.Reduce{Quorum: &q, Over: "ok"}
+	mapNode.Reduce = &ir.Reduce{Quorum: &q, Field: "ok"}
 
 	// Round 1: a,c emit {"ok":true} (ExitCode 0); b exits 1 (transient ItemFailed).
 	// agree=2 < need=3 → retryable_failure; reducer must NOT commit.

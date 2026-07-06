@@ -9,7 +9,7 @@ import (
 func TestReduceUnmarshalQuorum(t *testing.T) {
 	const src = `{"map":{"over":"input.items","as":"item","container":"lab",` +
 		`"body":[{"id":"b","run":"x"}],` +
-		`"reduce":{"quorum":2,"over":"vulnerable"}}}`
+		`"reduce":{"quorum":2,"field":"vulnerable"}}}`
 	var n NodeList
 	if err := json.Unmarshal([]byte("["+src+"]"), &n); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -30,8 +30,8 @@ func TestReduceUnmarshalQuorum(t *testing.T) {
 	if m.Reduce.Quorum == nil || m.Reduce.Quorum.String() != "2" {
 		t.Errorf("Quorum = %v, want 2", m.Reduce.Quorum)
 	}
-	if m.Reduce.Over != "vulnerable" {
-		t.Errorf("Over = %q, want vulnerable", m.Reduce.Over)
+	if m.Reduce.Field != "vulnerable" {
+		t.Errorf("Field = %q, want vulnerable", m.Reduce.Field)
 	}
 }
 
