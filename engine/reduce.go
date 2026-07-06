@@ -65,6 +65,7 @@ func runMapReduce(
 	wf *ir.Workflow,
 	moduleID string,
 	runstate *RunState,
+	runEnv map[string]string,
 	ld *LocalDispatcher,
 	log state.Log,
 	blobs state.Blobs,
@@ -110,7 +111,7 @@ func runMapReduce(
 			ld = ld.WithItemHandle(bare, rh)
 		}
 	}
-	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, moduleID, runstate, ld, log, blobs, clk, tap, cc)
+	return runReduce(ctx, n.Reduce, mapPath, branches, cohort, wf, moduleID, runstate, runEnv, ld, log, blobs, clk, tap, cc)
 }
 
 // runReduce executes a Map's reduce: clause AFTER fan-out, collapsing the N
@@ -147,6 +148,7 @@ func runReduce(
 	wf *ir.Workflow,
 	moduleID string,
 	rs *RunState,
+	runEnv map[string]string,
 	ld *LocalDispatcher,
 	log state.Log,
 	blobs state.Blobs,
@@ -162,7 +164,7 @@ func runReduce(
 	case r.IsQuorum():
 		return runQuorumReduce(r, nodePath, branches, cohort, log, blobs, rs)
 	case r.IsRun():
-		return runCommandReduce(ctx, r, nodePath, branches, wf, moduleID, rs, ld, log, blobs, clk, tap, cc)
+		return runCommandReduce(ctx, r, nodePath, branches, wf, moduleID, rs, runEnv, ld, log, blobs, clk, tap, cc)
 	default:
 		return "", fmt.Errorf("engine.runReduce: reduce at %q has neither quorum nor run (validator AWF1035)", nodePath)
 	}
@@ -224,7 +226,7 @@ func quorumThreshold(q *ir.Ratio, cohort int) int64 {
 // container and runs it as a synthesized CodeStep committing at nodePath.
 func runCommandReduce(
 	ctx context.Context, r *ir.Reduce, nodePath string, branches []reduceBranch,
-	wf *ir.Workflow, moduleID string, rs *RunState, ld *LocalDispatcher, log state.Log, blobs state.Blobs, clk clock.Clock, tap io.Writer,
+	wf *ir.Workflow, moduleID string, rs *RunState, runEnv map[string]string, ld *LocalDispatcher, log state.Log, blobs state.Blobs, clk clock.Clock, tap io.Writer,
 	cc reduceCallContext,
 ) (Outcome, error) {
 	// Derive the per-backend staging root (docker: "/work/.awf", native: ".awf").
@@ -293,9 +295,14 @@ func runCommandReduce(
 		return failStep(log, nodePath, OutcomePermanentFailure, fmt.Errorf("engine.runReduce: substitute output_files at %q: %w", nodePath, oerr))
 	}
 	synth := &ir.CodeStep{Run: cmd, Container: r.Container, OutputSchema: r.OutputSchema, OutputFiles: r.OutputFiles}
+	// I1: forward the resolved workflow env: allowlist (F15), like a graph run:
+	// step — copy FIRST, then set the engine key on top so AWF_STAGING_ROOT
+	// always wins a name collision with an author-declared env: name.
+	env := copyRunEnv(runEnv)
+	env["AWF_STAGING_ROOT"] = stagingRoot
 	resolved := ResolvedInputs{
 		Command:             cmd,
-		Env:                 map[string]string{"AWF_STAGING_ROOT": stagingRoot},
+		Env:                 env,
 		OutputFiles:         outputFiles,
 		OutputFileContracts: outputFileContracts,
 		OutputSchema:        r.OutputSchema,

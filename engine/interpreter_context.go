@@ -32,6 +32,20 @@ type interpreterContext struct {
 	resume        bool // true when re-entering a folded log (awf resume); gates map-item re-run
 }
 
+// copyRunEnv returns a FRESH copy of runEnv (F15's resolved workflow env:
+// allowlist, already resolved CLI-side — engine/ never calls os.LookupEnv).
+// Every injection site (graph code steps, reduce.run, react tool impls) must
+// copy rather than alias: runEnv is shared across every step in the run, so
+// handing out the same map would let one dispatcher/backend mutation leak
+// into another step's env. A nil runEnv yields an empty (non-nil) map.
+func copyRunEnv(runEnv map[string]string) map[string]string {
+	env := make(map[string]string, len(runEnv))
+	for k, v := range runEnv {
+		env[k] = v
+	}
+	return env
+}
+
 func (ictx interpreterContext) scope(path string) *Scope {
 	return callContextScope(ictx.runstate, ictx.wf, path, ictx.runtimeParent, ictx.input, ictx.inputFiles)
 }

@@ -346,7 +346,7 @@ func runMapWithContext(
 	//    it is from min_success above; a mechanically-failed branch still counts
 	//    (absent from branches → a non-agreeing vote), so passing len(overArr)
 	//    would demand agreement from items the frontier deliberately discarded.
-	return runMapReduce(ctx, n, mapPath, effectiveTotal, ictx.wf, ictx.moduleID, ictx.runstate, ld, ictx.log, ictx.blobs, ictx.clk, ictx.tap,
+	return runMapReduce(ctx, n, mapPath, effectiveTotal, ictx.wf, ictx.moduleID, ictx.runstate, ictx.runEnv, ld, ictx.log, ictx.blobs, ictx.clk, ictx.tap,
 		reduceCallContext{runtimeParent: ictx.runtimeParent, input: ictx.input, inputFiles: ictx.inputFiles})
 }
 

@@ -450,8 +450,8 @@ func dispatchOneTool(ctx context.Context, tool ir.Tool, toolPath string, tc agen
 	synth := &ir.CodeStep{Run: cmd, Container: tool.Impl.Container}
 	resolved := ResolvedInputs{
 		Command:     cmd,
-		Env:         map[string]string{},
-		InputFiles:  inputFiles, // staged impl input_files + the verbatim args file
+		Env:         copyRunEnv(ictx.runEnv), // I1: forward the resolved workflow env: allowlist (F15), like a graph run: step
+		InputFiles:  inputFiles,              // staged impl input_files + the verbatim args file
 		OutputFiles: outputFiles,
 	}
 	if tool.Impl.Timeout != nil {
