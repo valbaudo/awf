@@ -96,6 +96,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		var capturedResult agent.AgentResult
 		var kind string // "" none | "ok" | "unparseable" | "fatal"
 		var captureErr error
+		var initModel string // model from the "system"/init event, for Metrics.Model (F35)
 
 		scanner := bufio.NewScanner(pr)
 		scanner.Buffer(make([]byte, 64*1024), 1<<20)
@@ -111,6 +112,11 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			if perr != nil {
 				continue // tolerate a stray non-JSON line
 			}
+			// Capture the model reported in the system/init event for auditability
+			// (F35 — surfaced on the result even though droid stays unpriced).
+			if ev.Type == "system" && ev.Model != "" {
+				initModel = ev.Model
+			}
 			select {
 			case events <- agent.AgentEvent{Kind: ev.Type, Payload: raw, Stream: "stdout", Display: displayForDroid(ev)}:
 			case <-ctx.Done():
@@ -119,7 +125,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 			}
 			switch ev.Type {
 			case "completion":
-				res, eerr := resultFromCompletion(ev, inv)
+				res, eerr := resultFromCompletion(ev, inv, initModel)
 				var unparseable *agent.ErrUnparseableOutput
 				switch {
 				case eerr == nil:

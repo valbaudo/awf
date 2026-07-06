@@ -69,8 +69,21 @@ func parseStreamEvent(b []byte) (*streamEvent, error) {
 // event. With a schema, parses a JSON object out of finalText (layer-2);
 // non-parseable → *agent.ErrUnparseableOutput{NodePath}. Without a schema,
 // Output is nil (the transcript lives in the streamed AgentEvents). Cost zero
-// (droid reports no USD).
-func resultFromCompletion(ev *streamEvent, inv agent.AgentInvocation) (agent.AgentResult, error) {
+// (droid reports no USD — see the Model comment below for the roll-up story).
+//
+// model is the value captured from the "system"/init event's "model" field
+// (Launch threads it through, mirroring agent/claude's ExtractResult(msg,
+// model)). The completion event itself carries no model.
+//
+// F35: model is surfaced on Metrics.Model so it shows up in obs/cost roll-ups
+// even though droid's step stays unpriced (Cost.Source == ""). Deriving a
+// dollar cost from it (pricing.Table.Derive, the way agent/codex prices its
+// requested with:{model} — see agent/codex/result.go buildResult) is
+// DEFERRED: droid's resolved model ids need a live droid run to confirm which
+// pricing-table keys they actually match — tracked as a cve-runner follow-up,
+// NOT implemented here. Wiring Metrics.Model now is what makes that follow-up
+// a pure pricing-table change later, with no further adapter change needed.
+func resultFromCompletion(ev *streamEvent, inv agent.AgentInvocation, model string) (agent.AgentResult, error) {
 	var output map[string]any
 	if inv.OutputSchema != nil {
 		parsed, perr := extractJSONObject(ev.FinalText)
@@ -86,7 +99,7 @@ func resultFromCompletion(ev *streamEvent, inv agent.AgentInvocation) (agent.Age
 		tokens.CacheReadInput = ev.Usage.CacheReadInputTokens
 		tokens.CacheCreationInput = ev.Usage.CacheCreationInputTokens
 	}
-	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: agent.MetricSet{Tokens: tokens, Turns: ev.NumTurns}}, nil
+	return agent.AgentResult{Output: output, ExitCode: 0, Metrics: agent.MetricSet{Tokens: tokens, Turns: ev.NumTurns, Model: model}}, nil
 }
 
 // errorFromEvent maps a terminal "error" event to an outcome error. Auth

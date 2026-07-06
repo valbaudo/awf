@@ -158,3 +158,65 @@ func TestPrintRunCostSummaryMixedReportedAndDerived(t *testing.T) {
 		t.Errorf("mixed summary breakdown does not reconcile with total, got:\n%s", got)
 	}
 }
+
+// TestPrintRunCostSummaryUnpricedMarker (F35) asserts that a run with some
+// agent steps carrying no cost source at all (Cost.Source == "", e.g. droid
+// pre-pricing) surfaces a "+" on the total and a "(N of M steps unpriced)"
+// marker — so the total never reads as a complete `$X` when it silently
+// undercounts.
+func TestPrintRunCostSummaryUnpricedMarker(t *testing.T) {
+	dir := t.TempDir()
+	lg, err := state.OpenLog(filepath.Join(dir, "log"), clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	t.Cleanup(func() { _ = lg.Close() })
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+
+	priced := agent.MetricSet{Cost: agent.MetricCost{Source: agent.CostSourceReported, Total: 0.5}, Tokens: agent.MetricTokens{Input: 10, Output: 10}, Turns: 1}
+	unpriced := agent.MetricSet{Tokens: agent.MetricTokens{Input: 10, Output: 10}, Turns: 1} // no Cost.Source at all
+
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p2", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p3", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "u1", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &unpriced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "u2", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &unpriced})})
+
+	var out bytes.Buffer
+	printRunCostSummary(&out, lg)
+	got := out.String()
+
+	if !strings.Contains(got, "$1.5000+") {
+		t.Errorf("unpriced summary missing '+' on the total, got:\n%s", got)
+	}
+	if !strings.Contains(got, "2 of 5 steps unpriced") {
+		t.Errorf("unpriced summary missing the unpriced-step marker, got:\n%s", got)
+	}
+}
+
+// TestPrintRunCostSummaryFullyPricedNoMarker (F35) asserts the fully-priced
+// case is unchanged: no trailing "+" and no "unpriced" marker.
+func TestPrintRunCostSummaryFullyPricedNoMarker(t *testing.T) {
+	dir := t.TempDir()
+	lg, err := state.OpenLog(filepath.Join(dir, "log"), clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	t.Cleanup(func() { _ = lg.Close() })
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+
+	priced := agent.MetricSet{Cost: agent.MetricCost{Source: agent.CostSourceReported, Total: 0.5}, Tokens: agent.MetricTokens{Input: 10, Output: 10}, Turns: 1}
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p2", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
+
+	var out bytes.Buffer
+	printRunCostSummary(&out, lg)
+	got := out.String()
+
+	if strings.Contains(got, "unpriced") {
+		t.Errorf("fully-priced summary must NOT show the unpriced marker, got:\n%s", got)
+	}
+	if strings.Contains(got, "$1.0000+") {
+		t.Errorf("fully-priced summary must NOT show a '+' on the total, got:\n%s", got)
+	}
+}

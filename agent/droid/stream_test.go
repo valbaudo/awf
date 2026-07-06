@@ -13,7 +13,7 @@ func TestResultFromCompletion_SuccessNoSchema_NilOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseStreamEvent: %v", err)
 	}
-	res, eerr := resultFromCompletion(ev, agent.AgentInvocation{NodePath: "graph[0]"})
+	res, eerr := resultFromCompletion(ev, agent.AgentInvocation{NodePath: "graph[0]"}, "")
 	if eerr != nil {
 		t.Fatalf("resultFromCompletion: %v", eerr)
 	}
@@ -33,7 +33,7 @@ func TestResultFromCompletion_SuccessWithSchema_ParsesJSON(t *testing.T) {
 	// escapes, not Go escapes).
 	ev, _ := parseStreamEvent([]byte(`{"type":"completion","finalText":"Here is the answer: {\"answer\": 42}","numTurns":1,"durationMs":10}`))
 	inv := agent.AgentInvocation{NodePath: "graph[0]", OutputSchema: &ir.JSONSchema{"type": "object"}}
-	res, eerr := resultFromCompletion(ev, inv)
+	res, eerr := resultFromCompletion(ev, inv, "")
 	if eerr != nil {
 		t.Fatalf("resultFromCompletion: %v", eerr)
 	}
@@ -44,10 +44,35 @@ func TestResultFromCompletion_SuccessWithSchema_ParsesJSON(t *testing.T) {
 
 func TestResultFromCompletion_SchemaButFinalTextNotJSON_Unparseable(t *testing.T) {
 	ev, _ := parseStreamEvent([]byte(`{"type":"completion","finalText":"no json","numTurns":1,"durationMs":10}`))
-	_, eerr := resultFromCompletion(ev, agent.AgentInvocation{NodePath: "graph[2]", OutputSchema: &ir.JSONSchema{"type": "object"}})
+	_, eerr := resultFromCompletion(ev, agent.AgentInvocation{NodePath: "graph[2]", OutputSchema: &ir.JSONSchema{"type": "object"}}, "")
 	var unp *agent.ErrUnparseableOutput
 	if !errors.As(eerr, &unp) || unp.NodePath != "graph[2]" {
 		t.Fatalf("err = %v, want *agent.ErrUnparseableOutput{NodePath:graph[2]}", eerr)
+	}
+}
+
+// TestDroid_SurfacesModel (F35) asserts that the model reported in the
+// "system"/init event is threaded through to Metrics.Model on the completion
+// result — mirroring agent/claude's ExtractResult(msg, initModel). The
+// pricing-table rate lookup for that model is DEFERRED (see the
+// resultFromCompletion doc comment); this only asserts the id is surfaced.
+func TestDroid_SurfacesModel(t *testing.T) {
+	initEv, err := parseStreamEvent([]byte(`{"type":"system","model":"gpt-5-codex","tools":["read","write"]}`))
+	if err != nil {
+		t.Fatalf("parseStreamEvent(system): %v", err)
+	}
+	capturedModel := initEv.Model
+
+	ev, err := parseStreamEvent([]byte(`{"type":"completion","finalText":"done","numTurns":1,"durationMs":10}`))
+	if err != nil {
+		t.Fatalf("parseStreamEvent(completion): %v", err)
+	}
+	res, eerr := resultFromCompletion(ev, agent.AgentInvocation{NodePath: "graph[0]"}, capturedModel)
+	if eerr != nil {
+		t.Fatalf("resultFromCompletion: %v", eerr)
+	}
+	if res.Metrics.Model != "gpt-5-codex" {
+		t.Errorf("Metrics.Model = %q, want %q", res.Metrics.Model, "gpt-5-codex")
 	}
 }
 
