@@ -7,17 +7,27 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/codex"
 	"github.com/valbaudo/awf/agent/live"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/pricing"
 )
+
+// renamedKeys — with-keys that used to exist under a different name. F12:
+// `effort` is now the canonical name (matching anthropic/claude-code and
+// openai/codex); `reasoning_effort` no longer exists. Checked BEFORE the
+// generic unknown-key loop so the author gets a specific rename pointer.
+// KeyUnknown: true so the run-start with:-config guard (U1) surfaces this
+// pre-spend, same as any other unknown key.
+var renamedKeys = map[string]string{"reasoning_effort": "effort"}
 
 const AdapterRef = "openai/codex-live"
 
@@ -176,7 +186,12 @@ type config struct {
 
 func parseConfig(with ir.RawConfig) (config, error) {
 	allowed := map[string]struct{}{
-		"prompt": {}, "cwd": {}, "session": {}, "model": {}, "reasoning_effort": {}, "permission_policy": {},
+		"prompt": {}, "cwd": {}, "session": {}, "model": {}, "effort": {}, "permission_policy": {},
+	}
+	for old, newKey := range renamedKeys {
+		if _, ok := with[old]; ok {
+			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: old, Reason: "renamed to " + newKey, KeyUnknown: true}
+		}
 	}
 	for k := range with {
 		if _, ok := allowed[k]; !ok {
@@ -209,10 +224,18 @@ func parseConfig(with ir.RawConfig) (config, error) {
 		}
 		cfg.model = s
 	}
-	if v, ok := with["reasoning_effort"]; ok {
+	if v, ok := with["effort"]; ok {
 		s, ok := v.(string)
 		if !ok {
-			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "reasoning_effort", Reason: fmt.Sprintf("must be string, got %T", v)}
+			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "effort", Reason: fmt.Sprintf("must be string, got %T", v)}
+		}
+		// codexlive wraps the same codex CLI, so it shares codex's six-value
+		// model_reasoning_effort enum (single-sourced as codex.EffortValues) —
+		// unlike the with-key-only checks above, this one was previously
+		// missing entirely (F12), letting a bad value reach the app-server and
+		// fail mid-run instead of at validate time.
+		if !slices.Contains(codex.EffortValues, s) {
+			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "effort", Reason: fmt.Sprintf("must be one of %v, got %q", codex.EffortValues, s)}
 		}
 		cfg.reasoningEffort = s
 	}

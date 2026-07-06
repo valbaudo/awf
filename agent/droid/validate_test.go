@@ -21,7 +21,7 @@ func newWithKey(t *testing.T) *droid.Adapter {
 func TestValidateConfig_HappyPath(t *testing.T) {
 	a := newWithKey(t)
 	with := ir.RawConfig{
-		"prompt": "do the thing", "model": "claude-opus-4-8", "reasoning_effort": "high",
+		"prompt": "do the thing", "model": "claude-opus-4-8", "effort": "high",
 		"autonomy": "skip", "system_prompt": "be terse",
 		"enabled_tools": []any{"Read", "Edit"}, "disabled_tools": []any{"Execute"},
 	}
@@ -57,11 +57,37 @@ func TestValidateConfig_SessionKeysRejected(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_BadReasoningEffort(t *testing.T) {
-	err := newWithKey(t).ValidateConfig(ir.RawConfig{"prompt": "x", "reasoning_effort": "ludicrous"})
+func TestValidateConfig_BadEffort(t *testing.T) {
+	err := newWithKey(t).ValidateConfig(ir.RawConfig{"prompt": "x", "effort": "ludicrous"})
 	var bad *agent.ErrInvalidConfig
-	if !errors.As(err, &bad) || bad.Key != "reasoning_effort" {
-		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:reasoning_effort}", err)
+	if !errors.As(err, &bad) || bad.Key != "effort" {
+		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:effort}", err)
+	}
+}
+
+// F12: reasoning_effort was droid's original with-key name; effort is now the
+// sole canonical name (matching anthropic/claude-code and openai/codex). The
+// old key must not silently vanish or fall through to the generic unknown-key
+// message — it gets a specific rename pointer, and KeyUnknown:true so the
+// run-start with:-config guard (U1) surfaces it pre-spend.
+func TestDroid_EffortRenamed(t *testing.T) {
+	a := newWithKey(t)
+	if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": "high"}); err != nil {
+		t.Errorf("effort=high should pass: %v", err)
+	}
+	var bad *agent.ErrInvalidConfig
+	err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "reasoning_effort": "high"})
+	if !errors.As(err, &bad) {
+		t.Fatalf("reasoning_effort: err = %v, want *agent.ErrInvalidConfig", err)
+	}
+	if bad.Key != "reasoning_effort" {
+		t.Errorf("bad.Key = %q, want %q", bad.Key, "reasoning_effort")
+	}
+	if bad.Reason != "renamed to effort" {
+		t.Errorf("bad.Reason = %q, want %q", bad.Reason, "renamed to effort")
+	}
+	if !bad.KeyUnknown {
+		t.Error("bad.KeyUnknown = false, want true")
 	}
 }
 

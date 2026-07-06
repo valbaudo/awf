@@ -246,7 +246,7 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 		}
 		parts = append(parts, "--model", shellQuote(ref))
 	}
-	if re, ok := inv.With[keyReasoningEffort].(string); ok && re != "" {
+	if re, ok := inv.With[keyEffort].(string); ok && re != "" {
 		parts = append(parts, "--reasoning-effort", re) // value validated against a fixed enum
 	}
 	autonomy := "skip" // default: --skip-permissions-unsafe (isolated container)

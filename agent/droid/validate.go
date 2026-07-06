@@ -17,21 +17,21 @@ import (
 // disagree about a key string. The BYOK names (base_url/api_key_env/tls_insecure)
 // match agent/awfllm for cross-adapter consistency.
 const (
-	keyPrompt          = "prompt"
-	keyModel           = "model"
-	keyReasoningEffort = "reasoning_effort"
-	keyAutonomy        = "autonomy"
-	keySystemPrompt    = "system_prompt"
-	keyEnabledTools    = "enabled_tools"
-	keyDisabledTools   = "disabled_tools"
-	keyBaseURL         = "base_url"
-	keyAPIKeyEnv       = "api_key_env"
-	keyProvider        = "provider"
-	keyTLSInsecure     = "tls_insecure"
+	keyPrompt        = "prompt"
+	keyModel         = "model"
+	keyEffort        = "effort"
+	keyAutonomy      = "autonomy"
+	keySystemPrompt  = "system_prompt"
+	keyEnabledTools  = "enabled_tools"
+	keyDisabledTools = "disabled_tools"
+	keyBaseURL       = "base_url"
+	keyAPIKeyEnv     = "api_key_env"
+	keyProvider      = "provider"
+	keyTLSInsecure   = "tls_insecure"
 )
 
 var allowedKeys = map[string]struct{}{
-	keyPrompt: {}, keyModel: {}, keyReasoningEffort: {}, keyAutonomy: {},
+	keyPrompt: {}, keyModel: {}, keyEffort: {}, keyAutonomy: {},
 	keySystemPrompt: {}, keyEnabledTools: {}, keyDisabledTools: {},
 	// BYOK (custom OpenAI-compatible endpoint). `base_url` set ⇒ BYOK mode;
 	// see the BYOK branch in ValidateConfig.
@@ -41,6 +41,14 @@ var allowedKeys = map[string]struct{}{
 // rejectedKeys never belong in `with:` — `api_key` would inline a secret into
 // the durable definition; name the host env var with `api_key_env` instead.
 var rejectedKeys = []string{"api_key"}
+
+// renamedKeys — with-keys that used to exist under a different name. F12:
+// `effort` is now the canonical name (matching anthropic/claude-code and
+// openai/codex); `reasoning_effort` no longer exists. Checked BEFORE the
+// generic unknown-key loop so the author gets a specific rename pointer.
+// KeyUnknown: true so the run-start with:-config guard (U1) surfaces this
+// pre-spend, same as any other unknown key.
+var renamedKeys = map[string]string{"reasoning_effort": "effort"}
 
 // sessionKeysList — with-keys that would reuse/continue a prior droid session,
 // breaking gate independence. Note `fork` is droid-specific (the claude sibling
@@ -69,6 +77,11 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 	for _, k := range rejectedKeys {
 		if _, present := with[k]; present {
 			return wrapInvalidConfig("not supported (use api_key_env to name a host env var)", k)
+		}
+	}
+	for old, newKey := range renamedKeys {
+		if _, ok := with[old]; ok {
+			return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: old, Reason: "renamed to " + newKey, KeyUnknown: true}
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(with)) {
@@ -101,13 +114,13 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keySystemPrompt)
 		}
 	}
-	if v, ok := with[keyReasoningEffort]; ok {
+	if v, ok := with[keyEffort]; ok {
 		s, ok := v.(string)
 		if !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyReasoningEffort)
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyEffort)
 		}
 		if !slices.Contains(reasoningEffortValues, s) {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", reasoningEffortValues, s), keyReasoningEffort)
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", reasoningEffortValues, s), keyEffort)
 		}
 	}
 	if v, ok := with[keyAutonomy]; ok {

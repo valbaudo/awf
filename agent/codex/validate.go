@@ -12,15 +12,24 @@ import (
 // with-config key names. Shared by ValidateConfig (allowedKeys + per-key checks)
 // and assembleCommand (launch.go) so the two can never disagree on a key name.
 const (
-	keyPrompt          = "prompt"
-	keyModel           = "model"
-	keySandbox         = "sandbox"
-	keyReasoningEffort = "reasoning_effort"
+	keyPrompt  = "prompt"
+	keyModel   = "model"
+	keySandbox = "sandbox"
+	keyEffort  = "effort"
 )
 
 var allowedKeys = map[string]struct{}{
-	keyPrompt: {}, keyModel: {}, keySandbox: {}, keyReasoningEffort: {},
+	keyPrompt: {}, keyModel: {}, keySandbox: {}, keyEffort: {},
 }
+
+// renamedKeys — with-keys that used to exist under a different name. F12: the
+// codex/codexlive/droid adapters all called this key `reasoning_effort`;
+// `effort` is now the canonical name (matching anthropic/claude-code). Checked
+// BEFORE the generic unknown-key loop so the author gets a specific rename
+// pointer instead of a bare "unknown with-key" message. KeyUnknown: true so
+// the run-start with:-config guard (U1) surfaces this pre-spend, same as any
+// other unknown key.
+var renamedKeys = map[string]string{"reasoning_effort": "effort"}
 
 // sessionKeysList — with-keys that would reuse/continue a prior codex session.
 // `last`/`session_id` are resume/fork SUBCOMMAND args (not `codex exec` flags);
@@ -31,14 +40,17 @@ var sessionKeysList = []string{"resume", "fork", "last", "session_id", "continue
 // sandboxValues — codex exec --sandbox accepted modes.
 var sandboxValues = []string{"read-only", "workspace-write", "danger-full-access"}
 
-// reasoningEffortValues — codex's accepted model_reasoning_effort tiers, VERIFIED
+// EffortValues — codex's accepted model_reasoning_effort tiers, VERIFIED
 // against the v0.131.0 binary's own config validation: a bad value yields
 // "unknown variant ..., expected one of none, minimal, low, medium, high, xhigh"
 // at config-load, before any API call. Enum-validated here so a bad value fails at
 // awf-validate time, and only a bare-word, TOML-safe value reaches the
 // -c model_reasoning_effort= flag. (codex also rejects a bad value loudly at
 // config-load — this is fail-fast on top of that.)
-var reasoningEffortValues = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
+//
+// Exported so agent/codexlive can single-source the same enum: codexlive wraps
+// the same codex CLI, so a value valid on one is valid on the other.
+var EffortValues = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
 
 // ValidateConfig enforces codex's with-schema (session-reject → unknown-key →
 // required-prompt → per-key types+enums). Deterministic (sorted keys); runs twice
@@ -50,6 +62,11 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 	for _, key := range sessionKeysList {
 		if _, present := with[key]; present {
 			return &ErrSessionReuseAttempted{Key: key}
+		}
+	}
+	for old, newKey := range renamedKeys {
+		if _, ok := with[old]; ok {
+			return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: old, Reason: "renamed to " + newKey, KeyUnknown: true}
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(with)) {
@@ -82,13 +99,13 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", sandboxValues, s), keySandbox)
 		}
 	}
-	if v, ok := with[keyReasoningEffort]; ok {
+	if v, ok := with[keyEffort]; ok {
 		s, ok := v.(string)
 		if !ok {
-			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyReasoningEffort)
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyEffort)
 		}
-		if !slices.Contains(reasoningEffortValues, s) {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", reasoningEffortValues, s), keyReasoningEffort)
+		if !slices.Contains(EffortValues, s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", EffortValues, s), keyEffort)
 		}
 	}
 	return nil

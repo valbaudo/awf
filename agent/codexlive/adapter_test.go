@@ -450,6 +450,53 @@ func TestCodexLiveValidateConfigRejectsRelativeOrControlCWD(t *testing.T) {
 	}
 }
 
+// F12: codexlive wraps the same codex CLI, so it shares codex's six-value
+// model_reasoning_effort enum — this validation did not exist before (a bad
+// value used to reach the app-server and fail mid-run rather than at
+// validate time).
+func TestCodexlive_EffortEnumValidated(t *testing.T) {
+	a := newVersionTestAdapter(t, &fakeClient{info: ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"}})
+	base := ir.RawConfig{"prompt": "build", "cwd": t.TempDir(), "session": "effort-check"}
+
+	with := cloneRawConfig(base)
+	with["effort"] = "high"
+	if err := a.ValidateConfig(with); err != nil {
+		t.Errorf("effort=high should pass: %v", err)
+	}
+
+	with = cloneRawConfig(base)
+	with["effort"] = "bogus"
+	err := a.ValidateConfig(with)
+	var bad *agent.ErrInvalidConfig
+	if !errors.As(err, &bad) || bad.Key != "effort" {
+		t.Fatalf("effort=bogus: err = %v, want *agent.ErrInvalidConfig{Key:effort}", err)
+	}
+}
+
+// F12: reasoning_effort was codexlive's original with-key name; effort is now
+// the sole canonical name (matching codex/claude-code). The old key must not
+// silently vanish or fall through to the generic unknown-key message — it
+// gets a specific rename pointer, and KeyUnknown:true so the run-start
+// with:-config guard (U1) surfaces it pre-spend.
+func TestCodexlive_EffortRenamed(t *testing.T) {
+	a := newVersionTestAdapter(t, &fakeClient{info: ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"}})
+	with := ir.RawConfig{"prompt": "build", "cwd": t.TempDir(), "session": "rename-check", "reasoning_effort": "high"}
+	err := a.ValidateConfig(with)
+	var bad *agent.ErrInvalidConfig
+	if !errors.As(err, &bad) {
+		t.Fatalf("reasoning_effort: err = %v, want *agent.ErrInvalidConfig", err)
+	}
+	if bad.Key != "reasoning_effort" {
+		t.Errorf("bad.Key = %q, want %q", bad.Key, "reasoning_effort")
+	}
+	if bad.Reason != "renamed to effort" {
+		t.Errorf("bad.Reason = %q, want %q", bad.Reason, "renamed to effort")
+	}
+	if !bad.KeyUnknown {
+		t.Error("bad.KeyUnknown = false, want true")
+	}
+}
+
 func TestCodexLiveFailedTurnDoesNotCommitSuccess(t *testing.T) {
 	root := testRoot(t)
 	fake := &fakeClient{
