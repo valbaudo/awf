@@ -113,53 +113,13 @@ func errorFromEvent(ev *streamEvent) error {
 	return fmt.Errorf("agent/droid: droid exec error (%s): %s", ev.Source, ev.Message)
 }
 
-// extractJSONObject pulls a JSON object out of droid's free-text result. droid
-// has no native schema mode, so finalText may wrap the JSON in prose or a fence.
-// Strategy (stdlib only, STRING-AWARE via json.Decoder so braces/quotes inside
-// strings and escaped quotes don't fool it): strip a ```json fence → strict
-// whole-text decode → else scan each '{' start, decode with json.Decoder (which
-// consumes exactly one well-formed value), returning the LAST object that
-// decodes (right bias for an agent that reasons before its final JSON). We do
-// NOT schema-validate here (the engine's ValidateOutputMap does, so a
-// wrong-but-valid object becomes a retryable schema failure) and do NOT pull in
-// a json-repair dependency (it could fabricate a valid-but-wrong object).
+// extractJSONObject delegates to the shared agent.ExtractJSONObject (F37 —
+// hoisted from three byte-identical per-adapter copies; see agent/schema.go).
+// Kept as a local name (rather than calling agent.ExtractJSONObject inline)
+// because it is called unqualified by this package's in-package tests
+// (stream_test.go) and exported for white-box tests via export_test.go.
 func extractJSONObject(s string) (map[string]any, error) {
-	s = stripJSONFence(agent.StripThinkTags(strings.TrimSpace(s)))
-	var whole map[string]any
-	if err := json.Unmarshal([]byte(s), &whole); err == nil {
-		return whole, nil
-	}
-	var last map[string]any
-	found := false
-	for i := 0; i < len(s); i++ {
-		if s[i] != '{' {
-			continue
-		}
-		dec := json.NewDecoder(strings.NewReader(s[i:]))
-		var cand map[string]any
-		if err := dec.Decode(&cand); err == nil {
-			last = cand
-			found = true
-		}
-	}
-	if found {
-		return last, nil
-	}
-	return nil, fmt.Errorf("agent/droid: no JSON object found in result")
-}
-
-// stripJSONFence removes a single leading ```json / ``` fence line and a
-// trailing ``` if present.
-func stripJSONFence(s string) string {
-	if !strings.HasPrefix(s, "```") {
-		return s
-	}
-	if nl := strings.IndexByte(s, '\n'); nl >= 0 {
-		s = s[nl+1:]
-	}
-	s = strings.TrimSpace(s)
-	s = strings.TrimSuffix(s, "```")
-	return strings.TrimSpace(s)
+	return agent.ExtractJSONObject(s)
 }
 
 // displayForDroid maps one droid stream-json event to the normalized
