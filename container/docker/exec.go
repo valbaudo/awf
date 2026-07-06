@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	dockerContainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -61,8 +62,17 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 // execImage is the core Exec implementation for image-mode containers.
 // It is also called by execCompose after container ID resolution.
 func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.Cmd) (<-chan container.IOChunk, <-chan container.ExecResult, error) {
+	// Wrap the command so its process tree can be reaped on ctx-cancel. The
+	// wrapping `sh` writes its own PID (the tree root) to a per-exec pidfile,
+	// then runs cmd.Run in the FOREGROUND — stdin, stdout, and the exit code are
+	// unchanged (`echo` redirects to the file, and a ;-list's exit status is
+	// cmd.Run's). On timeout the watcher reaps root + PPID-reachable descendants
+	// (killExecTree); without it, docker exec has no per-exec kill and a stalled
+	// child lingers in the keepalive container until teardown.
+	pidfile := fmt.Sprintf("/tmp/.awf-exec-%d.pid", b.execSeq.Add(1))
+	wrapped := "echo $$ > '" + pidfile + "'; " + cmd.Run
 	execCreateResp, err := b.cli.ContainerExecCreate(ctx, dockerID, dockerContainer.ExecOptions{
-		Cmd:          []string{"sh", "-c", cmd.Run},
+		Cmd:          []string{"sh", "-c", wrapped},
 		Env:          envMapToSlice(cmd.Env),
 		AttachStdout: true,
 		AttachStderr: true,
@@ -101,6 +111,11 @@ func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.
 		defer close(watcherDone)
 		select {
 		case <-ctx.Done():
+			// Reap the step's process tree (best-effort, bounded) — docker exec
+			// has no per-exec kill, so otherwise a stalled child keeps running in
+			// the keepalive container. Detached so it never delays result
+			// delivery; attachResp.Close() below unblocks the reader immediately.
+			go b.killExecTree(dockerID, pidfile)
 			attachResp.Close()
 		case <-readerDone:
 			// Reader finished naturally; reader's defer closes.
@@ -178,6 +193,54 @@ func (b *Backend) execImage(ctx context.Context, dockerID string, cmd container.
 	}()
 
 	return chunks, result, nil
+}
+
+// killExecTree reaps a timed-out exec's process tree inside the container.
+// Docker exposes no per-exec kill, so on ctx-cancel we run a fresh exec that
+// reads the wrapping shell's PID from the per-exec pidfile, computes the
+// transitive closure of its descendants from /proc/<pid>/status (busybox-safe:
+// no procps, no fragile /proc/stat comm-field parsing), and SIGKILLs the set.
+// Best-effort and bounded: a background context (the step ctx is already
+// cancelled), a short timeout, all errors ignored; Detach:true so the daemon
+// runs it independently of this call.
+//
+// Limitation: a process that reparents to init (an intermediate parent exited)
+// or double-forks to daemonize loses its PPID link and is not reaped here; such
+// stragglers are cleaned up when the container is Destroyed. This reaps the real
+// case — a stalled agent CLI / script and its still-parented children.
+func (b *Backend) killExecTree(dockerID, pidfile string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := b.cli.ContainerExecCreate(ctx, dockerID, dockerContainer.ExecOptions{
+		Cmd: []string{"sh", "-c", killScript(pidfile)},
+	})
+	if err != nil {
+		return
+	}
+	_ = b.cli.ContainerExecStart(ctx, resp.ID, dockerContainer.ExecStartOptions{Detach: true})
+}
+
+// killScript is the POSIX/busybox shell that reaps the tree rooted at the PID in
+// pidfile: it builds the descendant set as a transitive closure over PPid, then
+// SIGKILLs the whole set at once. Enumerate-then-kill is deliberate — killing
+// incrementally would reparent not-yet-seen children to init and break the walk.
+// pidfile is an AWF-controlled path (no user input), so single-quoting is safe.
+func killScript(pidfile string) string {
+	return `L=$(cat '` + pidfile + `' 2>/dev/null); [ -n "$L" ] || exit 0
+t=" $L "
+c=1
+while [ "$c" = 1 ]; do
+  c=0
+  for s in /proc/[0-9]*/status; do
+    p=${s#/proc/}; p=${p%/status}
+    case "$t" in *" $p "*) continue ;; esac
+    pp=$(sed -n 's/^PPid:[[:space:]]*//p' "$s" 2>/dev/null)
+    [ -n "$pp" ] || continue
+    case "$t" in *" $pp "*) t="$t$p "; c=1 ;; esac
+  done
+done
+kill -KILL $t 2>/dev/null
+rm -f '` + pidfile + `' 2>/dev/null`
 }
 
 // streamingWriter is an io.Writer that emits one IOChunk per Write to the
