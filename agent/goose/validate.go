@@ -18,10 +18,15 @@ const (
 	keyModel        = "model"
 	keyMaxTurns     = "max_turns"
 	keySystemPrompt = "system_prompt"
+	// keyProvider (F34) — optional with-key mirroring droid/awfllm's `provider`
+	// convention. goose otherwise selects its provider ONLY via the host
+	// GOOSE_PROVIDER env var; this with-key beats that env default (see
+	// resolveProvider and assembleCommand's --provider flag in launch.go).
+	keyProvider = "provider"
 )
 
 var allowedKeys = map[string]struct{}{
-	keyPrompt: {}, keyModel: {}, keyMaxTurns: {}, keySystemPrompt: {},
+	keyPrompt: {}, keyModel: {}, keyMaxTurns: {}, keySystemPrompt: {}, keyProvider: {},
 }
 
 // sessionKeysList — with-keys that would reuse/continue a prior goose session,
@@ -74,12 +79,22 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("must be a positive integer, got %v (%T)", v, v), keyMaxTurns)
 		}
 	}
-	// Provider-conditional auth (defense-in-depth): only enforce when GOOSE_PROVIDER
-	// is set in the adapter env (then goose obeys env > config.yaml, so validated ==
-	// runtime). When unset, the active provider lives only in config.yaml, which the
-	// adapter cannot see → skip; a missing key still fails LOUD at Launch (goose exits
-	// 1 with "error: Error Configuration value not found: <KEY>" → permanent).
-	if provider, ok := a.env["GOOSE_PROVIDER"]; ok {
+	if v, ok := with[keyProvider]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyProvider)
+		}
+		if s == "" {
+			return wrapInvalidConfig("must not be empty", keyProvider)
+		}
+	}
+	// Provider-conditional auth (defense-in-depth): only enforce when a provider is
+	// resolvable (with:provider, beating the adapter's GOOSE_PROVIDER env — the same
+	// precedence assembleCommand's --provider flag enforces at Launch, so validated ==
+	// runtime). When neither is set, the active provider lives only in config.yaml,
+	// which the adapter cannot see → skip; a missing key still fails LOUD at Launch
+	// (goose exits 1 with "error: Error Configuration value not found: <KEY>" → permanent).
+	if provider, ok := resolveProvider(with, a.env); ok {
 		if key, needs := providerAuthKey[provider]; needs {
 			if _, present := a.env[key]; !present {
 				return &ErrMissingAPIKey{Key: key}
@@ -87,6 +102,21 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		}
 	}
 	return nil
+}
+
+// resolveProvider mirrors the precedence assembleCommand's --provider flag gives
+// goose itself (goose's own --provider help text: "Override the GOOSE_PROVIDER
+// environment variable for this run") — with:provider, if a non-empty string,
+// beats the adapter's inherited GOOSE_PROVIDER env var. Returns ok=false when
+// neither is set (provider lives only in goose's own config.yaml).
+func resolveProvider(with ir.RawConfig, env map[string]string) (string, bool) {
+	if p, ok := with[keyProvider].(string); ok && p != "" {
+		return p, true
+	}
+	if p, ok := env["GOOSE_PROVIDER"]; ok {
+		return p, true
+	}
+	return "", false
 }
 
 // asInt accepts the numeric shapes ir.RawConfig may carry for an integer with-key

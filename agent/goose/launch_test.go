@@ -210,6 +210,29 @@ func TestLaunch_NoTerminalComplete_UnexpectedExit(t *testing.T) {
 	}
 }
 
+// TestGoose_ProviderWithKey (F34): with:{provider:openai} is accepted and maps
+// to goose's own --provider flag, which the adapter's fixture env's inherited
+// GOOSE_PROVIDER ("claude-code", set by gooseLaunchAdapter) must NOT override —
+// goose's own --provider flag beats GOOSE_PROVIDER at the CLI layer.
+func TestGoose_ProviderWithKey(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, []container.IOChunk{chunk(nl(msgLine("assistant", "ok"))), chunk(nl(completeLine(0, 0)))})
+	a := gooseLaunchAdapter(t, f)
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: goose.AdapterRef,
+		With: ir.RawConfig{"prompt": "do it", "provider": "openai"},
+	}
+	_, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	cmd := f.Calls[0].Run
+	if !strings.Contains(cmd, "--provider 'openai'") {
+		t.Errorf("command missing --provider 'openai': %s", cmd)
+	}
+}
+
 func TestLaunch_TokensPropagated_CostZero(t *testing.T) {
 	f := container.NewFake()
 	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})

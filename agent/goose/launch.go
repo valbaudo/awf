@@ -243,6 +243,13 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	if model, ok := inv.With[keyModel].(string); ok && model != "" {
 		parts = append(parts, "--model", shellQuote(model))
 	}
+	// F34: goose's own --provider flag "override[s] the GOOSE_PROVIDER environment
+	// variable for this run" (verified goose --help), so appending it here already
+	// gives with:provider precedence over any inherited GOOSE_PROVIDER host env —
+	// no exec-env override needed.
+	if provider, ok := inv.With[keyProvider].(string); ok && provider != "" {
+		parts = append(parts, "--provider", shellQuote(provider))
+	}
 	if mt, ok := inv.With[keyMaxTurns]; ok {
 		if n, ok := asInt(mt); ok {
 			parts = append(parts, "--max-turns", strconv.Itoa(n))
