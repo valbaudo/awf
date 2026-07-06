@@ -4,7 +4,8 @@ import "testing"
 
 // ---- output_artifact validation (AWF3014) ----
 
-// TestValidateOutputArtifact_OnContainerAgent: output_artifact on a container-backed agent step → AWF3014.
+// TestValidateOutputArtifact_OnContainerAgent: output_artifact on a container-backed agent
+// step with output_schema → no AWF3014 (F39: widened from containerless-only).
 func TestValidateOutputArtifact_OnContainerAgent(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -14,7 +15,7 @@ func TestValidateOutputArtifact_OnContainerAgent(t *testing.T) {
 				OutputArtifact: "result", OutputSchema: &JSONSchema{"type": "object"}},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF3014", "gen")
+	assertNoErrorCode(t, Validate(ld), "AWF3014")
 }
 
 // TestValidateOutputArtifact_WithOutputFiles: output_artifact mutually exclusive with output_files → AWF3014.
@@ -23,6 +24,24 @@ func TestValidateOutputArtifact_WithOutputFiles(t *testing.T) {
 		ID: "x", Version: 1,
 		Graph: NodeList{
 			&AgentStep{ID: "gen", Uses: "awf/llm",
+				OutputArtifact: "result",
+				OutputSchema:   &JSONSchema{"type": "object"},
+				OutputFiles:    OutputFiles{{Name: "extra", Path: "/out/extra.json"}},
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3014", "gen")
+}
+
+// TestValidateOutputArtifact_OnContainerAgentWithOutputFiles: the mutual-exclusion-with-
+// output_files rule still applies to a container-backed step now that output_artifact is
+// valid there too (F39 widens WHERE it's allowed, not the co-presence rule).
+func TestValidateOutputArtifact_OnContainerAgentWithOutputFiles(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&AgentStep{ID: "gen", Container: "c", Uses: "anthropic/claude-code",
 				OutputArtifact: "result",
 				OutputSchema:   &JSONSchema{"type": "object"},
 				OutputFiles:    OutputFiles{{Name: "extra", Path: "/out/extra.json"}},

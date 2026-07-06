@@ -213,13 +213,15 @@ func TestOutputFilesByStepID_SyntheticForOutputArtifact(t *testing.T) {
 	}
 }
 
-func TestOutputFilesByStepID_NoSyntheticForContainerBacked(t *testing.T) {
-	// A container-backed agent step never gets a synthetic entry even if (somehow)
-	// OutputArtifact is set — guarded on Container=="" && OutputArtifact!="".
+func TestOutputFilesByStepID_SyntheticForContainerBackedOutputArtifact(t *testing.T) {
+	// F39: output_artifact is valid on a container-backed step too, so it now gets the
+	// same synthetic single-entry index as a containerless output_artifact step —
+	// guarded on OutputArtifact!="" alone (Container no longer excludes it).
 	wf := &Workflow{Graph: []Node{
 		&AgentStep{ID: "x", Uses: "anthropic/claude-code", Container: "lab", OutputArtifact: "result"},
 	}}
-	if _, ok := OutputFilesByStepID(wf)["x"].PathForName("result"); ok {
-		t.Fatal("container-backed step must not get a synthetic output_artifact entry")
+	p, ok := OutputFilesByStepID(wf)["x"].PathForName("result")
+	if !ok || p != "result" {
+		t.Fatalf("PathForName(result) = %q,%v; want \"result\",true", p, ok)
 	}
 }

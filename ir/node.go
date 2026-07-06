@@ -44,11 +44,12 @@ type AgentStep struct {
 	Continues    string      `json:"continues,omitempty"` // id of the prior agent turn to continue (engine-owned thread)
 	OutputSchema *JSONSchema `json:"output_schema,omitempty"`
 	OutputFiles  OutputFiles `json:"output_files,omitempty"`
-	// OutputArtifact, valid ONLY on a containerless agent step, serializes the
-	// step's validated typed Output as canonical JSON and publishes it as the
-	// named artifact step.<id>.files.<name>. Mutually exclusive with
-	// output_files; requires output_schema. The dispatcher produces the bytes
-	// (a containerless step has no filesystem to capture from).
+	// OutputArtifact, valid on any agent step with output_schema (container-backed
+	// or containerless — F39), serializes the step's validated typed Output as
+	// canonical JSON and publishes it as the named artifact step.<id>.files.<name>.
+	// Mutually exclusive with output_files; requires output_schema. The dispatcher
+	// always produces the bytes from the committed Output, never captured from
+	// the container filesystem.
 	OutputArtifact string            `json:"output_artifact,omitempty"`
 	Skills         *StepSkillRouting `json:"skills,omitempty"`
 	// InputFiles maps an in-container destination path → a static artifact or asset

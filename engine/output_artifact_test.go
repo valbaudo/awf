@@ -105,3 +105,83 @@ func TestRunAgentStep_OutputArtifactSerializesTypedOutput(t *testing.T) {
 		t.Fatalf("OutputsRef = %q, Files[result] ref = %q; want equal (byte-identical marshal → same CAS ref)", nr.OutputsRef, cas)
 	}
 }
+
+// TestRunAgentStep_OutputArtifactContainerBackedSerializesTypedOutput is the
+// F39 counterpart of the test above: output_artifact is no longer
+// containerless-only, so a CONTAINER-backed agent step (Container: "lab")
+// must get the same treatment — the dispatcher serializes its validated
+// typed Output into Files["result"] (local_dispatcher_agent.go's bare==""
+// guard dropped).
+func TestRunAgentStep_OutputArtifactContainerBackedSerializesTypedOutput(t *testing.T) {
+	wf := &ir.Workflow{
+		ID:      "output-artifact-container-backed",
+		Version: 1,
+		Graph: ir.NodeList{
+			&ir.AgentStep{
+				ID:             "draft",
+				Container:      "lab",
+				Uses:           "anthropic/claude-code",
+				With:           ir.RawConfig{"prompt": "draft it"},
+				OutputSchema:   &ir.JSONSchema{"type": "object"},
+				OutputArtifact: "result",
+			},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").
+		Script(0, fake.Result{Output: map[string]any{"label": "x", "score": 2}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	be := container.NewFake()
+	h, err := be.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create lab handle: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{Backend: be, Handles: map[string]container.Handle{"lab": h}, Resolver: &reg}
+
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1c", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1c", "d", nil)
+
+	oc, err := engine.Run(context.Background(), def, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	nr, ok := rs.LookupCompleted("draft")
+	if !ok {
+		t.Fatalf("RunState.Completed missing 'draft'")
+	}
+
+	cas, ok := nr.Files["result"]
+	if !ok {
+		t.Fatalf("committed Files = %+v, want a 'result' entry", nr.Files)
+	}
+
+	got, err := blobs.Get(cas)
+	if err != nil {
+		t.Fatalf("blobs.Get(%q): %v", cas, err)
+	}
+	want, err := json.Marshal(map[string]any{"label": "x", "score": 2})
+	if err != nil {
+		t.Fatalf("json.Marshal want: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("artifact content = %q, want canonical %q", got, want)
+	}
+
+	if nr.OutputsRef != cas {
+		t.Fatalf("OutputsRef = %q, Files[result] ref = %q; want equal (byte-identical marshal → same CAS ref)", nr.OutputsRef, cas)
+	}
+}

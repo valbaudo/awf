@@ -229,3 +229,94 @@ func TestContainerlessOutputFilesStillRejected(t *testing.T) {
 		t.Fatalf("err = %v, want it to contain %q", runErr, "output_files requires a container")
 	}
 }
+
+// containerBackedArtifactConsumedWF (F39 downstream-consumption proof): a
+// CONTAINER-backed producer with output_artifact publishes its typed output;
+// a second container-backed step consumes it via a static
+// input_files: step.draft.files.result reference. This exercises
+// ir.OutputFilesByStepID's synthetic index both at validate time
+// (validate_input_files.go's AWF3007 reachability check) and at runtime
+// (engine/artifact_refs.go's resolveNamedArtifactRef + staging) — the index
+// previously excluded container-backed producers by construction, which
+// would have made a container-backed output_artifact unreferenceable even
+// though AWF3014 no longer rejects declaring it.
+const containerBackedArtifactConsumedWF = `workflow: output-artifact-container-consumed
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: draft
+    container: lab
+    uses: anthropic/claude-code
+    with:
+      prompt: "draft it"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [label]
+      properties:
+        label: { type: string }
+    output_artifact: result
+  - id: consume
+    container: lab
+    uses: anthropic/claude-code
+    input_files:
+      /in/draft.json: step.draft.files.result
+    with:
+      prompt: "consume it"
+`
+
+func TestOutputArtifact_ContainerBackedProducerConsumedDownstream(t *testing.T) {
+	ld := loadAgentSimpleDef(t, containerBackedArtifactConsumedWF)
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").
+		Script(0, fake.Result{Output: map[string]any{"label": "x"}}).
+		Script(1, fake.Result{Output: map[string]any{}})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	be := container.NewFake()
+	h, err := be.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create lab handle: %v", err)
+	}
+	d := &engine.LocalDispatcher{
+		Backend:  be,
+		Handles:  map[string]container.Handle{"lab": h},
+		Resolver: &reg,
+	}
+
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	lg := state.NewInMemoryLog(clk)
+	if err := lg.Append(state.Event{
+		Type: engine.EventRunStarted,
+		Data: mustJSON(engine.RunStartedData{RunID: "r3", WorkflowDigest: "d3"}),
+	}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r3", "d3", nil)
+
+	oc, runErr := engine.Run(context.Background(), ld, rs, d, lg, blobs, clk, engine.RunOptions{Tap: io.Discard})
+	if runErr != nil || oc != engine.OutcomeOK {
+		t.Fatalf("engine.Run: oc=%v err=%v", oc, runErr)
+	}
+
+	want, err := json.Marshal(map[string]any{"label": "x"})
+	if err != nil {
+		t.Fatalf("json.Marshal want: %v", err)
+	}
+
+	// The consumer's container must have received the producer's artifact bytes
+	// at the declared destination, staged BEFORE Launch.
+	staged, err := be.ReadFileAt(context.Background(), h, "/in/draft.json")
+	if err != nil {
+		t.Fatalf("ReadFileAt(/in/draft.json): %v", err)
+	}
+	if string(staged) != string(want) {
+		t.Fatalf("staged input_files content = %q, want %q", staged, want)
+	}
+}

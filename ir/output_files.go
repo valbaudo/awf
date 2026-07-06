@@ -215,11 +215,12 @@ func OutputFilesByStepID(wf *Workflow) map[string]OutputFiles {
 		case *CodeStep:
 			out[s.ID] = s.OutputFiles
 		case *AgentStep:
-			if s.Container == "" && s.OutputArtifact != "" {
-				// Synthetic single-entry index for a containerless typed-output
-				// artifact: declaredPath == handle name (a label, like containerless
-				// input_files keys), so PathForName(name)==name and the engine
-				// resolver finds NodeResult.Files[name].
+			if s.OutputArtifact != "" {
+				// Synthetic single-entry index for a typed-output artifact (F39:
+				// valid on any output_schema step, container-backed or
+				// containerless): declaredPath == handle name (a label, like
+				// containerless input_files keys), so PathForName(name)==name and
+				// the engine resolver finds NodeResult.Files[name].
 				out[s.ID] = OutputFiles{{Name: s.OutputArtifact, Path: s.OutputArtifact}}
 			} else {
 				out[s.ID] = s.OutputFiles

@@ -30,7 +30,8 @@ package ir
 //   - input_files (AWF3007) — every input_files value is a static step.<id>.files.<name>
 //     ref naming a prior in-scope step's NAMED output_files artifact (dst absolute + clean)
 //   - output_files (AWF3009, AWF3014) — named output_files contract metadata shape and schema_ref
-//     assets; AWF3014 is the containerless output_artifact (typed-output → artifact) rule set
+//     assets; AWF3014 is the output_artifact (typed-output → artifact) rule set, valid on any
+//     output_schema agent step (container-backed or containerless, F39)
 //   - staging_literal (AWF3015) — run:/reduce.run hardcoding the docker-only staging
 //     path /work/.awf instead of $AWF_STAGING_ROOT (warning; native's staging root differs)
 //   - schema     (AWF2001/2) — JSON Schema well-formedness + §7 floor (warning, agents only)
