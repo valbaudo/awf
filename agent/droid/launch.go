@@ -257,10 +257,10 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	if sp, ok := inv.With[keySystemPrompt].(string); ok && sp != "" {
 		parts = append(parts, "--append-system-prompt", shellQuote(sp))
 	}
-	if tools := toStringSlice(inv.With[keyEnabledTools]); len(tools) > 0 {
+	if tools := toStringSlice(inv.With[keyAllowedTools]); len(tools) > 0 {
 		parts = append(parts, "--enabled-tools", shellQuote(strings.Join(tools, ",")))
 	}
-	if tools := toStringSlice(inv.With[keyDisabledTools]); len(tools) > 0 {
+	if tools := toStringSlice(inv.With[keyDisallowedTools]); len(tools) > 0 {
 		parts = append(parts, "--disabled-tools", shellQuote(strings.Join(tools, ",")))
 	}
 	parts = append(parts, shellQuote(prompt)) // positional prompt LAST

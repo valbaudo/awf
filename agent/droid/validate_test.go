@@ -23,7 +23,7 @@ func TestValidateConfig_HappyPath(t *testing.T) {
 	with := ir.RawConfig{
 		"prompt": "do the thing", "model": "claude-opus-4-8", "effort": "high",
 		"autonomy": "skip", "system_prompt": "be terse",
-		"enabled_tools": []any{"Read", "Edit"}, "disabled_tools": []any{"Execute"},
+		"allowed_tools": []any{"Read", "Edit"}, "disallowed_tools": []any{"Execute"},
 	}
 	if err := a.ValidateConfig(with); err != nil {
 		t.Fatalf("ValidateConfig: %v", err)
@@ -108,11 +108,11 @@ func TestValidateConfig_MissingAPIKey(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_EnabledToolsWrongType(t *testing.T) {
-	err := newWithKey(t).ValidateConfig(ir.RawConfig{"prompt": "x", "enabled_tools": "Read"})
+func TestValidateConfig_AllowedToolsWrongType(t *testing.T) {
+	err := newWithKey(t).ValidateConfig(ir.RawConfig{"prompt": "x", "allowed_tools": "Read"})
 	var bad *agent.ErrInvalidConfig
-	if !errors.As(err, &bad) || bad.Key != "enabled_tools" {
-		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:enabled_tools}", err)
+	if !errors.As(err, &bad) || bad.Key != "allowed_tools" {
+		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:allowed_tools}", err)
 	}
 }
 
@@ -132,11 +132,57 @@ func TestValidateConfig_NonStringPrompt(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_EnabledToolsNonStringElement(t *testing.T) {
-	err := newWithKey(t).ValidateConfig(ir.RawConfig{"prompt": "x", "enabled_tools": []any{"Read", 42}})
+func TestValidateConfig_AllowedToolsNonStringElement(t *testing.T) {
+	err := newWithKey(t).ValidateConfig(ir.RawConfig{"prompt": "x", "allowed_tools": []any{"Read", 42}})
 	var bad *agent.ErrInvalidConfig
-	if !errors.As(err, &bad) || bad.Key != "enabled_tools" {
-		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:enabled_tools}", err)
+	if !errors.As(err, &bad) || bad.Key != "allowed_tools" {
+		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:allowed_tools}", err)
+	}
+}
+
+// F19: enabled_tools/disabled_tools were droid's original with-key names;
+// allowed_tools/disallowed_tools are now the sole canonical names (matching
+// anthropic/claude-code and anthropic/claude-code-session). The old keys must
+// not silently vanish or fall through to the generic unknown-key message —
+// each gets a specific rename pointer, and KeyUnknown:true so the run-start
+// with:-config guard (U1) surfaces it pre-spend.
+func TestDroid_ToolKeysRenamed(t *testing.T) {
+	a := newWithKey(t)
+	with := ir.RawConfig{
+		"prompt": "x", "allowed_tools": []any{"Read"}, "disallowed_tools": []any{"Execute"},
+	}
+	if err := a.ValidateConfig(with); err != nil {
+		t.Errorf("allowed_tools/disallowed_tools should pass: %v", err)
+	}
+
+	var bad *agent.ErrInvalidConfig
+	err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "enabled_tools": []any{"Read"}})
+	if !errors.As(err, &bad) {
+		t.Fatalf("enabled_tools: err = %v, want *agent.ErrInvalidConfig", err)
+	}
+	if bad.Key != "enabled_tools" {
+		t.Errorf("bad.Key = %q, want %q", bad.Key, "enabled_tools")
+	}
+	if bad.Reason != "renamed to allowed_tools" {
+		t.Errorf("bad.Reason = %q, want %q", bad.Reason, "renamed to allowed_tools")
+	}
+	if !bad.KeyUnknown {
+		t.Error("bad.KeyUnknown = false, want true")
+	}
+
+	bad = nil
+	err = a.ValidateConfig(ir.RawConfig{"prompt": "x", "disabled_tools": []any{"Execute"}})
+	if !errors.As(err, &bad) {
+		t.Fatalf("disabled_tools: err = %v, want *agent.ErrInvalidConfig", err)
+	}
+	if bad.Key != "disabled_tools" {
+		t.Errorf("bad.Key = %q, want %q", bad.Key, "disabled_tools")
+	}
+	if bad.Reason != "renamed to disallowed_tools" {
+		t.Errorf("bad.Reason = %q, want %q", bad.Reason, "renamed to disallowed_tools")
+	}
+	if !bad.KeyUnknown {
+		t.Error("bad.KeyUnknown = false, want true")
 	}
 }
 

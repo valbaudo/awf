@@ -413,6 +413,10 @@ type AgentResult struct {
 
 **Registry.** `uses:` resolves to a registered adapter at run start; resolution is logged. On resume, an unresolvable ref fails (spec §8). A top-level `agents:` role registers a `DerivedAdapter` under the role name at run start: it wraps the role's base `uses:` adapter and folds the role's convenience fields (`model`, `system_prompt`) plus its `with:` into a key-blind overlay a step's own `with:` then shallow-merges over (step wins). The role is pinned like any runtime — its base version is drift-checked on resume.
 
+### `with:` key-naming rule
+
+`with:` stays opaque to the core (each adapter validates its own schema), but the key *names* follow one convention across adapters: a concept present in more than one harness gets one shared spelling, checked at the adapter-author level, not enforced by the core. **Shared names** (same concept, same key, every adapter that has it): `allowed_tools` / `disallowed_tools` (tool permissioning — claude, claude-code-session; droid renamed `enabled_tools`/`disabled_tools` to match, F19), `effort` (reasoning effort — claude, codex, codex-live, droid all use `effort`; droid's `reasoning_effort` was renamed to match, F12), `model`, `system_prompt`. **Harness-native names** stay when the knob is genuinely unique to one harness's design, not merely spelled differently for the same idea — e.g. codex's `sandbox` (a sandbox *policy* enum) and codex-live's `permission_policy` (a live-session permission mode) are different in kind, not aliases of each other, so neither is forced into the other's name. A rename from a harness-native spelling to the shared name is a **hard rename**: the old key is rejected with `ErrInvalidConfig{KeyUnknown: true, Reason: "renamed to <new>"}` (a per-adapter `renamedKeys` map checked before the generic unknown-key loop), never silently aliased — aliasing would let two spellings drift and multiply the surface instead of shrinking it.
+
 ### Adapter capability matrix
 
 `Caps` are static runtime declarations. The core may use them for runtime

@@ -122,6 +122,17 @@ func TestValidateConfig_UnknownKey_Rejects(t *testing.T) {
 	}
 }
 
+// F19: a non-string entry in allowed_tools must be rejected element-wise, not
+// silently dropped (the old behavior filtered it out at launch time).
+func TestClaudeSession_ToolsElementNonStringRejected(t *testing.T) {
+	a, _ := claudesession.New(claudesession.WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
+	err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "allowed_tools": []any{"Bash", 1}})
+	var bad *agent.ErrInvalidConfig
+	if !errors.As(err, &bad) || bad.Key != "allowed_tools" {
+		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:allowed_tools}", err)
+	}
+}
+
 func TestValidateConfig_BareTrue_NoAPIKey_Rejects(t *testing.T) {
 	a, _ := claudesession.New(claudesession.WithEnv(map[string]string{"OTHER": "v"}))
 	err := a.ValidateConfig(ir.RawConfig{"prompt": "p", "bare": true})

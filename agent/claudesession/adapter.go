@@ -172,8 +172,14 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		}
 	}
 	if v, ok := with[keyAllowedTools]; ok {
-		if _, ok := v.([]any); !ok {
+		arr, ok := v.([]any)
+		if !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be array of strings, got %T", v), keyAllowedTools)
+		}
+		for i, elem := range arr {
+			if _, ok := elem.(string); !ok {
+				return wrapInvalidConfig(fmt.Sprintf("element %d must be string, got %T", i, elem), keyAllowedTools)
+			}
 		}
 	}
 	if v, ok := with[keyBare]; ok {

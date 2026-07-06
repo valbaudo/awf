@@ -17,22 +17,22 @@ import (
 // disagree about a key string. The BYOK names (base_url/api_key_env/tls_insecure)
 // match agent/awfllm for cross-adapter consistency.
 const (
-	keyPrompt        = "prompt"
-	keyModel         = "model"
-	keyEffort        = "effort"
-	keyAutonomy      = "autonomy"
-	keySystemPrompt  = "system_prompt"
-	keyEnabledTools  = "enabled_tools"
-	keyDisabledTools = "disabled_tools"
-	keyBaseURL       = "base_url"
-	keyAPIKeyEnv     = "api_key_env"
-	keyProvider      = "provider"
-	keyTLSInsecure   = "tls_insecure"
+	keyPrompt          = "prompt"
+	keyModel           = "model"
+	keyEffort          = "effort"
+	keyAutonomy        = "autonomy"
+	keySystemPrompt    = "system_prompt"
+	keyAllowedTools    = "allowed_tools"
+	keyDisallowedTools = "disallowed_tools"
+	keyBaseURL         = "base_url"
+	keyAPIKeyEnv       = "api_key_env"
+	keyProvider        = "provider"
+	keyTLSInsecure     = "tls_insecure"
 )
 
 var allowedKeys = map[string]struct{}{
 	keyPrompt: {}, keyModel: {}, keyEffort: {}, keyAutonomy: {},
-	keySystemPrompt: {}, keyEnabledTools: {}, keyDisabledTools: {},
+	keySystemPrompt: {}, keyAllowedTools: {}, keyDisallowedTools: {},
 	// BYOK (custom OpenAI-compatible endpoint). `base_url` set ⇒ BYOK mode;
 	// see the BYOK branch in ValidateConfig.
 	keyBaseURL: {}, keyAPIKeyEnv: {}, keyProvider: {}, keyTLSInsecure: {},
@@ -44,11 +44,18 @@ var rejectedKeys = []string{"api_key"}
 
 // renamedKeys — with-keys that used to exist under a different name. F12:
 // `effort` is now the canonical name (matching anthropic/claude-code and
-// openai/codex); `reasoning_effort` no longer exists. Checked BEFORE the
-// generic unknown-key loop so the author gets a specific rename pointer.
-// KeyUnknown: true so the run-start with:-config guard (U1) surfaces this
-// pre-spend, same as any other unknown key.
-var renamedKeys = map[string]string{"reasoning_effort": "effort"}
+// openai/codex); `reasoning_effort` no longer exists. F19: `allowed_tools`/
+// `disallowed_tools` are now the canonical names (matching anthropic/claude-
+// code and anthropic/claude-code-session); `enabled_tools`/`disabled_tools`
+// no longer exist. Checked BEFORE the generic unknown-key loop so the author
+// gets a specific rename pointer. KeyUnknown: true so the run-start
+// with:-config guard (U1) surfaces this pre-spend, same as any other unknown
+// key.
+var renamedKeys = map[string]string{
+	"reasoning_effort": "effort",
+	"enabled_tools":    "allowed_tools",
+	"disabled_tools":   "disallowed_tools",
+}
 
 // sessionKeysList — with-keys that would reuse/continue a prior droid session,
 // breaking gate independence. Note `fork` is droid-specific (the claude sibling
@@ -132,7 +139,7 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", slices.Sorted(maps.Keys(autonomyFlags)), s), keyAutonomy)
 		}
 	}
-	for _, key := range []string{keyEnabledTools, keyDisabledTools} {
+	for _, key := range []string{keyAllowedTools, keyDisallowedTools} {
 		if v, ok := with[key]; ok {
 			arr, ok := v.([]any)
 			if !ok {
