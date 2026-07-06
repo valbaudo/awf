@@ -186,6 +186,30 @@ func TestDroid_ToolKeysRenamed(t *testing.T) {
 	}
 }
 
+// TestDroid_MultipleRenamedKeysDeterministic (final-review fix): when a
+// `with:` carries more than one deprecated key at once, the renamedKeys loop
+// used to range a Go map in randomized order, so the reported key was
+// nondeterministic run to run — flaky in a way that contradicts the sibling
+// unknown-key loop's sorted-key determinism. The loop now walks
+// slices.Sorted(maps.Keys(renamedKeys)), so with both "enabled_tools" and
+// "reasoning_effort" present, "enabled_tools" (sorts first) is always named.
+func TestDroid_MultipleRenamedKeysDeterministic(t *testing.T) {
+	a := newWithKey(t)
+	var bad *agent.ErrInvalidConfig
+	err := a.ValidateConfig(ir.RawConfig{
+		"prompt": "x", "enabled_tools": []any{"Read"}, "reasoning_effort": "high",
+	})
+	if !errors.As(err, &bad) {
+		t.Fatalf("err = %v, want *agent.ErrInvalidConfig", err)
+	}
+	if bad.Key != "enabled_tools" {
+		t.Errorf("bad.Key = %q, want %q (sorted-first of the two present renamed keys)", bad.Key, "enabled_tools")
+	}
+	if bad.Reason != "renamed to allowed_tools" {
+		t.Errorf("bad.Reason = %q, want %q", bad.Reason, "renamed to allowed_tools")
+	}
+}
+
 // newWithBYOKEnv builds an adapter whose env allowlist carries the named BYOK
 // key but NO FACTORY_API_KEY — pure BYOK needs no Factory account.
 func newWithBYOKEnv(t *testing.T, name, val string) *droid.Adapter {

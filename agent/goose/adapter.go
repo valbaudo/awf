@@ -84,9 +84,11 @@ func (*Adapter) Capabilities() agent.Caps {
 }
 
 // RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var
-// names goose authenticates with (provider-alternatives). GOOSE_PROVIDER and
+// names goose authenticates with (provider-alternatives). The provider itself
+// is selected by with:provider or the GOOSE_PROVIDER env var (F34: with:
+// provider takes precedence — see resolveProvider); GOOSE_PROVIDER and
 // GOOSE_MODEL are config selectors (not credentials) and are intentionally
-// excluded. Both names are defined in DefaultEnvAllowlist.
+// excluded here. Both names are defined in DefaultEnvAllowlist.
 func (*Adapter) RequiredEnv() []string {
 	return []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
 }

@@ -22,11 +22,18 @@ func wrapInvalidConfig(reason, key string) error {
 }
 
 // ErrMissingAPIKey — ValidateConfig's provider-conditional gate (anthropic/openai)
-// when GOOSE_PROVIDER is set in the adapter env but the matching key is absent.
-type ErrMissingAPIKey struct{ Key string }
+// when the resolved provider (with:provider, or else the GOOSE_PROVIDER env —
+// see resolveProvider; F34 gives with:provider precedence) needs a credential
+// that is absent from the adapter env. Provider names which provider resolved
+// so the message doesn't blame GOOSE_PROVIDER when a with:provider was the one
+// that actually selected it.
+type ErrMissingAPIKey struct {
+	Provider string
+	Key      string
+}
 
 func (e *ErrMissingAPIKey) Error() string {
-	return fmt.Sprintf("agent/goose: the configured GOOSE_PROVIDER requires %s in the adapter's env allowlist (--agent-env), but it is not present", e.Key)
+	return fmt.Sprintf("agent/goose: the selected provider %q requires %s in the adapter's env allowlist (--agent-env), but it is not present", e.Provider, e.Key)
 }
 
 // ErrSessionReuseAttempted — a with-key that would re-use a goose session.

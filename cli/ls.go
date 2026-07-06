@@ -31,13 +31,18 @@ func printLSUsage(w io.Writer) {
 // distinguishable from a real zero — a $0.0000 on an unpriced adapter would
 // read as "free", which it isn't. omitempty keeps code-only runs byte-identical
 // to the pre-metrics schema.
+// UnpricedSteps (F35 roll-up parity) surfaces the same signal
+// printRunCostSummary shows: nil/omitted when every priced agent step
+// reported a cost source, so a fully-priced run's JSON is unchanged; a
+// non-nil count means CostUSD is a floor, not a complete total.
 type lsRow struct {
-	RunID        string   `json:"run_id"`
-	Status       string   `json:"status"`
-	Workflow     string   `json:"workflow,omitempty"`
-	CostUSD      *float64 `json:"cost,omitempty"`
-	InputTokens  *int     `json:"input_tokens,omitempty"`
-	OutputTokens *int     `json:"output_tokens,omitempty"`
+	RunID         string   `json:"run_id"`
+	Status        string   `json:"status"`
+	Workflow      string   `json:"workflow,omitempty"`
+	CostUSD       *float64 `json:"cost,omitempty"`
+	InputTokens   *int     `json:"input_tokens,omitempty"`
+	OutputTokens  *int     `json:"output_tokens,omitempty"`
+	UnpricedSteps *int     `json:"unpriced_steps,omitempty"`
 }
 
 func cliLS(args []string, stdout, stderr io.Writer) int {
@@ -108,6 +113,10 @@ func cliLS(args []string, stdout, stderr io.Writer) int {
 				usd := m.TotalUSD
 				row.CostUSD = &usd
 			}
+			if m.UnpricedSteps > 0 {
+				up := m.UnpricedSteps
+				row.UnpricedSteps = &up
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -155,6 +164,10 @@ func emitLS(stdout io.Writer, output string, rows []lsRow) int {
 // Empty for runs with no agent steps. Cost shows "—" (not "$0.0000") when no
 // adapter reported a cost, so an unpriced run never reads as free. Tokens are
 // always input/output split — a combined total hides the in-vs-out ratio.
+// F35 parity: when some (but not all) agent steps reported no cost source,
+// the dollar figure is a floor, not a complete total — append the same "+"
+// printRunCostSummary uses, so a mixed priced/unpriced run doesn't read as
+// complete here either. A fully-priced run (UnpricedSteps nil) is unchanged.
 func lsMetricsSuffix(r lsRow) string {
 	if r.InputTokens == nil {
 		return ""
@@ -162,6 +175,9 @@ func lsMetricsSuffix(r lsRow) string {
 	cost := "—"
 	if r.CostUSD != nil {
 		cost = formatUSD(*r.CostUSD)
+		if r.UnpricedSteps != nil {
+			cost += "+"
+		}
 	}
 	return fmt.Sprintf("  %-9s  %d in / %d out tok", cost, *r.InputTokens, *r.OutputTokens)
 }

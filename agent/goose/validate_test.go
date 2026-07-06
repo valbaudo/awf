@@ -2,6 +2,7 @@ package goose_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -125,5 +126,34 @@ func TestGoose_ProviderWithKey_BeatsEnv_InAuthGate(t *testing.T) {
 	a2 := gooseAdapterEnv(t, map[string]string{"GOOSE_PROVIDER": "anthropic", "OPENAI_API_KEY": "sk"})
 	if err := a2.ValidateConfig(ir.RawConfig{"prompt": "x", "provider": "openai"}); err != nil {
 		t.Errorf("with:provider=openai + OPENAI_API_KEY present should pass, got %v", err)
+	}
+}
+
+// TestGoose_MissingAPIKeyMessage_NamesResolvedProvider_NotGooseProviderEnv
+// (final-review fix, post-F34): ErrMissingAPIKey's message used to always
+// blame "the configured GOOSE_PROVIDER" — wrong once with:provider (which
+// BEATS the env) is the one that actually selected the provider. The message
+// must name the resolved provider generically instead of implying it came
+// from the GOOSE_PROVIDER env var, and must still surface the correct key.
+func TestGoose_MissingAPIKeyMessage_NamesResolvedProvider_NotGooseProviderEnv(t *testing.T) {
+	// with:provider=openai selects openai even though env says GOOSE_PROVIDER=anthropic.
+	a := gooseAdapterEnv(t, map[string]string{"GOOSE_PROVIDER": "anthropic"})
+	err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "provider": "openai"})
+	var miss *goose.ErrMissingAPIKey
+	if !errors.As(err, &miss) {
+		t.Fatalf("err = %v, want *goose.ErrMissingAPIKey", err)
+	}
+	msg := miss.Error()
+	if miss.Provider != "openai" {
+		t.Errorf("miss.Provider = %q, want %q", miss.Provider, "openai")
+	}
+	if !strings.Contains(msg, `"openai"`) {
+		t.Errorf("message does not name the resolved provider %q: %s", "openai", msg)
+	}
+	if strings.Contains(msg, "the configured GOOSE_PROVIDER") {
+		t.Errorf("message wrongly blames GOOSE_PROVIDER when with:provider selected it: %s", msg)
+	}
+	if !strings.Contains(msg, "OPENAI_API_KEY") {
+		t.Errorf("message missing the required key: %s", msg)
 	}
 }

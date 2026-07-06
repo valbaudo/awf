@@ -97,7 +97,7 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 	if provider, ok := resolveProvider(with, a.env); ok {
 		if key, needs := providerAuthKey[provider]; needs {
 			if _, present := a.env[key]; !present {
-				return &ErrMissingAPIKey{Key: key}
+				return &ErrMissingAPIKey{Provider: provider, Key: key}
 			}
 		}
 	}

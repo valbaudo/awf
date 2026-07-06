@@ -86,9 +86,9 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 			return wrapInvalidConfig("not supported (use api_key_env to name a host env var)", k)
 		}
 	}
-	for old, newKey := range renamedKeys {
+	for _, old := range slices.Sorted(maps.Keys(renamedKeys)) {
 		if _, ok := with[old]; ok {
-			return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: old, Reason: "renamed to " + newKey, KeyUnknown: true}
+			return &agent.ErrInvalidConfig{Ref: AdapterRef, Key: old, Reason: "renamed to " + renamedKeys[old], KeyUnknown: true}
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(with)) {

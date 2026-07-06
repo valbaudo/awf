@@ -195,9 +195,9 @@ func parseConfig(with ir.RawConfig) (config, error) {
 	allowed := map[string]struct{}{
 		"prompt": {}, "cwd": {}, "session": {}, "model": {}, "effort": {}, "permission_policy": {},
 	}
-	for old, newKey := range renamedKeys {
+	for _, old := range slices.Sorted(maps.Keys(renamedKeys)) {
 		if _, ok := with[old]; ok {
-			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: old, Reason: "renamed to " + newKey, KeyUnknown: true}
+			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: old, Reason: "renamed to " + renamedKeys[old], KeyUnknown: true}
 		}
 	}
 	for k := range with {

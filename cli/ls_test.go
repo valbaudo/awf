@@ -177,6 +177,95 @@ func TestLSOmitsCostWhenUnreportedButKeepsTokens(t *testing.T) {
 	}
 }
 
+// TestLSUnpricedMarker (F35 roll-up parity) asserts that `awf ls` surfaces the
+// same unpriced signal printRunCostSummary does: a run with a mix of priced
+// and unpriced agent steps gets unpriced_steps in the JSON row and a "+" on
+// the cost cell in the text table — so a mixed run never reads as a complete
+// `$X` there either.
+func TestLSUnpricedMarker(t *testing.T) {
+	stateDir := t.TempDir()
+	mustData := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	writeRunLog(t, stateDir, "mixed",
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "mixed", WorkflowID: "wf"})},
+		state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: mustData(engine.NodeCompletedData{
+			Outcome: "ok",
+			Metrics: &agent.MetricSet{
+				Cost:   agent.MetricCost{Total: 0.5, Source: agent.CostSourceReported},
+				Tokens: agent.MetricTokens{Input: 10, Output: 10},
+			},
+		})},
+		// unpriced: no Cost.Source at all (e.g. droid pre-pricing).
+		state.Event{Type: engine.EventNodeCompleted, Path: "u1", Data: mustData(engine.NodeCompletedData{
+			Outcome: "ok",
+			Metrics: &agent.MetricSet{Tokens: agent.MetricTokens{Input: 5, Output: 5}},
+		})},
+		state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})},
+	)
+
+	var out, errb bytes.Buffer
+	if rc := cliLS([]string{"--state-dir", stateDir, "--output", "json"}, &out, &errb); rc != ExitOK {
+		t.Fatalf("ls rc = %d, stderr: %s", rc, errb.String())
+	}
+	var got []lsRow
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal ls json: %v\n%s", err, out.String())
+	}
+	if len(got) != 1 {
+		t.Fatalf("rows = %d, want 1: %s", len(got), out.String())
+	}
+	if r := got[0]; r.UnpricedSteps == nil || *r.UnpricedSteps != 1 {
+		t.Errorf("unpriced_steps = %v, want 1", r.UnpricedSteps)
+	}
+
+	out.Reset()
+	errb.Reset()
+	if rc := cliLS([]string{"--state-dir", stateDir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("ls rc = %d, stderr: %s", rc, errb.String())
+	}
+	if !strings.Contains(out.String(), "$0.5000+") {
+		t.Errorf("ls text missing '+' on the mixed run's cost cell:\n%s", out.String())
+	}
+}
+
+// TestLSFullyPricedNoUnpricedMarker (F35 roll-up parity) asserts a
+// fully-priced run's ls output — both JSON and text — is unchanged: no
+// unpriced_steps key, no trailing "+".
+func TestLSFullyPricedNoUnpricedMarker(t *testing.T) {
+	stateDir := t.TempDir()
+	mustData := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	writeRunLog(t, stateDir, "priced",
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "priced", WorkflowID: "wf"})},
+		state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: mustData(engine.NodeCompletedData{
+			Outcome: "ok",
+			Metrics: &agent.MetricSet{
+				Cost:   agent.MetricCost{Total: 0.5, Source: agent.CostSourceReported},
+				Tokens: agent.MetricTokens{Input: 10, Output: 10},
+			},
+		})},
+		state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})},
+	)
+
+	var out, errb bytes.Buffer
+	if rc := cliLS([]string{"--state-dir", stateDir, "--output", "json"}, &out, &errb); rc != ExitOK {
+		t.Fatalf("ls rc = %d, stderr: %s", rc, errb.String())
+	}
+	if strings.Contains(out.String(), "unpriced_steps") {
+		t.Errorf("fully-priced ls json must NOT contain unpriced_steps, got:\n%s", out.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	if rc := cliLS([]string{"--state-dir", stateDir}, &out, &errb); rc != ExitOK {
+		t.Fatalf("ls rc = %d, stderr: %s", rc, errb.String())
+	}
+	if strings.Contains(out.String(), "$0.5000+") {
+		t.Errorf("fully-priced ls text must NOT show a trailing '+', got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "$0.5000") {
+		t.Errorf("fully-priced ls text missing cost cell, got:\n%s", out.String())
+	}
+}
+
 func TestLSTextOutput(t *testing.T) {
 	stateDir := t.TempDir()
 	mustData := func(v any) []byte { b, _ := json.Marshal(v); return b }
