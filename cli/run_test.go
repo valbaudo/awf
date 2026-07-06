@@ -1209,7 +1209,7 @@ func TestCLIRunWritesBackendNativeOnRunStartedByDefault(t *testing.T) {
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q (default auto selection)", backendField, engine.BackendNative)
 	}
-	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline."
+	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline."
 	if got := strings.Count(stderr.String(), wantWarning); got != 1 {
 		t.Errorf("native auto warning count = %d, want 1; stderr:\n%s", got, stderr.String())
 	}
@@ -1232,7 +1232,7 @@ func TestCLIRunBackendAutoFlagAcceptedAndRecordsConcreteBackend(t *testing.T) {
 	if backendField != engine.BackendNative {
 		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
 	}
-	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline."
+	wantWarning := "awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline."
 	if got := strings.Count(stderr.String(), wantWarning); got != 1 {
 		t.Errorf("native auto warning count = %d, want 1; stderr:\n%s", got, stderr.String())
 	}

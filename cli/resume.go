@@ -193,7 +193,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	if kind == engine.BackendNative {
-		fprintf(stderr, "awf resume: native backend — committed work is replayed and snapshot: workspace workdirs are restored, but the host base environment is not pinned; shell-step tooling runs against the current host.\n")
+		fprintf(stderr, "awf resume: native backend — committed work is replayed and snapshot: workspace workdirs are restored from a full workdir archive, but the host base environment is not pinned; shell-step tooling runs against the current host.\n")
 	}
 	workdirRoot := filepath.Join(*stateDir, "work", runID)
 	backend, cleanup, err := r.resolveBackend(ctx, kind, runID, workdirRoot, blobs, stderr)

@@ -176,6 +176,89 @@ func TestWithSandbox_CapabilitiesUnchanged(t *testing.T) {
 	}
 }
 
+// mockFound returns a lookPath func that reports every name as found, at a
+// synthetic path. Used to force detectPlatformSandbox down its "tool present"
+// branch deterministically, mirroring mockNotFound's role for the opposite case.
+func mockFound() func(string) (string, error) {
+	return func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+}
+
+// TestNative_SandboxModeExposed_Disabled asserts that SandboxMode() reports
+// "none" when sandboxing was never requested — both the explicit
+// WithSandbox(false) and the omitted-option default. detectSandbox is never
+// invoked on this path, so the assertion is deterministic on every platform
+// (F30: the label detectSandbox resolves was previously discarded at
+// backend.go's `l, _ := detectSandbox(exec.LookPath)`).
+func TestNative_SandboxModeExposed_Disabled(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	b, err := New(dir, WithSandbox(false))
+	if err != nil {
+		t.Fatalf("New with WithSandbox(false): %v", err)
+	}
+	if got := b.SandboxMode(); got != "none" {
+		t.Errorf("SandboxMode() with WithSandbox(false) = %q, want %q", got, "none")
+	}
+
+	b2, err := New(dir)
+	if err != nil {
+		t.Fatalf("New with no WithSandbox option: %v", err)
+	}
+	if got := b2.SandboxMode(); got != "none" {
+		t.Errorf("SandboxMode() with no WithSandbox option = %q, want %q", got, "none")
+	}
+}
+
+// TestNative_SandboxModeExposed_ToolFound asserts that when sandbox mode is
+// requested and an injected lookPath stub reports the platform tool present,
+// SandboxMode() surfaces the real launcher's label — never "none" — using the
+// lookPath-injectable core (withSandboxLookPath) so the assertion doesn't
+// depend on what's actually installed on the host running the test.
+func TestNative_SandboxModeExposed_ToolFound(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	b, err := New(dir, withSandboxLookPath(true, mockFound()))
+	if err != nil {
+		t.Fatalf("New with withSandboxLookPath(true, mockFound()): %v", err)
+	}
+	switch got := b.SandboxMode(); got {
+	case "bwrap", "landlock-trampoline", "sandbox-exec":
+		// ok — a real platform launcher was resolved.
+	default:
+		t.Errorf("SandboxMode() = %q, want one of \"bwrap\"/\"landlock-trampoline\"/\"sandbox-exec\"", got)
+	}
+}
+
+// TestNative_SandboxModeExposed_ToolNotFound asserts that when sandbox mode
+// is requested but the injected lookPath stub reports the platform tool
+// absent, SandboxMode() reports "none" rather than propagating the long
+// human-readable noSandboxWarnLabel text (that text stays reserved for
+// SandboxWarnLabel — a distinct concern from this concise status token).
+//
+// "landlock-trampoline" is also accepted here: on a Landlock-capable Linux
+// host, detectPlatformSandbox probes the kernel directly (not lookPath), so
+// defeating the bwrap lookup alone does not force the no-op fallback there
+// (see TestSandboxLauncherLabel_WarnSubstring for the same caveat).
+func TestNative_SandboxModeExposed_ToolNotFound(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	b, err := New(dir, withSandboxLookPath(true, mockNotFound()))
+	if err != nil {
+		t.Fatalf("New with withSandboxLookPath(true, mockNotFound()): %v", err)
+	}
+	switch got := b.SandboxMode(); got {
+	case "none", "landlock-trampoline":
+		// ok
+	default:
+		t.Errorf("SandboxMode() = %q, want \"none\" (or \"landlock-trampoline\" on a Landlock-capable Linux host)", got)
+	}
+}
+
 // TestSandboxLauncherLabel_WarnSubstring checks that the no-op fallback label
 // loudly signals the absence of OS-level isolation.
 //

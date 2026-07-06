@@ -314,6 +314,14 @@ type RunStartedData struct {
 	// drift is always decided against the live file. Empty in logs from before the snapshot
 	// landed (omitempty); viewers fall back to the current file then.
 	DefinitionRef string `json:"definition_ref,omitempty"`
+	// SandboxMode records the resolved native-backend sandbox launcher label
+	// (F30): "bwrap", "landlock-trampoline", or "sandbox-exec" when a real
+	// platform sandbox is active, or "none" when sandboxing was disabled or
+	// unavailable. Empty for non-native backends and for logs written before
+	// this field existed (omitempty). The interpreter/CLI is the sole writer
+	// here — native.Backend.SandboxMode only EXPOSES the label; it never
+	// appends to state itself (cli/run.go reads it and populates this field).
+	SandboxMode string `json:"sandbox_mode,omitempty"`
 }
 
 type LiveHomePin struct {

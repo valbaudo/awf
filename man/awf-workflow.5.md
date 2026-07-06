@@ -332,11 +332,15 @@ filesystem snapshot:
 
     workspace:
       image: oci://...@sha256:...
-      snapshot: workspace        # capture a copy-on-write FS diff at each commit; restore on resume
+      snapshot: workspace        # capture the workdir at each commit; restore on resume
 
-The runtime then captures a copy-on-write diff (not a squashed commit) at each
-commit boundary and restores it instead of rebuilding from the recipe. It is off
-by default and scoped to mutable-workspace containers.
+The runtime then captures the container's workdir (not a squashed commit) at
+each commit boundary and restores it instead of rebuilding from the recipe.
+On the docker backend this is a copy-on-write FS diff against the base
+image; the native backend has no image layers to diff against, so it
+captures a full gzip-tar archive of the workdir instead — both are
+content-addressed and restored the same way from the caller's point of view.
+It is off by default and scoped to mutable-workspace containers.
 
 Two consequences to keep in mind:
 
@@ -1733,12 +1737,14 @@ content-addressed artifact, never a live container's process state.
     `output_files` are written to the artifact store, then a journal entry
     pointing at them is appended (content-address-then-pointer-swap, so a "done"
     record never references a missing artifact). For a `snapshot: workspace`
-    container, a copy-on-write FS diff is captured in the same commit.
+    container, its workdir is captured in the same commit — a copy-on-write FS
+    diff on the docker backend, a full gzip-tar workdir archive on native.
 
 **Resume**
 :   Folds the journal, then: recreates each live container from its image/Compose
     recipe (readiness re-runs via the entrypoint or `up --wait`; a
-    `snapshot: workspace` container restores its last committed diff instead);
+    `snapshot: workspace` container restores its last committed workdir
+    snapshot instead — the diff on docker, the archive on native);
     *replays committed steps from the journal* — recorded outputs and
     `output_files` are reused, not recomputed; and re-executes only the
     *uncommitted frontier* — the in-flight step on each active branch. A
