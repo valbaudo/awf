@@ -20,7 +20,7 @@ import (
 // output_schema bodies commit concurrently — the aggregation bucket's note).
 var reduceQuorumWorkflow = fmt.Sprintf(`workflow: conformance-reduce-quorum
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -68,7 +68,7 @@ graph:
 // resolves to the REDUCER's artifact (Task 11 Step 6).
 var reduceRunWorkflow = fmt.Sprintf(`workflow: conformance-reduce-run
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -117,7 +117,7 @@ graph:
 // reducer's committed map-path node.completed record.
 var reduceNamedRunWorkflow = fmt.Sprintf(`workflow: conformance-reduce-named-run
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -515,7 +515,7 @@ func countNodeCompleted(events []state.Event, path string) int {
 // output_schema commits.
 var mapGateReduceWorkflow = fmt.Sprintf(`workflow: conformance-map-gate-reduce
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false

@@ -1,6 +1,6 @@
 workflow: awf-llm-gate-extract
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   properties: {}

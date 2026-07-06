@@ -59,11 +59,11 @@ func validateUnknownKeys(mod validationModule, c *collector) {
 	walkRawNodeList("", graph, c)
 }
 
-// renamedKey describes one hard-renamed wire key: the struct's new field name
-// (informational — nothing here reads it back out, but it documents the
-// registry entry for anyone grepping) and the full AWF1064 diagnostic message.
+// renamedKey describes one hard-renamed wire key: the full AWF1064 diagnostic
+// message to emit for the old spelling. (There used to be a NewName field here
+// too, but nothing ever read it back out — the Message string is already
+// self-contained, so it was dropped rather than wired in for its own sake.)
 type renamedKey struct {
-	NewName string
 	Message string
 }
 
@@ -77,7 +77,10 @@ type renamedKey struct {
 // specific AWF1064 message instead — see validateUnknownKeys' doc comment.
 var renamedKeysByType = map[reflect.Type]map[string]renamedKey{
 	reflect.TypeOf(Reduce{}): {
-		"over": {NewName: "field", Message: "reduce over: renamed to field:"},
+		"over": {Message: "reduce over: renamed to field:"},
+	},
+	reflect.TypeOf(Workflow{}): {
+		"input": {Message: "top-level input: renamed to input_schema:"},
 	},
 }
 

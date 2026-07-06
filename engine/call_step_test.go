@@ -408,9 +408,9 @@ func TestRunCallStepCallStartedPinsContainerlessMapBodyAgent(t *testing.T) {
 		"additionalProperties": false,
 	}
 	child := &ir.Workflow{
-		ID:      "scan",
-		Version: 1,
-		Input:   &childInput,
+		ID:          "scan",
+		Version:     1,
+		InputSchema: &childInput,
 		Agents: map[string]ir.AgentRole{
 			"auditor": {Uses: "test/base"},
 		},
@@ -1075,7 +1075,7 @@ func TestRunCallStepChildMapReduceReusesQualifiedContainer(t *testing.T) {
 	child := &ir.Workflow{
 		ID:      "scan",
 		Version: 1,
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type":       "object",
 			"properties": map[string]any{"items": map[string]any{"type": "array"}},
 		},
@@ -1172,7 +1172,7 @@ func TestReduceInCalledSubworkflowResolvesOuterStepRefAndInput(t *testing.T) {
 	child := &ir.Workflow{
 		ID:      "scan",
 		Version: 1,
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type": "object",
 			"properties": map[string]any{
 				"items":  map[string]any{"type": "array"},
@@ -1241,7 +1241,7 @@ func TestReduceInCalledSubworkflowResolvesBodyAggregateRef(t *testing.T) {
 	child := &ir.Workflow{
 		ID:      "scan",
 		Version: 1,
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type":       "object",
 			"properties": map[string]any{"items": map[string]any{"type": "array"}},
 		},
@@ -1333,10 +1333,10 @@ func TestRunCallStepChildSignalWhereUsesChildScope(t *testing.T) {
 		},
 	}
 	child := &ir.Workflow{
-		ID:         "scan",
-		Version:    1,
-		Input:      awfStringObjectSchema("token"),
-		Containers: map[string]ir.Container{"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
+		ID:          "scan",
+		Version:     1,
+		InputSchema: awfStringObjectSchema("token"),
+		Containers:  map[string]ir.Container{"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
 		Graph: ir.NodeList{
 			&ir.CodeStep{ID: "produce", Container: "c", Run: "produce", OutputSchema: awfStringObjectSchema("value")},
 			&ir.SignalStep{
@@ -1431,7 +1431,7 @@ func TestRunCallStepNestedCallPaths(t *testing.T) {
 		Graph: ir.NodeList{&ir.CallStep{ID: "inner", Call: "inner"}},
 	}
 	inner := childNoOutputWorkflow("inner", "inner")
-	inner.Input = nil
+	inner.InputSchema = nil
 	def := callLoadedDefinition(root, outer)
 	def.ImportEdges[0] = ir.LoadedImportEdge{ParentID: "", ImportID: "outer", ChildID: "mod-scan"}
 	def.Modules["mod-inner"] = &ir.LoadedModule{ID: "mod-inner", Workflow: inner, ComposeFiles: map[string][]byte{}}
@@ -1474,7 +1474,7 @@ func TestRunCallStepChildScopeHidesParentSteps(t *testing.T) {
 	}
 	rig.disp.Handles["rootc"] = rootHandle
 	child := childNoOutputWorkflow("scan", "child sees {{ step.parent.summary }}")
-	child.Input = nil
+	child.InputSchema = nil
 
 	oc, err := Run(context.Background(), callLoadedDefinition(root, child), rig.rs, rig.disp, rig.log, rig.blobs, rig.clk, RunOptions{})
 	if oc != OutcomePermanentFailure {
@@ -1609,7 +1609,7 @@ func childSummaryWorkflow(id, run string) *ir.Workflow {
 	return &ir.Workflow{
 		ID:           id,
 		Version:      1,
-		Input:        awfStringObjectSchema("topic"),
+		InputSchema:  awfStringObjectSchema("topic"),
 		Containers:   map[string]ir.Container{"c": {Image: "oci://child@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
 		OutputSchema: awfStringObjectSchema("summary"),
 		Outputs: map[string]ir.TemplateValue{
@@ -1628,10 +1628,10 @@ func childSummaryWorkflow(id, run string) *ir.Workflow {
 
 func childNoOutputWorkflow(id, run string) *ir.Workflow {
 	return &ir.Workflow{
-		ID:         id,
-		Version:    1,
-		Input:      awfStringObjectSchema("label"),
-		Containers: map[string]ir.Container{"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
+		ID:          id,
+		Version:     1,
+		InputSchema: awfStringObjectSchema("label"),
+		Containers:  map[string]ir.Container{"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
 		Graph: ir.NodeList{
 			&ir.CodeStep{ID: "work", Container: "c", Run: run},
 		},

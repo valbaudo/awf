@@ -15,7 +15,7 @@ import (
 // per-item boot failure.
 const p6aRuntimeImageWorkflow = `workflow: conformance-p6a-runtime-image
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [items]
@@ -387,7 +387,7 @@ func testP6aMixedTallyDistinguishesCauses(t *testing.T, factory BackendFactory) 
 	// 4-item workflow with min_success 0.5.
 	const wf4 = `workflow: conformance-p6a-mixed
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [items]

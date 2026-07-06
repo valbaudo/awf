@@ -140,7 +140,7 @@ func evaluateCallInput(call *ir.CallStep, path string, child *ir.Workflow, ictx 
 		}
 		out[key] = value
 	}
-	if child.Input == nil {
+	if child.InputSchema == nil {
 		if len(out) > 0 {
 			return nil, fmt.Errorf("call input provided but child workflow declares no input schema")
 		}
@@ -150,7 +150,7 @@ func evaluateCallInput(call *ir.CallStep, path string, child *ir.Workflow, ictx 
 	if err != nil {
 		return nil, fmt.Errorf("marshal call input: %w", err)
 	}
-	validated, err := ValidateAgainstSchema(raw, child.Input)
+	validated, err := ValidateAgainstSchema(raw, child.InputSchema)
 	if err != nil {
 		return nil, fmt.Errorf("call input schema validation: %w", err)
 	}

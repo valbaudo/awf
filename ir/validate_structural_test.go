@@ -559,7 +559,7 @@ func TestStructuralMapImageTargetMayOmitImage(t *testing.T) {
 	// AWF1019 violation. (P6a.)
 	ld := makeLD(&Workflow{
 		ID: "p6a-ok", Version: 1,
-		Input: &JSONSchema{"type": "object", "properties": map[string]any{
+		InputSchema: &JSONSchema{"type": "object", "properties": map[string]any{
 			"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
 		}},
 		Containers: map[string]Container{
@@ -614,7 +614,7 @@ func TestStructuralMapImageTargetWithStaticImageConflicts(t *testing.T) {
 	img := "oci://example.com/x@sha256:" + strings.Repeat("0", 64)
 	ld := makeLD(&Workflow{
 		ID: "p6a-conflict", Version: 1,
-		Input: &JSONSchema{"type": "object", "properties": map[string]any{
+		InputSchema: &JSONSchema{"type": "object", "properties": map[string]any{
 			"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
 		}},
 		Containers: map[string]Container{"vl": {Image: img}},
@@ -633,7 +633,7 @@ func TestStructuralResourcesOnlyMapImageTargetNoConflict(t *testing.T) {
 	// A resources-only map.image target (the intended shape) does NOT trip AWF1025.
 	ld := makeLD(&Workflow{
 		ID: "p6a-ok2", Version: 1,
-		Input: &JSONSchema{"type": "object", "properties": map[string]any{
+		InputSchema: &JSONSchema{"type": "object", "properties": map[string]any{
 			"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
 		}},
 		Containers: map[string]Container{"vl": {Resources: &Resources{CPU: "1"}}},
@@ -651,7 +651,7 @@ func TestStructuralResourcesOnlyMapImageTargetNoConflict(t *testing.T) {
 func TestStructuralMapImageTargetContainerRejectedOutsideOwningMapBody(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "p6a-escape", Version: 1,
-		Input: &JSONSchema{"type": "object", "properties": map[string]any{
+		InputSchema: &JSONSchema{"type": "object", "properties": map[string]any{
 			"items": map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
 		}},
 		Containers: map[string]Container{"vl": {Resources: &Resources{CPU: "1"}}},

@@ -250,7 +250,7 @@ func TestCLIRunInputSchemaValidationFails(t *testing.T) {
 	if err := os.WriteFile(wfPath, []byte(`
 workflow: input-typed
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [cve_id]
@@ -414,7 +414,7 @@ func TestCLIRunInputFlagIsBlobsPutAndScopeable(t *testing.T) {
 	if err := os.WriteFile(wfPath, []byte(`
 workflow: with-input
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [cve_id]

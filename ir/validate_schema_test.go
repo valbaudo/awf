@@ -166,7 +166,7 @@ func TestSchemaFloorRecursiveOnNestedObject(t *testing.T) {
 func TestSchemaInputSchemaAlsoValidated(t *testing.T) {
 	bad := JSONSchema{"type": "not-a-type"}
 	ld := makeLD(&Workflow{
-		ID: "input", Version: 1, Input: &bad,
+		ID: "input", Version: 1, InputSchema: &bad,
 		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
 		Graph:      NodeList{},
 	})

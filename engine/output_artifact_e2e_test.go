@@ -40,7 +40,7 @@ import (
 //   - max_attempts: 3 — required; the gate executor errors on MaxAttempts < 1.
 const gateOutputArtifactWF = `workflow: awf-llm-gate-extract
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   properties: {}

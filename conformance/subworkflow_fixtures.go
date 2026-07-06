@@ -166,7 +166,7 @@ graph:
 
 var subworkflowAggregateChildWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-aggregate-child
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [items]
@@ -372,7 +372,7 @@ graph:
 
 var subworkflowSimpleChildWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-child
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [topic]
@@ -428,7 +428,7 @@ graph:
 
 var subworkflowOptionalOutputChildWorkflow = fmt.Sprintf(`workflow: conformance-subworkflow-optional-output-child
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   properties:

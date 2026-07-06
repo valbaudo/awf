@@ -154,7 +154,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// disk (pre-flight rejection avoids orphan log files on bad input). Input is
 	// supplied inline via --input or from a file/stdin via --input-file (mutually
 	// exclusive); either way the resolved bytes are validated against
-	// workflow.input and content-addressed identically below (Step 8).
+	// workflow.input_schema and content-addressed identically below (Step 8).
 	inputBytes, haveInput, inErr := resolveRunInput(*inputJSON, *inputFile, r.stdin())
 	if inErr != nil {
 		fprintf(stderr, "awf run: %v\n", inErr)
@@ -162,13 +162,13 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	var inputMap map[string]any
 	if haveInput {
-		if ld.Workflow.Input == nil {
+		if ld.Workflow.InputSchema == nil {
 			// Run input is only meaningful when the workflow declares an input
 			// schema. Quiet acceptance is a confused-deputy smell for a security tool.
-			fprintf(stderr, "awf run: run input provided but workflow declares no input schema. Drop --input/--input-file or add an `input:` schema to the workflow.\n")
+			fprintf(stderr, "awf run: run input provided but workflow declares no input schema. Drop --input/--input-file or add an `input_schema:` schema to the workflow.\n")
 			return ExitUsage
 		}
-		m, err := engine.ValidateAgainstSchema(inputBytes, ld.Workflow.Input)
+		m, err := engine.ValidateAgainstSchema(inputBytes, ld.Workflow.InputSchema)
 		if err != nil {
 			fprintf(stderr, "awf run: run input failed validation: %v\n", err)
 			return ExitUsage

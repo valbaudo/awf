@@ -296,7 +296,7 @@ type RunStartedData struct {
 	StructuralDigest string                     `json:"structural_digest,omitempty"` // WS-6a; "" in pre-WS6 logs (omitempty)
 	WorkflowID       string                     `json:"workflow_id,omitempty"`       // slice 6.1 — obs awf.workflow.id (standard §9); empty in pre-6.1 logs
 	WorkflowVersion  int                        `json:"workflow_version,omitempty"`  // slice 6.1 — obs awf.workflow.version; 0 in pre-6.1 logs
-	InputRef         string                     `json:"input_ref,omitempty"`         // empty if Workflow.Input is nil
+	InputRef         string                     `json:"input_ref,omitempty"`         // empty if Workflow.InputSchema is nil
 	Backend          string                     `json:"backend,omitempty"`           // slice 4.5; "" → BackendDocker on resume
 	Assets           map[string]RunStartedAsset `json:"assets,omitempty"`
 	// InputFiles records the supplied top-level workflow input-file manifest:

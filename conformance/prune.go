@@ -28,7 +28,7 @@ import (
 // survivor set {1,3} is deterministic regardless of concurrency.
 var pruneKeepWorkflow = fmt.Sprintf(`workflow: conformance-prune-keep
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -72,7 +72,7 @@ graph:
 // schema as pruneKeepWorkflow.
 var pruneStopWhenWorkflow = fmt.Sprintf(`workflow: conformance-prune-stop-when
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -114,7 +114,7 @@ graph:
 // controller and keep a SECOND survivor — the >k corruption this test guards.
 var prunePartialCrashWorkflow = fmt.Sprintf(`workflow: conformance-prune-partial-crash
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -155,7 +155,7 @@ graph:
 // pruneKeepWorkflow.
 var pruneTryWorkflow = fmt.Sprintf(`workflow: conformance-prune-try
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -225,7 +225,7 @@ func scoreAgreeProgram(item string, v float64, agree bool) execProgram {
 // retryable_failure on a documented feature combination.
 var pruneQuorumWorkflow = fmt.Sprintf(`workflow: conformance-prune-quorum
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false

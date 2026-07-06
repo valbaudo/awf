@@ -21,9 +21,9 @@ func TestValidateCallInputAgainstParentSchema(t *testing.T) {
 	ld := loadedWithChild(
 		&Workflow{
 			ID: "root", Version: 1,
-			Input:      objectSchema("cve"),
-			Imports:    map[string]string{"scan": "modules/scan.awf.yaml"},
-			Containers: map[string]Container{},
+			InputSchema: objectSchema("cve"),
+			Imports:     map[string]string{"scan": "modules/scan.awf.yaml"},
+			Containers:  map[string]Container{},
 			Graph: NodeList{
 				&CallStep{
 					ID:   "scan",
@@ -43,7 +43,7 @@ func TestValidateCallInputAgainstParentSchema(t *testing.T) {
 func TestValidateCallInputAgainstChildSchema(t *testing.T) {
 	root := validCallingRoot()
 	child := childWorkflowWithTypedOutput("child", "finding")
-	child.Input = objectSchema("query")
+	child.InputSchema = objectSchema("query")
 	ld := loadedWithChild(root, child)
 
 	assertErrorAt(t, Validate(ld), "AWF1047", "scan.input")
@@ -62,7 +62,7 @@ func TestValidateCallInputRejectsUnknownChildInputKey(t *testing.T) {
 		},
 	}
 	child := childWorkflowWithTypedOutput("child", "finding")
-	child.Input = objectSchema("query")
+	child.InputSchema = objectSchema("query")
 	ld := loadedWithChild(root, child)
 
 	assertErrorAt(t, Validate(ld), "AWF1047", "scan.input.extra")
@@ -80,7 +80,7 @@ func TestValidateCallInputRejectsStaticTypeMismatch(t *testing.T) {
 		},
 	}
 	child := childWorkflowWithTypedOutput("child", "finding")
-	child.Input = objectSchema("query")
+	child.InputSchema = objectSchema("query")
 	ld := loadedWithChild(root, child)
 
 	assertErrorAt(t, Validate(ld), "AWF1047", "scan.input.query")
@@ -114,7 +114,7 @@ func TestValidateCallInputAcceptsValidStaticInput(t *testing.T) {
 		},
 	}
 	child := childWorkflowWithTypedOutput("child", "finding")
-	child.Input = objectSchema("query")
+	child.InputSchema = objectSchema("query")
 	ld := loadedWithChild(root, child)
 
 	assertNoErrorCode(t, Validate(ld), "AWF1047")
@@ -349,7 +349,7 @@ func TestValidateCallInputFilesAcceptsGatePromotedArtifact(t *testing.T) {
 func TestValidateCallInputFilesAcceptsReducePromotedArtifact(t *testing.T) {
 	root := validCallingRoot()
 	root.Containers = awf5003Container()
-	root.Input = &JSONSchema{"type": "object", "additionalProperties": false,
+	root.InputSchema = &JSONSchema{"type": "object", "additionalProperties": false,
 		"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}}
 	root.Graph = NodeList{
 		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
@@ -367,7 +367,7 @@ func TestValidateCallInputFilesAcceptsReducePromotedArtifact(t *testing.T) {
 func TestValidateCallInputFilesRejectsQuorumReducerArtifact(t *testing.T) {
 	root := validCallingRoot()
 	root.Containers = awf5003Container()
-	root.Input = &JSONSchema{"type": "object", "additionalProperties": false,
+	root.InputSchema = &JSONSchema{"type": "object", "additionalProperties": false,
 		"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}}
 	root.Graph = NodeList{
 		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
@@ -388,7 +388,7 @@ func TestTypedInputFilesObjectStillWorksInTemplates(t *testing.T) {
 	wf := &Workflow{
 		ID:      "typed-input-files-object",
 		Version: 1,
-		Input: &JSONSchema{
+		InputSchema: &JSONSchema{
 			"type": "object",
 			"properties": map[string]any{
 				"files": map[string]any{

@@ -14,7 +14,7 @@ import (
 const inputSchemaWF = `
 workflow: with-input
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [cve_id]

@@ -14,7 +14,7 @@ import (
 type Workflow struct {
 	ID              string                   `json:"workflow"`
 	Version         int                      `json:"version"`
-	Input           *JSONSchema              `json:"input,omitempty"`
+	InputSchema     *JSONSchema              `json:"input_schema,omitempty"`
 	InputFiles      WorkflowInputFiles       `json:"input_files,omitempty"`
 	Env             []string                 `json:"env,omitempty"`
 	Assets          map[string]string        `json:"assets,omitempty"`

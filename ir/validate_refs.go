@@ -51,9 +51,9 @@ func validateRefsModule(ld *LoadedDefinition, mod validationModule, c *collector
 	indexModuleProducers(ld, mod.ModuleID, wf.Graph, producers)
 
 	// Synthetic "input" producer so the same checkRef machinery can validate input.<field>
-	// against wf.Input. Path "input" mirrors what TestSchemaInputSchemaAlsoValidated uses.
-	if wf.Input != nil {
-		producers["input"] = producer{path: "input", kind: "input", schema: wf.Input}
+	// against wf.InputSchema. Path "input" mirrors what TestSchemaInputSchemaAlsoValidated uses.
+	if wf.InputSchema != nil {
+		producers["input"] = producer{path: "input", kind: "input", schema: wf.InputSchema}
 	}
 
 	// Index every Map by its static IR path so checkRef's AWF5004 branch can read the
@@ -952,8 +952,8 @@ func validateCalls(ld *LoadedDefinition, mod validationModule, c *collector) {
 	targets := callTargets(ld, mod.ModuleID)
 	producers := map[string]producer{}
 	indexModuleProducers(ld, mod.ModuleID, wf.Graph, producers)
-	if wf.Input != nil {
-		producers["input"] = producer{path: "input", kind: "input", schema: wf.Input}
+	if wf.InputSchema != nil {
+		producers["input"] = producer{path: "input", kind: "input", schema: wf.InputSchema}
 	}
 	order := nodeOrder(wf.Graph)
 	outFiles := outputFilesByStepIDForModule(ld, mod.ModuleID, wf)
@@ -969,7 +969,7 @@ func validateCalls(ld *LoadedDefinition, mod validationModule, c *collector) {
 		} else if _, ok := targets[call.Call]; !ok {
 			c.errf(nodePath, "AWF1046", fmt.Sprintf("%s: %q", catalog["AWF1046"], call.Call))
 		} else if child, ok := callTargetModule(ld, mod.ModuleID, call.Call); ok && child != nil && child.Workflow != nil {
-			validateCallInputContract(c, nodePath, call.Input, child.Workflow.Input)
+			validateCallInputContract(c, nodePath, call.Input, child.Workflow.InputSchema)
 			validateCallInputFiles(ld, mod.ModuleID, c, nodePath, call.InputFiles, child.Workflow.InputFiles, producers, order, outFiles, maps)
 		}
 		validateTemplateValueRefs(c, "AWF1047", nodePath+".input", call.Input, producers, maps, nil)
@@ -1207,8 +1207,8 @@ func validateWorkflowExports(ld *LoadedDefinition, mod validationModule, c *coll
 	wf := mod.Workflow
 	producers := map[string]producer{}
 	indexModuleProducers(ld, mod.ModuleID, wf.Graph, producers)
-	if wf.Input != nil {
-		producers["input"] = producer{path: "input", kind: "input", schema: wf.Input}
+	if wf.InputSchema != nil {
+		producers["input"] = producer{path: "input", kind: "input", schema: wf.InputSchema}
 	}
 	maps := mapsByPath(wf.Graph)
 

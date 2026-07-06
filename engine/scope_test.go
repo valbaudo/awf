@@ -1046,9 +1046,9 @@ func namedMapProductWorkflow(reduce bool) *ir.Workflow {
 	}
 	return &ir.Workflow{
 		ID: "test", Version: 1,
-		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
-		Input:      &ir.JSONSchema{"type": "object", "properties": map[string]any{"items": map[string]any{"type": "array"}}},
-		Graph:      ir.NodeList{m},
+		Containers:  map[string]ir.Container{"lab": {Image: fakeShaImage}},
+		InputSchema: &ir.JSONSchema{"type": "object", "properties": map[string]any{"items": map[string]any{"type": "array"}}},
+		Graph:       ir.NodeList{m},
 	}
 }
 
@@ -1376,7 +1376,7 @@ func TestScopeResolveAsBindingShadowsReservedRoots(t *testing.T) {
 	}
 	wf := &ir.Workflow{
 		ID: "x", Version: 1,
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type": "object",
 			"properties": map[string]any{
 				"foo": map[string]any{"type": "string"},

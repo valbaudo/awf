@@ -1,6 +1,6 @@
 workflow: gate-repair-cve
 version: 1
-input:
+input_schema:
   type: object
   required: [target_url]
   additionalProperties: false

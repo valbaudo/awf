@@ -64,7 +64,7 @@ func TestRuntimeComposeScopedHandleAllowedInMapReduce(t *testing.T) {
 			Reduce: &Reduce{Run: "./merge.sh", Container: "lab"},
 		},
 	})
-	wf.Input = &JSONSchema{
+	wf.InputSchema = &JSONSchema{
 		"type": "object",
 		"properties": map[string]any{
 			"items": map[string]any{"type": "array"},
@@ -90,7 +90,7 @@ func TestRuntimeComposeScopedHandleRejectedInMapReduceOutsideBody(t *testing.T) 
 	wf := runtimeComposeWF(NodeList{
 		&CodeStep{ID: "smoke", Container: "lab", Run: "true"},
 	})
-	wf.Input = &JSONSchema{
+	wf.InputSchema = &JSONSchema{
 		"type": "object",
 		"properties": map[string]any{
 			"items": map[string]any{"type": "array"},

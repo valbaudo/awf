@@ -306,8 +306,8 @@ func TestRefsCrossScopeIntoMapBodyRejected(t *testing.T) {
 	// over-sink gate, so the over-sink rejection wins.)
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
-		Containers: awf5003Container(),
-		Input:      &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
+		Containers:  awf5003Container(),
+		InputSchema: &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
 		Graph: NodeList{
 			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
 				awf5003Step("inner"),
@@ -342,8 +342,8 @@ func TestRefsCrossScopeIntoGateRejected(t *testing.T) {
 func TestRefsSameItemMapSiblingAllowed(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
-		Containers: awf5003Container(),
-		Input:      &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
+		Containers:  awf5003Container(),
+		InputSchema: &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
 		Graph: NodeList{
 			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
 				awf5003Step("a"),
@@ -437,7 +437,7 @@ func TestRefsAgentSchemaReferencedInCallInputNoAWF3002(t *testing.T) {
 		},
 	}
 	child := childWorkflowWithTypedOutput("child", "summary")
-	child.Input = objectSchema("query")
+	child.InputSchema = objectSchema("query")
 	ld := loadedWithChild(root, child)
 
 	assertNoCode(t, Validate(ld), "AWF3002")
@@ -489,8 +489,8 @@ func TestRefsCrossScopeNestedMapInGateRejected(t *testing.T) {
 	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
-		Containers: awf5003Container(),
-		Input:      &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
+		Containers:  awf5003Container(),
+		InputSchema: &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
 		Graph: NodeList{
 			&Gate{
 				Generate: NodeList{
@@ -630,7 +630,7 @@ func TestAggregateLoopMultipliedMapDeferredAWF5002(t *testing.T) {
 	maxIters := 3
 	ld := makeLD(&Workflow{ID: "agg-loop", Version: 1,
 		Containers: aggContainer(),
-		Input: &JSONSchema{
+		InputSchema: &JSONSchema{
 			"type": "object", "additionalProperties": false,
 			"required":   []any{"items"},
 			"properties": map[string]any{"items": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}},
@@ -744,7 +744,7 @@ func TestValidateWarnsOutputBindsIfNestedStep(t *testing.T) {
 		ID:         "cond-out",
 		Version:    1,
 		Containers: map[string]Container{"c": {Image: "oci://x@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
-		Input: &JSONSchema{
+		InputSchema: &JSONSchema{
 			"type":                 "object",
 			"additionalProperties": false,
 			"required":             []any{"do_it"},

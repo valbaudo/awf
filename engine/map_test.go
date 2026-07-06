@@ -137,7 +137,7 @@ func staticOverWorkflow(asName string, body ir.NodeList, concurrency int, minSuc
 		Containers: map[string]ir.Container{
 			testMapContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
 		},
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type": "object",
 			"properties": map[string]any{
 				"items": map[string]any{"type": "array"},
@@ -560,7 +560,7 @@ func TestRunMapPrunedDoesNotTripTry(t *testing.T) {
 		Containers: map[string]ir.Container{
 			testMapContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
 		},
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type":       "object",
 			"properties": map[string]any{"items": map[string]any{"type": "array"}},
 		},
@@ -1554,7 +1554,7 @@ func TestRunInputFilesMapBodyConsumesTopLevelProducer(t *testing.T) {
 			"lab": {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
 			"box": {Image: "oci://example.com/r@sha256:" + strings.Repeat("1", 64)},
 		},
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type":       "object",
 			"properties": map[string]any{"items": map[string]any{"type": "array"}},
 		},

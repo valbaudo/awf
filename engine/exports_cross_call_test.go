@@ -32,9 +32,9 @@ func crossCallDef(parentOutputs map[string]ir.TemplateValue, parentOutSchemaProp
 		"properties":           map[string]any{"deep": map[string]any{"type": "boolean"}},
 	}
 	child := &ir.Workflow{
-		ID:      "scan",
-		Version: 1,
-		Input:   childInSchema,
+		ID:          "scan",
+		Version:     1,
+		InputSchema: childInSchema,
 		Containers: map[string]ir.Container{
 			"c": {Image: "oci://child@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
 		},

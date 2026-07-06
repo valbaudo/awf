@@ -30,7 +30,7 @@ func TestInputFilesReducerArtifactRefAccepted(t *testing.T) {
 			&CodeStep{ID: "hunt", Container: "c", Run: "true",
 				InputFiles: map[string]string{"/work/report.md": "step.scan.files.report"}},
 		},
-		Input: &JSONSchema{"type": "object", "additionalProperties": false,
+		InputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
 			"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}},
 	})
 	assertNoErrorCode(t, Validate(ld), "AWF3007")
@@ -51,7 +51,7 @@ func TestInputFilesReducerNonDeclaredArtifactErrors(t *testing.T) {
 			&CodeStep{ID: "hunt", Container: "c", Run: "true",
 				InputFiles: map[string]string{"/work/leaf.txt": "step.scan.files.leaf"}},
 		},
-		Input: &JSONSchema{"type": "object", "additionalProperties": false,
+		InputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
 			"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}},
 	})
 	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
@@ -75,7 +75,7 @@ func TestInputFilesQuorumReducerHasNoArtifactsErrors(t *testing.T) {
 			&CodeStep{ID: "hunt", Container: "c", Run: "true",
 				InputFiles: map[string]string{"/work/leaf.txt": "step.scan.files.leaf"}},
 		},
-		Input: &JSONSchema{"type": "object", "additionalProperties": false,
+		InputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
 			"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}},
 	})
 	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
@@ -93,7 +93,7 @@ func TestInputFilesNonReduceMapStillRejectsCrossScope(t *testing.T) {
 			&CodeStep{ID: "hunt", Container: "c", Run: "true",
 				InputFiles: map[string]string{"/work/leaf.txt": "step.scan.files.leaf"}},
 		},
-		Input: &JSONSchema{"type": "object", "additionalProperties": false,
+		InputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
 			"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}},
 	})
 	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")

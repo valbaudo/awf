@@ -442,7 +442,7 @@ graph:
 // (map[0].item-0.process etc).
 const mapStandardWorkflow = `workflow: conformance-map-standard
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -471,7 +471,7 @@ graph:
 // step 5: skip ends the item as item_passed.
 const mapSkipInItemWorkflow = `workflow: conformance-map-skip-in-item
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -512,7 +512,7 @@ graph:
 // without affecting what this bucket pins.
 const mapAggregationWorkflow = `workflow: conformance-map-aggregation
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false
@@ -854,7 +854,7 @@ graph:
 // The await step needs no container; the map needs a container for its body scope.
 var signalWhereWorkflow = fmt.Sprintf(`workflow: signal-where
 version: 1
-input:
+input_schema:
   type: object
   required: [hyps]
   additionalProperties: false

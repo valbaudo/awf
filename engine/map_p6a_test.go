@@ -59,7 +59,7 @@ func TestMapImageDispatchSetsPullIfAbsent(t *testing.T) {
 		ID: "p6a", Version: 1,
 		// No declared image: the container is a runtime-resolved map.image target.
 		Containers: map[string]ir.Container{testMapContainer: {}},
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type":       "object",
 			"properties": map[string]any{"items": map[string]any{"type": "array"}},
 		},
@@ -109,7 +109,7 @@ func TestMapConfigCreateErrorFailsWholeMap(t *testing.T) {
 	wf := &ir.Workflow{
 		ID: "p6a-cfg", Version: 1,
 		Containers: map[string]ir.Container{testMapContainer: {}},
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type":       "object",
 			"properties": map[string]any{"items": map[string]any{"type": "array"}},
 		},

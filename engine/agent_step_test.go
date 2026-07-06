@@ -45,7 +45,7 @@ func loadAgentSimpleDef(t *testing.T, yaml string) *ir.LoadedDefinition {
 func TestRunAgentStep_HappyPath_TemplatedWith(t *testing.T) {
 	const yaml = `workflow: agent-step-templated
 version: 1
-input:
+input_schema:
   type: object
   required: [topic]
   additionalProperties: false
@@ -1621,7 +1621,7 @@ func TestRunAgentStep_StagesInputFiles(t *testing.T) {
 func TestRunAgentStep_OutputFilesPathTemplatedAndCommitted(t *testing.T) {
 	const yaml = `workflow: agent-output-files
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [cve_id]

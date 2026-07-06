@@ -79,7 +79,7 @@ graph:
 //	        map[0].item-1.refine call 3  (threads item-1's ask)
 var continuesMapBodyWorkflow = `workflow: conformance-continues-map-body
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false

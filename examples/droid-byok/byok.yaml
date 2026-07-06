@@ -21,7 +21,7 @@ version: 1
 # Forward the host env var that holds the provider API key into the agent step.
 env: [LITELLM_API_KEY]
 
-input:
+input_schema:
   type: object
   required: [question]
   properties:

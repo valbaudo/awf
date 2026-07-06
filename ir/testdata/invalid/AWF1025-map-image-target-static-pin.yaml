@@ -1,6 +1,6 @@
 workflow: map-image-target-static-pin
 version: 1
-input:
+input_schema:
   type: object
   properties:
     items:

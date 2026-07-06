@@ -1,6 +1,6 @@
 workflow: phase3-map
 version: 1
-input:
+input_schema:
   type: object
   required: [items]
   additionalProperties: false

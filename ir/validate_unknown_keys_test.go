@@ -202,6 +202,82 @@ func TestUnknownKeys_MapOverStillValid(t *testing.T) {
 	}
 }
 
+// TestUnknownKeys_TopLevelInputSchemaAccepted confirms the renamed top-level
+// input_schema: (F17) decodes clean — no AWF1062, no AWF1064.
+func TestUnknownKeys_TopLevelInputSchemaAccepted(t *testing.T) {
+	src := "workflow: x\nversion: 1\n" +
+		"input_schema: {type: object, properties: {foo: {type: string}}}\n" +
+		"containers:\n  c: {image: \"oci://x@sha256:abc\"}\n" +
+		"graph:\n  - id: a\n    container: c\n    run: \"echo {{ input.foo }}\"\n"
+	diags := validateForTest(t, src)
+	if hasCode(diags, "AWF1062") {
+		t.Fatalf("input_schema: must not be flagged unknown, got %v", diags)
+	}
+	if hasCode(diags, "AWF1064") {
+		t.Fatalf("input_schema: must not be flagged renamed, got %v", diags)
+	}
+}
+
+// TestUnknownKeys_TopLevelInputRenamed confirms the OLD top-level `input:`
+// spelling (retired F17) is caught as a specific hard rename (AWF1064), not
+// the generic unknown-key AWF1062 — the position-aware counterpart of
+// TestUnknownKeys_ReduceOverRenamed, but for the Workflow shape.
+func TestUnknownKeys_TopLevelInputRenamed(t *testing.T) {
+	src := "workflow: x\nversion: 1\n" +
+		"input: {type: object, properties: {foo: {type: string}}}\n" +
+		"graph: []\n"
+	diags := validateForTest(t, src)
+	if !hasCode(diags, "AWF1064") {
+		t.Fatalf("expected AWF1064 for top-level input:, got %v", diags)
+	}
+	if hasCode(diags, "AWF1062") {
+		t.Fatalf("top-level input: must get the specific AWF1064, not also the generic AWF1062, got %v", diags)
+	}
+	var msg string
+	for _, d := range diags {
+		if d.Code == "AWF1064" {
+			msg = d.Message
+		}
+	}
+	if msg != "top-level input: renamed to input_schema:" {
+		t.Errorf("AWF1064 message = %q, want %q", msg, "top-level input: renamed to input_schema:")
+	}
+}
+
+// TestUnknownKeys_InputTemplateRefsStillResolve confirms the runtime
+// {{ input.* }} namespace is UNRELATED to the input_schema: rename: a step
+// referencing input.foo still resolves against the (renamed) schema producer,
+// with no AWF1062/AWF1064/AWF3001.
+func TestUnknownKeys_InputTemplateRefsStillResolve(t *testing.T) {
+	src := "workflow: x\nversion: 1\n" +
+		"input_schema: {type: object, required: [foo], properties: {foo: {type: string}}, additionalProperties: false}\n" +
+		"containers:\n  c: {image: \"oci://x@sha256:abc\"}\n" +
+		"graph:\n  - id: a\n    container: c\n    run: \"echo {{ input.foo }}\"\n"
+	diags := validateForTest(t, src)
+	for _, d := range diags {
+		if d.Code == "AWF1062" || d.Code == "AWF1064" || d.Code == "AWF3001" {
+			t.Errorf("did not expect %s: %+v", d.Code, d)
+		}
+	}
+}
+
+// TestUnknownKeys_CallStepInputUnaffected confirms a call step's OWN `input:`
+// (the instance-binding wire key on CallStep, unrelated to the Workflow-level
+// input_schema: rename) still validates clean — F17 only retires the
+// top-level Workflow shape's `input:`, not CallStep.Input. Mirrors
+// TestUnknownKeys_MapOverStillValid's position-awareness proof.
+func TestUnknownKeys_CallStepInputUnaffected(t *testing.T) {
+	src := "workflow: root\nversion: 1\ncontainers: {}\n" +
+		"graph:\n  - id: c1\n    call: child\n    input:\n      x: \"hello\"\n"
+	diags := validateForTest(t, src)
+	if hasCode(diags, "AWF1062") {
+		t.Fatalf("call-step input: must not be flagged unknown, got %v", diags)
+	}
+	if hasCode(diags, "AWF1064") {
+		t.Fatalf("call-step input: must not be flagged renamed (position-aware: only Workflow.input is a hard rename), got %v", diags)
+	}
+}
+
 // TestUnknownKeys_CorpusZeroFalsePositives loads every examples/**/*.yaml and
 // asserts ZERO AWF1062 diagnostics. This is the objective safety net: a false
 // positive means the walker is missing a real allowed key or a skip rule — fix the

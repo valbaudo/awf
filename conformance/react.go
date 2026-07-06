@@ -28,7 +28,7 @@ import (
 // invariant).
 var reactToolLoopWorkflow = fmt.Sprintf(`workflow: conformance-react-tool-loop
 version: 1
-input:
+input_schema:
   type: object
   additionalProperties: false
   required: [q]

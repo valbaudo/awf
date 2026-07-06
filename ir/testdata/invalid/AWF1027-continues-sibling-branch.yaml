@@ -1,6 +1,6 @@
 workflow: continues-sibling-branch
 version: 1
-input:
+input_schema:
   type: object
   properties:
     go: { type: boolean }

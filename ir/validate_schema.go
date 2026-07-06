@@ -26,8 +26,8 @@ import (
 // the schema directly, no backend constraint involved).
 func validateSchema(ld *LoadedDefinition, c *collector) {
 	wf := ld.Workflow
-	if wf.Input != nil {
-		checkSchemaWellFormed(*wf.Input, "input", c)
+	if wf.InputSchema != nil {
+		checkSchemaWellFormed(*wf.InputSchema, "input", c)
 	}
 	if wf.OutputSchema != nil {
 		checkSchemaWellFormed(*wf.OutputSchema, "output_schema", c)

@@ -170,8 +170,8 @@ func TestContinuesGateInternalFromOutsideRejected(t *testing.T) {
 func TestContinuesMapItemFromOutsideRejected(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
-		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
-		Input:      &JSONSchema{"type": "object", "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
+		Containers:  map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		InputSchema: &JSONSchema{"type": "object", "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
 		Graph: NodeList{
 			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 2,
 				Body: NodeList{&AgentStep{ID: "per_item", Container: "c", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}}}},

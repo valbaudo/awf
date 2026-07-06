@@ -385,7 +385,7 @@ func TestRunCommandReduceTemplatesRun(t *testing.T) {
 		Containers: map[string]ir.Container{
 			reduceContainer: {Image: "oci://example.com/r@sha256:" + strings.Repeat("0", 64)},
 		},
-		Input: &ir.JSONSchema{
+		InputSchema: &ir.JSONSchema{
 			"type":       "object",
 			"properties": map[string]any{"cve_id": map[string]any{"type": "string"}},
 		},
