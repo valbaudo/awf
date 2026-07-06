@@ -29,6 +29,30 @@ func TestDurationScalars_QuotedStringAccepted(t *testing.T) {
 	}
 }
 
+func TestDurationScalars_TimeoutMapQuotedAccepted(t *testing.T) {
+	src := "workflow: x\nversion: 1\ngraph:\n  - run: echo hi\n    timeout: { wall: \"45m\", idle: \"5m\" }\n"
+	diags := validateForTest(t, src)
+	if hasCode(diags, "AWF1063") {
+		t.Fatalf("quoted wall/idle map must pass, got %v", diags)
+	}
+}
+
+func TestDurationScalars_TimeoutMapBareIntWallRejected(t *testing.T) {
+	src := "workflow: x\nversion: 1\ngraph:\n  - run: echo hi\n    timeout: { wall: 300, idle: \"5m\" }\n"
+	diags := validateForTest(t, src)
+	if !hasCode(diags, "AWF1063") {
+		t.Fatalf("expected AWF1063 for bare-int timeout.wall, got %v", diags)
+	}
+}
+
+func TestDurationScalars_TimeoutMapBareIntIdleRejected(t *testing.T) {
+	src := "workflow: x\nversion: 1\ngraph:\n  - run: echo hi\n    timeout: { idle: 120 }\n"
+	diags := validateForTest(t, src)
+	if !hasCode(diags, "AWF1063") {
+		t.Fatalf("expected AWF1063 for bare-int timeout.idle, got %v", diags)
+	}
+}
+
 func TestDurationScalars_BareIntRetryRejected(t *testing.T) {
 	src := "workflow: x\nversion: 1\ngraph:\n  - run: echo hi\n    retry:\n      initial: 5\n"
 	diags := validateForTest(t, src)

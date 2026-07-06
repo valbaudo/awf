@@ -22,7 +22,7 @@ type CodeStep struct {
 	ID           string      `json:"id"`
 	Container    string      `json:"container,omitempty"`
 	Run          string      `json:"run"`
-	Timeout      *Duration   `json:"timeout,omitempty"`
+	Timeout      *Timeout    `json:"timeout,omitempty"`
 	OutputSchema *JSONSchema `json:"output_schema,omitempty"`
 	OutputFiles  OutputFiles `json:"output_files,omitempty"`
 	// InputFiles maps an in-container destination path → a static artifact or asset
@@ -58,7 +58,7 @@ type AgentStep struct {
 	// {{ }} template (AWF3007). Requires a container (rejected on containerless
 	// agent steps at runtime).
 	InputFiles     map[string]string `json:"input_files,omitempty"`
-	Timeout        *Duration         `json:"timeout,omitempty"`
+	Timeout        *Timeout          `json:"timeout,omitempty"`
 	IdempotencyKey *Template         `json:"idempotency_key,omitempty"`
 	Retry          *RetryPolicy      `json:"retry,omitempty"`
 }

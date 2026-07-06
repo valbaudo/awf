@@ -382,7 +382,12 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		InputFiles:            inputFiles,
 	}
 	if cs.Timeout != nil {
-		resolved.Timeout = time.Duration(*cs.Timeout)
+		if cs.Timeout.Wall != nil {
+			resolved.Timeout = time.Duration(*cs.Timeout.Wall)
+		}
+		if cs.Timeout.Idle != nil {
+			resolved.IdleTimeout = time.Duration(*cs.Timeout.Idle)
+		}
 	}
 
 	intent := NodeIntent{

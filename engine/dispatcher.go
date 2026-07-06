@@ -69,6 +69,11 @@ type ResolvedInputs struct {
 	OutputSchema          *ir.JSONSchema
 	NonRetryableExitCodes []int
 	Timeout               time.Duration
+	// IdleTimeout is the max time a step may produce no output before the attempt
+	// is cancelled (→ retryable_failure). Zero = disabled. Enforced per-attempt in
+	// the dispatcher alongside the wall-clock Timeout; code steps reset on each
+	// IOChunk, agent steps on each drained AgentEvent.
+	IdleTimeout time.Duration
 
 	// InputFiles are the resolved (path → bytes) artifacts to stage via
 	// Backend.CopyTo BEFORE Exec/Launch. The interpreter resolves each ref to a

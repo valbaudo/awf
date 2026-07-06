@@ -77,7 +77,14 @@ func walkDurationNode(parent string, index int, m map[string]any, c *collector) 
 	}
 	if _, isStep := stepKeys[kind]; isStep {
 		path := PathFor(parent, "", rawStepID(m), index)
-		checkDurationKey(m, "timeout", path, c)
+		switch kind {
+		case "run", "uses":
+			// Code/agent steps accept the scalar OR the { wall, idle } map form.
+			checkTimeoutKey(m, path, c)
+		default:
+			// await (SignalStep) timeout is scalar-only.
+			checkDurationKey(m, "timeout", path, c)
+		}
 		if retry, ok := m["retry"].(map[string]any); ok {
 			checkDurationKey(retry, "initial", path+".retry", c)
 			checkDurationKey(retry, "max", path+".retry", c)
@@ -133,6 +140,23 @@ func recurseDurationControlChildren(kind, path string, inner map[string]any, c *
 	case "react":
 		// No child node list, and React itself has no Timeout/Retry field.
 	}
+}
+
+// checkTimeoutKey validates a code/agent step's `timeout`. The scalar form is
+// checked exactly like any duration (AWF1063 on a bare int); the { wall, idle }
+// map form validates each present sub-key as a duration instead of flagging the
+// map itself as a bare-int violation.
+func checkTimeoutKey(m map[string]any, path string, c *collector) {
+	v, ok := m["timeout"]
+	if !ok || v == nil {
+		return
+	}
+	if sub, isMap := v.(map[string]any); isMap {
+		checkDurationKey(sub, "wall", path+".timeout", c)
+		checkDurationKey(sub, "idle", path+".timeout", c)
+		return
+	}
+	checkDurationKey(m, "timeout", path, c)
 }
 
 // checkDurationKey emits AWF1063 when m[key] is present and its RawDoc value is

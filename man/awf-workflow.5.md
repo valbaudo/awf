@@ -538,12 +538,29 @@ nanoseconds for JSON round-tripping (internal to the runtime), so an unquoted
 YAML integer like `timeout: 300` would otherwise parse silently as 300
 nanoseconds — a step that times out instantly with no error.
 
+**Wall and idle timeouts.** On a code (`run:`) or agent (`uses:`) step, `timeout:`
+may instead be a map with `wall:` and/or `idle:` sub-keys (each a quoted Go
+duration). `wall:` is the per-attempt wall-clock deadline — identical to the scalar
+form, which stays valid and is exactly `wall:`. `idle:` cancels the attempt when it
+produces **no output** for that long — no stdout/stderr chunk for a code step, no
+streamed event for an agent step. Idle catches a step that is alive but silently
+stalled (e.g. an agent CLI whose streaming response hangs behind a proxy) without
+having to pull the wall deadline down near the worst-case total runtime. An idle
+expiry is a `retryable_failure`, identical in class to a wall expiry, and rides the
+step's `retry:` policy. There is **no default** `idle:` — omit it and no idle
+deadline applies. Tuning note: some agent CLIs stream one event per completed step
+rather than per token (e.g. `openai/codex`'s `exec --json`), so the gap between
+events during a single long reasoning turn can be legitimately long; set `idle:`
+above that normal inter-event gap for the model and effort in use, or a healthy
+long turn can be killed and retried.
+
 ## Code step (run)
 
     - id: <id>
       container: <name>
       run: <command>
-      timeout: <dur>                 # optional; on expiry -> retryable_failure
+      timeout: <dur>                 # optional; wall-clock; on expiry -> retryable_failure
+      # timeout: { wall: <dur>, idle: <dur> }   # ...or a map: add an idle (no-output) deadline
       output_schema: { ... }         # optional; step writes JSON to $AWF_OUTPUT
       output_files: [<path>, ...]    # optional; bare list -> capture-only
       # output_files: { <name>: <path> }   # ...or a name->path/contract map -> named, referenceable
@@ -583,7 +600,8 @@ format never hard-codes one harness's options.
         query: <template>
         limit: <positive-int>
         into: <absolute-container-path>
-      timeout: <dur>                 # optional
+      timeout: <dur>                 # optional; wall-clock; on expiry -> retryable_failure
+      # timeout: { wall: <dur>, idle: <dur> }   # ...or a map: add an idle (no-output) deadline
       idempotency_key: <template>    # optional
       retry: { ... }                 # optional
 
