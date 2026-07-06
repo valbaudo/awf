@@ -189,6 +189,7 @@ var catalog = map[string]string{
 	"AWF3012": "top-level output binds a step inside a conditional scope; if that branch is not taken the output key is omitted (and validation fails if output_schema marks the field required)",
 	"AWF3013": "string-typed reference substituted unquoted into a run:/idempotency_key shell host; an attacker-controlled value can inject shell commands (CWE-78) — wrap the slot in double quotes",
 	"AWF3014": "output_artifact is valid only on a containerless agent step, requires output_schema, is mutually exclusive with output_files, and its name must be a valid identifier",
+	"AWF3015": "run:/reduce.run hardcodes the docker-only staging path /work/.awf; use $AWF_STAGING_ROOT (native's staging root is workdir-relative)",
 	"AWF5001": "reference to `evaluate.<field>` outside a gate's generate or until",
 	"AWF5002": "map output aggregation across nested or loop-multiplied maps is not yet defined",
 	"AWF5003": "reference to a step inside a gate or map body from outside that scope — gate/map-internal steps resolve only within the same attempt/item (read a gate's product via evaluate.<field>)",

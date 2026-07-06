@@ -31,6 +31,8 @@ package ir
 //     ref naming a prior in-scope step's NAMED output_files artifact (dst absolute + clean)
 //   - output_files (AWF3009, AWF3014) — named output_files contract metadata shape and schema_ref
 //     assets; AWF3014 is the containerless output_artifact (typed-output → artifact) rule set
+//   - staging_literal (AWF3015) — run:/reduce.run hardcoding the docker-only staging
+//     path /work/.awf instead of $AWF_STAGING_ROOT (warning; native's staging root differs)
 //   - schema     (AWF2001/2) — JSON Schema well-formedness + §7 floor (warning, agents only)
 //   - compose    (AWF3003/4/5) — compose-go/v2 parse + digest-pinning of every inner image
 //
@@ -71,6 +73,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 		validateRefsModule(ld, mod, c)
 		validateInputFilesModule(ld, mod, c)
 		validateOutputFiles(modLD, c)
+		validateStagingLiteral(modLD, c)
 		validateWorkflowExports(ld, mod, c)
 		validateAwfOutputWrites(mod.Workflow.Graph, c)
 		validateSchema(modLD, c)
