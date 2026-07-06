@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/compose/v2/pkg/api"
 	dockerContainer "github.com/docker/docker/api/types/container"
@@ -162,12 +163,9 @@ func (*Backend) Capabilities() container.Caps {
 // returns a Handle. spec.Image is required for image-mode; compose mode lands
 // in slice 4.3.
 //
-// Precondition: spec.Image must already be present in the local Docker
-// image cache. Create does NOT pull — it calls cli.ContainerCreate which
-// returns a "no such image" error if absent. Callers (slice 4.5's
-// cli/run.go onward) are responsible for pre-pulling via client.ImagePull
-// before invoking Create. The integ tests demonstrate the pattern via
-// the pullImage helper.
+// spec.Image need not be pre-cached: if ContainerCreate reports the image
+// missing (cold cache), Create pulls it by its pinned digest (F27) and
+// retries ContainerCreate exactly once — see the not-found handling below.
 //
 // Exception (P6a): when spec.PullIfAbsent is set — a map's runtime-resolved
 // per-element image: — Create itself pulls the image first (it cannot have
@@ -247,7 +245,24 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	// with the new container ID.
 	resp, err := b.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
 	if err != nil {
-		return container.Handle{}, fmt.Errorf("container/docker: Create: ContainerCreate: %w", err)
+		if !cerrdefs.IsNotFound(err) {
+			// Not an image-availability fault — a malformed spec (e.g. a host
+			// config the daemon rejects) is a deterministic definition error,
+			// so it stays unwrapped (see ImageUnavailableError's doc comment).
+			return container.Handle{}, fmt.Errorf("container/docker: Create: ContainerCreate: %w", err)
+		}
+		// Cold cache: the pinned image isn't present locally yet. Pull it by
+		// digest — same helper the P6a runtime-resolved-image path above uses
+		// — and retry ContainerCreate exactly once. A second failure (pull or
+		// create) is a genuine image-availability fault, not a definition
+		// error, matching the ContainerStart/waitReady handling below.
+		if pullErr := b.pullByDigest(ctx, spec.Image); pullErr != nil {
+			return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: pullErr}
+		}
+		resp, err = b.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
+		if err != nil {
+			return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: fmt.Errorf("ContainerCreate after pull: %w", err)}
+		}
 	}
 
 	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
