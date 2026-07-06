@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/container"
@@ -145,13 +146,24 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		return DispatchResult{Outcome: OutcomeRetryableFailure, Err: err}, nil, nil
 	}
 
-	// Apply step timeout to ctx (if any). On expiry the Backend.Exec call
-	// observes ctx cancellation and returns an error; ClassifyOutcome then
-	// routes it to retryable_failure per spec §6.
+	// Apply step timeout(s) to ctx. On expiry the Backend.Exec call observes ctx
+	// cancellation and returns an error; ClassifyOutcome then routes it to
+	// retryable_failure per spec §6. The wall timeout bounds total elapsed time;
+	// the idle timeout (armed here, reset on each IOChunk in the drain loop below)
+	// bounds time with no output.
+	var cancel context.CancelFunc
 	if intent.ResolvedInputs.Timeout > 0 {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, intent.ResolvedInputs.Timeout)
+	} else if intent.ResolvedInputs.IdleTimeout > 0 {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	if cancel != nil {
 		defer cancel()
+	}
+	var idleTimer *time.Timer
+	if intent.ResolvedInputs.IdleTimeout > 0 {
+		idleTimer = time.AfterFunc(intent.ResolvedInputs.IdleTimeout, cancel)
+		defer idleTimer.Stop()
 	}
 
 	// Build the env: defensive-copy the caller's map so we don't mutate it,
@@ -202,7 +214,14 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 	// is typically small; memory cost is bounded.
 	var collected []container.IOChunk
 	for c := range rawChunks {
+		// Any chunk (stdout or stderr) is progress — reset the idle deadline.
+		if idleTimer != nil {
+			idleTimer.Reset(intent.ResolvedInputs.IdleTimeout)
+		}
 		collected = append(collected, c)
+	}
+	if idleTimer != nil {
+		idleTimer.Stop()
 	}
 	exec := <-resultCh
 

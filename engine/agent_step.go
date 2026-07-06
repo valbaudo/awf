@@ -268,7 +268,12 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		SessionDir:            sessionDir,          // projects/ subtree to capture; PersistentSession adapters only
 	}
 	if as.Timeout != nil {
-		resolved.Timeout = time.Duration(*as.Timeout)
+		if as.Timeout.Wall != nil {
+			resolved.Timeout = time.Duration(*as.Timeout.Wall)
+		}
+		if as.Timeout.Idle != nil {
+			resolved.IdleTimeout = time.Duration(*as.Timeout.Idle)
+		}
 	}
 
 	dispatchCtx, cancelDispatch := context.WithCancel(ctx)

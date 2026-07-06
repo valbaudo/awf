@@ -176,6 +176,17 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	}
 	defer cancel()
 
+	// Idle timeout: arm a timer that cancels ctx if no AgentEvent is drained for
+	// IdleTimeout. Armed here (the pre-first-output window counts, so a step that
+	// emits nothing still fires), reset on each event in the drain loop below, and
+	// stopped on normal completion. An idle fire cancels ctx exactly like a wall
+	// expiry → the adapter surfaces ctx.Err() → retryable_failure → existing retry.
+	var idleTimer *time.Timer
+	if intent.ResolvedInputs.IdleTimeout > 0 {
+		idleTimer = time.AfterFunc(intent.ResolvedInputs.IdleTimeout, cancel)
+		defer idleTimer.Stop()
+	}
+
 	// Validate config defensively — the run-start walk (U1, cli/with_guard.go's
 	// checkWithConfigForLoadedDefinition) already validated every agent step's
 	// with: before the log opened; this is the double-check at dispatch time per
@@ -267,6 +278,10 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		var sinkErr error
 		render := d.eventRenderer()
 		for ev := range events {
+			// Any drained event is progress — reset the idle deadline.
+			if idleTimer != nil {
+				idleTimer.Reset(intent.ResolvedInputs.IdleTimeout)
+			}
 			if d.AgentEventTap != nil {
 				render(d.AgentEventTap, ev)
 			}
@@ -282,6 +297,11 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 			// Display is json:"-" and never serialized directly. Keep it in memory
 			// so the interpreter can copy sanitized scalar summaries for live events.
 			buf = append(buf, ev)
+		}
+		// Events channel closed = agent finished; disarm so a post-completion idle
+		// fire can't cancel a step that already produced its outcome.
+		if idleTimer != nil {
+			idleTimer.Stop()
 		}
 		drainDone <- drainedAgentEvents{events: buf, err: sinkErr}
 	}()

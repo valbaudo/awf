@@ -2,6 +2,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -94,6 +95,71 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	*d = Duration(n)
+	return nil
+}
+
+// Timeout is a step's timeout policy. On the wire it is EITHER a bare Go-duration
+// scalar — the historical wall-clock per-attempt deadline — OR a { wall, idle }
+// map. Idle is the maximum time a step may produce no output (no stdout/stderr
+// chunk for a code step, no AgentEvent for an agent step) before the attempt is
+// cancelled; an idle expiry is a `retryable_failure`, identical in class to a
+// wall expiry, and rides the existing retry policy. Only code (run:) and agent
+// (uses:) steps carry a *Timeout; await/tool timeouts stay scalar *Duration.
+//
+// Digest stability: when Idle is nil the value marshals back to the bare
+// nanosecond integer a *Duration would emit, so a scalar-form workflow's digest
+// is byte-identical to before the map form existed.
+type Timeout struct {
+	Wall *Duration
+	Idle *Duration
+}
+
+func (t *Timeout) MarshalJSON() ([]byte, error) {
+	// Scalar form: emit exactly what a *Duration field would (digest stability).
+	if t.Idle == nil {
+		if t.Wall == nil {
+			return []byte("null"), nil
+		}
+		return t.Wall.MarshalJSON()
+	}
+	// Map form. json.Marshal sorts map keys, and JCS re-sorts at digest time, so
+	// ordering here is irrelevant.
+	m := make(map[string]*Duration, 2)
+	if t.Wall != nil {
+		m["wall"] = t.Wall
+	}
+	m["idle"] = t.Idle
+	return json.Marshal(m)
+}
+
+func (t *Timeout) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil
+	}
+	if trimmed[0] == '{' {
+		// Map form { wall?, idle? }, strict: an unknown sub-key is rejected here
+		// (the AWF1062 unknown-key walker does not descend into `timeout`).
+		var m struct {
+			Wall *Duration `json:"wall"`
+			Idle *Duration `json:"idle"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&m); err != nil {
+			return err
+		}
+		t.Wall = m.Wall
+		t.Idle = m.Idle
+		return nil
+	}
+	// Scalar form (a quoted Go-duration string, or a bare int in nanoseconds that
+	// validateDurationScalars flags as AWF1063) → wall.
+	var d Duration
+	if err := d.UnmarshalJSON(trimmed); err != nil {
+		return err
+	}
+	t.Wall = &d
 	return nil
 }
 
