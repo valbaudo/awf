@@ -3,6 +3,18 @@
     "severity": "error",
     "path": "map[0]",
     "code": "AWF1012",
-    "message": "map missing one of over/as/container/concurrency"
+    "message": "map missing a required field: `as:`"
+  },
+  {
+    "severity": "error",
+    "path": "map[0]",
+    "code": "AWF1012",
+    "message": "map missing a required field: `container:`"
+  },
+  {
+    "severity": "error",
+    "path": "map[0]",
+    "code": "AWF1012",
+    "message": "map missing a required field: `over:`"
   }
 ]

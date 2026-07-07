@@ -128,7 +128,7 @@ func staticOverWorkflow(asName string, body ir.NodeList, concurrency int, minSuc
 		Over:        ir.Expr("{{ input.items }}"),
 		As:          asName,
 		Container:   testMapContainer,
-		Concurrency: concurrency,
+		Concurrency: intPtr(concurrency),
 		MinSuccess:  minSuccess,
 		Body:        body,
 	}
@@ -221,7 +221,7 @@ func TestRunMapLiteralOverIterates(t *testing.T) {
 		OverItems:   []any{"a", "b", "c"},
 		As:          "x",
 		Container:   testMapContainer,
-		Concurrency: 2,
+		Concurrency: intPtr(2),
 		Body:        echoStep("x", nil),
 	}
 	wf := &ir.Workflow{
@@ -547,7 +547,7 @@ func TestRunMapPrunedDoesNotTripTry(t *testing.T) {
 		Over:        ir.Expr("{{ input.items }}"),
 		As:          "x",
 		Container:   testMapContainer,
-		Concurrency: 4,
+		Concurrency: intPtr(4),
 		Body:        pruneBody(&ir.RetryPolicy{Attempts: 1}),
 		Prune:       &ir.Prune{Score: "score", Keep: &ir.PruneKeep{K: 2}},
 	}
@@ -1564,7 +1564,7 @@ func TestRunInputFilesMapBodyConsumesTopLevelProducer(t *testing.T) {
 				OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.md"}},
 			},
 			&ir.Map{
-				Over: ir.Expr("{{ input.items }}"), As: "h", Container: "box", Concurrency: 1,
+				Over: ir.Expr("{{ input.items }}"), As: "h", Container: "box", Concurrency: intPtr(1),
 				Body: ir.NodeList{
 					&ir.CodeStep{
 						ID: "hunt", Container: "box", Run: "./hunt.sh {{ h }}",

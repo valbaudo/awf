@@ -57,7 +57,7 @@ func TestRuntimeComposeScopedHandleAllowedInMapReduce(t *testing.T) {
 			Over:        Expr("{{ input.items }}"),
 			As:          "item",
 			Container:   "runner",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				&CodeStep{ID: "scan", Container: "lab", Run: "true"},
 			},
@@ -100,7 +100,7 @@ func TestRuntimeComposeScopedHandleRejectedInMapReduceOutsideBody(t *testing.T) 
 		Over:        Expr("{{ input.items }}"),
 		As:          "item",
 		Container:   "runner",
-		Concurrency: 1,
+		Concurrency: intPtr(1),
 		Body: NodeList{
 			&CodeStep{ID: "scan", Container: "runner", Run: "true"},
 		},

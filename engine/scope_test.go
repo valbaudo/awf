@@ -1543,7 +1543,7 @@ func TestEnclosingMapForBindingTable(t *testing.T) {
 func TestResolveAggregateMapOutputs(t *testing.T) {
 	rs := NewRunState("run-x", "digest-x", nil)
 	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{
-		&ir.Map{Over: "{{ step.seed.items }}", As: "u", Container: "c", Concurrency: 1, Body: ir.NodeList{
+		&ir.Map{Over: "{{ step.seed.items }}", As: "u", Container: "c", Concurrency: intPtr(1), Body: ir.NodeList{
 			&ir.AgentStep{ID: "scan", Container: "c",
 				OutputSchema: &ir.JSONSchema{"type": "object", "required": []any{"finding"}, "properties": map[string]any{"finding": map[string]any{"type": "string"}}, "additionalProperties": false}}}}}}
 	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "a", Status: ItemPassed})

@@ -251,7 +251,7 @@ func mapOverExprWorkflow() *Workflow {
 		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
 		Graph: NodeList{
 			&Map{
-				ID: "m", Over: "{{ input.items }}", As: "item", Container: "c", Concurrency: 1,
+				ID: "m", Over: "{{ input.items }}", As: "item", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{&CodeStep{ID: "b", Container: "c", Run: "echo {{ item }}"}},
 			},
 		},

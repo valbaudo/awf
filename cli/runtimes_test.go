@@ -13,6 +13,11 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
+// intPtr is a small test helper for *int struct fields (e.g. ir.Map.Concurrency, F45
+// presence-tracking) — shared by this file and cli/runtimeimageguard_test.go, both
+// `package cli`.
+func intPtr(n int) *int { return &n }
+
 func TestWalkAgentRefs_EmptyGraph(t *testing.T) {
 	wf := &ir.Workflow{}
 	got := walkAgentRefs(wf)
@@ -146,7 +151,7 @@ func TestWalkAgentRefs_MapBodyIncluded(t *testing.T) {
 				Over:        "input.items",
 				As:          "item",
 				Container:   "lab",
-				Concurrency: 1,
+				Concurrency: intPtr(1),
 				Body:        ir.NodeList{&ir.AgentStep{ID: "m1", Container: "lab", Uses: "m"}},
 			},
 		},

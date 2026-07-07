@@ -330,7 +330,7 @@ func TestRunReduceTemplatesBodyStepRefsAsJSON(t *testing.T) {
 			Over:        ir.Expr("{{ input.items }}"),
 			As:          "x",
 			Container:   reduceContainer,
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: ir.NodeList{
 				&ir.CodeStep{ID: "scan", Run: "./scan {{ x }}", Container: reduceContainer, OutputSchema: rowSchema},
 			},

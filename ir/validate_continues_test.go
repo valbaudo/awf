@@ -173,7 +173,7 @@ func TestContinuesMapItemFromOutsideRejected(t *testing.T) {
 		Containers:  map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
 		InputSchema: &JSONSchema{"type": "object", "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}},
 		Graph: NodeList{
-			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 2,
+			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: intPtr(2),
 				Body: NodeList{&AgentStep{ID: "per_item", Container: "c", Uses: "awf/llm", With: RawConfig{"model": "m", "prompt": "p"}}}},
 			&AgentStep{ID: "after", Uses: "awf/llm", Continues: "per_item", With: RawConfig{"model": "m", "prompt": "p"}},
 		},

@@ -117,8 +117,14 @@ func runMapWithContext(
 	}
 
 	// 3. Concurrency cap. semaphore.Weighted is ctx-respecting (H6) — Acquire
-	//    returns ctx.Err on cancel without blocking forever.
-	capSize := int64(n.Concurrency)
+	//    returns ctx.Err on cancel without blocking forever. F45: Concurrency is
+	//    presence-tracked (*int) — nil is defaulted to 1 by the loader before this ever
+	//    runs (loader.Load), but a nil (or non-positive value that slipped past AWF1012)
+	//    still falls back to 1 here as defense-in-depth.
+	capSize := int64(1)
+	if n.Concurrency != nil {
+		capSize = int64(*n.Concurrency)
+	}
 	if capSize < 1 {
 		capSize = 1 // defense-in-depth; validator AWF1012 should have caught zero/negative
 	}

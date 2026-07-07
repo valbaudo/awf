@@ -26,7 +26,7 @@ func TestReducedMapRunReducerFieldRefAccepted(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1,
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{
 					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 						With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
@@ -49,14 +49,14 @@ func TestReducedMapWholeOutputRefAccepted(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1,
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{
 					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 						With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
 				},
 				Reduce: &Reduce{Run: "true", Container: "c", OutputSchema: reduceRunSchema()},
 			},
-			&Map{Over: Expr("{{ step.scan }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.scan }}"), As: "f", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "v"}},
 			}},
 		}})
@@ -71,7 +71,7 @@ func TestReducedMapNonDeclaredRunReducerFieldErrors(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1,
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{
 					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 						With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
@@ -103,7 +103,7 @@ func TestReducedMapQuorumReducerFieldsAccepted(t *testing.T) {
 			Containers: aggContainer(),
 			Graph: NodeList{
 				aggFindURLs(),
-				&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1,
+				&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 					Body:   body(),
 					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
 				},
@@ -122,7 +122,7 @@ func TestReducedMapQuorumNonDeclaredFieldErrors(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1,
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{
 					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 						With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: &JSONSchema{
@@ -148,7 +148,7 @@ func TestNonReduceMapStillEmitsAWF5004(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 					With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
 			}},

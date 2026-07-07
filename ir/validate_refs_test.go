@@ -309,7 +309,7 @@ func TestRefsCrossScopeIntoMapBodyRejected(t *testing.T) {
 		Containers:  awf5003Container(),
 		InputSchema: &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
 		Graph: NodeList{
-			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				awf5003Step("inner"),
 			}},
 			// A top-level step referencing a single-map-body producer from a scalar host.
@@ -345,7 +345,7 @@ func TestRefsSameItemMapSiblingAllowed(t *testing.T) {
 		Containers:  awf5003Container(),
 		InputSchema: &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
 		Graph: NodeList{
-			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				awf5003Step("a"),
 				&CodeStep{ID: "b", Container: "c", Run: "echo {{ step.a.exit_code }}"}, // same item → allowed
 			}},
@@ -494,7 +494,7 @@ func TestRefsCrossScopeNestedMapInGateRejected(t *testing.T) {
 		Graph: NodeList{
 			&Gate{
 				Generate: NodeList{
-					&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
+					&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 						awf5003Step("inner"),
 					}},
 					// same gate attempt, but outside the map item → cross-item.
@@ -572,11 +572,11 @@ func TestAggregateRefIntoOverIsAccepted(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 					With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
 			}},
-			&Map{Over: Expr("{{ step.scan }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.scan }}"), As: "f", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code",
 					With: RawConfig{"prompt": "Verify {{ f.finding }} (item {{ f.index }})"}},
 			}},
@@ -594,7 +594,7 @@ func TestAggregateRefInRunHostRejectedAWF5004(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 					With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
 			}},
@@ -611,11 +611,11 @@ func TestAggregateExitCodeRejectedAWF5005(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 					With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: aggScanSchema()},
 			}},
-			&Map{Over: Expr("{{ step.scan.exit_code }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.scan.exit_code }}"), As: "f", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "v"}},
 			}},
 		}})
@@ -638,7 +638,7 @@ func TestAggregateLoopMultipliedMapDeferredAWF5002(t *testing.T) {
 		Graph: NodeList{
 			// loop[0]: body contains map[0] producing a typed `finding` field.
 			&Loop{MaxIters: &maxIters, Body: NodeList{
-				&Map{Over: Expr("{{ input.items }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{
+				&Map{Over: Expr("{{ input.items }}"), As: "x", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 						With: RawConfig{"prompt": "scan {{ x }}"}, OutputSchema: aggScanSchema()},
 				}},
@@ -646,7 +646,7 @@ func TestAggregateLoopMultipliedMapDeferredAWF5002(t *testing.T) {
 			// map[1] (outside the loop): tries to use the loop-multiplied map's producer as
 			// its over. Producer path = "loop[0].body.map[0].body.scan" → loop[ present →
 			// SingleMapBodyShape=false → opaque scope → no gate[ → AWF5002.
-			&Map{Over: Expr("{{ step.scan.finding }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.scan.finding }}"), As: "f", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "v"}},
 			}},
 		}})
@@ -660,8 +660,8 @@ func TestAggregateNestedMapDeferredAWF5002(t *testing.T) {
 		Containers: aggContainer(),
 		Graph: NodeList{
 			aggFindURLs(),
-			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: 1, Body: NodeList{
-				&Map{Over: Expr("{{ u }}"), As: "v", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1), Body: NodeList{
+				&Map{Over: Expr("{{ u }}"), As: "v", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 						With: RawConfig{"prompt": "Scan {{ v }}"}, OutputSchema: aggScanSchema()},
 				}},
@@ -669,7 +669,7 @@ func TestAggregateNestedMapDeferredAWF5002(t *testing.T) {
 			// A 3-segment field ref into the map-in-map producer's declared `finding`
 			// field. The non-v1-shape producer (two enclosing maps) makes this the
 			// opaque-scope reject; with no gate in the producer path → AWF5002.
-			&Map{Over: Expr("{{ step.scan.finding }}"), As: "f", Container: "c", Concurrency: 1, Body: NodeList{
+			&Map{Over: Expr("{{ step.scan.finding }}"), As: "f", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 				&AgentStep{ID: "verify", Container: "c", Uses: "anthropic/claude-code", With: RawConfig{"prompt": "v"}},
 			}},
 		}})

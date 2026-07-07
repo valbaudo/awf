@@ -31,7 +31,7 @@ func mapWithPrune(p *Prune, schema *JSONSchema) *LoadedDefinition {
 		Containers: map[string]Container{"lab": {Image: "oci://x@sha256:abc"}},
 		Graph: NodeList{
 			&Map{
-				Over: Expr("{{ input.items }}"), As: "item", Container: "lab", Concurrency: 1,
+				Over: Expr("{{ input.items }}"), As: "item", Container: "lab", Concurrency: intPtr(1),
 				Prune: p,
 				Body: NodeList{
 					&CodeStep{ID: "gen", Container: "lab", Run: "true", OutputSchema: schema},

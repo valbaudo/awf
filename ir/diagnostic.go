@@ -143,7 +143,7 @@ var catalog = map[string]string{
 	"AWF1009": "container reference is missing or does not resolve to a declared container",
 	"AWF1010": "parallel branches use overlapping containers (§5.4 forbids)",
 	"AWF1011": "loop declares neither until nor max_iters",
-	"AWF1012": "map missing one of over/as/container/concurrency",
+	"AWF1012": "map missing a required field",
 	"AWF1013": "gate.generate must be non-empty",
 	"AWF1014": "gate.evaluate final node must declare output_schema",
 	"AWF1015": "gate missing until",

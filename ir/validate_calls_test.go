@@ -352,7 +352,7 @@ func TestValidateCallInputFilesAcceptsReducePromotedArtifact(t *testing.T) {
 	root.InputSchema = &JSONSchema{"type": "object", "additionalProperties": false,
 		"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}}
 	root.Graph = NodeList{
-		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
+		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 			Body: NodeList{reduceBodyScan()},
 			Reduce: &Reduce{Run: "true", Container: "c",
 				OutputFiles: OutputFiles{{Name: "report", Path: "/out/report.md"}}}},
@@ -370,7 +370,7 @@ func TestValidateCallInputFilesRejectsQuorumReducerArtifact(t *testing.T) {
 	root.InputSchema = &JSONSchema{"type": "object", "additionalProperties": false,
 		"required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array"}}}
 	root.Graph = NodeList{
-		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
+		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 			Body: NodeList{&CodeStep{ID: "scan", Container: "c", Run: "true",
 				OutputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
 					"required": []any{"agree"}, "properties": map[string]any{"agree": map[string]any{"type": "boolean"}}},
@@ -477,7 +477,7 @@ func TestValidateRejectsDuplicateStepAndAggregateProductIDs(t *testing.T) {
 				Over:        Expr("{{ input.items }}"),
 				As:          "item",
 				Container:   "c",
-				Concurrency: 1,
+				Concurrency: intPtr(1),
 				Body:        NodeList{&CodeStep{ID: "body", Container: "c", Run: "true"}},
 			},
 		},

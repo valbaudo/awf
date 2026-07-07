@@ -302,7 +302,7 @@ func TestLiveResumePreflightCompletedMapContinuesToFollowingLive(t *testing.T) {
 			Over:        "{{ input.items }}",
 			As:          "item",
 			Container:   "worker",
-			Concurrency: 2,
+			Concurrency: intPtr(2),
 			Body:        ir.NodeList{&ir.CodeStep{ID: "scan"}},
 		},
 		&ir.AgentStep{ID: "after", Uses: "live/agent"},
@@ -340,7 +340,7 @@ func TestLiveResumePreflightCollectsAllUncommittedMapItems(t *testing.T) {
 			Over:        "{{ input.items }}",
 			As:          "item",
 			Container:   "worker",
-			Concurrency: 2,
+			Concurrency: intPtr(2),
 			Body: ir.NodeList{
 				&ir.CodeStep{ID: "prep"},
 				&ir.AgentStep{ID: "live", Uses: "live/agent"},

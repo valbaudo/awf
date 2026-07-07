@@ -144,11 +144,17 @@ type Map struct {
 	// into the wire "over" key (never a separate "over_items" key) by Map's custom
 	// MarshalJSON; that also keeps TestEveryExportedFieldHasNonEmptyJSONTag happy the same
 	// way Parallel.Children and Skip.Reason already do.
-	OverItems   []any    `json:"-"`
-	As          string   `json:"as"`
-	Container   string   `json:"container"`
-	Image       Template `json:"image,omitempty"`
-	Concurrency int      `json:"concurrency"`
+	OverItems []any    `json:"-"`
+	As        string   `json:"as"`
+	Container string   `json:"container"`
+	Image     Template `json:"image,omitempty"`
+	// Concurrency is presence-tracked (F45): nil means `concurrency:` was omitted from the
+	// source, which the loader desugars to 1 (serial) BEFORE any digest/validate pass runs
+	// (loader.Load) — so a workflow that omits concurrency: and one that writes
+	// `concurrency: 1` produce byte-identical normalized IR (same digest). A non-nil pointer
+	// to a value <= 0 is a validation error (AWF1012); engine/map.go additionally defends
+	// against a stray nil/<=0 that slipped past the loader with its own capSize<1 backstop.
+	Concurrency *int     `json:"concurrency,omitempty"`
 	MinSuccess  *Ratio   `json:"min_success,omitempty"`
 	Body        NodeList `json:"body"`
 	Reduce      *Reduce  `json:"reduce,omitempty"`

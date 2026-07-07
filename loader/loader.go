@@ -47,6 +47,15 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 	if err != nil {
 		return nil, err
 	}
+	// F45: default an OMITTED `concurrency:` to 1 (serial) BEFORE any digest or validation
+	// pass ever sees the IR, so an omitted concurrency: and an explicit `concurrency: 1`
+	// normalize to byte-identical IR (same digest). Runs over every module — root AND every
+	// imported workflow — since modules[""] is the root module (loadModuleFromRoot above
+	// keys it that way) and its Workflow is the SAME pointer aliased into the returned
+	// LoadedDefinition.Workflow below.
+	for _, m := range modules {
+		applyMapConcurrencyDefault(m.Workflow)
+	}
 	return &ir.LoadedDefinition{
 		Workflow:     root.Workflow,
 		WorkflowPath: root.WorkflowPath,
@@ -55,6 +64,25 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 		Modules:      modules,
 		ImportEdges:  edges,
 	}, nil
+}
+
+// applyMapConcurrencyDefault walks every node in wf.Graph and sets a nil `Map.Concurrency`
+// (F45: `concurrency:` was omitted from the source) to a pointer to 1 (serial), in place.
+// ir.WalkNodes recurses into every nested body (map/loop/if/try/parallel/gate/compose), so
+// nested maps are covered too. Must run before ComputeDigest/ir.Validate — see the call site
+// in Load — so the normalized IR (not the raw decode) is what gets digested/validated.
+func applyMapConcurrencyDefault(wf *ir.Workflow) {
+	if wf == nil {
+		return
+	}
+	ir.WalkNodes(wf.Graph, "", func(n ir.Node, _ string) {
+		m, ok := n.(*ir.Map)
+		if !ok || m.Concurrency != nil {
+			return
+		}
+		one := 1
+		m.Concurrency = &one
+	})
 }
 
 func loadModuleFromRoot(

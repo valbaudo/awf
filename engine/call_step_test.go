@@ -419,7 +419,7 @@ func TestRunCallStepCallStartedPinsContainerlessMapBodyAgent(t *testing.T) {
 				Over:        ir.Expr("{{ input.items }}"),
 				As:          "item",
 				Container:   "lab",
-				Concurrency: 1,
+				Concurrency: intPtr(1),
 				Body: ir.NodeList{
 					&ir.AgentStep{ID: "audit", Uses: "auditor"},
 				},
@@ -1088,7 +1088,7 @@ func TestRunCallStepChildMapReduceReusesQualifiedContainer(t *testing.T) {
 				Over:        ir.Expr("{{ input.items }}"),
 				As:          "item",
 				Container:   "c",
-				Concurrency: 1,
+				Concurrency: intPtr(1),
 				Body: ir.NodeList{
 					&ir.CodeStep{ID: "scan", Container: "c", Run: "scan {{ item }}", OutputSchema: awfStringObjectSchema("k")},
 				},
@@ -1189,7 +1189,7 @@ func TestReduceInCalledSubworkflowResolvesOuterStepRefAndInput(t *testing.T) {
 				Over:        ir.Expr("{{ input.items }}"),
 				As:          "item",
 				Container:   "c",
-				Concurrency: 1,
+				Concurrency: intPtr(1),
 				Body: ir.NodeList{
 					&ir.CodeStep{ID: "scan", Container: "c", Run: "scan {{ item }}", OutputSchema: awfStringObjectSchema("k")},
 				},
@@ -1254,7 +1254,7 @@ func TestReduceInCalledSubworkflowResolvesBodyAggregateRef(t *testing.T) {
 				Over:        ir.Expr("{{ input.items }}"),
 				As:          "item",
 				Container:   "c",
-				Concurrency: 1,
+				Concurrency: intPtr(1),
 				Body: ir.NodeList{
 					&ir.CodeStep{ID: "scan", Container: "c", Run: "scan {{ item }}", OutputSchema: awfStringObjectSchema("k")},
 				},

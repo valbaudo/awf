@@ -30,7 +30,7 @@ func mapWithReduce(r *Reduce, minSuccess *Ratio) *LoadedDefinition {
 		Containers: map[string]Container{"lab": {Image: "oci://x@sha256:abc"}},
 		Graph: NodeList{
 			&Map{
-				Over: Expr("{{ input.items }}"), As: "item", Container: "lab", Concurrency: 1,
+				Over: Expr("{{ input.items }}"), As: "item", Container: "lab", Concurrency: intPtr(1),
 				MinSuccess: minSuccess,
 				Reduce:     r,
 				Body: NodeList{
@@ -109,7 +109,7 @@ func mapWithReduceBody(body NodeList) *LoadedDefinition {
 		Containers: map[string]Container{"lab": {Image: "oci://x@sha256:abc"}},
 		Graph: NodeList{
 			&Map{
-				Over: Expr("{{ input.items }}"), As: "item", Container: "lab", Concurrency: 1,
+				Over: Expr("{{ input.items }}"), As: "item", Container: "lab", Concurrency: intPtr(1),
 				Reduce: r,
 				Body:   body,
 			},

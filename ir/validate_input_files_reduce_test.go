@@ -22,7 +22,7 @@ func TestInputFilesReducerArtifactRefAccepted(t *testing.T) {
 	ld := makeLD(&Workflow{ID: "x", Version: 1,
 		Containers: awf5003Container(),
 		Graph: NodeList{
-			&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
+			&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{reduceBodyScan()},
 				Reduce: &Reduce{Run: "true", Container: "c",
 					OutputFiles: OutputFiles{{Name: "report", Path: "/out/report.md"}}},
@@ -42,7 +42,7 @@ func TestInputFilesReducerNonDeclaredArtifactErrors(t *testing.T) {
 	ld := makeLD(&Workflow{ID: "x", Version: 1,
 		Containers: awf5003Container(),
 		Graph: NodeList{
-			&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
+			&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{reduceBodyScan()},
 				Reduce: &Reduce{Run: "true", Container: "c",
 					OutputFiles: OutputFiles{{Name: "report", Path: "/out/report.md"}}},
@@ -63,7 +63,7 @@ func TestInputFilesQuorumReducerHasNoArtifactsErrors(t *testing.T) {
 	ld := makeLD(&Workflow{ID: "x", Version: 1,
 		Containers: awf5003Container(),
 		Graph: NodeList{
-			&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
+			&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{
 					&CodeStep{ID: "scan", Container: "c", Run: "true",
 						OutputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
@@ -87,7 +87,7 @@ func TestInputFilesNonReduceMapStillRejectsCrossScope(t *testing.T) {
 	ld := makeLD(&Workflow{ID: "x", Version: 1,
 		Containers: awf5003Container(),
 		Graph: NodeList{
-			&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: 1,
+			&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 				Body: NodeList{reduceBodyScan()},
 			},
 			&CodeStep{ID: "hunt", Container: "c", Run: "true",

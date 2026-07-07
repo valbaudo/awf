@@ -20,7 +20,7 @@ func TestMapImageRendersAtItemScope(t *testing.T) {
 		Graph: ir.NodeList{
 			&ir.Map{
 				Over: "{{ input.items }}", As: "v", Container: "version_lab",
-				Image: "{{ v.image }}", Concurrency: 1,
+				Image: "{{ v.image }}", Concurrency: intPtr(1),
 				Body: ir.NodeList{&ir.CodeStep{ID: "probe", Container: "version_lab", Run: "true"}},
 			},
 		},
@@ -52,7 +52,7 @@ func TestMapImageDispatchSetsPullIfAbsent(t *testing.T) {
 
 	mapNode := &ir.Map{
 		Over: "{{ input.items }}", As: "v", Container: testMapContainer,
-		Image: "{{ v.image }}", Concurrency: 1,
+		Image: "{{ v.image }}", Concurrency: intPtr(1),
 		Body: ir.NodeList{&ir.CodeStep{ID: "p", Container: testMapContainer, Run: "probe"}},
 	}
 	wf := &ir.Workflow{
@@ -103,7 +103,7 @@ func TestMapConfigCreateErrorFailsWholeMap(t *testing.T) {
 	ms := ir.Ratio("0.5")
 	mapNode := &ir.Map{
 		Over: "{{ input.items }}", As: "v", Container: testMapContainer,
-		Image: "{{ v.image }}", Concurrency: 2, MinSuccess: &ms,
+		Image: "{{ v.image }}", Concurrency: intPtr(2), MinSuccess: &ms,
 		Body: ir.NodeList{&ir.CodeStep{ID: "p", Container: testMapContainer, Run: "probe"}},
 	}
 	wf := &ir.Workflow{

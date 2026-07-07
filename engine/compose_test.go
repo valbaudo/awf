@@ -143,7 +143,7 @@ func TestComposeServiceOverridesIncludesMapReduce(t *testing.T) {
 			Over:        ir.Expr("{{ input.items }}"),
 			As:          "item",
 			Container:   "runner",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: ir.NodeList{
 				&ir.CodeStep{ID: "scan", Container: "lab", Run: "true"},
 			},
@@ -163,7 +163,7 @@ func TestComposeServiceOverridesIgnoresQuorumReduceContainer(t *testing.T) {
 			Over:        ir.Expr("{{ input.items }}"),
 			As:          "item",
 			Container:   "runner",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: ir.NodeList{
 				&ir.CodeStep{ID: "vote", Container: "lab", Run: "true"},
 			},

@@ -13,7 +13,7 @@ func runtimeImageWF() *ir.Workflow {
 		ID: "p6a", Version: 1,
 		Containers: map[string]ir.Container{"vl": {Resources: &ir.Resources{CPU: "1"}}},
 		Graph: ir.NodeList{
-			&ir.Map{Over: "{{ input.items }}", As: "v", Container: "vl", Image: "{{ v.image }}", Concurrency: 1,
+			&ir.Map{Over: "{{ input.items }}", As: "v", Container: "vl", Image: "{{ v.image }}", Concurrency: intPtr(1),
 				Body: ir.NodeList{&ir.CodeStep{ID: "probe", Container: "vl", Run: "true"}}},
 		},
 	}

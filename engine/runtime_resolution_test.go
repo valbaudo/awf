@@ -88,7 +88,7 @@ func TestWalkRuntimeRefsIncludesContainerlessMapBodyAgent(t *testing.T) {
 				Over:        "input.items",
 				As:          "item",
 				Container:   "lab",
-				Concurrency: 1,
+				Concurrency: intPtr(1),
 				Body: ir.NodeList{
 					&ir.AgentStep{ID: "audit", Uses: "awf/llm"},
 				},
@@ -136,7 +136,7 @@ func TestWalkRuntimeRefsSkipsRuntimeCreatedContainerAliases(t *testing.T) {
 				As:          "item",
 				Container:   "dyn",
 				Image:       "oci://repo/{{ item.image }}",
-				Concurrency: 1,
+				Concurrency: intPtr(1),
 				Body: ir.NodeList{
 					&ir.AgentStep{ID: "dynamic_map", Uses: "test/map", Container: "dyn"},
 					&ir.AgentStep{ID: "containerless_map", Uses: "awf/llm"},

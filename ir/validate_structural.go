@@ -218,8 +218,23 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 			// F51: `over:` is satisfied by either arm — the `{{ }}` expression (Over) or
 			// the literal sequence (OverItems, non-nil even for an empty `[]`).
 			overPresent := string(v.Over) != "" || v.OverItems != nil
-			if !overPresent || v.As == "" || v.Container == "" || v.Concurrency == 0 {
-				c.errf(path, "AWF1012", catalog["AWF1012"])
+			// F45: each required field gets its OWN AWF1012 call so a map missing (say)
+			// only `container:` names that field specifically instead of an opaque
+			// "missing one of ..." combined message. `concurrency:` is no longer part of
+			// this required-presence set — it's presence-tracked (*int) and defaulted to
+			// 1 by the loader before validation ever runs (loader.Load); an EXPLICIT
+			// non-positive value is still rejected below.
+			if !overPresent {
+				c.errf(path, "AWF1012", fmt.Sprintf("%s: `over:`", catalog["AWF1012"]))
+			}
+			if v.As == "" {
+				c.errf(path, "AWF1012", fmt.Sprintf("%s: `as:`", catalog["AWF1012"]))
+			}
+			if v.Container == "" {
+				c.errf(path, "AWF1012", fmt.Sprintf("%s: `container:`", catalog["AWF1012"]))
+			}
+			if v.Concurrency != nil && *v.Concurrency <= 0 {
+				c.errf(path, "AWF1012", "map `concurrency:` must be a positive integer")
 			}
 			if v.Over != "" {
 				checkFieldSize(string(v.Over), path, c)

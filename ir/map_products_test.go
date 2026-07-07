@@ -21,7 +21,7 @@ func namedAggregateMap(id string, reduce *Reduce, finalSchema *JSONSchema) *Map 
 		Over:        Expr("{{ step.find_urls.urls }}"),
 		As:          "u",
 		Container:   "c",
-		Concurrency: 1,
+		Concurrency: intPtr(1),
 		Body: NodeList{
 			&AgentStep{
 				ID:           "scan",
@@ -101,7 +101,7 @@ func TestStructuralDuplicateMapIDsRejected(t *testing.T) {
 			Over:        Expr("{{ step.find_urls.urls }}"),
 			As:          "v",
 			Container:   "c",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				&CodeStep{ID: "collect", Container: "c", Run: `echo '{"finding":"x","index":0}' > "$AWF_OUTPUT"`, OutputSchema: aggScanSchema()},
 			},
@@ -126,7 +126,7 @@ func TestMapCompactProducerRejectsFinalControlNode(t *testing.T) {
 			Over:        Expr("{{ step.find_urls.urls }}"),
 			As:          "u",
 			Container:   "c",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				&If{Cond: Expr("{{ true }}"), Then: NodeList{&CodeStep{ID: "collect", Container: "c", Run: "true", OutputSchema: aggScanSchema()}}},
 			},
@@ -170,7 +170,7 @@ func TestNamedReducedMapInsideNestedMapRejected(t *testing.T) {
 			Over:        Expr("{{ step.find_urls.urls }}"),
 			As:          "u",
 			Container:   "c",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				namedAggregateMap("version_universe", namedAggregateRunReduce(), aggScanSchema()),
 			},
@@ -216,7 +216,7 @@ func TestNamedCompactMapWholeOutputRefIntoOverAccepted(t *testing.T) {
 	ld := namedAggregateWorkflow(NodeList{
 		aggFindURLs(),
 		namedAggregateMap("version_universe", nil, aggScanSchema()),
-		&Map{Over: Expr("{{ step.version_universe }}"), As: "finding", Container: "c", Concurrency: 1, Body: NodeList{
+		&Map{Over: Expr("{{ step.version_universe }}"), As: "finding", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 			&CodeStep{ID: "consume", Container: "c", Run: "true"},
 		}},
 	})
@@ -229,7 +229,7 @@ func TestNamedCompactMapFieldRefIntoOverAccepted(t *testing.T) {
 	ld := namedAggregateWorkflow(NodeList{
 		aggFindURLs(),
 		namedAggregateMap("version_universe", nil, aggScanSchema()),
-		&Map{Over: Expr("{{ step.version_universe.finding }}"), As: "finding", Container: "c", Concurrency: 1, Body: NodeList{
+		&Map{Over: Expr("{{ step.version_universe.finding }}"), As: "finding", Container: "c", Concurrency: intPtr(1), Body: NodeList{
 			&CodeStep{ID: "consume", Container: "c", Run: "true"},
 		}},
 	})
@@ -254,7 +254,7 @@ func TestNamedCompactMapSelfOverRejected(t *testing.T) {
 			Over:        Expr("{{ step.version_universe }}"),
 			As:          "u",
 			Container:   "c",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code", OutputSchema: aggScanSchema()},
 			},
@@ -270,7 +270,7 @@ func TestNamedReducedMapSelfOverRejected(t *testing.T) {
 			Over:        Expr("{{ step.version_universe.total }}"),
 			As:          "u",
 			Container:   "c",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code", OutputSchema: aggScanSchema()},
 			},
@@ -286,7 +286,7 @@ func TestMapBodyStepSelfOverRejectedWithoutReduce(t *testing.T) {
 			Over:        Expr("{{ step.scan.finding }}"),
 			As:          "u",
 			Container:   "c",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code", OutputSchema: aggScanSchema()},
 			},
@@ -301,7 +301,7 @@ func TestMapBodyStepSelfOverRejectedWithReduce(t *testing.T) {
 			Over:        Expr("{{ step.scan.total }}"),
 			As:          "u",
 			Container:   "c",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code", OutputSchema: namedAggregateReduceSchema()},
 			},
@@ -319,7 +319,7 @@ func TestNamedReducedMapBodyArtifactSelfRefRejected(t *testing.T) {
 			Over:        Expr("{{ step.find_urls.urls }}"),
 			As:          "u",
 			Container:   "c",
-			Concurrency: 1,
+			Concurrency: intPtr(1),
 			Body: NodeList{
 				&CodeStep{ID: "consume", Container: "c", Run: "true", InputFiles: map[string]string{
 					"/work/files.jsonl": "step.version_universe.files.files",

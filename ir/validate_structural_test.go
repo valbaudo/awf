@@ -161,10 +161,181 @@ func TestStructuralMapRequiresAllFields(t *testing.T) {
 		ID: "map", Version: 1,
 		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
 		Graph: NodeList{
-			&Map{Body: NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}}}, // missing over/as/container/concurrency
+			&Map{Body: NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}}}, // missing over/as/container
 		},
 	})
 	assertErrorAt(t, Validate(ld), "AWF1012", "map[0]")
+}
+
+// F45: `concurrency:` is presence-tracked (*int) and left OUT of the required-presence
+// set entirely — an omitted concurrency: (Concurrency == nil, as ir.Validate sees it
+// directly; loader.Load's desugar to 1 runs upstream of Validate, not inside it) must
+// NOT trip AWF1012 on its own.
+func TestStructuralMapOmittedConcurrencyIsValid(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "map-concurrency-omitted", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"), As: "item", Container: "c",
+				// Concurrency intentionally left nil (omitted).
+				Body: NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+			},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF1012")
+}
+
+// F45: an explicit `concurrency: 0` is REJECTED (no longer silently coerced to serial
+// downstream) — a distinct, positive-integer-specific AWF1012 message.
+func TestStructuralMapConcurrencyZeroRejected(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "map-concurrency-zero", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"), As: "item", Container: "c",
+				Concurrency: intPtr(0),
+				Body:        NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+			},
+		},
+	})
+	diags := Validate(ld)
+	assertErrorAt(t, diags, "AWF1012", "map[0]")
+	found := false
+	for _, d := range diags {
+		if d.Code == "AWF1012" && strings.Contains(d.Message, "positive integer") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want an AWF1012 diagnostic mentioning \"positive integer\"; got %+v", diags)
+	}
+}
+
+// F45: negative concurrency was previously silently coerced to serial by the engine's
+// `capSize < 1` backstop — validation now catches it explicitly, same message as zero.
+func TestStructuralMapConcurrencyNegativeRejected(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "map-concurrency-negative", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"), As: "item", Container: "c",
+				Concurrency: intPtr(-3),
+				Body:        NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+			},
+		},
+	})
+	diags := Validate(ld)
+	assertErrorAt(t, diags, "AWF1012", "map[0]")
+	found := false
+	for _, d := range diags {
+		if d.Code == "AWF1012" && strings.Contains(d.Message, "positive integer") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want an AWF1012 diagnostic mentioning \"positive integer\"; got %+v", diags)
+	}
+}
+
+// F45: a positive explicit concurrency validates clean and is left completely alone —
+// the value itself is asserted unchanged (deref == 3), not just "no error".
+func TestStructuralMapConcurrencyPositiveUnchanged(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "map-concurrency-three", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"), As: "item", Container: "c",
+				Concurrency: intPtr(3),
+				Body:        NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+			},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF1012")
+	m := ld.Workflow.Graph[0].(*Map)
+	if m.Concurrency == nil || *m.Concurrency != 3 {
+		t.Fatalf("Concurrency = %v, want unchanged pointer to 3", m.Concurrency)
+	}
+}
+
+// F45: each of over/as/container gets its OWN AWF1012 diagnostic — a map missing ONLY
+// `over:` must report exactly the over-specific message and must NOT also claim as/
+// container are missing (they're both present here).
+func TestStructuralMapMissingOverNamesFieldOnly(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "map-missing-over", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				As: "item", Container: "c", Concurrency: intPtr(1),
+				Body: NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+			},
+		},
+	})
+	diags := Validate(ld)
+	assertMessageContainsAt(t, diags, "AWF1012", "map[0]", "`over:`")
+	assertMessageNotContainsAt(t, diags, "AWF1012", "map[0]", "`as:`")
+	assertMessageNotContainsAt(t, diags, "AWF1012", "map[0]", "`container:`")
+}
+
+func TestStructuralMapMissingAsNamesFieldOnly(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "map-missing-as", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"), Container: "c", Concurrency: intPtr(1),
+				Body: NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+			},
+		},
+	})
+	diags := Validate(ld)
+	assertMessageContainsAt(t, diags, "AWF1012", "map[0]", "`as:`")
+	assertMessageNotContainsAt(t, diags, "AWF1012", "map[0]", "`over:`")
+	assertMessageNotContainsAt(t, diags, "AWF1012", "map[0]", "`container:`")
+}
+
+func TestStructuralMapMissingContainerNamesFieldOnly(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "map-missing-container", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"), As: "item", Concurrency: intPtr(1),
+				Body: NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
+			},
+		},
+	})
+	diags := Validate(ld)
+	assertMessageContainsAt(t, diags, "AWF1012", "map[0]", "`container:`")
+	assertMessageNotContainsAt(t, diags, "AWF1012", "map[0]", "`over:`")
+	assertMessageNotContainsAt(t, diags, "AWF1012", "map[0]", "`as:`")
+}
+
+// assertMessageContainsAt asserts diags contains an Error with the given code at the
+// exact path AND whose message contains substr.
+func assertMessageContainsAt(t *testing.T, diags []Diagnostic, code, exactPath, substr string) {
+	t.Helper()
+	for _, d := range diags {
+		if d.Code == code && d.Severity == Error && d.Path == exactPath && strings.Contains(d.Message, substr) {
+			return
+		}
+	}
+	t.Errorf("want Error %q at path %q containing %q; got %+v", code, exactPath, substr, diags)
+}
+
+// assertMessageNotContainsAt asserts diags contains NO Error with the given code at the
+// exact path whose message contains substr.
+func assertMessageNotContainsAt(t *testing.T, diags []Diagnostic, code, exactPath, substr string) {
+	t.Helper()
+	for _, d := range diags {
+		if d.Code == code && d.Severity == Error && d.Path == exactPath && strings.Contains(d.Message, substr) {
+			t.Errorf("did not want Error %q at path %q containing %q; got %+v", code, exactPath, substr, diags)
+		}
+	}
 }
 
 func TestStructuralMapLiteralOverSatisfiesAWF1012(t *testing.T) {
@@ -178,7 +349,7 @@ func TestStructuralMapLiteralOverSatisfiesAWF1012(t *testing.T) {
 				OverItems:   []any{"a", "b", "c"},
 				As:          "item",
 				Container:   "c",
-				Concurrency: 2,
+				Concurrency: intPtr(2),
 				Body:        NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
 			},
 		},
@@ -196,7 +367,7 @@ func TestStructuralMapContainerMustResolve(t *testing.T) {
 				Over:        Expr("{{ input.items }}"),
 				As:          "item",
 				Container:   "nope", // undeclared
-				Concurrency: 2,
+				Concurrency: intPtr(2),
 				Body:        NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
 			},
 		},
@@ -214,7 +385,7 @@ func TestStructuralMapContainerRejectsTemplateSyntax(t *testing.T) {
 				Over:        Expr("{{ input.items }}"),
 				As:          "item",
 				Container:   "{{ injected }}", // template syntax forbidden here
-				Concurrency: 2,
+				Concurrency: intPtr(2),
 				Body:        NodeList{&CodeStep{ID: "a", Container: "c", Run: "true"}},
 			},
 		},
@@ -573,7 +744,7 @@ func TestStructuralMapImageTargetMayOmitImage(t *testing.T) {
 		Graph: NodeList{
 			&Map{
 				Over: "{{ input.items }}", As: "v", Container: "version_lab",
-				Image: "{{ v.image }}", Concurrency: 2,
+				Image: "{{ v.image }}", Concurrency: intPtr(2),
 				Body: NodeList{&CodeStep{ID: "probe", Container: "version_lab", Run: "true"}},
 			},
 		},
@@ -626,7 +797,7 @@ func TestStructuralMapImageTargetWithStaticImageConflicts(t *testing.T) {
 		Graph: NodeList{
 			&Map{
 				Over: "{{ input.items }}", As: "v", Container: "vl",
-				Image: "{{ v.image }}", Concurrency: 1,
+				Image: "{{ v.image }}", Concurrency: intPtr(1),
 				Body: NodeList{&CodeStep{ID: "probe", Container: "vl", Run: "true"}},
 			},
 		},
@@ -645,7 +816,7 @@ func TestStructuralResourcesOnlyMapImageTargetNoConflict(t *testing.T) {
 		Graph: NodeList{
 			&Map{
 				Over: "{{ input.items }}", As: "v", Container: "vl",
-				Image: "{{ v.image }}", Concurrency: 1,
+				Image: "{{ v.image }}", Concurrency: intPtr(1),
 				Body: NodeList{&CodeStep{ID: "probe", Container: "vl", Run: "true"}},
 			},
 		},
@@ -663,7 +834,7 @@ func TestStructuralMapImageTargetContainerRejectedOutsideOwningMapBody(t *testin
 		Graph: NodeList{
 			&Map{
 				Over: "{{ input.items }}", As: "v", Container: "vl",
-				Image: "{{ v.image }}", Concurrency: 1,
+				Image: "{{ v.image }}", Concurrency: intPtr(1),
 				Body: NodeList{&CodeStep{ID: "probe", Container: "vl", Run: "true"}},
 			},
 			&CodeStep{ID: "after", Container: "vl", Run: "true"},
@@ -699,7 +870,7 @@ func TestValidateSnapshotField(t *testing.T) {
 			step := &CodeStep{ID: "s", Container: "c", Run: "true"}
 			var graph NodeList
 			if c.inMap {
-				graph = NodeList{&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: 1, Body: NodeList{step}}}
+				graph = NodeList{&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: intPtr(1), Body: NodeList{step}}}
 			} else {
 				graph = NodeList{step}
 			}
