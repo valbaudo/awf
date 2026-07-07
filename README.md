@@ -52,6 +52,11 @@ its own homework. A crash is not a verdict; only a real evaluation with a false
   not fragile free text.
 - **Checkpoint/resume**: step outputs and declared files commit to a
   content-addressed artifact store before the journal pointer moves.
+- **Stall recovery**: an idle watchdog catches a wedged agent (silent longer than
+  `timeout.idle`, distinct from slow-but-thinking) and turns it into a retryable
+  failure; on a stall a persistent-session step resumes the *same* conversation
+  thread (`recovery: continue`) instead of restarting. Default-on for the codex
+  live adapter, which streams a reasoning heartbeat; opt-in elsewhere.
 - **Pinned replay**: a structural change — topology, imported files, assets,
   container digests, or resolved runtime versions — hard-fails the resume; an edit
   confined to step bodies instead reuses the unchanged committed steps and re-runs
