@@ -341,6 +341,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
+	// F4b (AWF1065): same run-start guard as cli/run.go, re-checked against the
+	// backend `kind` recorded in run.started (resume has no --backend flag —
+	// see Step 5 above). Catches a workflow definition that was edited (still
+	// digest-pinned, so only node bodies could change — Step 7 above) to add a
+	// bare `run:` step onto an already-docker run.
+	if err := checkContainerlessRunCapability(ld, kind); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
 
 	handles := make(map[string]container.Handle, len(ld.Workflow.Containers))
 	skipTeardown := false

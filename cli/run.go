@@ -144,6 +144,16 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	}
 	autoSelectedNative := *backendKind == backendAuto && concreteBackendKind == engine.BackendNative
 
+	// F4b (AWF1065): a bare `run:` step's F4a host-workspace handle carries no
+	// image, so it cannot run under docker. Checked HERE — right after backend
+	// resolution, before minting run.id / touching disk — so it also catches a
+	// MIXED workflow where auto-resolution (above) picked docker because of an
+	// unrelated image-backed container, not just an explicit --backend docker.
+	if err := checkContainerlessRunCapability(ld, concreteBackendKind); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
+
 	// Step 2: mint run.id.
 	id := *runID
 	if id == "" {

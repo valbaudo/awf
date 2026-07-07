@@ -56,6 +56,89 @@ func firstDockerOnlyFeatureForLoadedDefinition(ld *ir.LoadedDefinition) (dockerF
 	return firstFeatureForLoadedDefinition(ld, firstDockerOnlyFeature)
 }
 
+// firstContainerlessCodeStep reports the static IR path of the first
+// container-less (bare `run:`) *ir.CodeStep reachable from ld — the root
+// module plus every imported / `call:`-reached module. ld.Modules already
+// resolves call: targets at load time (loader.Load), so a single
+// ld.WalkModules pass covers both without a separate call-graph walk; this
+// mirrors firstDockerOnlyFeatureForLoadedDefinition's module-walk /
+// "module <id> <path>" prefixing shape exactly, just over ir.WalkNodes'
+// step-level tree instead of wf.Containers.
+//
+// F4a gives a bare CodeStep (Container == "") a per-step implicit
+// host-workspace handle at dispatch time (engine/interpreter.go,
+// hostWorkspaceSpec) — that handle carries no image, so it cannot run under
+// docker. AWF1065's run-start guard (checkContainerlessRunCapability, below)
+// uses this to fail closed before a bare step ever reaches a docker-resolved
+// dispatcher.
+//
+// Only *ir.CodeStep is checked: *ir.AgentStep's empty Container means a
+// Containerless-capable adapter (awf/llm), a different mechanism already
+// guarded elsewhere (AWF1057-adjacent); *ir.Reduce's run: form REQUIRES
+// container: (AWF1035, ir/validate_reduce.go), and a *ir.Map's own
+// container: is required too (AWF1012) — neither can ever be bare.
+func firstContainerlessCodeStep(ld *ir.LoadedDefinition) (string, bool) {
+	if ld == nil {
+		return "", false
+	}
+	var out string
+	var found bool
+	_ = ld.WalkModules(func(module *ir.LoadedModule) error {
+		if found || module == nil || module.Workflow == nil {
+			return nil
+		}
+		var path string
+		var hit bool
+		ir.WalkNodes(module.Workflow.Graph, "", func(n ir.Node, p string) {
+			if hit {
+				return
+			}
+			if cs, ok := n.(*ir.CodeStep); ok && cs.Container == "" {
+				path = p
+				hit = true
+			}
+		})
+		if !hit {
+			return nil
+		}
+		if module.ID != "" {
+			path = fmt.Sprintf("module %s %s", module.ID, path)
+		}
+		out = path
+		found = true
+		return nil
+	})
+	return out, found
+}
+
+// checkContainerlessRunCapability rejects, at run/resume start, a workflow
+// that resolves to the docker backend (explicit --backend docker, or auto's
+// image/snapshot/compose-triggered resolution via
+// firstDockerOnlyFeatureForLoadedDefinition) while it also contains a
+// container-less (bare `run:`) CodeStep — AWF1065.
+//
+// Deliberately a run-start CLI check, not a static ir.Validate rule: whether
+// a bare step is a PROBLEM depends on the resolved --backend, which validate
+// never sees. It must run AFTER backend resolution (selectRunBackendForLoadedDefinition)
+// so a MIXED workflow — an image-backed container alongside a bare step,
+// which auto-resolves to docker precisely because of that image — is caught
+// too, not just an explicit `--backend docker`. native and fake both pass
+// through untouched (F4a already makes them bare-run-capable).
+func checkContainerlessRunCapability(ld *ir.LoadedDefinition, backendKind string) error {
+	if backendKind != engine.BackendDocker {
+		return nil
+	}
+	path, ok := firstContainerlessCodeStep(ld)
+	if !ok {
+		return nil
+	}
+	// Message text mirrors catalog["AWF1065"] (ir/diagnostic.go) verbatim; cli
+	// cannot reference the unexported catalog map directly, so it is
+	// deliberately duplicated here — keep the two in sync on edit (same
+	// cross-package pattern as the AWF1025 reference comment in cli/run.go).
+	return fmt.Errorf("AWF1065: %s: a container-less `run:` step requires native execution; it is incompatible with `--backend docker` — declare a `container:` or run native", path)
+}
+
 // firstNativeIncompatibleFeature detects only the features native genuinely
 // cannot run — static compose (native Create refuses compose), runtime compose
 // (ir.FirstRuntimeComposePath), runtime map image (native Caps.RuntimeImage is

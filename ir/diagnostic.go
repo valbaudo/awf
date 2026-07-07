@@ -220,6 +220,14 @@ var catalog = map[string]string{
 	"AWF1062": "unknown key (not part of the workflow or step schema; typo'd keys silently do nothing — remove or correct it)",
 	"AWF1063": "duration must be a quoted string (e.g. \"300s\", \"5m\"); a bare integer is not accepted (it would be read as nanoseconds)",
 	"AWF1064": "wire key renamed; see the diagnostic message for the old and new spelling",
+	// AWF1065 is a run-start CLI capability guard (cli/backend_features.go,
+	// checkContainerlessRunCapability), not a static ir.Validate rule — whether
+	// a bare `run:` step is a problem depends on the resolved --backend, which
+	// validate never sees. Reserved here (catalog membership + uniqueness
+	// coverage via TestCatalogCodesAreUnique) so the code space stays
+	// append-only and collision-free even though no c.errf call in ir/
+	// emits it.
+	"AWF1065": "a container-less `run:` step requires native execution; it is incompatible with `--backend docker` — declare a `container:` or run native",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
 	"AWF_IMPORT_DECODE":         "workflow failed to decode",

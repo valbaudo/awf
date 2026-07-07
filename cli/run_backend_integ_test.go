@@ -485,3 +485,90 @@ func TestCLIResumeOfFinishedNativeLogIsNoOp(t *testing.T) {
 		t.Errorf("stderr missing 'already finished': %s", stderr.String())
 	}
 }
+
+// F4b: a bare `run:` step (no declared container:) actually executes end to
+// end on the REAL native backend — beyond TestCLIRunNativeBackendContainerlessRunRecordsNative
+// (which only proves an already-containerless FIXTURE, testdata/phase4/native-seq.yaml,
+// still resolves to native), this drives a workflow with a genuine *ir.CodeStep
+// with an empty container: through the real container/native Backend (host
+// exec, no fake injected), proving F4a's per-step implicit host-workspace
+// handle (engine/interpreter.go, hostWorkspaceSpec / BareRunHandleKey) really
+// provisions and tears down a REAL host workspace directory — not just that
+// the CLI/engine wiring is happy with a programmed fake.
+func TestCLIRunNativeBackendBareCodeStepExecutesEndToEnd(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	wfPath := filepath.Join(tmp, "bare-native.yaml")
+	if err := os.WriteFile(wfPath, []byte(`workflow: bare-native
+version: 1
+graph:
+  - id: bare
+    run: "echo bare-native-hello > out.txt"
+    output_files: [out.txt]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := t.TempDir()
+	runID := fmt.Sprintf("native-bare-%d", time.Now().UnixNano())
+	runner := &cli.Runner{IDGen: &clock.Fake{IDs: []string{runID}}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run(
+		[]string{"run", "--state-dir", stateDir, "--run-id", runID, "--backend", "native", wfPath},
+		&stdout, &stderr,
+	)
+	if rc != cli.ExitOK {
+		t.Fatalf("rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
+	}
+
+	backendField := readRunStartedBackendField(t, stateDir, runID)
+	if backendField != engine.BackendNative {
+		t.Errorf("run.started.Backend = %q, want %q", backendField, engine.BackendNative)
+	}
+
+	// Fold the log for node.completed{bare} and pull the captured out.txt
+	// blob ref straight out of the real (non-fake) blob store — proving the
+	// step actually ran on the host and its output was really captured, not
+	// merely that the run finished ok.
+	logPath := filepath.Join(stateDir, "runs", runID, "log")
+	fl, err := state.OpenLog(logPath, clock.System{})
+	if err != nil {
+		t.Fatalf("OpenLog: %v", err)
+	}
+	defer func() { _ = fl.Close() }()
+	events, err := fl.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var completedRef string
+	var found bool
+	for _, e := range events {
+		if e.Type != engine.EventNodeCompleted || e.Path != "bare" {
+			continue
+		}
+		found = true
+		var d engine.NodeCompletedData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatalf("unmarshal node.completed: %v", err)
+		}
+		completedRef = d.Files["out.txt"]
+	}
+	if !found {
+		t.Fatal("no node.completed event for 'bare'")
+	}
+	if completedRef == "" {
+		t.Fatal(`node.completed{bare}.Files["out.txt"] missing — output_files capture did not happen on the real native backend`)
+	}
+
+	blobs, err := state.OpenBlobs(filepath.Join(stateDir, "blobs"))
+	if err != nil {
+		t.Fatalf("OpenBlobs: %v", err)
+	}
+	content, err := blobs.Get(completedRef)
+	if err != nil {
+		t.Fatalf("blobs.Get(%q): %v", completedRef, err)
+	}
+	if got, want := string(content), "bare-native-hello\n"; got != want {
+		t.Errorf("out.txt content = %q, want %q", got, want)
+	}
+}

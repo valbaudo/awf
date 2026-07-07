@@ -18,6 +18,8 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/valbaudo/awf/container"
@@ -193,5 +195,65 @@ func TestRunParallelBareRunStepsAreIsolated(t *testing.T) {
 	}
 	if !seen["parallel[0].b0"] || !seen["parallel[0].b1"] {
 		t.Errorf("missing node.completed for one or both branches; seen=%v", seen)
+	}
+}
+
+// F4b (e): a bare `run:` step never inherits snapshot:workspace capture from
+// an unrelated sibling container declared elsewhere in the SAME workflow.
+// runCode's capture gate (local_dispatcher.go: "intent.ResolvedInputs.Snapshot
+// == \"workspace\"") reads intent.ResolvedInputs.Snapshot, which the
+// interpreter resolves via wf.Containers[snapBare].Snapshot where
+// snapBare = SplitContainerRef(cs.Container) — for a bare step cs.Container
+// == "", so this is always a Go zero-value map miss (ir's containerNamePattern
+// forbids an empty container name, so wf.Containers can never actually
+// contain a "" key). This test proves that resolution end to end: "ws" here
+// is a real, validly-shaped snapshot:workspace container that "bare" never
+// references — if the bare step's resolution ever picked it up by mistake,
+// the fake backend (no blobs injected — see newRunHarness) would fail the
+// Snapshot call with container.ErrUnsupported and the run would end
+// permanent_failure instead of ok.
+func TestBareCodeStepNeverInheritsSiblingSnapshotWorkspace(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./bare.sh", container.ExecResult{ExitCode: 0}, nil)
+
+	wf := &ir.Workflow{
+		Containers: map[string]ir.Container{
+			"ws": {
+				Image:    "oci://example.com/ws@sha256:" + strings.Repeat("0", 64),
+				Snapshot: "workspace",
+			},
+		},
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "bare", Run: "./bare.sh"},
+		},
+	}
+	def := &ir.LoadedDefinition{Workflow: wf}
+
+	oc, err := engine.Run(context.Background(), def, rs, disp, log, blobs, clk, engine.RunOptions{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %v, want ok (a snapshot capture attempt against the unblobbed fake would fail closed)", oc)
+	}
+
+	events, _ := log.Fold()
+	var sawCompleted bool
+	for _, e := range events {
+		if e.Type != engine.EventNodeCompleted || e.Path != "bare" {
+			continue
+		}
+		sawCompleted = true
+		var d engine.NodeCompletedData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			t.Fatalf("unmarshal node.completed: %v", err)
+		}
+		if d.SnapshotRef != "" {
+			t.Errorf("node.completed{bare}.SnapshotRef = %q, want empty — bare step must not capture a sibling container's snapshot:workspace", d.SnapshotRef)
+		}
+	}
+	if !sawCompleted {
+		t.Fatal("no node.completed event for 'bare'")
 	}
 }
