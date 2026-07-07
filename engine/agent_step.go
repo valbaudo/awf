@@ -18,6 +18,26 @@ import (
 	"github.com/valbaudo/awf/template"
 )
 
+// D3 per-tier idle-watchdog defaults. When an agent step leaves timeout.idle
+// unset, the interpreter fills a runtime-only default from the adapter's measured
+// Caps.SurfacesLiveness tier (see runAgentStepWithContext). These land ONLY in the
+// runtime-only ResolvedInputs, never in ir.AgentStep.Timeout, so they never reach
+// Compute/StructuralDigest.
+const (
+	// defaultIdleFine is the idle watchdog for a Fine-liveness adapter (streams
+	// fine-grained deltas): a quiet stretch this long is strong evidence the turn
+	// hung. No startup grace — a Fine adapter emits from its first tokens.
+	defaultIdleFine = 25 * time.Second
+	// defaultIdleCoarse is the (looser) idle watchdog for a Coarse-liveness adapter
+	// that streams only coarse progress deltas, so longer silent stretches are
+	// normal between deltas.
+	defaultIdleCoarse = 90 * time.Second
+	// defaultStartupGraceCoarse is the one-time initial idle window for a Coarse
+	// adapter, covering the pre-first-delta warmup before the watchdog tightens to
+	// defaultIdleCoarse.
+	defaultStartupGraceCoarse = 30 * time.Second
+)
+
 // runAgentStep is the interpreter-side handler for *ir.AgentStep — symmetric
 // to runCodeStep. It:
 //
@@ -234,9 +254,13 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// a zero handle and fail every successful run. Both paths are RunID-keyed and
 	// RunID is read-from-log on resume, so the dirs are determinism-safe.
 	var sessionDir, sessionConfigDirRel string
+	var livenessTier agent.Liveness
 	if ictx.resolver != nil {
 		if adp, ok := ictx.resolver.Lookup(uses); ok {
 			caps := adp.Capabilities()
+			// D3: the adapter's measured liveness tier drives the default-on idle
+			// watchdog below (filled only when the author left timeout.idle unset).
+			livenessTier = caps.SurfacesLiveness
 			// PersistentSession IMPLIES a config dir: capture/restore reads the
 			// per-run config dir's projects/ subtree, so a session adapter is always
 			// given one (even if it didn't explicitly declare IsolatedConfigDir) —
@@ -287,6 +311,20 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		}
 		if as.Timeout.Idle != nil {
 			resolved.IdleTimeout = time.Duration(*as.Timeout.Idle)
+		}
+	}
+	// D3: default-on per-tier idle watchdog. When the author left timeout.idle
+	// unset, fill a runtime-only default from the adapter's measured liveness tier.
+	// Applied ONLY to ResolvedInputs — NEVER written back to as.Timeout: ir.Timeout
+	// feeds Compute/StructuralDigest, so a materialized default would trip the
+	// resume drift hard-error. A None (unmeasured) tier stays wall-clock-only.
+	if as.Timeout == nil || as.Timeout.Idle == nil {
+		switch livenessTier {
+		case agent.LivenessFine:
+			resolved.IdleTimeout = defaultIdleFine
+		case agent.LivenessCoarse:
+			resolved.IdleTimeout = defaultIdleCoarse
+			resolved.StartupGrace = defaultStartupGraceCoarse
 		}
 	}
 

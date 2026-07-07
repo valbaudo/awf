@@ -183,7 +183,15 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// expiry → the adapter surfaces ctx.Err() → retryable_failure → existing retry.
 	var idleTimer *time.Timer
 	if intent.ResolvedInputs.IdleTimeout > 0 {
-		idleTimer = time.AfterFunc(intent.ResolvedInputs.IdleTimeout, cancel)
+		// StartupGrace (D3), when set, is the one-time initial idle window used until
+		// the first event is drained (a Coarse adapter's warmup may exceed the
+		// per-gap IdleTimeout); the drain loop below switches to IdleTimeout after
+		// that first event.
+		initialIdle := intent.ResolvedInputs.IdleTimeout
+		if intent.ResolvedInputs.StartupGrace > 0 {
+			initialIdle = intent.ResolvedInputs.StartupGrace
+		}
+		idleTimer = time.AfterFunc(initialIdle, cancel)
 		defer idleTimer.Stop()
 	}
 
@@ -278,10 +286,23 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		var buf []agent.AgentEvent
 		var sinkErr error
 		render := d.eventRenderer()
+		// idleReset is the value each drained event resets the idle timer to. It
+		// starts at the initial arm (StartupGrace when set, matching the timer above)
+		// and switches to IdleTimeout after the first event proves the turn is
+		// producing output — so the startup grace applies only through warmup.
+		idleReset := intent.ResolvedInputs.IdleTimeout
+		if intent.ResolvedInputs.StartupGrace > 0 {
+			idleReset = intent.ResolvedInputs.StartupGrace
+		}
+		firstEvent := true
 		for ev := range events {
 			// Any drained event is progress — reset the idle deadline.
 			if idleTimer != nil {
-				idleTimer.Reset(intent.ResolvedInputs.IdleTimeout)
+				idleTimer.Reset(idleReset)
+			}
+			if firstEvent {
+				idleReset = intent.ResolvedInputs.IdleTimeout
+				firstEvent = false
 			}
 			if d.AgentEventTap != nil {
 				render(d.AgentEventTap, ev)

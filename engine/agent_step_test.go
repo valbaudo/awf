@@ -1729,6 +1729,17 @@ func (c *capturingDispatcher) Run(ctx context.Context, intent engine.NodeIntent)
 	return c.inner.Run(ctx, intent)
 }
 
+// AgentResolver forwards the inner dispatcher's AdapterResolver so the interpreter
+// wires ictx.resolver (adapter-capability lookup, e.g. SessionDir wiring and the
+// D3 per-tier idle default). Without this a wrapping dispatcher would hide the
+// inner LocalDispatcher's resolver and those interpreter-side lookups would no-op.
+func (c *capturingDispatcher) AgentResolver() agent.Resolver {
+	if ar, ok := c.inner.(engine.AdapterResolver); ok {
+		return ar.AgentResolver()
+	}
+	return nil
+}
+
 func TestRunAgentStep_FeedbackPopulatedOnGateRepair(t *testing.T) {
 	const yaml = `workflow: gate-agent-feedback
 version: 1
