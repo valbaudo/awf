@@ -38,6 +38,32 @@ const (
 	defaultStartupGraceCoarse = 30 * time.Second
 )
 
+// recovery:continue|restart selects how a retry re-runs an agent step after a
+// transient (idle/wall) fault. "restart" re-launches the step fresh (the
+// historical behavior); "continue" resumes the adapter's persistent session and
+// is only meaningful for a PersistentSession adapter. Consumed by the retry loop
+// (R3-R5); resolved per-adapter here when the author leaves recovery unset.
+const (
+	recoveryContinue = "continue"
+	recoveryRestart  = "restart"
+)
+
+// effectiveRecovery resolves an unset retry.recovery to a per-adapter default:
+// "continue" for a PersistentSession adapter (a retry can resume the live
+// session) and "restart" otherwise (a stateless adapter can only re-launch
+// fresh). An explicit author value is returned unchanged. Pure + runtime-only:
+// the result lives on the merged retry.Policy passed to RunWithRetry, never
+// written back to ir, so it never enters Compute/StructuralDigest.
+func effectiveRecovery(authored string, persistentSession bool) string {
+	if authored != "" {
+		return authored
+	}
+	if persistentSession {
+		return recoveryContinue
+	}
+	return recoveryRestart
+}
+
 // runAgentStep is the interpreter-side handler for *ir.AgentStep — symmetric
 // to runCodeStep. It:
 //
@@ -255,12 +281,16 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// RunID is read-from-log on resume, so the dirs are determinism-safe.
 	var sessionDir, sessionConfigDirRel string
 	var livenessTier agent.Liveness
+	var persistentSession bool
 	if ictx.resolver != nil {
 		if adp, ok := ictx.resolver.Lookup(uses); ok {
 			caps := adp.Capabilities()
 			// D3: the adapter's measured liveness tier drives the default-on idle
 			// watchdog below (filled only when the author left timeout.idle unset).
 			livenessTier = caps.SurfacesLiveness
+			// Rk: a PersistentSession adapter can resume its live session on retry,
+			// so an unset recovery resolves to "continue"; otherwise "restart".
+			persistentSession = caps.PersistentSession
 			// PersistentSession IMPLIES a config dir: capture/restore reads the
 			// per-run config dir's projects/ subtree, so a session adapter is always
 			// given one (even if it didn't explicitly declare IsolatedConfigDir) —
@@ -274,6 +304,11 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 			}
 		}
 	}
+
+	// Rk: resolve an unset recovery to its per-adapter effective value on the
+	// merged policy the retry loop consults. Runtime-only — never written back to
+	// as.Retry, so ir.RetryPolicy (and the digest) is untouched.
+	policy.Recovery = effectiveRecovery(policy.Recovery, persistentSession)
 
 	// WorkflowDir: the absolute directory containing the step's own module's
 	// workflow file — same directory the loader resolves imports/assets
