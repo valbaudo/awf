@@ -10,6 +10,24 @@ is tracked independently of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-08
+
+A patch release fixing a native-backend timeout deadlock.
+
+### Fixed
+
+- **Native-backend timeout deadlock (leaked agent process).** On the native
+  backend a step's real workload runs as a grandchild (under `sh -c`, and the
+  sandbox trampoline). A timeout SIGKILLed only the direct child, so the
+  grandchild survived holding the step's stdout/stderr pipe write-ends open — the
+  reader goroutines never saw EOF, no step outcome was ever produced, and the
+  whole run deadlocked, with the agent process orphaned and still holding its
+  network connections. The native backend now runs each step in its own process
+  group and kills the whole group on timeout (with a `WaitDelay` backstop),
+  reaping the workload and surfacing the timeout as a retryable failure that
+  feeds the existing retry / `recovery: continue` path — matching the Docker
+  backend's existing process-tree reaping.
+
 ## [0.4.0] - 2026-07-08
 
 A workflow-format release adding input-parameterizable agent roles: a reusable
