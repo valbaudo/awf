@@ -523,7 +523,7 @@ and **only** `input.*`. These resolve at step execution against the input of the
 **module the role is declared in**: the root workflow's run input for a root step,
 and a child workflow's validated `call:` input for a child step. Any other scope
 inside a role (`{{ run.id }}`, `{{ step.* }}`, `{{ item.* }}`, an aggregate,
-`asset.*`) is rejected at `awf validate` (**AWF1064**), as is any `{{ }}` in a
+`asset.*`) is rejected at `awf validate` (**AWF1067**), as is any `{{ }}` in a
 non-top-level-string position (a nested map/array value or a key) — those are never
 substituted and would otherwise reach the adapter as literal text. A role that
 references `{{ input.model }}` requires the run to supply that field via `--input`;
