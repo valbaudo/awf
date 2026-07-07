@@ -1,0 +1,14 @@
+# Fixture stub for the awf-workflow(5) flagship EXAMPLE (F1 doc-sync guard).
+# Digest-pinned per AWF3003; the images are placeholders (this file is never
+# pulled or run — the loader only reads its bytes, and ir.Validate only checks
+# the sha256 pinning). Kept out of examples/ so the examples-corpus guards
+# (which load every examples/**.yml as a workflow) don't see it.
+services:
+  vulnerable:
+    image: registry.example.com/awf-flagship-lab-vulnerable@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  patched:
+    image: registry.example.com/awf-flagship-lab-patched@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  db:
+    image: registry.example.com/awf-flagship-lab-db@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  capture:
+    image: registry.example.com/awf-flagship-lab-capture@sha256:0000000000000000000000000000000000000000000000000000000000000000

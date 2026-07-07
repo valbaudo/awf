@@ -2042,7 +2042,7 @@ is torn down with the run.
       - id: triage
         container: lab
         uses: anthropic/claude-code
-        with: { skill: cve-triage, cve: "{{ input.cve_id }}" }
+        with: { prompt: "Triage {{ input.cve_id }}: is it web-exploitable, and is source available?" }
         output_schema:
           type: object
           additionalProperties: false
@@ -2064,7 +2064,7 @@ is torn down with the run.
                   - id: exploit              # repair attempts auto-receive the prior verdict
                     container: lab
                     uses: anthropic/claude-code
-                    with: { skill: cve-exploit }
+                    with: { prompt: "Write a proof-of-concept exploit for {{ input.cve_id }} in the lab container." }
                 evaluate:                     # multi-step independent judge
                   - id: run_oracle            # deterministic: exploit on vuln + patched + benign payload
                     container: lab
