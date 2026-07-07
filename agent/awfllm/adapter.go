@@ -90,8 +90,16 @@ func (*Adapter) Ref() string { return AdapterRef }
 
 // Capabilities: layer-2 typed output (NativeSchema:false) + no container needed +
 // threading supported (engine-supplied continues: message history prepended by launch).
+//
+// SurfacesLiveness=None (honest floor): the transport is chosen per-Launch
+// (with:), so Capabilities() cannot statically tell the streaming transports
+// (which DO emit a per-content-delta / Anthropic-ping liveness event) from
+// Gemini's single-shot non-streaming callGemini, which surfaces no intermediate
+// liveness at all. A static capability that can't be guaranteed across every
+// transport must not claim a signal, so this stays None; an author who knows the
+// transport can still opt into timeout.idle.
 func (*Adapter) Capabilities() agent.Caps {
-	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true, InlineInputFiles: true}
+	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true, InlineInputFiles: true, SurfacesLiveness: agent.LivenessNone}
 }
 
 // RequiredEnv implements agent.CredentialNamer. Returns the full forward-

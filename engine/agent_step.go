@@ -18,6 +18,48 @@ import (
 	"github.com/valbaudo/awf/template"
 )
 
+// defaultIdleCoarse is the ONLY default-on idle watchdog — the honest asymmetric
+// design. When a Coarse-liveness adapter's agent step leaves timeout.idle unset,
+// the interpreter fills this runtime-only default (see runAgentStepWithContext).
+// Only agent/codexlive surfaces a genuine liveness signal (it forwards
+// reasoning-summary deltas ~every <=36s per D1), so only it can safely carry a
+// default idle. At a generous 300s it is a safety net for a genuine hang, not a
+// tripwire on healthy reasoning — the forwarded deltas keep resetting the timer,
+// so a full 5-minute silence really is a stall. Authors with legitimately
+// long-silent-tool workflows raise timeout.idle; a rare false-cancel is softened
+// by continue-recovery. Fine and None tiers get NO default (opt-in only):
+// claude/claudesession/awf-llm emit one AgentEvent per COMPLETE message and go
+// silent during tool execution, so a default idle there would false-cancel healthy
+// work. Lands ONLY in the runtime-only ResolvedInputs, never in ir.AgentStep.Timeout,
+// so it never reaches Compute/StructuralDigest.
+const defaultIdleCoarse = 300 * time.Second
+
+// recovery:continue|restart selects how a retry re-runs an agent step after a
+// transient (idle/wall) fault. "restart" re-launches the step fresh (the
+// historical behavior); "continue" resumes the adapter's persistent session and
+// is only meaningful for a PersistentSession adapter. Consumed by the retry loop
+// (R3-R5); resolved per-adapter here when the author leaves recovery unset.
+const (
+	recoveryContinue = "continue"
+	recoveryRestart  = "restart"
+)
+
+// effectiveRecovery resolves an unset retry.recovery to a per-adapter default:
+// "continue" for a PersistentSession adapter (a retry can resume the live
+// session) and "restart" otherwise (a stateless adapter can only re-launch
+// fresh). An explicit author value is returned unchanged. Pure + runtime-only:
+// the result lives on the merged retry.Policy passed to RunWithRetry, never
+// written back to ir, so it never enters Compute/StructuralDigest.
+func effectiveRecovery(authored string, persistentSession bool) string {
+	if authored != "" {
+		return authored
+	}
+	if persistentSession {
+		return recoveryContinue
+	}
+	return recoveryRestart
+}
+
 // runAgentStep is the interpreter-side handler for *ir.AgentStep — symmetric
 // to runCodeStep. It:
 //
@@ -234,9 +276,17 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// a zero handle and fail every successful run. Both paths are RunID-keyed and
 	// RunID is read-from-log on resume, so the dirs are determinism-safe.
 	var sessionDir, sessionConfigDirRel string
+	var livenessTier agent.Liveness
+	var persistentSession bool
 	if ictx.resolver != nil {
 		if adp, ok := ictx.resolver.Lookup(uses); ok {
 			caps := adp.Capabilities()
+			// D3: the adapter's measured liveness tier drives the default-on idle
+			// watchdog below (filled only when the author left timeout.idle unset).
+			livenessTier = caps.SurfacesLiveness
+			// Rk: a PersistentSession adapter can resume its live session on retry,
+			// so an unset recovery resolves to "continue"; otherwise "restart".
+			persistentSession = caps.PersistentSession
 			// PersistentSession IMPLIES a config dir: capture/restore reads the
 			// per-run config dir's projects/ subtree, so a session adapter is always
 			// given one (even if it didn't explicitly declare IsolatedConfigDir) —
@@ -250,6 +300,11 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 			}
 		}
 	}
+
+	// Rk: resolve an unset recovery to its per-adapter effective value on the
+	// merged policy the retry loop consults. Runtime-only — never written back to
+	// as.Retry, so ir.RetryPolicy (and the digest) is untouched.
+	policy.Recovery = effectiveRecovery(policy.Recovery, persistentSession)
 
 	// WorkflowDir: the absolute directory containing the step's own module's
 	// workflow file — same directory the loader resolves imports/assets
@@ -287,6 +342,19 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		}
 		if as.Timeout.Idle != nil {
 			resolved.IdleTimeout = time.Duration(*as.Timeout.Idle)
+		}
+	}
+	// Default-on idle watchdog, honest asymmetric design: ONLY a Coarse-liveness
+	// adapter (today just codexlive, which forwards reasoning deltas) gets a default
+	// idle when the author left timeout.idle unset. Fine and None tiers get nothing
+	// (opt-in) because they emit one AgentEvent per COMPLETE message and go silent
+	// during tool execution, so a default idle would false-cancel healthy work.
+	// Applied ONLY to ResolvedInputs — NEVER written back to as.Timeout: ir.Timeout
+	// feeds Compute/StructuralDigest, so a materialized default would trip the resume
+	// drift hard-error.
+	if as.Timeout == nil || as.Timeout.Idle == nil {
+		if livenessTier == agent.LivenessCoarse {
+			resolved.IdleTimeout = defaultIdleCoarse
 		}
 	}
 

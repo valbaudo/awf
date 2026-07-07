@@ -60,6 +60,11 @@ type Policy struct {
 	Initial               time.Duration
 	Max                   time.Duration
 	NonRetryableExitCodes []int
+	// Recovery is the merged recovery strategy ("continue" | "restart" | "" =
+	// unset). The wire form is ir.RetryPolicy.Recovery; Merge copies a non-empty
+	// per-step value over the base. Default leaves it unset ("") — the engine
+	// resolves the per-adapter effective value at dispatch time.
+	Recovery string
 }
 
 // Default is the spec §6 default policy. The 78 sentinel is EX_CONFIG from
@@ -144,6 +149,9 @@ func Merge(def Policy, override *ir.RetryPolicy) (Policy, error) {
 		dup := make([]int, len(override.NonRetryableExitCodes))
 		copy(dup, override.NonRetryableExitCodes)
 		out.NonRetryableExitCodes = dup
+	}
+	if override.Recovery != "" {
+		out.Recovery = override.Recovery
 	}
 	return out, nil
 }

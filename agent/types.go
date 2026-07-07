@@ -65,7 +65,27 @@ type Caps struct {
 	// filesystem to isolate). Orthogonal to PersistentSession, which ADDITIONALLY
 	// captures/restores the session as that dir's projects/ subtree.
 	IsolatedConfigDir bool `json:"isolated_config_dir,omitempty"`
+
+	// SurfacesLiveness grades how finely this adapter streams live progress
+	// signals a stall watchdog can trust as proof the turn is still working.
+	// The zero value LivenessNone means "not measured / no signal", so an
+	// adapter that hasn't been characterized never overclaims. Only adapters we
+	// have MEASURED set a higher tier (codexlive = Coarse, claude-family = Fine).
+	SurfacesLiveness Liveness `json:"surfaces_liveness,omitempty"`
 }
+
+// Liveness grades the degree to which an Adapter surfaces live progress
+// signals (streamed deltas) between the start and end of a turn. A stall
+// watchdog reads this to decide how confidently a quiet stretch means "hung"
+// rather than "working silently". The zero value is LivenessNone so an
+// unmeasured adapter honestly declares no signal instead of overclaiming.
+type Liveness uint8
+
+const (
+	LivenessNone   Liveness = iota // no live progress signal (default; unmeasured)
+	LivenessCoarse                 // coarse progress deltas (e.g. reasoning-summary chunks)
+	LivenessFine                   // fine-grained streamed deltas (e.g. thinking_delta tokens)
+)
 
 // SecretEnv is the type used for env-passthrough values that contain secrets
 // (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN).
@@ -156,6 +176,22 @@ type AgentInvocation struct {
 	// containerless analog of container.InputFile staging). Empty for
 	// container-backed steps. json:"-": bytes never reach the state log.
 	InputFiles []InputFile `json:"-"`
+	// Attempt is the 1-based retry-attempt index the engine is currently on for
+	// this node (1 on the first try, 2 on the first retry, …). Threaded from
+	// NodeIntent.Attempt by the dispatcher so an adapter can distinguish a fresh
+	// try from a retry. Engine operational state like ResumeSession, not author
+	// with: config; json:"-": never journaled. Zero when a caller builds an
+	// AgentInvocation directly (tests) without wiring it.
+	Attempt int `json:"-"`
+	// RecoveryContinue is true when the resolved retry.recovery strategy for this
+	// step is "continue" (resume the persistent session on a retry) rather than
+	// "restart". Set by the engine from the merged retry.Policy (engine resolves an
+	// unset value to a per-adapter default); meaningful only for a PersistentSession
+	// adapter. Combined with Attempt>0 it tells the adapter that a leftover
+	// in-progress turn from a prior attempt in THIS run may be abandoned and the
+	// thread resumed, instead of hard-halting for a cross-process replay. Engine
+	// operational state like Attempt/ResumeSession; json:"-": never journaled.
+	RecoveryContinue bool `json:"-"`
 	// ResumeSession is set true by the engine when it successfully restored a
 	// committed session transcript for this node before calling adapter.Launch.
 	// The adapter uses it to select the correct CLI flag:

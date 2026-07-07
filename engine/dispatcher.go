@@ -51,6 +51,20 @@ type NodeIntent struct {
 	IsGateEvaluate bool
 	RunContext     agent.RunContext
 
+	// Attempt is the 1-based index of the current retry attempt within
+	// RunWithRetry (1 on the first try, 2 on the first retry, …). Set per attempt
+	// by RunWithRetry on its local intent copy before each dispatcher.Run; the
+	// dispatcher threads it into agent.AgentInvocation.Attempt. Runtime-only — never
+	// enters any digest (NodeIntent is not addressed/journaled).
+	Attempt int
+
+	// RecoveryContinue is true when the merged retry.Policy resolved to
+	// recovery:continue. Set by RunWithRetry from policy.Recovery; the dispatcher
+	// threads it into agent.AgentInvocation.RecoveryContinue so a PersistentSession
+	// adapter knows a retry may resume its session. Runtime-only — never enters any
+	// digest.
+	RecoveryContinue bool
+
 	agentEventSink *agentEventSink
 }
 

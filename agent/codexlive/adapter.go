@@ -113,6 +113,9 @@ func (*Adapter) Capabilities() agent.Caps {
 		NativeSchema:      true,
 		Containerless:     true,
 		PersistentSession: true,
+		// Coarse: forwards reasoning-summary deltas (~<=36s cadence, D1) — a
+		// stall watchdog gets progress proof, but not per-token granularity.
+		SurfacesLiveness: agent.LivenessCoarse,
 	}
 }
 

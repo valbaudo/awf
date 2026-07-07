@@ -68,6 +68,13 @@ type RetryPolicy struct {
 	Initial               *Duration `json:"initial,omitempty"`
 	Max                   *Duration `json:"max,omitempty"`
 	NonRetryableExitCodes []int     `json:"non_retryable_exit_codes,omitempty"`
+	// Recovery selects how a retry re-runs the step after a transient fault:
+	// "continue" resumes the adapter's persistent session, "restart" re-launches
+	// fresh. Unset (the omitempty zero value) means "let the engine resolve a
+	// per-adapter default" — see engine.effectiveRecovery. omitempty is
+	// load-bearing: an unset recovery must marshal to the exact bytes it did
+	// before this field existed so ComputeDigest stays byte-identical.
+	Recovery string `json:"recovery,omitempty"`
 }
 
 // Duration marshals to integer nanoseconds (digest stability); parses int ns or a Go duration string.

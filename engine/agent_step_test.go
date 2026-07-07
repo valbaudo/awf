@@ -600,6 +600,10 @@ graph:
 }
 
 func TestRunAgentStep_LiveReplayRequiredLaunchErrHaltsWithoutFailureOrRetry(t *testing.T) {
+	// recovery: restart pins the pre-stall-feature disposition: ErrLiveReplayRequired
+	// is a hard internal halt (needs a cross-process resume). Under the new
+	// PersistentSession default (recovery: continue) R3 instead demotes it to a
+	// retryable_failure and resumes — covered by TestRunWithRetry_LiveReplayRecoveryPolicy.
 	const yaml = `workflow: live-replay-launch
 version: 1
 graph:
@@ -607,6 +611,8 @@ graph:
     uses: live/agent
     with:
       prompt: "p"
+    retry:
+      recovery: restart
 `
 	ld := loadAgentSimpleDef(t, yaml)
 
@@ -642,6 +648,8 @@ graph:
 }
 
 func TestRunAgentStep_LiveReplayRequiredOutcomeErrAppendsPriorEventsThenHalts(t *testing.T) {
+	// recovery: restart pins the hard-halt disposition (see the launch-err test);
+	// the continue-path reclassification (R3) is covered separately.
 	const yaml = `workflow: live-replay-outcome
 version: 1
 graph:
@@ -649,6 +657,8 @@ graph:
     uses: live/agent
     with:
       prompt: "p"
+    retry:
+      recovery: restart
 `
 	ld := loadAgentSimpleDef(t, yaml)
 
@@ -699,6 +709,7 @@ graph:
       prompt: "p"
     retry:
       attempts: 3
+      recovery: restart
     output_schema:
       type: object
       additionalProperties: false
@@ -1727,6 +1738,17 @@ type capturingDispatcher struct {
 func (c *capturingDispatcher) Run(ctx context.Context, intent engine.NodeIntent) (engine.DispatchResult, <-chan container.IOChunk, error) {
 	c.captured = append(c.captured, intent)
 	return c.inner.Run(ctx, intent)
+}
+
+// AgentResolver forwards the inner dispatcher's AdapterResolver so the interpreter
+// wires ictx.resolver (adapter-capability lookup, e.g. SessionDir wiring and the
+// D3 per-tier idle default). Without this a wrapping dispatcher would hide the
+// inner LocalDispatcher's resolver and those interpreter-side lookups would no-op.
+func (c *capturingDispatcher) AgentResolver() agent.Resolver {
+	if ar, ok := c.inner.(engine.AdapterResolver); ok {
+		return ar.AgentResolver()
+	}
+	return nil
 }
 
 func TestRunAgentStep_FeedbackPopulatedOnGateRepair(t *testing.T) {

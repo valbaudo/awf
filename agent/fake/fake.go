@@ -44,6 +44,15 @@ type Result struct {
 	// transient/permanent launch failures (e.g. *agent.ErrAgentLaunch with a
 	// RetryHint) and drive the dispatcher's failure classification.
 	Err error
+
+	// StallUntilCancel, when true, makes the emitter block AFTER emitting the
+	// scripted Events instead of finishing: it holds the events channel OPEN
+	// (does not close it) until ctx is cancelled, then yields an outcome carrying
+	// ctx.Err(). Without this, the fake closes events immediately and the
+	// dispatcher disarms its idle timer on channel close — so idle can never fire
+	// in a fake test. This trailing-stall mode lets idle-timeout tests run against
+	// the fake backend (mirrors the bespoke idleTestAdapter in engine tests).
+	StallUntilCancel bool
 }
 
 // Fake is the in-memory scripted adapter. Zero value is NOT usable — call
@@ -214,6 +223,17 @@ func (f *Fake) Launch(ctx context.Context, _ container.Handle, inv agent.AgentIn
 				case <-time.After(delay):
 				}
 			}
+		}
+
+		// Trailing-stall mode: hold the events channel OPEN (don't close it via
+		// the deferred close until we return) and block until ctx is cancelled,
+		// then yield ctx.Err(). Lets idle-timeout tests drive the fake into the
+		// idle path — the dispatcher disarms its idle timer on events-channel
+		// close, so a fake must stay open past its last event for idle to fire.
+		if r.StallUntilCancel {
+			<-ctx.Done()
+			outcomeCh <- agent.AgentOutcome{Err: ctx.Err()}
+			return
 		}
 
 		// Scripted launch failure: emit it as the outcome error (after any

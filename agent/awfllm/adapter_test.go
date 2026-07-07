@@ -31,6 +31,21 @@ func TestRefAndCapabilities(t *testing.T) {
 	}
 }
 
+// awf/llm declares SurfacesLiveness=None (honest floor): the transport is chosen
+// per-Launch (with:), so Capabilities() can't distinguish the streaming transports
+// (which emit content-delta / Anthropic-ping liveness) from Gemini's single-shot
+// non-streaming path (no intermediate liveness at all). A static capability that
+// can't be guaranteed across every transport must not claim a signal.
+func TestCapabilities_SurfacesLivenessNone(t *testing.T) {
+	a, err := awfllm.New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := a.Capabilities().SurfacesLiveness; got != agent.LivenessNone {
+		t.Errorf("SurfacesLiveness = %d, want LivenessNone", got)
+	}
+}
+
 func TestWithEnv_EmptyOK(t *testing.T) {
 	if _, err := awfllm.New(awfllm.WithEnv(nil)); err != nil {
 		t.Fatalf("New(WithEnv(nil)): %v", err)

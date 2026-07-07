@@ -248,6 +248,8 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		Thread:           intent.ResolvedInputs.Thread,   // Task 4.5
 		ContextEvidence:  intent.ResolvedInputs.ContextEvidence,
 		InputFiles:       intent.ResolvedInputs.ContainerlessFiles, // resolved input_files for containerless steps; nil for container-backed (those use stageInputFiles)
+		Attempt:          intent.Attempt,                           // R1: 1-based per-attempt signal from RunWithRetry
+		RecoveryContinue: intent.RecoveryContinue,                  // R3: resolved recovery == continue (session adapters resume on retry)
 		ResumeSession:    sessionRestored,                          // M2 task: true when session subtree was written back for this node
 		SessionConfigDir: sessionConfigDir,                         // absolute per-run CLAUDE_CONFIG_DIR; adapter sets it on the exec env
 		WorkflowDir:      intent.ResolvedInputs.WorkflowDir,        // absolute workflow-file directory; codexlive defaults `cwd` to it (F33)
@@ -320,6 +322,11 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// In-flight failure surfaced via launchOutcome.Err.
 	if launchOutcome.Err != nil {
 		if errors.Is(launchOutcome.Err, agent.ErrLiveReplayRequired) {
+			// A stalled PersistentSession turn needing a replay. Propagate the signal:
+			// under recovery:continue RunWithRetry retries in-process (the adapter
+			// re-derives its session key and continues the live thread); otherwise it
+			// halts and a later `awf resume` re-derives defaultSessionKey(runID,nodePath)
+			// to read the on-disk live.SessionRecord — no journaled hint needed.
 			return DispatchResult{
 				Err:         launchOutcome.Err,
 				AgentEvents: bufferedEvents,
@@ -338,6 +345,11 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	if intent.ResolvedInputs.OutputSchema != nil {
 		if err := ValidateOutputMap(launchOutcome.Result.Output, intent.ResolvedInputs.OutputSchema); err != nil {
 			if launchOutcome.Result.Live != nil {
+				// A live turn that completed but whose output failed schema validation
+				// needs a replay. Signal ErrLiveReplayRequired: under recovery:continue
+				// RunWithRetry retries in-process; otherwise a later `awf resume`
+				// re-derives defaultSessionKey(runID,nodePath) to read the on-disk
+				// live.SessionRecord — no journaled hint needed.
 				return DispatchResult{
 					Outputs:     launchOutcome.Result.Output,
 					AgentEvents: bufferedEvents,
