@@ -89,17 +89,6 @@ type ResolvedInputs struct {
 	// IOChunk, agent steps on each drained AgentEvent.
 	IdleTimeout time.Duration
 
-	// StartupGrace is a runtime-only, one-time initial idle window used INSTEAD of
-	// IdleTimeout until the first AgentEvent is drained — a Coarse-liveness adapter
-	// may take a while to emit its first progress delta, so the watchdog is more
-	// patient during warmup, then tightens to IdleTimeout for subsequent gaps. Zero
-	// means "no separate grace; arm with IdleTimeout from the start". Agent steps
-	// only. NEVER materialized into ir.AgentStep.Timeout: it is filled per-tier
-	// (D3) from the adapter's Caps.SurfacesLiveness in the runtime-only
-	// ResolvedInputs, so it never reaches Compute/StructuralDigest and cannot trip
-	// the resume drift hard-error.
-	StartupGrace time.Duration
-
 	// InputFiles are the resolved (path → bytes) artifacts to stage via
 	// Backend.CopyTo BEFORE Exec/Launch. The interpreter resolves each ref to a
 	// CAS blob and Blobs.Get's the bytes (the dispatcher never touches Blobs).

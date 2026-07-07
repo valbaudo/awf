@@ -31,18 +31,18 @@ func TestRefAndCapabilities(t *testing.T) {
 	}
 }
 
-// D4: awf/llm declares SurfacesLiveness=Coarse — streaming content-delta plus the
-// Anthropic ping reset resets the idle watchdog, but reasoning-gap/SDK ping-hiding
-// keeps it below Fine. The transport is chosen per-Launch (with:), so Capabilities()
-// can't distinguish streaming from Gemini's non-streaming path; Coarse is the
-// conservative static default.
-func TestCapabilities_SurfacesLivenessCoarse(t *testing.T) {
+// awf/llm declares SurfacesLiveness=None (honest floor): the transport is chosen
+// per-Launch (with:), so Capabilities() can't distinguish the streaming transports
+// (which emit content-delta / Anthropic-ping liveness) from Gemini's single-shot
+// non-streaming path (no intermediate liveness at all). A static capability that
+// can't be guaranteed across every transport must not claim a signal.
+func TestCapabilities_SurfacesLivenessNone(t *testing.T) {
 	a, err := awfllm.New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if got := a.Capabilities().SurfacesLiveness; got != agent.LivenessCoarse {
-		t.Errorf("SurfacesLiveness = %d, want LivenessCoarse", got)
+	if got := a.Capabilities().SurfacesLiveness; got != agent.LivenessNone {
+		t.Errorf("SurfacesLiveness = %d, want LivenessNone", got)
 	}
 }
 

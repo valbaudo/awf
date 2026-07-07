@@ -93,16 +93,19 @@ func New(opts ...Option) (*Adapter, error) {
 func (*Adapter) Ref() string { return AdapterRef }
 
 // Capabilities returns Caps{NativeSchema: true, PersistentSession: true,
-// SurfacesLiveness: Fine}. Not Containerless — this adapter requires a container
+// SurfacesLiveness: None}. Not Containerless — this adapter requires a container
 // (like the base claude adapter). Gate independence is enforced by the engine's
-// PR0a guard that rejects PersistentSession adapters in gate.evaluate. Fine
-// liveness: like the base claude adapter, it streams thinking_delta tokens.
+// PR0a guard that rejects PersistentSession adapters in gate.evaluate.
+// SurfacesLiveness None: like the base claude adapter, it emits one AgentEvent per
+// COMPLETE stream-json message (no --include-partial-messages token deltas) and
+// goes silent during tool execution, so there is no liveness signal an idle
+// watchdog can trust.
 func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{
 		NativeSchema:      true,
 		PersistentSession: true,
 		IsolatedConfigDir: true,
-		SurfacesLiveness:  agent.LivenessFine,
+		SurfacesLiveness:  agent.LivenessNone,
 	}
 }
 

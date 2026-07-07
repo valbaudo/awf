@@ -18,25 +18,21 @@ import (
 	"github.com/valbaudo/awf/template"
 )
 
-// D3 per-tier idle-watchdog defaults. When an agent step leaves timeout.idle
-// unset, the interpreter fills a runtime-only default from the adapter's measured
-// Caps.SurfacesLiveness tier (see runAgentStepWithContext). These land ONLY in the
-// runtime-only ResolvedInputs, never in ir.AgentStep.Timeout, so they never reach
-// Compute/StructuralDigest.
-const (
-	// defaultIdleFine is the idle watchdog for a Fine-liveness adapter (streams
-	// fine-grained deltas): a quiet stretch this long is strong evidence the turn
-	// hung. No startup grace — a Fine adapter emits from its first tokens.
-	defaultIdleFine = 25 * time.Second
-	// defaultIdleCoarse is the (looser) idle watchdog for a Coarse-liveness adapter
-	// that streams only coarse progress deltas, so longer silent stretches are
-	// normal between deltas.
-	defaultIdleCoarse = 90 * time.Second
-	// defaultStartupGraceCoarse is the one-time initial idle window for a Coarse
-	// adapter, covering the pre-first-delta warmup before the watchdog tightens to
-	// defaultIdleCoarse.
-	defaultStartupGraceCoarse = 30 * time.Second
-)
+// defaultIdleCoarse is the ONLY default-on idle watchdog — the honest asymmetric
+// design. When a Coarse-liveness adapter's agent step leaves timeout.idle unset,
+// the interpreter fills this runtime-only default (see runAgentStepWithContext).
+// Only agent/codexlive surfaces a genuine liveness signal (it forwards
+// reasoning-summary deltas ~every <=36s per D1), so only it can safely carry a
+// default idle. At a generous 300s it is a safety net for a genuine hang, not a
+// tripwire on healthy reasoning — the forwarded deltas keep resetting the timer,
+// so a full 5-minute silence really is a stall. Authors with legitimately
+// long-silent-tool workflows raise timeout.idle; a rare false-cancel is softened
+// by continue-recovery. Fine and None tiers get NO default (opt-in only):
+// claude/claudesession/awf-llm emit one AgentEvent per COMPLETE message and go
+// silent during tool execution, so a default idle there would false-cancel healthy
+// work. Lands ONLY in the runtime-only ResolvedInputs, never in ir.AgentStep.Timeout,
+// so it never reaches Compute/StructuralDigest.
+const defaultIdleCoarse = 300 * time.Second
 
 // recovery:continue|restart selects how a retry re-runs an agent step after a
 // transient (idle/wall) fault. "restart" re-launches the step fresh (the
@@ -348,18 +344,17 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 			resolved.IdleTimeout = time.Duration(*as.Timeout.Idle)
 		}
 	}
-	// D3: default-on per-tier idle watchdog. When the author left timeout.idle
-	// unset, fill a runtime-only default from the adapter's measured liveness tier.
+	// Default-on idle watchdog, honest asymmetric design: ONLY a Coarse-liveness
+	// adapter (today just codexlive, which forwards reasoning deltas) gets a default
+	// idle when the author left timeout.idle unset. Fine and None tiers get nothing
+	// (opt-in) because they emit one AgentEvent per COMPLETE message and go silent
+	// during tool execution, so a default idle would false-cancel healthy work.
 	// Applied ONLY to ResolvedInputs — NEVER written back to as.Timeout: ir.Timeout
-	// feeds Compute/StructuralDigest, so a materialized default would trip the
-	// resume drift hard-error. A None (unmeasured) tier stays wall-clock-only.
+	// feeds Compute/StructuralDigest, so a materialized default would trip the resume
+	// drift hard-error.
 	if as.Timeout == nil || as.Timeout.Idle == nil {
-		switch livenessTier {
-		case agent.LivenessFine:
-			resolved.IdleTimeout = defaultIdleFine
-		case agent.LivenessCoarse:
+		if livenessTier == agent.LivenessCoarse {
 			resolved.IdleTimeout = defaultIdleCoarse
-			resolved.StartupGrace = defaultStartupGraceCoarse
 		}
 	}
 

@@ -37,8 +37,8 @@ graph:
 `
 
 // TestRunAgentStep_DefaultIdle_CoarseTier: a Coarse-tier adapter with no author
-// idle: gets the per-tier default filled in ResolvedInputs — idle 90s + a 30s
-// startup grace — without the workflow ever declaring a timeout. Captured off the
+// idle: gets the single default-on idle filled in ResolvedInputs — a generous 300s
+// safety net — without the workflow ever declaring a timeout. Captured off the
 // dispatched NodeIntent (the interpreter's deliverable) via capturingDispatcher.
 func TestRunAgentStep_DefaultIdle_CoarseTier(t *testing.T) {
 	ld := loadAgentSimpleDef(t, coarseIdleDefaultYAML)
@@ -77,11 +77,8 @@ func TestRunAgentStep_DefaultIdle_CoarseTier(t *testing.T) {
 		t.Fatalf("captured intents = %d, want 1", len(cap.captured))
 	}
 	ri := cap.captured[0].ResolvedInputs
-	if ri.IdleTimeout != 90*time.Second {
-		t.Errorf("ResolvedInputs.IdleTimeout = %v, want 90s (Coarse-tier default)", ri.IdleTimeout)
-	}
-	if ri.StartupGrace != 30*time.Second {
-		t.Errorf("ResolvedInputs.StartupGrace = %v, want 30s (Coarse-tier default)", ri.StartupGrace)
+	if ri.IdleTimeout != 300*time.Second {
+		t.Errorf("ResolvedInputs.IdleTimeout = %v, want 300s (Coarse-tier default)", ri.IdleTimeout)
 	}
 }
 
@@ -140,9 +137,6 @@ graph:
 	ri := cap.captured[0].ResolvedInputs
 	if ri.IdleTimeout != 0 {
 		t.Errorf("ResolvedInputs.IdleTimeout = %v, want 0 (None tier — wall-clock only)", ri.IdleTimeout)
-	}
-	if ri.StartupGrace != 0 {
-		t.Errorf("ResolvedInputs.StartupGrace = %v, want 0 (None tier)", ri.StartupGrace)
 	}
 }
 

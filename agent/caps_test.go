@@ -56,7 +56,8 @@ func TestCapsSurfacesLivenessZeroValueIsNone(t *testing.T) {
 }
 
 func TestCapsSurfacesLivenessMeasuredAdapterTiers(t *testing.T) {
-	// codexlive forwards reasoning-summary deltas (D1) -> Coarse.
+	// codexlive forwards reasoning-summary deltas (D1) -> Coarse. It is the ONLY
+	// adapter with a genuine liveness signal.
 	codexLive, err := codexlive.New()
 	if err != nil {
 		t.Fatalf("codexlive.New: %v", err)
@@ -65,20 +66,22 @@ func TestCapsSurfacesLivenessMeasuredAdapterTiers(t *testing.T) {
 		t.Errorf("codexlive SurfacesLiveness = %d, want LivenessCoarse", got)
 	}
 
-	// claude-code / claude-code-session stream thinking_delta -> Fine.
+	// claude-code / claude-code-session emit one AgentEvent per COMPLETE stream-json
+	// message (no --include-partial-messages token deltas) and go silent during tool
+	// execution -> None (no signal an idle watchdog can trust).
 	claudeAdapter, err := claude.New()
 	if err != nil {
 		t.Fatalf("claude.New: %v", err)
 	}
-	if got := claudeAdapter.Capabilities().SurfacesLiveness; got != agent.LivenessFine {
-		t.Errorf("claude SurfacesLiveness = %d, want LivenessFine", got)
+	if got := claudeAdapter.Capabilities().SurfacesLiveness; got != agent.LivenessNone {
+		t.Errorf("claude SurfacesLiveness = %d, want LivenessNone", got)
 	}
 	claudeSess, err := claudesession.New()
 	if err != nil {
 		t.Fatalf("claudesession.New: %v", err)
 	}
-	if got := claudeSess.Capabilities().SurfacesLiveness; got != agent.LivenessFine {
-		t.Errorf("claudesession SurfacesLiveness = %d, want LivenessFine", got)
+	if got := claudeSess.Capabilities().SurfacesLiveness; got != agent.LivenessNone {
+		t.Errorf("claudesession SurfacesLiveness = %d, want LivenessNone", got)
 	}
 
 	// Every unmeasured adapter keeps the zero value (None).

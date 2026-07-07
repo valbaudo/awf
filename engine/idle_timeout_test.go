@@ -111,43 +111,6 @@ func TestRunAgent_NoIdleTimeout_CompletesNormally(t *testing.T) {
 	}
 }
 
-// TestRunAgent_StartupGraceProtectsSlowFirstEvent (test b): with a StartupGrace
-// LARGER than IdleTimeout, an adapter whose first event arrives after a gap longer
-// than IdleTimeout but shorter than StartupGrace must NOT be cancelled — the
-// initial idle window is the grace, not the (tighter) idle timeout. After that
-// first event the watchdog tightens; a trailing stall then cancels the step.
-//
-// The discriminator is whether the first event was actually EMITTED: if the timer
-// were armed with IdleTimeout (20ms) instead of StartupGrace (150ms), ctx would be
-// cancelled at 20ms and the adapter's run would return via its ctx.Done() branch
-// BEFORE emitting anything → zero buffered events. Grace working → one event.
-func TestRunAgent_StartupGraceProtectsSlowFirstEvent(t *testing.T) {
-	const (
-		idle            = 20 * time.Millisecond
-		firstEventDelay = 60 * time.Millisecond // > idle, < grace: only survives under grace
-		grace           = 150 * time.Millisecond
-	)
-	adapter := &idleTestAdapter{
-		run: func(ctx context.Context, events chan<- agent.AgentEvent) agent.AgentOutcome {
-			select {
-			case <-ctx.Done(): // cancelled before the first event → grace was NOT honored
-				return agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
-			case <-time.After(firstEventDelay):
-			}
-			events <- agent.AgentEvent{Kind: "progress"} // first (and only) event
-			<-ctx.Done()                                 // trailing stall until the tightened idle fires
-			return agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
-		},
-	}
-	dr := runIdleAgent(t, engine.ResolvedInputs{IdleTimeout: idle, StartupGrace: grace}, adapter)
-	if dr.Outcome != engine.OutcomeRetryableFailure {
-		t.Fatalf("Outcome = %v, want retryable_failure (trailing stall after the grace-protected first event)", dr.Outcome)
-	}
-	if len(dr.AgentEvents) != 1 {
-		t.Fatalf("buffered AgentEvents = %d, want 1 (the startup grace must protect the slow first event)", len(dr.AgentEvents))
-	}
-}
-
 // stallBackend embeds the fake backend and overrides Exec to produce no output
 // and block until ctx is cancelled — a stalled code step.
 type stallBackend struct{ *container.Fake }
