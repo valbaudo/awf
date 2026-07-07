@@ -1,0 +1,24 @@
+workflow: repetition-digest-fixture
+version: 1
+
+containers:
+  workspace:
+    image: "oci://registry.example.com/workspace@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+# Hand-expanded twin of repetition_anchors.yaml: same three steps, `container:`/`uses:`
+# spelled out on each instead of factored through &defaults/<<:, and no x-defaults
+# holder at all. Used to prove the anchor is a pure source-level convenience: it must
+# produce the byte-identical definition digest as this file.
+graph:
+  - id: draft
+    container: workspace
+    uses: anthropic/claude-code
+    with: { prompt: "Draft a product description from the input brief." }
+  - id: polish
+    container: workspace
+    uses: anthropic/claude-code
+    with: { prompt: "Polish the draft for tone and clarity." }
+  - id: proofread
+    container: workspace
+    uses: anthropic/claude-code
+    with: { prompt: "Proofread the polished copy for grammar." }

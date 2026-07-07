@@ -97,7 +97,9 @@ keys it does not recognize, so a typo (`ouput_files:`) or a GHA muscle-memory ke
 (`working-directory:`, a step-level `env:`) would otherwise silently do nothing;
 the validator flags any key that is not part of the workflow or step schema.
 Top-level `x-*` keys are exempt — they are reserved for YAML-anchor holders (for
-example `x-defaults: &defaults …`). Opaque and free-form value subtrees are not
+example `x-defaults: &defaults …`; see **REDUCING REPETITION** for the
+supported way to factor out repeated `container:`/`uses:`/`model:` boilerplate
+with anchors and `agents:` roles). Opaque and free-form value subtrees are not
 inspected: an agent step's `with:` block, JSON-Schema values (`output_schema`,
 the top-level `input_schema`, a tool's `input_schema`), and `outputs:` values may
 contain any keys.
@@ -520,6 +522,79 @@ example `with: { scope: "{{ run.id }}" }` — which the key-blind overlay places
 top of the role's static `with:`. (Top-level `env:` is a host-var **name**
 allowlist, not a value map, so it cannot carry a templated value — do not use
 `env:` as a scope-id channel.)
+
+# REDUCING REPETITION
+
+A real corpus of steps that share the same container, adapter, and model
+repeats those three fields on every step — a four-file workflow with fifty-one
+`container: workspace` lines is not unusual. AWF does not add a template
+language or an implicit-defaults layer for this. It blesses two ordinary,
+pre-existing mechanisms — YAML anchors and `agents:` roles — that already work
+end-to-end and already fold correctly into the definition digest.
+
+**YAML anchors, aliases, and the `<<:` merge key.** `&name` marks a mapping as
+an anchor, `*name` aliases it back in, and `<<:` merges an aliased mapping's
+keys into the surrounding one (a merged-in key loses to an explicit key on the
+same map — standard YAML merge-key precedence). A reserved top-level `x-*` key
+is where the anchor lives: it is not a workflow field, so **AWF1062** (unknown
+top-level key) tolerates any `x-`-prefixed name unconditionally — the same
+convention Compose uses for its own `x-*` extension fields.
+
+    x-defaults: &defaults
+      container: workspace
+      uses: anthropic/claude-code
+
+    graph:
+      - id: draft
+        <<: *defaults
+        with: { prompt: "Draft a product description from the input brief." }
+      - id: polish
+        <<: *defaults
+        with: { prompt: "Polish the draft for tone and clarity." }
+      - id: proofread
+        <<: *defaults
+        with: { prompt: "Proofread the polished copy for grammar." }
+
+is exactly equivalent to writing `container: workspace` and
+`uses: anthropic/claude-code` on all three steps by hand — scale either side to
+fifty-one steps and the difference is the whole point.
+
+**Digest-stability guarantee.** An anchor is resolved before the IR ever sees
+it. The YAML frontend (`frontend/yaml.DecodeWithRaw`) decodes in three stages:
+goccy parses the document bytes into a plain `map[string]any` — this is where
+`&`/`*`/`<<:` are expanded, a standard part of YAML parsing, not an
+AWF-specific pass — then that already-expanded tree is JSON-round-tripped into
+the typed `ir.Workflow`. **`ComputeDigest` never sees the source YAML**: it
+marshals the typed IR back to canonical JSON (RFC 8785). So an anchored
+workflow and its hand-expanded twin produce the byte-identical definition
+digest, and the `x-*` holder itself contributes nothing to that digest either
+way — it has no corresponding `Workflow` field, so the typed IR drops it
+whether or not anything aliased it. Anchors are consequently free to use for
+resume: they change nothing AWF pins against (see **CHECKPOINTING AND
+RESUME**, Pinning).
+
+**`agents:` roles.** A shared `model:`/`system_prompt:` is the other common
+repetition — the same two `with:` keys copy-pasted onto every agent step.
+`agents:` (see **AGENTS**) names that pair once and a step opts in with
+`uses: <role>` instead of `uses: <adapter-ref>`:
+
+    agents:
+      writer:
+        uses: anthropic/claude-code
+        model: opus
+        system_prompt: "You are a precise technical copy editor."
+
+Combined with the anchor above (`uses: writer` inside `x-defaults`, in place of
+`uses: anthropic/claude-code`), a step's own `with:` carries only what is
+actually per-step — here, `prompt:`.
+
+**No implicit `defaults:`.** AWF deliberately has no top-level `defaults:`
+block and no container/adapter inference: a step's `container:` and `uses:`
+are always read from that step (or from what an anchor expanded onto it)
+before the IR exists, never filled in silently at validate or run time.
+Anchors and roles are the two explicit mechanisms — what a reader sees
+post-expansion in `awf validate`'s errors, in a trace, or in the definition
+digest is exactly what ran; nothing is inferred behind their back.
 
 # STEPS
 

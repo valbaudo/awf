@@ -1,0 +1,24 @@
+workflow: repetition-digest-fixture
+version: 1
+
+containers:
+  workspace:
+    image: "oci://registry.example.com/workspace@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+# x-* is the reserved top-level namespace for YAML-anchor holders (AWF1062 tolerates
+# it — ir/validate_unknown_keys.go). It carries no Workflow field of its own, so it
+# is only ever a place to hang an anchor; it never reaches the IR.
+x-defaults: &defaults
+  container: workspace
+  uses: anthropic/claude-code
+
+graph:
+  - id: draft
+    <<: *defaults
+    with: { prompt: "Draft a product description from the input brief." }
+  - id: polish
+    <<: *defaults
+    with: { prompt: "Polish the draft for tone and clarity." }
+  - id: proofread
+    <<: *defaults
+    with: { prompt: "Proofread the polished copy for grammar." }
