@@ -343,13 +343,14 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// In-flight failure surfaced via launchOutcome.Err.
 	if launchOutcome.Err != nil {
 		if errors.Is(launchOutcome.Err, agent.ErrLiveReplayRequired) {
-			// R2: a stalled PersistentSession turn needing cross-process replay.
-			// Surface the ACTUAL session key the adapter used (from its Live handoff)
-			// so RunWithRetry can journal a resume.hint for a later `awf resume`.
+			// A stalled PersistentSession turn needing a replay. Propagate the signal:
+			// under recovery:continue RunWithRetry retries in-process (the adapter
+			// re-derives its session key and continues the live thread); otherwise it
+			// halts and a later `awf resume` re-derives defaultSessionKey(runID,nodePath)
+			// to read the on-disk live.SessionRecord — no journaled hint needed.
 			return DispatchResult{
 				Err:         launchOutcome.Err,
 				AgentEvents: bufferedEvents,
-				ResumeHint:  resumeHintFromLive(launchOutcome.Result.Live),
 			}, closedChunks(), launchOutcome.Err
 		}
 		dispatchOutcome := classifyAgentLaunchErr(launchOutcome.Err)
@@ -365,13 +366,15 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	if intent.ResolvedInputs.OutputSchema != nil {
 		if err := ValidateOutputMap(launchOutcome.Result.Output, intent.ResolvedInputs.OutputSchema); err != nil {
 			if launchOutcome.Result.Live != nil {
-				// R2: a live turn that completed but whose output failed schema
-				// validation needs a replay; carry its session key as a resume hint.
+				// A live turn that completed but whose output failed schema validation
+				// needs a replay. Signal ErrLiveReplayRequired: under recovery:continue
+				// RunWithRetry retries in-process; otherwise a later `awf resume`
+				// re-derives defaultSessionKey(runID,nodePath) to read the on-disk
+				// live.SessionRecord — no journaled hint needed.
 				return DispatchResult{
 					Outputs:     launchOutcome.Result.Output,
 					AgentEvents: bufferedEvents,
 					Err:         agent.ErrLiveReplayRequired,
-					ResumeHint:  launchOutcome.Result.Live.SessionKey,
 				}, closedChunks(), agent.ErrLiveReplayRequired
 			}
 			return DispatchResult{
@@ -521,17 +524,6 @@ func classifyAgentLaunchErr(err error) Outcome {
 		// *agent.ErrAgentLaunch and any other error class → transport.
 		return OutcomeRetryableFailure
 	}
-}
-
-// resumeHintFromLive returns the live session key an adapter surfaced on its
-// data-only Live handoff (for a cross-process resume hint), or "" when no handoff
-// is present. Nil-safe: a failed attempt that never reached the point of building
-// the Live metadata carries no hint.
-func resumeHintFromLive(l *agent.LiveDispatch) string {
-	if l == nil {
-		return ""
-	}
-	return l.SessionKey
 }
 
 // agentRetryAfter extracts an adapter-supplied Retry-After hint from a launch
