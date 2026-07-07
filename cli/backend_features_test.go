@@ -155,6 +155,13 @@ func TestCheckContainerlessRunCapability_BareRunDockerRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "bare") {
 		t.Errorf("err = %q, want the offending step path %q", err, "bare")
 	}
+	// The guard's message is sourced from ir.CatalogText("AWF1065"), not a
+	// hand-duplicated literal (see cli/backend_features.go) — assert the
+	// catalog's own wording actually appears in the composed error, so the
+	// two can never silently drift back apart.
+	if want := ir.CatalogText("AWF1065"); !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %q, want it to contain ir.CatalogText(\"AWF1065\") = %q", err, want)
+	}
 }
 
 func TestCheckContainerlessRunCapability_FakeAndNativeAccepted(t *testing.T) {

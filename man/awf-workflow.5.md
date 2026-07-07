@@ -25,7 +25,9 @@ definition (see **CHECKPOINTING AND RESUME**).
 
 # TOP LEVEL
 
-A workflow document has the following top-level shape:
+A workflow document has the following top-level shape. Here and in every field
+synopsis throughout this page, a field annotated `# optional` is optional; a
+field with no such annotation is required.
 
     workflow: <id>
     version: 1
@@ -157,11 +159,14 @@ error, just like drift in the root workflow.
     step as `uses: <role>`.
 
 **containers**
-:   Optional, but required in practice for any step that names a container (every
-    `run:` step and every containerful agent step does — `container:` must resolve
-    to a declared name, else **AWF1009**). A fully containerless workflow — for
-    example one whose only steps use the `awf/llm` runtime — needs no `containers:`
-    block at all (see **CONTAINERS**).
+:   Optional, but required in practice for any step that names a container
+    (`container:` must resolve to a declared name, else **AWF1009**). A code
+    (`run:`) step MAY name one, but MAY also omit `container:` entirely — a bare
+    `run:` executes host-side under the native sandbox and needs no declared
+    container (see **Code step (run)**); every containerful agent step still
+    requires one. A fully containerless workflow — for example one whose only
+    steps use the `awf/llm` runtime — needs no `containers:` block at all (see
+    **CONTAINERS**).
 
 **tools**
 :   Optional. A map of named tool definitions offered to `react:` steps (see
@@ -633,7 +638,7 @@ long turn can be killed and retried.
 ## Code step (run)
 
     - id: <id>
-      container: <name>
+      container: <name>             # optional; a bare run: executes host-side under the native sandbox
       run: <command>
       timeout: <dur>                 # optional; wall-clock; on expiry -> retryable_failure
       # timeout: { wall: <dur>, idle: <dur> }   # ...or a map: add an idle (no-output) deadline
@@ -655,6 +660,15 @@ unless its code is declared permanent (see **OUTCOMES, RETRY, AND REPAIR**).
 `run:`'s cwd, `$AWF_OUTPUT`/`$AWF_STAGING_ROOT` paths, `env:` forwarding, and
 resource-limit handling all differ by backend — see
 **STEP EXECUTION CONTRACT**.
+
+**container**
+:   Optional. A `run:` step MAY name a `containers:`-declared container, or
+    MAY omit `container:` entirely. A bare (container-less) `run:` executes
+    host-side under the native backend's sandbox — `auto` resolves it to native
+    when nothing else in the workflow forces docker. An explicit
+    `--backend docker` rejects a bare `run:` step outright at run start
+    (**AWF1065**): docker has no container to run it in, so either declare a
+    `container:` for the step or run under native.
 
 ## Agent step (uses)
 
@@ -694,8 +708,9 @@ format never hard-codes one harness's options.
     performs its work without a container, for example via a direct network call
     — may omit `container:`; the runtime is then resolved and pinned with no
     container. A `container:` that is present must still resolve to a declared
-    container. Code (`run:`) steps and non-containerless agent runtimes still
-    require a container.
+    container. Non-containerless agent runtimes still require a container. Code
+    (`run:`) steps have their own, separate container-optionality rule — see
+    **Code step (run)**.
 
 **with**
 :   Required. Opaque runtime config (one runtime takes `{model, prompt, tools,
@@ -1232,7 +1247,7 @@ not `break`: it ends the current iteration/branch, not a whole loop.
         as: <name>                   # each element bound as {{ <name>.<...> }} and {{ <name>.index }}
         container: <name>            # per-item container/compose instance (one per element)
         image: <template>            # optional; the per-element container's image, resolved at runtime
-        concurrency: <n>             # max elements in flight at once
+        concurrency: <n>             # optional; default 1 (serial); max elements in flight at once
         min_success: <ratio|n>       # optional; fan-in succeeds if at least this many do (default: all)
         body: [<node>...]
         reduce:                      # optional; fan-IN — collapse the N branch outputs to one

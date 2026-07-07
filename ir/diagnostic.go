@@ -246,3 +246,16 @@ var catalog = map[string]string{
 	"AWF5010":                   "map aggregate product may only be referenced outside its producing map",
 	"AWF5011":                   "map aggregate product id is only supported for a single non-gate non-loop map",
 }
+
+// CatalogText returns the catalog's stable message text for a diagnostic
+// code, or "" if code is not registered. catalog itself stays unexported (it
+// is validate's internal composition table, keyed by ad hoc call sites across
+// ir/*.go), but some codes — AWF1065 chief among them — are emitted OUTSIDE
+// ir/ entirely (cli/backend_features.go's run-start capability guard; see the
+// AWF1065 catalog comment above) and until now had no way to read the
+// catalog's text without hand-duplicating it as a literal. CatalogText is
+// that read-only accessor: a second call site composing the same message
+// from the same code can no longer drift from the catalog's wording.
+func CatalogText(code string) string {
+	return catalog[code]
+}

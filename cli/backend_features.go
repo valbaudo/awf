@@ -132,11 +132,11 @@ func checkContainerlessRunCapability(ld *ir.LoadedDefinition, backendKind string
 	if !ok {
 		return nil
 	}
-	// Message text mirrors catalog["AWF1065"] (ir/diagnostic.go) verbatim; cli
-	// cannot reference the unexported catalog map directly, so it is
-	// deliberately duplicated here — keep the two in sync on edit (same
-	// cross-package pattern as the AWF1025 reference comment in cli/run.go).
-	return fmt.Errorf("AWF1065: %s: a container-less `run:` step requires native execution; it is incompatible with `--backend docker` — declare a `container:` or run native", path)
+	// Message text is sourced from ir.CatalogText("AWF1065") (ir/diagnostic.go)
+	// — the exported read-only accessor onto the unexported catalog map — so
+	// this wire text can never drift from the catalog's. Only the dynamic step
+	// path is composed here.
+	return fmt.Errorf("AWF1065: %s: %s", path, ir.CatalogText("AWF1065"))
 }
 
 // firstNativeIncompatibleFeature detects only the features native genuinely

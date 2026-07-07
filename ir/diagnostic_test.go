@@ -59,6 +59,26 @@ func TestCatalogCodesAreUnique(t *testing.T) {
 	}
 }
 
+// TestCatalogText_AWF1065NonEmpty guards the exported CatalogText accessor
+// cli/backend_features.go's AWF1065 run-start guard now sources its wire
+// text from, instead of hand-duplicating the catalog string as a literal
+// (see the AWF1065 catalog comment above). If this ever goes empty, that
+// call site silently loses its message.
+func TestCatalogText_AWF1065NonEmpty(t *testing.T) {
+	if got := CatalogText("AWF1065"); got == "" {
+		t.Fatal("CatalogText(\"AWF1065\") = \"\", want the catalog's AWF1065 message")
+	}
+}
+
+// TestCatalogText_UnknownCodeEmpty locks the "absent -> empty string"
+// contract (a plain map lookup with the zero value, not a panic or a
+// synthesized placeholder).
+func TestCatalogText_UnknownCodeEmpty(t *testing.T) {
+	if got := CatalogText("AWF9999"); got != "" {
+		t.Errorf("CatalogText(\"AWF9999\") = %q, want \"\" (unregistered code)", got)
+	}
+}
+
 func TestCatalogIncludesLoaderDiagnosticCodes(t *testing.T) {
 	for _, code := range []string{
 		"AWF_IMPORT_CYCLE",
