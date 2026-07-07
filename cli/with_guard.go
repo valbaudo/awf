@@ -55,7 +55,23 @@ func checkWithConfigForLoadedDefinition(ld *ir.LoadedDefinition, resolver agent.
 				return // unresolved ref: resolveRuntimes hard-errors separately
 			}
 			if err := adapter.ValidateConfig(step.With); err != nil {
-				if suppressTemplatedValueErr(err, step.With) {
+				// Locate a templated offending value across the role⊕step with:, not
+				// just step.With — a role may supply the templated key (AWF1067 has
+				// proved role templates are input.*-only; their resolved value is
+				// validated at execution, not here).
+				merged := step.With
+				if rp, ok := adapter.(agent.RoleWithProvider); ok {
+					if role := rp.RoleWith(); len(role) > 0 {
+						merged = make(ir.RawConfig, len(role)+len(step.With))
+						for k, v := range role {
+							merged[k] = v
+						}
+						for k, v := range step.With {
+							merged[k] = v // step wins
+						}
+					}
+				}
+				if suppressTemplatedValueErr(err, merged) {
 					return
 				}
 				walkErr = fmt.Errorf("step %q (uses: %s): %w", nodePath, ref, err)
