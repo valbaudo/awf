@@ -242,6 +242,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		Uses:             intent.ResolvedInputs.Uses,
 		RunContext:       intent.RunContext,
 		With:             intent.ResolvedInputs.With,
+		RoleWith:         intent.ResolvedInputs.RoleWith,
 		OutputSchema:     intent.ResolvedInputs.OutputSchema,
 		IdempotencyKey:   intent.IdempotencyKey,
 		Feedback:         intent.ResolvedInputs.Feedback, // slice 5.3

@@ -318,9 +318,31 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 		workflowDir = filepath.Dir(mod.WorkflowPath)
 	}
 
+	// Role with: substitution (input-parameterizable roles). A role-backed adapter
+	// carries a raw, possibly {{ input.* }}-templated role with:; substitute it
+	// against THIS step's scope (which binds input.* to the owning module's input —
+	// root run input for a root step, child call input for a child step, via
+	// childCtx.input) so the role layer merges as already-rendered config. The load
+	// guard (AWF1067) has already proved these templates are input.*-only.
+	var resolvedRoleWith ir.RawConfig
+	if ictx.resolver != nil {
+		if adp, ok := ictx.resolver.Lookup(uses); ok {
+			if rp, ok := adp.(agent.RoleWithProvider); ok {
+				if raw := rp.RoleWith(); len(raw) > 0 {
+					resolvedRoleWith, err = substituteRawConfig(raw, scope)
+					if err != nil {
+						return failStep(log, path, OutcomePermanentFailure,
+							fmt.Errorf("engine.runAgentStep: substitute role with: at %q: %w", path, err))
+					}
+				}
+			}
+		}
+	}
+
 	resolved := ResolvedInputs{
 		Uses:                  uses,
 		With:                  resolvedWith,
+		RoleWith:              resolvedRoleWith,
 		WorkflowDir:           workflowDir,
 		OutputFiles:           outputFiles,
 		OutputArtifact:        as.OutputArtifact,

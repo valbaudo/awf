@@ -2342,3 +2342,76 @@ type autoTreeFake struct {
 func (a *autoTreeFake) ReadTreeAt(_ context.Context, _ container.Handle, _ string) ([]byte, error) {
 	return container.BuildTreeTar(map[string][]byte{"-work/s.jsonl": []byte("{}")})
 }
+
+// TestRunAgentStep_RoleModelResolvedFromInput — Task 4. A role's model:
+// carries {{ input.model }} (AWF1067 permits input.*-only templates in a
+// role's model/system_prompt/top-level with: values). The engine must
+// substitute it against the step's scope (root step → run input) BEFORE the
+// DerivedAdapter merges it under the step's own with:, so the base adapter
+// never sees a literal `{{ }}` template. Registration mirrors
+// conformance/roles.go's testRoles (the conformance equivalent of
+// cli/registerRoles: base adapter registered first, then a DerivedAdapter
+// wrapping it under the role name with the role's model folded into its
+// with: as an opaque key, matching cli/agent_registry.go's roleWithFor).
+func TestRunAgentStep_RoleModelResolvedFromInput(t *testing.T) {
+	const yaml = `workflow: agent-step-role-model
+version: 1
+input_schema:
+  type: object
+  required: [model]
+  additionalProperties: false
+  properties:
+    model: { type: string }
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+agents:
+  judge:
+    uses: anthropic/claude-code
+    model: "{{ input.model }}"
+graph:
+  - id: triage
+    container: lab
+    uses: judge
+    with:
+      prompt: "hi"
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	var reg agent.Registry
+	fk := fake.New("anthropic/claude-code").Script(0, fake.Result{})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register base: %v", err)
+	}
+	if err := reg.Register(agent.NewDerivedAdapter("judge", fk, ir.RawConfig{"model": "{{ input.model }}"})); err != nil {
+		t.Fatalf("Register role: %v", err)
+	}
+
+	be := container.NewFake()
+	handles := map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}}
+	dispatcher := &engine.LocalDispatcher{Backend: be, Handles: handles, Resolver: &reg}
+
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	blobs := state.NewInMemoryBlobs()
+	rs := engine.NewRunState("r1", "d", map[string]any{"model": "opus"})
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+
+	calls := fk.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("fake.Calls len = %d, want 1", len(calls))
+	}
+	if got := calls[0].With["model"]; got != "opus" {
+		t.Errorf("With[model] = %v, want %q (role model should resolve from input.model, not leak the literal template)", got, "opus")
+	}
+}

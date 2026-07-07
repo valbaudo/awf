@@ -127,6 +127,13 @@ type ResolvedInputs struct {
 	Uses string       // matches AgentStep.Uses; LocalDispatcher.runAgent looks up resolver.Lookup(Uses)
 	With ir.RawConfig // post-template-substitution opaque adapter config; adapter.ValidateConfig + adapter.Launch read it
 
+	// RoleWith is the engine-resolved (scope-substituted) role with: for a
+	// role-backed agent step, threaded to AgentInvocation.RoleWith. Nil for
+	// a non-role step. The dispatcher forwards it verbatim (no substitution here —
+	// substitution already happened engine-side, matching the ResolvedInputs
+	// "no template.Substitute inside the dispatcher" contract).
+	RoleWith ir.RawConfig
+
 	// Slice 5.3 — agent-step gate feedback (the prior evaluator verdict on
 	// repair attempts N>1). Populated by engine/agent_step.go runAgentStep
 	// from the enclosing gate's runstate.LookupGateAttempts(gatePath) when
