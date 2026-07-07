@@ -216,3 +216,49 @@ func TestDerivedAdapterForwardsRunToolLoop(t *testing.T) {
 		t.Fatalf("role with: not merged: %v", base.gotWith.With)
 	}
 }
+
+// A fake base adapter that records the merged With it was launched with.
+type recordingBase struct {
+	agent.Adapter
+	launched ir.RawConfig
+}
+
+func (r *recordingBase) Launch(ctx context.Context, h container.Handle, inv agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+	r.launched = inv.With
+	oc := make(chan agent.AgentOutcome, 1)
+	oc <- agent.AgentOutcome{Result: agent.AgentResult{}}
+	close(oc)
+	ev := make(chan agent.AgentEvent)
+	close(ev)
+	return ev, oc, nil
+}
+
+func TestDerivedAdapter_RoleWithOverride_UsedAtLaunch(t *testing.T) {
+	base := &recordingBase{}
+	d := agent.NewDerivedAdapter("judge", base, ir.RawConfig{"model": "{{ input.model }}"}) // raw
+	// Engine supplies the scope-resolved role with:
+	inv := agent.AgentInvocation{Uses: "judge", RoleWith: ir.RawConfig{"model": "gpt-5.5"}, With: ir.RawConfig{"prompt": "hi"}}
+	_, oc, err := d.Launch(context.Background(), container.Handle{}, inv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-oc
+	if got := base.launched["model"]; got != "gpt-5.5" {
+		t.Fatalf("expected resolved role model gpt-5.5, got %v (leaked raw template?)", got)
+	}
+	if base.launched["prompt"] != "hi" {
+		t.Fatalf("step with: lost")
+	}
+}
+
+func TestDerivedAdapter_RoleWithAccessor_ReturnsRawCopy(t *testing.T) {
+	d := agent.NewDerivedAdapter("judge", &recordingBase{}, ir.RawConfig{"model": "{{ input.model }}"})
+	got := d.RoleWith()
+	if got["model"] != "{{ input.model }}" {
+		t.Fatalf("accessor should return raw role with, got %v", got)
+	}
+	got["model"] = "mutated"
+	if d.RoleWith()["model"] != "{{ input.model }}" {
+		t.Fatalf("accessor must return a copy, not alias internal state")
+	}
+}

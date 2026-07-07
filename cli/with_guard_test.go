@@ -9,7 +9,7 @@ import (
 )
 
 // withGuardFake wraps *fake.Fake (permissive by default) and overrides
-// ValidateConfig to exercise the two ErrInvalidConfig shapes the run-start
+// ValidateConfig to exercise the ErrInvalidConfig shapes the run-start
 // with:-config guard must distinguish:
 //
 //   - an unknown key "promt" (a typo of "prompt") → KeyUnknown: true. A key
@@ -19,6 +19,10 @@ import (
 //     BOTH a literal bad value ("bogus") and a not-yet-substituted template
 //     ("{{x}}") identically — it's the GUARD's suppressTemplatedValueErr,
 //     not this stub, that must tell them apart.
+//   - key "model" set to anything other than "known-model" → KeyUnknown:
+//     false, a value-shape error, same as "effort" but exercised through a
+//     role's with: rather than the step's (see
+//     TestWithGuard_RoleTemplatedValue_NotRejected).
 type withGuardFake struct {
 	*fake.Fake
 }
@@ -29,6 +33,9 @@ func (f *withGuardFake) ValidateConfig(with ir.RawConfig) error {
 	}
 	if v, ok := with["effort"]; ok && v != "low" && v != "medium" && v != "high" {
 		return &agent.ErrInvalidConfig{Ref: f.Ref(), Key: "effort", Reason: "must be low, medium, or high", KeyUnknown: false}
+	}
+	if v, ok := with["model"]; ok && v != "known-model" {
+		return &agent.ErrInvalidConfig{Ref: f.Ref(), Key: "model", Reason: "unknown model id", KeyUnknown: false}
 	}
 	return nil
 }
@@ -102,5 +109,33 @@ func TestWithGuard_UnknownKeyRejectedEvenWhenTemplatedValue(t *testing.T) {
 	err := checkWithConfigForLoadedDefinition(ld, reg, nil)
 	if err == nil {
 		t.Fatal("checkWithConfigForLoadedDefinition returned nil, want an error (KeyUnknown must win over template-suppression)")
+	}
+}
+
+// TestWithGuard_RoleTemplatedValue_NotRejected: a role whose with: supplies a
+// templated key (e.g. model: "{{ input.model }}") must not be rejected by the
+// run-start guard — DerivedAdapter.ValidateConfig merges the role's raw with:
+// under the step's before delegating to the base adapter, so the value-shape
+// error surfaces on a key the STEP never set. The guard must locate it in the
+// role⊕step merge, not just step.With, to suppress it (its resolved value
+// can't be known until execution).
+func TestWithGuard_RoleTemplatedValue_NotRejected(t *testing.T) {
+	base := &withGuardFake{Fake: fake.New("test/agent")}
+	derived := agent.NewDerivedAdapter("reviewer", base, ir.RawConfig{"model": "{{ input.model }}"})
+	var reg agent.Registry
+	if err := reg.Register(derived); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	wf := &ir.Workflow{
+		Agents: map[string]ir.AgentRole{"reviewer": {Uses: "test/agent"}},
+		Graph: ir.NodeList{
+			&ir.AgentStep{ID: "step1", Uses: "reviewer", Container: "lab"},
+		},
+	}
+	ld := &ir.LoadedDefinition{Workflow: wf}
+
+	err := checkWithConfigForLoadedDefinition(ld, &reg, nil)
+	if err != nil {
+		t.Fatalf("checkWithConfigForLoadedDefinition = %v, want nil (templated role value must be suppressed)", err)
 	}
 }

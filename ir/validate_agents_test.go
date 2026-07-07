@@ -1,6 +1,9 @@
 package ir
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Tests for the agents: role-definition + uses:-resolution pass — see validate_agents.go
 // (AWF1033 = role definition fault; AWF1034 = uses: reference fault).
@@ -98,4 +101,112 @@ func TestValidateAgentsUsesBaseRefNoRole(t *testing.T) {
 		},
 	})
 	assertNoErrorCode(t, Validate(ld), "AWF1034")
+}
+
+// --- AWF1067: role model/system_prompt/top-level-string with: templates are
+// input.* only; any template in a nested/non-string position is rejected outright. ---
+
+// rolesGuard1067 validates a workflow whose only agents: entry is `role` (referenced
+// by one step so the workflow is otherwise well-formed) and returns the AWF1067
+// diagnostic messages found (empty if none).
+func rolesGuard1067(t *testing.T, role AgentRole) []Diagnostic {
+	t.Helper()
+	ld := makeLD(&Workflow{
+		ID: "role-template", Version: 1,
+		Agents:     map[string]AgentRole{"r": role},
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&AgentStep{ID: "s", Container: "c", Uses: "r", With: RawConfig{"prompt": "hi"}},
+		},
+	})
+	var diags []Diagnostic
+	for _, d := range Validate(ld) {
+		if d.Code == "AWF1067" {
+			diags = append(diags, d)
+		}
+	}
+	return diags
+}
+
+func TestRoleTemplate_InputRoot_OK(t *testing.T) {
+	got := rolesGuard1067(t, AgentRole{Uses: "openai/codex", Model: "{{ input.model }}"})
+	if len(got) != 0 {
+		t.Fatalf("expected no AWF1067 for input.* root, got %v", got)
+	}
+}
+
+func TestRoleTemplate_NonInputRoot_Rejected(t *testing.T) {
+	for _, ref := range []string{"{{ run.id }}", "{{ step.x.y }}", "{{ item.z }}"} {
+		got := rolesGuard1067(t, AgentRole{Uses: "openai/codex", Model: ref})
+		if len(got) == 0 {
+			t.Fatalf("expected AWF1067 for non-input root %q, got none", ref)
+		}
+	}
+}
+
+func TestRoleTemplate_SystemPromptAndStringWith_Checked(t *testing.T) {
+	got := rolesGuard1067(t, AgentRole{
+		Uses:         "openai/codex",
+		SystemPrompt: "{{ run.id }}",                        // non-input → reject
+		With:         RawConfig{"api_base": "{{ step.a }}"}, // top-level string, non-input → reject
+	})
+	var sawSystemPrompt, sawWithAPIBase bool
+	for _, d := range got {
+		if strings.Contains(d.Path, "system_prompt") {
+			sawSystemPrompt = true
+		}
+		if strings.Contains(d.Path, "with.api_base") {
+			sawWithAPIBase = true
+		}
+	}
+	if !sawSystemPrompt {
+		t.Fatalf("expected an AWF1067 diagnostic at the system_prompt position, got %v", got)
+	}
+	if !sawWithAPIBase {
+		t.Fatalf("expected an AWF1067 diagnostic at the with.api_base position, got %v", got)
+	}
+}
+
+func TestRoleTemplate_NestedTemplate_Rejected(t *testing.T) {
+	// A template in a NESTED position is never substituted (would leak literally).
+	got := rolesGuard1067(t, AgentRole{
+		Uses: "openai/codex",
+		With: RawConfig{"mcp_servers": []any{map[string]any{"url": "{{ input.url }}"}}},
+	})
+	if len(got) == 0 {
+		t.Fatalf("expected AWF1067 for nested template, got none")
+	}
+	if !strings.Contains(strings.ToLower(got[0].Message), "nested") {
+		t.Fatalf("message should name the nested position, got %q", got[0].Message)
+	}
+}
+
+func TestRoleTemplate_NestedMapKey_Rejected(t *testing.T) {
+	// A template in a NESTED map KEY is never substituted — engine.substituteRawConfig
+	// only walks top-level string VALUES, so a key template would leak literally.
+	got := rolesGuard1067(t, AgentRole{
+		Uses: "openai/codex",
+		With: RawConfig{"headers": map[string]any{"{{ input.header_name }}": "x"}},
+	})
+	if len(got) == 0 {
+		t.Fatalf("expected AWF1067 for a templated nested map key, got none")
+	}
+}
+
+func TestRoleTemplate_TopLevelWithKey_Rejected(t *testing.T) {
+	// A template in a TOP-LEVEL with: key is also never substituted (only VALUES are).
+	got := rolesGuard1067(t, AgentRole{
+		Uses: "openai/codex",
+		With: RawConfig{"{{ input.k }}": "v"},
+	})
+	if len(got) == 0 {
+		t.Fatalf("expected AWF1067 for a templated top-level with: key, got none")
+	}
+}
+
+func TestRoleTemplate_MalformedTemplate_Rejected(t *testing.T) {
+	got := rolesGuard1067(t, AgentRole{Uses: "openai/codex", Model: "{{ input.model"}) // unterminated
+	if len(got) == 0 {
+		t.Fatalf("expected AWF1067 for malformed template, got none")
+	}
 }

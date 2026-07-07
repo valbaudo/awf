@@ -191,11 +191,21 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// checkWithConfigForLoadedDefinition) already validated every agent step's
 	// with: before the log opened; this is the double-check at dispatch time per
 	// the Phase 5 design slice 5.2 row "Calls Adapter.ValidateConfig (defensively)".
-	if err := adapter.ValidateConfig(intent.ResolvedInputs.With); err != nil {
+	// For a role-backed step with a resolved role layer, validate what Launch will
+	// actually send (the RESOLVED role with:, not the raw {{ input.* }} template) —
+	// otherwise a value-validated key (e.g. codex's effort) would spuriously fail
+	// on the still-templated raw form even though the resolved value is valid.
+	var vcErr error
+	if rv, ok := adapter.(agent.RoleResolvedValidator); ok && intent.ResolvedInputs.RoleWith != nil {
+		vcErr = rv.ValidateResolvedConfig(intent.ResolvedInputs.RoleWith, intent.ResolvedInputs.With)
+	} else {
+		vcErr = adapter.ValidateConfig(intent.ResolvedInputs.With)
+	}
+	if vcErr != nil {
 		// Permanent failure: bad config won't fix itself on retry.
 		return DispatchResult{
 			Outcome: OutcomePermanentFailure,
-			Err:     err,
+			Err:     vcErr,
 		}, nil, nil
 	}
 
@@ -242,6 +252,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		Uses:             intent.ResolvedInputs.Uses,
 		RunContext:       intent.RunContext,
 		With:             intent.ResolvedInputs.With,
+		RoleWith:         intent.ResolvedInputs.RoleWith,
 		OutputSchema:     intent.ResolvedInputs.OutputSchema,
 		IdempotencyKey:   intent.IdempotencyKey,
 		Feedback:         intent.ResolvedInputs.Feedback, // slice 5.3
