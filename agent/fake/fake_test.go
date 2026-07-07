@@ -314,6 +314,57 @@ func TestFake_Launch_FailureBranch_OutcomeCarriesErr(t *testing.T) {
 	}
 }
 
+func TestFake_Launch_StallUntilCancel(t *testing.T) {
+	// Trailing-stall mode: after emitting the scripted Events the fake holds the
+	// events channel OPEN (does not close it) until ctx is cancelled, then yields
+	// an outcome carrying ctx.Err(). This lets dispatcher idle-timeout tests drive
+	// a fake into the idle path — normally the fake closes events immediately and
+	// the dispatcher disarms the idle timer on channel close.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	f := fake.New("anthropic/claude-code").Script(0, fake.Result{
+		Output:           map[string]any{"ok": true},
+		Events:           []agent.AgentEvent{{Kind: "progress"}},
+		StallUntilCancel: true,
+	})
+
+	events, outcomeCh, err := f.Launch(ctx, container.Handle{Name: "lab"}, agent.AgentInvocation{Uses: "anthropic/claude-code"})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	// The one scripted event arrives first.
+	ev, ok := <-events
+	if !ok {
+		t.Fatal("events channel closed before any event; want the scripted event first")
+	}
+	if ev.Kind != "progress" {
+		t.Fatalf("event.Kind = %q, want %q", ev.Kind, "progress")
+	}
+
+	// The channel must stay OPEN (blocked) until ctx is cancelled — the trailing stall.
+	select {
+	case ev, ok := <-events:
+		if !ok {
+			t.Fatal("events channel closed before ctx cancel; trailing stall did not hold it open")
+		}
+		t.Fatalf("unexpected extra event before cancel: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+		// Good: still blocked/open.
+	}
+
+	// Cancel — the stall releases, closes events, and yields ctx.Err().
+	cancel()
+
+	for range events { // drains to close
+	}
+	outcome := <-outcomeCh
+	if !errors.Is(outcome.Err, context.Canceled) {
+		t.Fatalf("outcome.Err = %v, want context.Canceled", outcome.Err)
+	}
+}
+
 func TestFake_Launch_TranscriptRoundTrip(t *testing.T) {
 	// Phase 3 Task 3.3: Result.Transcript is copied verbatim into
 	// AgentResult.Transcript so conformance tests can assert per-turn content
