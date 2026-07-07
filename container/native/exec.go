@@ -8,9 +8,20 @@ import (
 	"os/exec"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/valbaudo/awf/container"
 )
+
+// execWaitDelay bounds how long, after the process exits or ctx is cancelled, Go
+// waits for the command's I/O pipes to drain before forcibly closing them. It is
+// the cross-platform backstop to the process-group reap (hardenProcessCleanup):
+// even if a workload double-forks a descendant out of the group and that
+// descendant keeps a pipe write-end open, the reader goroutines are guaranteed to
+// unblock within this bound instead of deadlocking the run forever. Generous
+// enough never to fire on a healthy run (the process's own exit closes the pipes
+// first).
+const execWaitDelay = 10 * time.Second
 
 // Exec runs cmd.Run via `sh -c` with cmd.Dir = handle workdir. Host
 // env is inherited and merged with cmd.Env (cmd.Env wins on conflict).
@@ -25,14 +36,19 @@ import (
 // 1-buffered result channel. chunks closes BEFORE result emits — every
 // chunk is materialized before the result is observable.
 //
-// ctx-cancel: Go 1.20+ exec.CommandContext sets Cmd.Cancel =
-// cmd.Process.Kill by default. ctx.Done() -> SIGKILL -> pipes close ->
-// reader goroutines exit -> wg.Wait returns. Pre-slice-5.3 the ctx.Err
-// came back via Backend.Exec's err return; the streaming refactor
-// surfaces it via ExecResult.Err instead so the result channel can
-// carry it without short-circuiting the chunk drain. c.Wait's error is
-// discarded; ProcessState.ExitCode() is the meaningful signal (matches
-// docker's ContainerExecInspect pattern and pre-5.3 native behavior).
+// ctx-cancel: the default exec.CommandContext cancel SIGKILLs only the
+// DIRECT child, but the workload runs as a GRANDCHILD (under `sh -c`, and a
+// sandbox trampoline in production), so a bare kill leaves the grandchild
+// alive holding the pipe write-ends open — the reader goroutines never see
+// EOF and the run deadlocks (customer-reported; docker solved the same class
+// with killExecTree, #18). hardenProcessCleanup (below, before Start)
+// replaces the default with a process-GROUP kill (Setpgid + SIGKILL -pgid),
+// reaping the grandchild and closing the pipes; Cmd.WaitDelay is the backstop
+// for a straggler that escapes the group. On cancel the ctx.Err surfaces via
+// ExecResult.Err (not the err return) so the result channel carries it
+// without short-circuiting the chunk drain. c.Wait's error is discarded;
+// ProcessState.ExitCode() is the meaningful signal (matches docker's
+// ContainerExecInspect pattern and pre-5.3 native behavior).
 //
 // Phase 2 + slice 5.3 contract: on non-nil err return, BOTH channels
 // are nil (callers MUST check err before receiving on either).
@@ -75,6 +91,15 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 	}
 	c.Dir = r.workdir
 	c.Env = append(c.Environ(), envMapToSlice(cmd.Env)...)
+
+	// Reap the whole process tree on ctx-cancel (timeout), not just the direct
+	// child: the workload runs under `sh -c` / a sandbox trampoline as a
+	// grandchild, which would otherwise survive SIGKILL and hold the stdout/stderr
+	// pipe write-ends open, deadlocking the reader goroutines below (the bug the
+	// docker backend fixed via killExecTree, #18). WaitDelay is the cross-platform
+	// backstop for a straggler that escapes the process group.
+	hardenProcessCleanup(c)
+	c.WaitDelay = execWaitDelay
 
 	stdoutPipe, err := c.StdoutPipe()
 	if err != nil {
