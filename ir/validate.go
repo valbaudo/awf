@@ -7,6 +7,8 @@ package ir
 //
 // Passes (each lives in its own validate_*.go file):
 //
+//   - recovery   (AWF1064) — retry.recovery is one of "continue"/"restart"/unset
+//     (a typo would silently fall back to the per-adapter default)
 //   - structural (AWF1xxx)  — §4 step shape, §5 control-flow field requirements, §3
 //     container shape, parallel/map distinct-container rule
 //   - agents     (AWF1033/4) — top-level agents: role-definition shape (non-empty
@@ -61,6 +63,7 @@ func Validate(ld *LoadedDefinition) []Diagnostic {
 		modLD := loadedDefinitionForValidationModule(mod)
 		validateUnknownKeys(mod, c)
 		validateDurationScalars(mod, c)
+		validateRecovery(modLD, c)
 		validateStructural(modLD, c)
 		validateAgents(modLD, c)
 		validateSkills(modLD, c)
