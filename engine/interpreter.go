@@ -397,9 +397,46 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		IdempotencyKey: idemKey,
 	}
 
+	// F4a: a bare `run:` step (no declared container:) gets a per-step
+	// implicit host-workspace handle, provisioned HERE at dispatch time —
+	// mirrors engine/map.go dispatchItem's per-item container provisioning.
+	// Needs Backend access, so downcast like runMap does (Design Q2: Phase
+	// 3's one production Dispatcher is *LocalDispatcher). Keyed by this
+	// step's own node path (BareRunHandleKey) so two bare steps running
+	// concurrently under Parallel (which shares one ictx.dispatcher across
+	// branches — engine/parallel.go) never share a handle: each branch
+	// downcasts the SAME ld but clones its OWN dispatcher via WithRawHandle,
+	// never mutating ld.Handles itself.
+	//
+	// Unlike runMap's downcast, a failed downcast here is NOT an error: many
+	// engine-package unit tests (try/catch/finally, parallel, gate, ...) build
+	// bare `ir.CodeStep{Container: ""}` fixtures against a scripted test
+	// Dispatcher (e.g. scriptedDispatcher in try_test.go) that keys purely off
+	// step ID and never consults Container/Handles at all — Container is just
+	// left unset because those tests don't care. Production always dispatches
+	// through *LocalDispatcher (Design Q2), so skipping provisioning for any
+	// other concrete Dispatcher only affects test scaffolding, never a real run.
+	dispatcher := ictx.dispatcher
+	if cs.Container == "" {
+		if ld, ok := ictx.dispatcher.(*LocalDispatcher); ok {
+			handle, err := ld.Backend.Create(ctx, hostWorkspaceSpec(path))
+			if err != nil {
+				return "", fmt.Errorf("engine.Run: create per-step host workspace at %q: %w", path, err)
+			}
+			defer func() {
+				// Destroy errors at step end are not fatal — the step already
+				// terminated and this is cleanup. context.Background() so a
+				// cancelled parent ctx still tears the workspace down (mirrors
+				// dispatchItem's Destroy defer in engine/map.go).
+				_ = ld.Backend.Destroy(context.Background(), handle)
+			}()
+			dispatcher = ld.WithRawHandle(BareRunHandleKey(path), handle)
+		}
+	}
+
 	appendNodeStarted(ictx.log, path, "code")
 
-	dr, chunks, runErr := RunWithRetry(ctx, ictx.dispatcher, intent, policy, ictx.clk, ictx.log)
+	dr, chunks, runErr := RunWithRetry(ctx, dispatcher, intent, policy, ictx.clk, ictx.log)
 	// Drain the live-tap channel (single consumer — fine for Phase 2's
 	// pre-closed fake channels; Phase 4's Docker streaming will require
 	// this be moved to a goroutine).

@@ -126,3 +126,39 @@ func TestStaticPlusRuntime_Compose(t *testing.T) {
 		t.Errorf("stepPath = %q", stepPath)
 	}
 }
+
+// TestBareRunHandleKey pins F4a's reserved-key scheme: keyed by node path
+// (so two bare steps never collide), and provably distinct from every real
+// QualifiedContainerKey result (declared containers can't contain ':' —
+// ir.containerNamePattern — and a qualified key only ever inserts "::").
+func TestBareRunHandleKey(t *testing.T) {
+	cases := []struct {
+		nodePath string
+		want     string
+	}{
+		{"build", "_run:build"},
+		{"parallel[0].b0", "_run:parallel[0].b0"},
+		{"parallel[0].b1", "_run:parallel[0].b1"},
+	}
+	for _, c := range cases {
+		if got := BareRunHandleKey(c.nodePath); got != c.want {
+			t.Errorf("BareRunHandleKey(%q) = %q, want %q", c.nodePath, got, c.want)
+		}
+	}
+
+	// Two distinct node paths never collide.
+	if BareRunHandleKey("parallel[0].b0") == BareRunHandleKey("parallel[0].b1") {
+		t.Error("BareRunHandleKey collision across distinct node paths")
+	}
+
+	// Never collides with a plain declared-container key (no runtimeParent).
+	for _, container := range []string{"lab", "_run", "build"} {
+		if BareRunHandleKey("x") == QualifiedContainerKey("", container) {
+			t.Errorf("BareRunHandleKey collides with QualifiedContainerKey(\"\", %q)", container)
+		}
+	}
+	// Never collides with a call-scoped ("::"-qualified) declared-container key.
+	if BareRunHandleKey("x") == QualifiedContainerKey("build.workflow", "lab") {
+		t.Error("BareRunHandleKey collides with a call-scoped QualifiedContainerKey")
+	}
+}

@@ -127,6 +127,28 @@ func QualifiedContainerKey(runtimeParent, container string) string {
 	return runtimeParent + "::" + container
 }
 
+// bareRunHandleKeyPrefix reserves the Handles-map key namespace for F4a's
+// per-step implicit host-workspace handle (a bare `run:` code step — no
+// declared `container:`). It can never collide with a QualifiedContainerKey
+// result: declared container names match ir's containerNamePattern (no ':'),
+// and a qualified key only ever inserts "::" (runtimeParent is always
+// "workflow" or "<callPath>.workflow" — see CallWorkflowRuntimePath — so it
+// never ends in exactly "_run"), never a lone ':'. So no real Handles key can
+// start with "_run:".
+const bareRunHandleKeyPrefix = "_run:"
+
+// BareRunHandleKey returns the reserved Handles-map key for a bare code
+// step's per-step implicit host-workspace handle, keyed by the step's own
+// node path (deterministic) so two parallel bare steps never share a handle
+// (F4a; mirrors WithItemHandle's per-item keying in engine/map.go). The node
+// path is already call-workflow-qualified by construction (interpNodes is
+// called with parent=runtimeParent for a call's sub-graph — see
+// engine/call_step.go), so no separate RuntimeParent qualification is needed
+// here the way QualifiedContainerKey needs it for a bare workflow-declared name.
+func BareRunHandleKey(nodePath string) string {
+	return bareRunHandleKeyPrefix + nodePath
+}
+
 // ParentPath returns the runtime-address parent of a node path, and false when
 // the node is a top-level child of the run root (no parent segment).
 //

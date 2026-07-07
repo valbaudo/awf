@@ -131,7 +131,19 @@ func (d *LocalDispatcher) stageInputFiles(ctx context.Context, h container.Handl
 
 func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir.CodeStep) (DispatchResult, <-chan container.IOChunk, error) {
 	bare, svcOverride := SplitContainerRef(cs.Container)
-	handleKey := QualifiedContainerKey(d.RuntimeParent, bare)
+	var handleKey string
+	if bare == "" {
+		// F4a: a bare `run:` step (no declared container:) resolves to its
+		// per-step implicit host-workspace handle instead of
+		// QualifiedContainerKey(d.RuntimeParent, "") — a key that's never
+		// populated (there's no declared container named ""). The
+		// interpreter (runCodeStepWithContext) Creates this handle via
+		// hostWorkspaceSpec and registers it under this same key — via
+		// WithRawHandle — before dispatch.
+		handleKey = BareRunHandleKey(intent.Path)
+	} else {
+		handleKey = QualifiedContainerKey(d.RuntimeParent, bare)
+	}
 	h, ok := d.Handles[handleKey]
 	if !ok {
 		return DispatchResult{}, nil, fmt.Errorf("engine.LocalDispatcher: no handle for container %q (bare name %q, key %q) at path %q (interpreter must Create before dispatch)", cs.Container, bare, handleKey, intent.Path)
@@ -140,8 +152,11 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		h.Service = svcOverride // shallow clone — h is a Handle value type; no aliasing of d.Handles
 	}
 
-	// Code steps require a container (validated at load time), so no containerless
-	// guard is needed here (cf. runAgent). Stage input_files before exec.
+	// Code steps always dispatch against SOME handle — either a declared
+	// container (the common case) or, since F4a, a bare step's per-step
+	// implicit host-workspace handle (empty container:; no containerless
+	// guard needed the way runAgent needs one, since the handle above always
+	// exists by the time we get here). Stage input_files before exec.
 	if err := d.stageInputFiles(ctx, h, intent.ResolvedInputs.InputFiles, intent.Path); err != nil {
 		return DispatchResult{Outcome: OutcomeRetryableFailure, Err: err}, nil, nil
 	}
@@ -427,6 +442,35 @@ func ContainerSpecFor(wf *ir.Workflow, composeFiles map[string][]byte, name stri
 	return spec
 }
 
+// hostWorkspaceSpec builds the container.ContainerSpec for F4a's per-step
+// implicit host-workspace handle — a bare `run:` code step with no declared
+// container:. It carries no Image and no Compose:
+//
+//   - native.Backend.Create already ignores spec.Image (native isn't
+//     digest-pinned — decision 1) and only rejects spec.Compose != nil (which
+//     stays nil here), so it's treated as an ordinary per-container workdir.
+//   - container/fake.Create treats a spec with no Image/Compose as an
+//     ordinary empty-spec Create: it mints a fresh, isolated in-memory
+//     fakeHandle regardless of spec contents (container/fake.go Create),
+//     which is exactly the per-step isolation this needs.
+//
+// spec.Name is a "_run."-prefixed form of the step's node path: deterministic
+// (stable across resume — F4b's resume path reuses this same helper) and
+// guaranteed distinct from every OTHER Create call's spec.Name in the same
+// run. Declared containers (ContainerSpecFor) and map per-item containers
+// (engine/map.go dispatchItem, "<container>-item-N") both derive their Name
+// from a workflow-declared container name, which ir's containerNamePattern
+// forbids from containing '.' — so neither can ever collide with a
+// "_run.<nodePath>" name (nodePath always contains '.'/'['/']' from
+// ir.PathFor for anything but a single top-level step, and the "_run." prefix
+// alone is enough to distinguish even that case). Kept distinct from
+// BareRunHandleKey's "_run:" Handles-map key (a Go-map key, unconstrained) —
+// spec.Name additionally has to be a safe on-disk directory-name component on
+// the native backend, so it avoids ':'.
+func hostWorkspaceSpec(nodePath string) container.ContainerSpec {
+	return container.ContainerSpec{Name: "_run." + nodePath}
+}
+
 // SplitContainerRef parses a step's container reference into a bare name and
 // optional service override. The spec §3 form `container: lab:db` addresses
 // the `db` service of the `lab` compose project; bare `container: lab` uses
@@ -467,6 +511,39 @@ func (d *LocalDispatcher) WithItemHandle(name string, h container.Handle) *Local
 		cloned[k] = v
 	}
 	cloned[QualifiedContainerKey(d.RuntimeParent, name)] = h
+	return &LocalDispatcher{
+		Backend:          d.Backend,
+		Handles:          cloned,
+		RuntimeParent:    d.RuntimeParent,
+		ComposeFiles:     d.ComposeFiles,
+		Resolver:         d.Resolver,
+		AgentEventTap:    d.AgentEventTap,
+		RenderAgentEvent: d.RenderAgentEvent,
+		StepCostLine:     d.StepCostLine,
+		RunState:         d.RunState,
+		Blobs:            d.Blobs,
+	}
+}
+
+// WithRawHandle returns a shallow clone of d with Handles cloned and the
+// (key → h) entry overridden (or inserted) VERBATIM — unlike WithItemHandle,
+// key is NOT run through QualifiedContainerKey(d.RuntimeParent, key). F4a's
+// per-step implicit host-workspace handle uses this: key is
+// BareRunHandleKey(nodePath), already a globally-unique reserved token (the
+// node path is itself already call-workflow-qualified — see
+// BareRunHandleKey's doc comment), not a bare workflow-declared container
+// name that still needs RuntimeParent qualification.
+//
+// Same immutable-clone contract as WithItemHandle: d.Handles itself is never
+// mutated, so concurrent callers (Parallel branches dispatching bare steps
+// concurrently — engine/parallel.go shares one ictx.dispatcher across
+// branches) each get their own clone with no data race on the shared map.
+func (d *LocalDispatcher) WithRawHandle(key string, h container.Handle) *LocalDispatcher {
+	cloned := make(map[string]container.Handle, len(d.Handles)+1)
+	for k, v := range d.Handles {
+		cloned[k] = v
+	}
+	cloned[key] = h
 	return &LocalDispatcher{
 		Backend:          d.Backend,
 		Handles:          cloned,

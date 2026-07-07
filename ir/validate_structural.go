@@ -130,15 +130,18 @@ var containerNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 // path of the enclosing node (empty at the top level). wf is read-only — needed for container
 // ref resolution (the set of declared container names).
 //
-// requireContainer is true for CodeStep / AgentStep (where AWF §4 requires a container) and
-// false for SignalStep (where AWF §4.3 explicitly states "No container needed").
+// checkContainerRefInScope's `required` arg is false for CodeStep (F4a: a bare `container:`
+// gets a per-step implicit host-workspace handle at dispatch — engine.BareRunHandleKey /
+// hostWorkspaceSpec), AgentStep (containerless adapters like awf/llm need no container; the
+// run-start guard enforces it), and SignalStep (AWF §4.3 explicitly states "No container
+// needed" — SignalStep doesn't even call checkContainerRefInScope, having no Container field).
 func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, seen map[string]string, scoped map[string]bool, mapImageTargetOwners map[string][]string) {
 	for i, n := range nodes {
 		switch v := n.(type) {
 		case *CodeStep:
 			path := PathFor(parent, "", v.ID, i)
 			checkStepID(v.ID, path, c, seen)
-			checkContainerRefInScope(v.Container, path, wf, scoped, mapImageTargetOwners, c, true /* required */)
+			checkContainerRefInScope(v.Container, path, wf, scoped, mapImageTargetOwners, c, false /* optional: F4a — a bare run: step gets a per-step implicit host-workspace handle at dispatch (engine.BareRunHandleKey / hostWorkspaceSpec); container: remains the common case */)
 			checkFieldSize(v.Run, path, c)
 		case *AgentStep:
 			path := PathFor(parent, "", v.ID, i)
@@ -427,6 +430,14 @@ func checkParallelDistinctContainers(children NodeList, path string, c *collecto
 	// Walk each branch's FIRST step and collect the container ref's BARE name (left of any
 	// colon — `lab:db` and `lab` both refer to the same compose project per AWF §3). Report
 	// a single AWF1010 per duplicate pair so the diagnostic count doesn't explode.
+	//
+	// firstContainerRef returns "" for a bare (F4a) step, and the `ctr == ""` branch below
+	// SKIPS it — deliberately: a bare step is a validate-time UNKNOWN (its container is a
+	// runtime-provisioned per-step implicit host-workspace handle, keyed by the step's own
+	// node path — engine.BareRunHandleKey), never a name two branches could share. Two
+	// parallel bare branches each get their OWN handle (distinct node paths → distinct
+	// engine.BareRunHandleKey values → distinct Backend.Create calls), so they're isolated
+	// by construction without this check's help; skipping is safe, not a gap.
 	used := map[string][]int{} // bare container name → branch indices using it
 	for i, child := range children {
 		ctr := firstContainerRef(child)

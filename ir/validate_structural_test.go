@@ -82,16 +82,34 @@ func TestStructuralContainerRefMustResolve(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF1009", "a")
 }
 
-func TestStructuralCodeStepEmptyContainerRejected(t *testing.T) {
-	// I1: empty container ref on a CodeStep is AWF1009 (missing). SignalStep is
-	// container-less per AWF §4.3. AgentStep may also omit container when the
-	// resolved adapter is Containerless (e.g. awf/llm) — see
-	// TestStructuralAgentStepAllowsNoContainer; the run-start guard enforces it.
+func TestStructuralCodeStepAllowsNoContainer(t *testing.T) {
+	// F4a: a CodeStep may now omit `container:` — a bare `run:` step. The
+	// interpreter provisions a per-step implicit host-workspace handle at
+	// dispatch (engine.BareRunHandleKey / hostWorkspaceSpec), so no AWF1009
+	// should fire for the empty ref (mirrors TestStructuralAgentStepAllowsNoContainer).
 	ld := makeLD(&Workflow{
-		ID: "empty-ctr", Version: 1,
+		ID: "bare-run", Version: 1,
 		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
 		Graph: NodeList{
 			&CodeStep{ID: "a", Container: "", Run: "true"},
+		},
+	})
+	assertNoErrorCode(t, Validate(ld), "AWF1009")
+	// Container=="" is preserved in the IR — Validate does not rewrite it.
+	cs := ld.Workflow.Graph[0].(*CodeStep)
+	if cs.Container != "" {
+		t.Errorf("Container = %q, want empty (unchanged by Validate)", cs.Container)
+	}
+}
+
+func TestStructuralCodeStepPresentButUnresolvedContainerStillErrors(t *testing.T) {
+	// A NON-EMPTY container that doesn't resolve is still AWF1009 — only the
+	// empty case is newly permitted (F4a).
+	ld := makeLD(&Workflow{
+		ID: "bad-ref", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&CodeStep{ID: "a", Container: "undeclared", Run: "true"},
 		},
 	})
 	assertErrorAt(t, Validate(ld), "AWF1009", "a")
