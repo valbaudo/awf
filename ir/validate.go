@@ -11,9 +11,11 @@ package ir
 //     (a typo would silently fall back to the per-adapter default)
 //   - structural (AWF1xxx)  — §4 step shape, §5 control-flow field requirements, §3
 //     container shape, parallel/map distinct-container rule
-//   - agents     (AWF1033/4) — top-level agents: role-definition shape (non-empty
-//     uses:, role name not in the <vendor>/<name> adapter-ref form) and every
-//     uses: ref resolving to a declared role OR a syntactically-valid base ref
+//   - agents     (AWF1033/4/1067) — top-level agents: role-definition shape (non-empty
+//     uses:, role name not in the <vendor>/<name> adapter-ref form), every
+//     uses: ref resolving to a declared role OR a syntactically-valid base ref, and
+//     role config {{ }} templates restricted to input.* in the positions the
+//     engine actually substitutes (model, system_prompt, top-level with: values)
 //   - skills     (AWF1040-45, AWF3010-11) — native skill corpus declarations,
 //     loaded directory layout, and agent-step routing shape/staging constraints
 //   - calls      (AWF1046-51) — imported workflow call targets, input contracts,

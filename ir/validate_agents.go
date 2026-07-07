@@ -63,12 +63,15 @@ func checkRoleTemplates(rolePath string, role AgentRole, c *collector) {
 	checkRoleInputOnly(rolePath+".model", role.Model, c)
 	checkRoleInputOnly(rolePath+".system_prompt", role.SystemPrompt, c)
 	// Top-level with: string values → input.* allowed; everything nested → no templates.
+	// Map KEYS (top-level or nested) are never substituted by engine.substituteRawConfig
+	// (it walks only string VALUES), so any {{ }} in a key is rejected outright.
 	keys := make([]string, 0, len(role.With))
 	for k := range role.With {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
+		rejectTemplateInString(rolePath+".with."+k, k, c)
 		if s, ok := role.With[k].(string); ok {
 			checkRoleInputOnly(rolePath+".with."+k, s, c)
 			continue
@@ -101,13 +104,12 @@ func checkRoleInputOnly(path, src string, c *collector) {
 }
 
 // rejectAnyRoleTemplate: recurse into nested values; ANY {{ }} in a string leaf
-// here is rejected — nested positions are not substituted at run time.
+// or a map KEY here is rejected — neither is substituted at run time
+// (engine.substituteRawConfig walks only top-level string values).
 func rejectAnyRoleTemplate(path string, v any, c *collector) {
 	switch t := v.(type) {
 	case string:
-		if slots, err := template.Slots(t); err != nil || len(slots) > 0 {
-			c.errf(path, "AWF1067", "role config has a template in a nested position (never substituted); allowed only in model, system_prompt, and top-level string with: values")
-		}
+		rejectTemplateInString(path, t, c)
 	case map[string]any:
 		keys := make([]string, 0, len(t))
 		for k := range t {
@@ -115,11 +117,22 @@ func rejectAnyRoleTemplate(path string, v any, c *collector) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			rejectTemplateInString(path+"."+k, k, c)
 			rejectAnyRoleTemplate(path+"."+k, t[k], c)
 		}
 	case []any:
 		for i, e := range t {
 			rejectAnyRoleTemplate(fmt.Sprintf("%s[%d]", path, i), e, c)
 		}
+	}
+}
+
+// rejectTemplateInString flags any {{ }} slot found in s as AWF1067. Used for
+// positions engine.substituteRawConfig never visits — map keys (top-level or
+// nested) and nested string leaves — where a template would leak literally to
+// the adapter instead of being substituted.
+func rejectTemplateInString(path, s string, c *collector) {
+	if slots, err := template.Slots(s); err != nil || len(slots) > 0 {
+		c.errf(path, "AWF1067", "role config has a template in a nested position or map key (never substituted); allowed only in model, system_prompt, and top-level string with: values")
 	}
 }
