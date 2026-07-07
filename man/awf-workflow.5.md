@@ -517,16 +517,23 @@ The merge is **key-blind** — AWF never interprets a `with:` key; it stays opaq
 to the named adapter. The role names and values fold into the definition digest
 and are pinned on resume, exactly like `env:`.
 
-**Static role `with:` vs. templated step `with:` (format contract).** A role's
-`with:` is **static**: it resolves once at run start, *before* any template scope
-exists, so it is **never** `{{ }}`-substituted. A step's own `with:` **is**
-substituted (`{{ run.id }}`, `{{ step.* }}`, ...) before it overlays on top of the
-role's. So a per-run **scope id** that ties the whole fleet to one memory
-namespace is supplied by the **step's** `with:` as a templated scalar — for
-example `with: { scope: "{{ run.id }}" }` — which the key-blind overlay places on
-top of the role's static `with:`. (Top-level `env:` is a host-var **name**
-allowlist, not a value map, so it cannot carry a templated value — do not use
-`env:` as a scope-id channel.)
+**Templated role config (format contract).** A role's `model`, `system_prompt`, and
+each **top-level string value** in its `with:` MAY reference `{{ input.<field> }}` —
+and **only** `input.*`. These resolve at step execution against the input of the
+**module the role is declared in**: the root workflow's run input for a root step,
+and a child workflow's validated `call:` input for a child step. Any other scope
+inside a role (`{{ run.id }}`, `{{ step.* }}`, `{{ item.* }}`, an aggregate,
+`asset.*`) is rejected at `awf validate` (**AWF1064**), as is any `{{ }}` in a
+non-top-level-string position (a nested map/array value or a key) — those are never
+substituted and would otherwise reach the adapter as literal text. A role that
+references `{{ input.model }}` requires the run to supply that field via `--input`;
+an omitted `--input` does not materialize input-schema `default:`s. The **raw
+template** folds into the definition digest (stable across model choices); the
+resolved value rides the pinned run/call input and is replayed on resume, so
+re-resolution is deterministic. A step's own `with:` is still substituted and
+overlays the role's (step key wins). A per-run scope id like
+`with: { scope: "{{ run.id }}" }` remains a **step** concern (roles are
+`input.*`-only).
 
 # REDUCING REPETITION
 
