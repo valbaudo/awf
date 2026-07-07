@@ -147,7 +147,7 @@ func TestRoleTemplate_NonInputRoot_Rejected(t *testing.T) {
 func TestRoleTemplate_SystemPromptAndStringWith_Checked(t *testing.T) {
 	got := rolesGuard1067(t, AgentRole{
 		Uses:         "openai/codex",
-		SystemPrompt: "{{ run.id }}",                       // non-input → reject
+		SystemPrompt: "{{ run.id }}",                        // non-input → reject
 		With:         RawConfig{"api_base": "{{ step.a }}"}, // top-level string, non-input → reject
 	})
 	if len(got) < 2 {
