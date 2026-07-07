@@ -10,6 +10,14 @@ is tracked independently of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-07
+
+A workflow-format release. It renames several author-facing keys (migrate per
+the BREAKING list below), adds container-less `run:` steps and native stall
+detection with retry-as-continue, and tightens validation. The workflow-format
+version (`version: 1`) is unchanged, but existing workflows must apply the key
+migrations to keep validating.
+
 ### BREAKING (v0.3.0 format)
 
 - **`reduce`'s quorum `over:` is renamed to `field:`.** The per-branch boolean
