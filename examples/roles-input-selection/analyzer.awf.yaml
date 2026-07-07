@@ -1,0 +1,20 @@
+workflow: analyzer
+version: 1
+input_schema:
+  type: object
+  additionalProperties: false
+  required: [model]
+  properties:
+    model: { type: string }
+agents:
+  worker:
+    uses: awf/llm
+    model: "{{ input.model }}"
+    with:
+      provider: anthropic
+      max_tokens: 1024
+graph:
+  - id: analyze
+    uses: worker
+    with:
+      prompt: "In one sentence, name the single biggest risk in shipping a workflow gate without an independent evaluator."

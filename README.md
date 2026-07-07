@@ -48,6 +48,9 @@ its own homework. A crash is not a verdict; only a real evaluation with a false
   with the prior verdict automatically fed into the next generate attempt.
 - **Black-box agents**: wrap existing CLIs such as Claude Code, Factory droid,
   Block Goose, OpenAI Codex, or use `awf/llm` for direct OpenAI-compatible HTTP.
+- **Input-parameterizable roles**: a reusable `agents:` role's `model` /
+  `system_prompt` may reference `{{ input.* }}`, so one `--input` steers a
+  whole fleet — and forwards across a `call:` boundary into a child's own role.
 - **Typed outputs**: downstream steps bind to validated `output_schema` fields,
   not fragile free text.
 - **Checkpoint/resume**: step outputs and declared files commit to a

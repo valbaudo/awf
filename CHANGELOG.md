@@ -10,6 +10,14 @@ is tracked independently of the `awf` tool version.
 
 ## [Unreleased]
 
+### Added
+
+- **Input-parameterizable agent roles.** A role's `model`/`system_prompt`/top-level
+  string `with:` values may reference `{{ input.* }}`, resolved against the owning
+  module's run input at step execution — so one `awf run --input model=…` steers a
+  whole fleet, and a child workflow's own role reads a model forwarded via
+  `call: input:`. Guarded by AWF1067 (`input.*` only; no nested templates).
+
 ## [0.3.0] - 2026-07-07
 
 A workflow-format release. It renames several author-facing keys (migrate per
