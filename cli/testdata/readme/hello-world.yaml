@@ -1,0 +1,4 @@
+version: 1
+graph:
+  - id: hello
+    run: echo "hello from awf"

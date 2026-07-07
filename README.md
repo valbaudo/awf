@@ -64,8 +64,50 @@ its own homework. A crash is not a verdict; only a real evaluation with a false
 
 ## A First Workflow
 
+The smallest AWF workflow needs four things: a format version, a graph, a step
+id, and a command. No container image, no agent credentials, no Ollama server:
+
+```yaml
+version: 1
+graph:
+  - id: hello
+    run: echo "hello from awf"
+```
+
+Save it as `hello.yaml` and run it:
+
+```sh
+awf run hello.yaml
+```
+
+```
+awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline.
+hello from awf
+run 1a2b3c4d: ok
+```
+
+(The run id on the last line is minted per run, so yours will differ.)
+
+The step declares no `container:`, so `auto` backend selection finds no
+Docker-only feature to route to and picks `native`: the command runs directly
+on the host, write-confined to its own per-step host workspace by an OS
+sandbox (bubblewrap or Landlock on Linux, `sandbox-exec` on macOS), and its
+output is committed to the run's journal — the same checkpoint path a
+Docker-backed step uses, just with no container boundary. `--backend docker`
+refuses a bare `run:` step outright (AWF1065): there is no image to run it in,
+so let `auto` decide, or pass `--backend native` yourself.
+
+Real workflows are rarely one step, and running a command is not what makes
+AWF different from a shell script. The primitive that does is the **gate**: an
+independent check that decides whether to advance. The next section shows one.
+
+## A Gated Workflow
+
 This workflow asks a model to write a release note, then has an independent
-judge approve it or send feedback into the next repair attempt.
+judge approve it or send feedback into the next repair attempt. Unlike the
+hello-world above, it needs a running OpenAI-compatible endpoint (Ollama here)
+and an `OPENAI_API_KEY` env var — see Quickstart below for the exact commands
+to run it.
 
 ```yaml
 workflow: gated-release-note
