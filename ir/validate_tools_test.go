@@ -99,6 +99,26 @@ func TestValidateReactRejectsNonAwfllm(t *testing.T) {
 	assertErrorAt(t, Validate(reactLD(r, okTools())), "AWF1057", "react[0]")
 }
 
+// A react: node cannot reach a declared agents: role either — roles can't
+// reach react (Task 7 case 9). uses: must be the literal "awf/llm"; a role
+// name (which AWF1033 guarantees never contains '/') fails that check the
+// same way any other non-awf/llm ref does, even though "analyst" IS a
+// validly-declared role an AgentStep could resolve.
+func TestValidateReactRejectsDeclaredRole(t *testing.T) {
+	r := &React{
+		ID: "a", Prompt: "q", Tools: []string{"check"},
+		With: RawConfig{"uses": "analyst", "model": "m"},
+	}
+	ld := makeLD(&Workflow{
+		ID: "wf", Version: 1,
+		Containers: map[string]Container{"fin": {Image: "oci://x@sha256:abc"}},
+		Tools:      okTools(),
+		Agents:     map[string]AgentRole{"analyst": {Uses: "anthropic/claude-code"}},
+		Graph:      NodeList{r},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1057", "react[0]")
+}
+
 func TestValidateReactRejectsOllamaFormat(t *testing.T) {
 	r := &React{
 		ID: "a", Prompt: "q", Tools: []string{"check"},

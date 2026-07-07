@@ -96,6 +96,26 @@
 //     system_prompt:audit (role), mcp_servers:[memclaw] (role — the fleet memory
 //     MCP handle). run.started.Runtimes records (ref=auditor, container=lab), so
 //     the role is a first-class pinned runtime drift-checked on resume.
+//   - Roles input-parameterization (Task 6/7): a role's model/system_prompt/
+//     top-level with: may template {{ input.* }} only (AWF1067), resolved at
+//     step execution against the OWNING module's input. root_selection_two_runs_differ
+//     — two runs of a root role with different --input model values record
+//     different invocations. child_selection_forwarded_input — a parent's
+//     call: input: forwards its own input.model into a child role, which
+//     resolves it. resume_determinism_replays_recorded_call_input — a
+//     resume with a seeded call.started (and NO root input, so a recompute
+//     would hard-fail) replays the recorded model unchanged.
+//     digest_stability_across_input_values — two runs with different
+//     --input produce byte-identical WorkflowDigest (the raw template
+//     folds in, never the resolved value). overlay_precedence_step_with_wins
+//     — a step-local with: overrides the role-resolved value.
+//     omitted_input_fails_honestly — no --input fails the step
+//     (permanent_failure, zero launches), never a materialized default.
+//     Guard cases (role templating a non-input scope; a nested with:
+//     template) are AWF1067 faults already covered end-to-end by
+//     ir/validate_agents_test.go (Task 2) — not duplicated here. A react:
+//     node cannot name a declared role (AWF1057, roles can't reach react)
+//     — covered by ir/validate_tools_test.go's TestValidateReactRejectsDeclaredRole.
 //   - Reduce (SP2 C2a): a map's reduce: fan-in collapses N branches into ONE
 //     output committed at the map path. quorum_pass — quorum: 2 met over 3 items
 //     commits {passed:true,votes:3,agree:2} and a downstream step.<bodyId>.passed
@@ -164,6 +184,7 @@ func RunSuite(t *testing.T, factory BackendFactory) {
 	t.Run("continues_loop_map", func(t *testing.T) { testContinuesLoopMap(t, factory) })
 	t.Run("thread", func(t *testing.T) { testThread(t, factory) })
 	t.Run("roles", func(t *testing.T) { testRoles(t, factory) })
+	t.Run("roles_input", func(t *testing.T) { testRolesInput(t, factory) })
 	t.Run("reduce", func(t *testing.T) { testReduce(t, factory) })
 	t.Run("subworkflow", func(t *testing.T) { testSubworkflow(t, factory) })
 	t.Run("prune", func(t *testing.T) { testPrune(t, factory) })
