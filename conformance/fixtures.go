@@ -879,7 +879,7 @@ graph:
       body:
         - id: wait_oob
           await: oob-hit
-          where: 'candidate_id == "{{ hyp.id }}"'
+          where: '{{ signal.candidate_id == hyp.id }}'
           timeout: 2s   # fast-fail bound: a mis-correlated item never matches and
                         # times out (retryable_failure) in 2s instead of hanging the
                         # suite until the global test timeout. Both signals are

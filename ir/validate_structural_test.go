@@ -466,31 +466,36 @@ func TestStructuralSignalStepAwaitCharset(t *testing.T) {
 	}
 }
 
-// TestStructuralSignalStepWhereExpr exercises AWF1036: a signal step's where:
-// clause must be a valid bounded boolean expression once its {{ }} slots are
-// scanned and stripped. `{{ }}` slots render from the engine scope at runtime
-// and bare identifiers resolve against the delivered payload, so the validator
-// replaces each slot with a parse-safe placeholder and ParseExprs the remainder.
+// TestStructuralSignalStepWhereExpr exercises AWF1036 (F18): a signal step's
+// where: clause must be ONE `{{ }}` envelope containing a bounded boolean
+// expression — the SAME grammar if.cond/loop.until use (template.ParseExpr, no
+// arithmetic/calls/loops). Unlike if.cond/loop.until, the envelope is NOT
+// optional here: a bare expression (the old substitute-then-parse form's
+// surface) is a hard cut, rejected before the grammar is even parsed.
+// `signal.<field>` is an ordinary Ref syntactically at this static-only pass —
+// its special routing to the payload scope is a runtime concern
+// (engine.signalScope), not checked here.
 func TestStructuralSignalStepWhereExpr(t *testing.T) {
 	cases := []struct {
 		name    string
 		where   string
 		wantErr bool // true => AWF1036 must fire
 	}{
-		// 1. quoted-slot string comparison — valid (the author's "" survive the
-		//    slot strip, so the placeholder lands inside them: candidate_id == "<ph>").
-		{"quoted-slot-string", `candidate_id == "{{ hyp.id }}"`, false},
-		// 2. truncated comparison — invalid.
-		{"truncated", "candidate_id ==", true},
-		// 3. unbalanced slot — the slot scan fails.
-		{"unbalanced-slot", "{{ unbalanced ", true},
-		// 4. arithmetic — not in the bounded-boolean grammar; ParseExpr rejects `+`.
-		{"arithmetic", "candidate_id + 1 == 2", true},
-		// 5. empty where (omitted) — no-op, no AWF1036.
+		// 1. envelope form, mixed signal.* + outer roots — valid.
+		{"envelope-valid", `{{ signal.candidate_id == hyp.id }}`, false},
+		// 2. bare-identifier (old form) — hard cut, no envelope present.
+		{"bare-no-envelope", "candidate_id == 1", true},
+		// 3. envelope present but the inner expression is truncated — invalid.
+		{"envelope-truncated", "{{ signal.candidate_id == }}", true},
+		// 4. envelope missing its closing `}}` — invalid (envelope check fails
+		//    before ParseExpr is even attempted).
+		{"envelope-unclosed", "{{ signal.candidate_id == 1", true},
+		// 5. arithmetic — not in the bounded-boolean grammar; ParseExpr rejects `+`.
+		{"arithmetic", "{{ signal.candidate_id + 1 == 2 }}", true},
+		// 6. empty where (omitted) — no-op, no AWF1036.
 		{"empty", "", false},
-		// 6. numeric correlation, no inner quotes — valid (bare placeholder is a
-		//    valid primary in operand position: count == <ph>).
-		{"numeric-bare-slot", "count == {{ n }}", false},
+		// 7. numeric correlation inside the envelope — valid.
+		{"numeric-envelope", "{{ signal.count == 2 }}", false},
 	}
 	for _, tc := range cases {
 		tc := tc

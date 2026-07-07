@@ -140,7 +140,7 @@ func TestDigestFoldsContinues(t *testing.T) {
 func TestDigestFoldsWhere(t *testing.T) {
 	withWhere := sampleWorkflow()
 	withWhere.Graph = append(withWhere.Graph,
-		&SignalStep{ID: "s1", Await: "oob-hit", Where: "candidate_id == 1"},
+		&SignalStep{ID: "s1", Await: "oob-hit", Where: "{{ signal.candidate_id == 1 }}"},
 	)
 	dWhere, err := withWhere.ComputeDigest(nil, nil)
 	if err != nil {

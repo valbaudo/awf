@@ -155,8 +155,8 @@ func walkStructural(nodes NodeList, parent string, wf *Workflow, c *collector, s
 				c.errf(path, "AWF1020", fmt.Sprintf("%s: await=%q (must match %s)",
 					catalog["AWF1020"], v.Await, stepIDPattern))
 			}
-			// SP4 keyed signals: the optional where: clause must be a bounded
-			// boolean expression once its {{ }} slots are scanned/stripped (AWF1036).
+			// SP4 keyed signals (F18): the optional where: clause must be a single
+			// `{{ }}`-enveloped bounded boolean expression (AWF1036).
 			checkWhereExpr(v.Where, path+".where", c)
 			// SignalStep has no container — by design (AWF §4.3).
 		case *CallStep:
@@ -498,43 +498,34 @@ func checkFieldSize(src, path string, c *collector) {
 	}
 }
 
-// checkWhereExpr validates a signal step's where: clause (SP4 keyed signals).
-// The clause is template-then-expr: `{{ … }}` slots render from the engine scope
-// at runtime, and bare identifiers resolve against the delivered payload. To
-// validate the EXPR grammar (bounded boolean — no arithmetic) we scan the slots
-// first (catches `{{ }}` imbalance), replace each with a parse-safe placeholder,
-// then ParseExpr the remainder. Bare idents are NOT cross-checked against any
-// output_schema (they are payload fields, not step.<id>.<field> refs). Emits
-// AWF1036 on any deviation. Empty where → no-op.
+// checkWhereExpr validates a signal step's where: clause (SP4 keyed signals,
+// grammar rewritten by F18). Unlike if.cond / loop.until — whose `{{ }}`
+// envelope is optional (UnwrapEnvelope tolerates a bare expression) — where:
+// REQUIRES the envelope: a bare expression (the old substitute-then-parse
+// form's surface, e.g. `candidate_id == 1`) is rejected before the grammar is
+// even parsed. This is a HARD CUT — the runtime path that bare form depended
+// on (string-substituting `{{ }}` refs into the predicate) is gone; it was
+// also the expression-injection hazard F18 closes.
 //
-// The placeholder is a bare `0` so it is a valid primary in BOTH operand
-// positions an author may write the slot in: inside the author's own quotes for
-// a string correlation value (`candidate_id == "{{ id }}"` → `candidate_id ==
-// "0"`, a string literal) and bare for a numeric one (`count == {{ n }}` →
-// `count == 0`, a number literal). A self-quoted placeholder would break the
-// quoted-string case by colliding with the author's surrounding `"`.
+// Once the envelope is confirmed present, the inner text is parsed via the
+// SAME bounded-boolean grammar if.cond / loop.until use (template.ParseExpr —
+// no arithmetic, no calls, no loops). `signal.<field>` is an ordinary Ref
+// syntactically; its special routing to the payload scope (vs. every other
+// root routing to the normal engine scope) is a RUNTIME concern
+// (engine.signalScope) — this pass never resolves refs, only parses the
+// grammar, exactly like checkExprRefs's sibling static-only check for
+// if.cond/until. Emits AWF1036 on any deviation. Empty where → no-op.
 func checkWhereExpr(src, path string, c *collector) {
 	if src == "" {
 		return
 	}
 	checkFieldSize(src, path, c) // AWF1016 size guard, same as other expr fields
-	slots, err := template.Slots(src)
-	if err != nil {
-		c.errf(path, "AWF1036", fmt.Sprintf("%s: %s", catalog["AWF1036"], syntaxMessage(err)))
+	trimmed := strings.TrimSpace(src)
+	if !strings.HasPrefix(trimmed, "{{") || !strings.HasSuffix(trimmed, "}}") {
+		c.errf(path, "AWF1036", catalog["AWF1036"])
 		return
 	}
-	// Replace each slot span with a placeholder primary so the surrounding
-	// expression grammar parses without the runtime-substituted value. Slots are
-	// in ascending Start order (template.Slots emits them left-to-right).
-	var b strings.Builder
-	cursor := 0
-	for _, sl := range slots {
-		b.WriteString(src[cursor:sl.Start])
-		b.WriteString("0") // a bare number literal — valid primary in any operand position
-		cursor = sl.End
-	}
-	b.WriteString(src[cursor:])
-	if _, err := template.ParseExpr(template.UnwrapEnvelope(b.String())); err != nil {
+	if _, err := template.ParseExpr(template.UnwrapEnvelope(src)); err != nil {
 		c.errf(path, "AWF1036", fmt.Sprintf("%s: %s", catalog["AWF1036"], syntaxMessage(err)))
 	}
 }

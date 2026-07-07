@@ -1342,7 +1342,7 @@ func TestRunCallStepChildSignalWhereUsesChildScope(t *testing.T) {
 			&ir.SignalStep{
 				ID:           "wait",
 				Await:        "ready",
-				Where:        `token == "{{ input.token }}" && value == "{{ step.produce.value }}"`,
+				Where:        `{{ signal.token == input.token && signal.value == step.produce.value }}`,
 				OutputSchema: signalTokenValueSchema(),
 			},
 		},

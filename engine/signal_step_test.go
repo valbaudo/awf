@@ -262,8 +262,8 @@ func whereSchema() *ir.JSONSchema {
 }
 
 func TestRunSignalStep_WhereMatchesByPayload(t *testing.T) {
-	// Two buffered signals; the where: clause selects seq 2 (candidate_id == "b").
-	// The non-matching seq 1 must stay buffered for another await.
+	// Two buffered signals; the where: clause selects seq 2 (signal.candidate_id
+	// == "b"). The non-matching seq 1 must stay buffered for another await.
 	b := tempBroker(t)
 	rs := NewRunState("r", "d", nil)
 	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
@@ -277,7 +277,7 @@ func TestRunSignalStep_WhereMatchesByPayload(t *testing.T) {
 	ss := &ir.SignalStep{
 		ID:           "wait_oob",
 		Await:        "oob",
-		Where:        `candidate_id == "b"`,
+		Where:        `{{ signal.candidate_id == "b" }}`,
 		OutputSchema: whereSchema(),
 	}
 	// wf.Graph must be non-nil: NewScope→StepPathIndex→WalkNodes dereferences it.
@@ -306,10 +306,10 @@ func TestRunSignalStep_WhereMatchesByPayload(t *testing.T) {
 	}
 }
 
-func TestRunSignalStep_WhereSlotSubstitutes(t *testing.T) {
-	// The {{ run.id }} slot substitutes against the engine scope (run.id == "r")
-	// THEN string-matches the payload. The inner "" quotes are required: run.id
-	// is a string, so the rendered expr is `candidate_id == "r"`.
+func TestRunSignalStep_WhereOuterRefFromEngineScope(t *testing.T) {
+	// signal.candidate_id (payload scope) compared against run.id (outer engine
+	// scope, constant across candidates — run.id == "r"). Both sides are
+	// resolved to TYPED values and compared directly (F18: no string splice).
 	b := tempBroker(t)
 	rs := NewRunState("r", "d", nil)
 	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
@@ -323,7 +323,7 @@ func TestRunSignalStep_WhereSlotSubstitutes(t *testing.T) {
 	ss := &ir.SignalStep{
 		ID:           "wait_oob",
 		Await:        "oob",
-		Where:        `candidate_id == "{{ run.id }}"`,
+		Where:        `{{ signal.candidate_id == run.id }}`,
 		OutputSchema: whereSchema(),
 	}
 	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
@@ -349,7 +349,7 @@ func TestRunSignalStep_WhereNoMatchTimesOut(t *testing.T) {
 		t.Fatalf("WriteSignal a: %v", err)
 	}
 	timeout := ir.Duration(5 * time.Millisecond)
-	ss := &ir.SignalStep{ID: "wait_oob", Await: "oob", Where: `candidate_id == "zzz"`, Timeout: &timeout}
+	ss := &ir.SignalStep{ID: "wait_oob", Await: "oob", Where: `{{ signal.candidate_id == "zzz" }}`, Timeout: &timeout}
 	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
 	oc, err := runSignalStep(context.Background(), ss, "wait_oob", wf, rs, nil, log, state.NewInMemoryBlobs(), &clock.Fake{}, nil, b)
 	if err == nil {
@@ -363,17 +363,16 @@ func TestRunSignalStep_WhereNoMatchTimesOut(t *testing.T) {
 	}
 }
 
-func TestRunSignalStep_WhereBadSlotIsPermanent(t *testing.T) {
-	// A where: whose {{ }} slot is an unresolved engine ref (step.ghost.x — ghost
-	// is not in wf.Graph) → substitution fails at runtime → permanent_failure
-	// (author bug; re-running is identical, so not retryable).
-	b := tempBroker(t)
+func TestRunSignalStep_WhereMalformedGrammarIsPermanent(t *testing.T) {
+	// F18: the ONLY synchronous where: failure mode left is a GRAMMAR parse
+	// error (an author bug AWF1036 should have caught upstream) — never a ref
+	// RESOLUTION failure (see WhereBadOuterRefTimesOut below). A truncated
+	// expression inside a well-formed envelope fails template.ParseExpr before
+	// the broker is ever touched → permanent_failure, not retryable.
+	b := tempBroker(t) // no signals written — must fail before ever calling Receive
 	rs := NewRunState("r", "d", nil)
 	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
-	if _, err := b.WriteSignal("oob", []byte(`{"candidate_id":"a"}`)); err != nil {
-		t.Fatalf("WriteSignal a: %v", err)
-	}
-	ss := &ir.SignalStep{ID: "wait_oob", Await: "oob", Where: `candidate_id == {{ step.ghost.x }}`}
+	ss := &ir.SignalStep{ID: "wait_oob", Await: "oob", Where: `{{ signal.candidate_id == }}`}
 	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
 	oc, err := runSignalStep(context.Background(), ss, "wait_oob", wf, rs, nil, log, state.NewInMemoryBlobs(), &clock.Fake{}, nil, b)
 	if err == nil {
@@ -384,6 +383,107 @@ func TestRunSignalStep_WhereBadSlotIsPermanent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "where") {
 		t.Errorf("err = %v, want 'where'", err)
+	}
+}
+
+func TestRunSignalStep_WhereBadOuterRefIsPermanent(t *testing.T) {
+	// F18 REGRESSION GUARD. An unresolvable OUTER ref in where:
+	// (input.NONEXISTENT — not in the run input) must fail PERMANENTLY and FAST,
+	// synchronously, BEFORE the broker is ever polled — NOT hang forever waiting
+	// for a signal that can never match. The eager outer-ref pre-check in
+	// buildWherePredicateWithScope resolves every non-signal ref once up front
+	// and surfaces the typo as a permanent build error.
+	//
+	// Deliberately NO ss.Timeout is set: the whole point is that the failure is
+	// synchronous, so no timeout is needed to bound it. A short CONTEXT deadline
+	// is used purely as a test safety net — if this ever regresses back to the
+	// deferred-in-MatchFunc behavior, the context cancels and the assertions
+	// fail cleanly (retryable, not permanent) instead of wedging the suite.
+	// Only signal.* refs stay deferred; outer roots are pre-checked.
+	b := tempBroker(t) // no signals written — a correct impl never reaches Receive
+	rs := NewRunState("r", "d", map[string]any{"present": "x"})
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	ss := &ir.SignalStep{ID: "wait_oob", Await: "oob", Where: `{{ signal.candidate_id == input.NONEXISTENT }}`}
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	oc, err := runSignalStep(ctx, ss, "wait_oob", wf, rs, nil, log, state.NewInMemoryBlobs(), &clock.Fake{}, nil, b)
+	if err == nil {
+		t.Fatal("err = nil, want permanent_failure")
+	}
+	if oc != OutcomePermanentFailure {
+		t.Errorf("outcome = %q, want permanent_failure (unresolvable outer ref must fail fast, not hang/timeout)", oc)
+	}
+	if !strings.Contains(err.Error(), "where") {
+		t.Errorf("err = %v, want 'where'", err)
+	}
+	// Prove it failed BEFORE the broker was polled: the 2s safety-net deadline
+	// must not have been consumed (a hang would have burned it).
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Errorf("context deadline was exceeded — where: outer-ref typo hung on the broker instead of failing fast")
+	}
+}
+
+func TestRunSignalStep_WhereInjectionSafe(t *testing.T) {
+	// LOAD-BEARING (F18 security proof). Historical vulnerability class
+	// (pre-F18): the old substitute-then-parse builder rendered an outer ref's
+	// value into the where: STRING via template.Substitute, then re-parsed
+	// that string as an expression — a value containing predicate
+	// metacharacters (quotes/parens/boolean operators) could alter the parsed
+	// expression's STRUCTURE (classic injection). F18 deletes that splice:
+	// every ref — signal.* AND outer — resolves to a TYPED value compared by
+	// the evaluator's compare(), which never re-enters the parser.
+	//
+	// Prove it: drive the SAME malicious string through BOTH channels at once
+	// — an outer ref (input.expected) and a signal payload field
+	// (signal.note) — as the comparison operand for a candidate whose
+	// candidate_id does NOT match. If injection still worked, splicing the
+	// malicious value would corrupt the predicate into something that matches
+	// every candidate; if it's inert data, this candidate correctly never
+	// matches and the await times out with the signal still buffered.
+	const malicious = `") || true) -- `
+
+	b := tempBroker(t)
+	rs := NewRunState("r", "d", map[string]any{"expected": malicious})
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	payloadBytes, err := json.Marshal(map[string]any{"candidate_id": "a", "note": malicious})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if _, err := b.WriteSignal("oob", payloadBytes); err != nil {
+		t.Fatalf("WriteSignal: %v", err)
+	}
+	timeout := ir.Duration(5 * time.Millisecond)
+	ss := &ir.SignalStep{
+		ID:    "wait_oob",
+		Await: "oob",
+		// signal.note == input.expected is TRUE (both are the same malicious
+		// string, compared as data) but signal.candidate_id == input.expected
+		// is FALSE — candidate_id ("a") was never near the malicious value, so
+		// injection would have to corrupt this clause's grammar to force a
+		// match. It doesn't: the whole expression evaluates false.
+		Where:   `{{ signal.candidate_id == input.expected && signal.note == input.expected }}`,
+		Timeout: &timeout,
+	}
+	wf := &ir.Workflow{ID: "w", Version: 1, Graph: ir.NodeList{ss}}
+	oc, err := runSignalStep(context.Background(), ss, "wait_oob", wf, rs, nil, log, state.NewInMemoryBlobs(), &clock.Fake{}, nil, b)
+	if err == nil {
+		t.Fatal("err = nil, want timeout (no injection: candidate_id \"a\" != malicious value)")
+	}
+	if oc != OutcomeRetryableFailure {
+		t.Errorf("outcome = %q, want retryable_failure (malicious value must NOT force a match)", oc)
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("err = %v, want 'timeout'", err)
+	}
+	// The buffered signal must remain UNCONSUMED — proves the predicate was
+	// never corrupted into an always-true match.
+	d, rerr := b.Receive(context.Background(), "oob", 0)
+	if rerr != nil {
+		t.Fatalf("Receive remaining: %v", rerr)
+	}
+	if d.Seq != 1 {
+		t.Errorf("remaining signal seq=%d, want 1 (candidate must still be buffered, unconsumed)", d.Seq)
 	}
 }
 

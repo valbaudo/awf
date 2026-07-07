@@ -196,7 +196,7 @@ var catalog = map[string]string{
 	"AWF5004": "map output aggregation reference is only usable as another map's `over:` (an aggregate is an array; templating renders scalars only)",
 	"AWF5005": "exit_code/stdout are not defined on map aggregates (a map-internal step aggregates to []outputs or []field only)",
 	"AWF1035": "reduce: must declare exactly one of run: or quorum: (quorum requires field:; a run: reducer requires container:)",
-	"AWF1036": "where: clause is not a valid bounded boolean expression (after `{{ }}` slot scan / parse)",
+	"AWF1036": "where: use the `{{ signal.field == ... }}` envelope form (bare-identifier where: was removed)",
 	"AWF1037": "prune must declare a `score` field name and exactly one of `keep`/`stop_when` (`keep` must be a positive integer, `stop_when` must be a non-empty bounded boolean expression)",
 	"AWF1038": "compose block is invalid (requires static as/from/service/body, non-empty body, and a scoped handle that does not collide)",
 	"AWF1039": "runtime map image target container may only be referenced by its owning map and that map's body",
