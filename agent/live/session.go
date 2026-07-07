@@ -223,6 +223,35 @@ func ClearActiveTurnIfSafe(root Root, adapterRef, sessionKey string) error {
 	return WriteSessionRecord(root, rec)
 }
 
+// ClearActiveTurnForRecovery clears a leftover ActiveTurn as part of a
+// continue-retry (recovery:continue), so a stalled turn's session can resume
+// with a fresh turn. Unlike ClearActiveTurnIfSafe it ABANDONS a turn even at
+// PhaseProviderTurnStarted (the phase that safe-clear refuses) — the provider
+// turn was started server-side but the local process lost it to an idle/stall
+// cancel and the retry loop is now resuming the session in-process. A no-op when
+// there is no ActiveTurn.
+//
+// EDGE: if that provider turn had actually COMPLETED server-side before the
+// stall (we cancelled while draining its tail), resuming re-generates it — wasted
+// work, and duplicate tool side-effects if the turn had external effects. That is
+// the accepted cost of recovery:continue; recovery:restart avoids it by
+// hard-halting for a clean cross-process replay instead.
+//
+// Only the interpreter's retry loop drives this (via a PersistentSession adapter
+// on a continue-retry); it must never run on a first attempt, where a leftover
+// ActiveTurn genuinely needs cross-process replay.
+func ClearActiveTurnForRecovery(root Root, adapterRef, sessionKey string) error {
+	rec, err := ReadSessionRecord(root, adapterRef, sessionKey)
+	if err != nil {
+		return err
+	}
+	if rec.ActiveTurn == nil {
+		return nil
+	}
+	rec.ActiveTurn = nil
+	return WriteSessionRecord(root, rec)
+}
+
 func homePin(path string) HomePin {
 	sum := sha256.Sum256([]byte(path))
 	return HomePin{Path: path, Digest: "sha256:" + hex.EncodeToString(sum[:])}

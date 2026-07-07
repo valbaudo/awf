@@ -628,12 +628,25 @@ streamed event for an agent step. Idle catches a step that is alive but silently
 stalled (e.g. an agent CLI whose streaming response hangs behind a proxy) without
 having to pull the wall deadline down near the worst-case total runtime. An idle
 expiry is a `retryable_failure`, identical in class to a wall expiry, and rides the
-step's `retry:` policy. There is **no default** `idle:` — omit it and no idle
-deadline applies. Tuning note: some agent CLIs stream one event per completed step
-rather than per token (e.g. `openai/codex`'s `exec --json`), so the gap between
-events during a single long reasoning turn can be legitimately long; set `idle:`
-above that normal inter-event gap for the model and effort in use, or a healthy
-long turn can be killed and retried.
+step's `retry:` policy. **The default `idle:` is asymmetric by adapter.** On an
+agent (`uses:`) step that leaves `timeout.idle` unset, the runtime fills a default
+idle watchdog **only** for an adapter that streams a genuine liveness signal —
+currently just the codex live/app-server runtime (`openai/codex-live`), at a
+generous ~300s safety net. That adapter forwards reasoning-summary deltas that
+reset the watchdog, so healthy reasoning never trips it; raise `idle:` for a
+workflow whose turns run long *silent* tool executions. Every other adapter
+(`anthropic/claude-code`, `anthropic/claude-code-session`, `block/goose`,
+`factory/droid`, the direct-LLM `awf/llm` runtime) and every code `run:` step has
+**no default** `idle:` — they go silent during tool execution, so a default there
+would false-cancel healthy work; set `idle:` explicitly to opt in. Setting `idle:`
+on an adapter that surfaces no liveness makes it behave as a plain wall-clock
+deadline (a silent-but-working turn can be killed) — `awf validate` and `awf run`
+warn in that case (**AWF3016**); drop `idle:` or set a `wall:` instead. Tuning
+note: some agent CLIs stream one event per completed step rather than per token
+(e.g. `openai/codex`'s `exec --json`), so the gap between events during a single
+long reasoning turn can be legitimately long; set `idle:` above that normal
+inter-event gap for the model and effort in use, or a healthy long turn can be
+killed and retried.
 
 ## Code step (run)
 
@@ -1701,8 +1714,27 @@ jitter (keyed on the node path, so it is resume-stable) so parallel retries
 decorrelate; and when a provider sends a wait hint — a `Retry-After` /
 `retry-after-ms` header or an `x-should-retry` directive — the runtime honors it
 for the next sleep (capped at 5m) instead of the curve, and `x-should-retry:
-false` suppresses the retry. These are runtime behaviors; the fields above are
-the only authored knobs.
+false` suppresses the retry. These are runtime behaviors; the fields above,
+together with `recovery:` (below), are the authored knobs.
+
+`recovery: continue|restart` selects how a retry re-runs an agent (`uses:`) step
+after a transient (idle- or wall-timeout) fault. `continue` resumes the *same*
+conversation/thread — the completed turns are preserved and the step re-enters
+where it stalled; `restart` re-runs the step fresh from the beginning. The default
+is `continue` for a persistent-session adapter (`openai/codex-live`,
+`anthropic/claude-code-session`, which carry a durable session/thread a retry can
+resume) and `restart` for every other adapter (a stateless adapter can only
+re-launch). One edge to know: `continue` may re-generate a turn that had already
+completed server-side — the stall was in *observing* the result, not producing it
+— so it can waste that turn's work and, for a turn with side effects, duplicate
+them; choose `restart` where a re-run must not repeat side effects. Two honest
+limits. First, on a **single-turn** agent step `continue` is effectively `restart`:
+nothing completed *within* the step to preserve, so both re-run the one turn.
+Second, for `openai/codex-live` crash-safe cross-process `continue` (resuming after
+`awf resume`) is **best-effort**: the session thread is server-side live state,
+re-derived on resume from the durable session key — it is not a content-addressed
+artifact, so a provider that has expired the thread cannot be continued and the
+step re-runs fresh.
 
 Repair — quality recovery — is the gate, a separate axis. A step can be retried
 for flakiness *and* sit inside a gate that repairs it for quality; the two

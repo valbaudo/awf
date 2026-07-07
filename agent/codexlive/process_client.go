@@ -614,6 +614,14 @@ func providerEventFromNotification(method string, params json.RawMessage) (Provi
 			return ProviderEvent{}, "", false, false
 		}
 		return ProviderEvent{Type: EventAgentMessageDelta, Text: p.Delta}, p.TurnID, false, true
+	case EventReasoningSummaryDelta:
+		// The only liveness codex exposes while reasoning. Same delta shape as
+		// agentMessage; forwarded non-terminal so the drain loop feeds the idle timer.
+		var p agentDeltaNotification
+		if err := json.Unmarshal(params, &p); err != nil {
+			return ProviderEvent{}, "", false, false
+		}
+		return ProviderEvent{Type: EventReasoningSummaryDelta, Text: p.Delta}, p.TurnID, false, true
 	case EventItemCompleted:
 		var p itemCompletedNotification
 		if err := json.Unmarshal(params, &p); err != nil {

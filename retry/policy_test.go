@@ -107,6 +107,33 @@ func TestMergePartialOverrideKeepsDefaultsForUnsetFields(t *testing.T) {
 	}
 }
 
+func TestMergeRecoveryOverridesBase(t *testing.T) {
+	// Rk: a non-empty per-step recovery overrides the base value.
+	got, err := retry.Merge(retry.Default, &ir.RetryPolicy{Recovery: "continue"})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if got.Recovery != "continue" {
+		t.Errorf("Recovery = %q, want continue (per-step override)", got.Recovery)
+	}
+
+	// An empty override leaves the base value in place (set-if-non-empty semantic).
+	base := retry.Default
+	base.Recovery = "restart"
+	got2, err := retry.Merge(base, &ir.RetryPolicy{})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if got2.Recovery != "restart" {
+		t.Errorf("Recovery = %q, want restart (base preserved on empty override)", got2.Recovery)
+	}
+
+	// Default leaves Recovery unset (the engine resolves the per-adapter default).
+	if retry.Default.Recovery != "" {
+		t.Errorf("Default.Recovery = %q, want empty (unset)", retry.Default.Recovery)
+	}
+}
+
 func TestMergeUnknownBackoffIsError(t *testing.T) {
 	// Revision #8: unknown backoff strings used to silently fall back to exp.
 	// Slice 1.4 doesn't validate retry.backoff (verified by grepping

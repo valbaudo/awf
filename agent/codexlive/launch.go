@@ -72,7 +72,13 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 	if err != nil {
 		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
 	}
-	session, err := a.prepareSession(ctx, cfg, info)
+	// R5: a continue-retry (recovery:continue, attempt≥2 within this run's retry
+	// loop) lets prepareSession abandon a leftover ActiveTurn and resume the thread
+	// instead of demanding a cross-process replay. Attempt>0 excludes a bare
+	// invocation (a direct test caller leaves Attempt zero); attempt 1's leftover
+	// (a prior-process crash) still needs cross-process replay.
+	continueRetry := inv.Attempt > 0 && inv.RecoveryContinue
+	session, err := a.prepareSession(ctx, cfg, info, continueRetry)
 	if err != nil {
 		if errors.Is(err, agent.ErrLiveReplayRequired) {
 			return nil, nil, err
@@ -157,12 +163,24 @@ func (a *Adapter) Launch(ctx context.Context, _ container.Handle, inv agent.Agen
 	return events, outcomes, nil
 }
 
-func (a *Adapter) prepareSession(ctx context.Context, cfg config, info ProviderInfo) (ThreadInfo, error) {
+func (a *Adapter) prepareSession(ctx context.Context, cfg config, info ProviderInfo, continueRetry bool) (ThreadInfo, error) {
 	existing, err := live.ReadSessionRecord(a.root, AdapterRef, cfg.session)
 	switch {
 	case err == nil:
 		if existing.ActiveTurn != nil {
-			return ThreadInfo{}, agent.ErrLiveReplayRequired
+			if !continueRetry {
+				return ThreadInfo{}, agent.ErrLiveReplayRequired
+			}
+			// R5: continue-retry — a prior attempt in THIS run stalled mid-turn and
+			// left an ActiveTurn (possibly at PhaseProviderTurnStarted). Abandon it and
+			// fall through to ResumeThread so the thread continues with a fresh turn
+			// instead of hard-halting for a cross-process replay. See
+			// live.ClearActiveTurnForRecovery for the duplicate-side-effect edge
+			// accepted under recovery:continue.
+			if cerr := live.ClearActiveTurnForRecovery(a.root, AdapterRef, cfg.session); cerr != nil {
+				return ThreadInfo{}, cerr
+			}
+			existing.ActiveTurn = nil
 		}
 		next := existing
 		next.CWD = cfg.cwd
@@ -286,6 +304,14 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
 					return
 				}
+			case EventReasoningSummaryDelta:
+				// Reasoning is codex's only signal while thinking; forward it as a
+				// liveness heartbeat to keep the idle timer fed. It is NOT the answer,
+				// so it never joins finalText. Bound the preview like other displays.
+				if !sendLiveEvent(ctx, events, ev.Type, agent.Elide(ev.Text, agent.ToolResultHeadTail, agent.ToolResultHeadTail)) {
+					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
+					return
+				}
 			case EventItemCompleted:
 				finalText = ev.Text
 				if ev.Text != "" && !sendLiveEvent(ctx, events, ev.Type, ev.Text) {
@@ -304,7 +330,11 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 				output = ev.Output
 				if output == nil && inv.OutputSchema != nil && strings.TrimSpace(finalText) != "" {
 					if err := json.Unmarshal([]byte(strings.TrimSpace(finalText)), &output); err != nil {
-						outcomes <- agent.AgentOutcome{Err: agent.ErrLiveReplayRequired}
+						// R2: the turn completed but its output did not parse — a failed
+						// session attempt needing replay. Surface the live session key
+						// (via the data-only Live handoff) so the engine can journal a
+						// resume.hint for a cross-process continue; the thread is alive.
+						outcomes <- agent.AgentOutcome{Result: agent.AgentResult{Live: &meta}, Err: agent.ErrLiveReplayRequired}
 						return
 					}
 				}

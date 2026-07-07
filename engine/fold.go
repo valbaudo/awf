@@ -54,6 +54,11 @@ import (
 //     bug on resume).
 //   - run.cancelled sets Cancelled to true (slice 3.5; TERMINAL — cli/resume.go
 //     refuses).
+//   - resume.hint is NO LONGER emitted (dead machinery removed). Cross-process
+//     resume continuation of a stalled live session re-derives
+//     defaultSessionKey(runID,nodePath) and reads the on-disk live.SessionRecord
+//     (agent/codexlive PreflightResume/Launch) — no journaled hint. A legacy
+//     resume.hint event in an old log hits the default arm below and is ignored.
 //   - Anything else (future event types not yet written by Phase 2 slices) → ignored.
 //
 // Errors (any fold error → resume cannot proceed safely):
@@ -397,6 +402,8 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 			//     completion event drives RunState)
 			//   - agent.event (5.2 — observational; Phase 6 obs projects as OTel
 			//     span events; resume reconstructs RunState from node.completed only)
+			//   - resume.hint (LEGACY — dead machinery removed; ignored so old logs
+			//     replay cleanly)
 			// obs (Phase 6) projects these via its own dispatch.
 		}
 	}

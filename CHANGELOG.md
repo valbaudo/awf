@@ -46,6 +46,23 @@ is tracked independently of the `awf` tool version.
   literal sequence (e.g. `over: [a, b, c]`) — a static, digest-pinned
   parameter sweep known before the run, as opposed to a runtime-sized
   worklist.
+- **Container-less `run:` steps (bare shell).** A `run:` code step may now omit
+  `container:`; it executes host-side under the native sandbox (auto-selected
+  when the workflow declares no image), so a hello-world needs no image or
+  digest procurement. A bare `run:` is rejected under `--backend docker`
+  (`AWF1065`) — declare a `container:` or run native.
+- **`map`'s `concurrency:` is optional (default 1, serial).** Omitting it runs
+  the map serially; an explicit value `<= 0` is now rejected (`AWF1012`).
+- **Native stall detection + retry-as-continue.** An idle watchdog cancels an
+  agent step that goes silent longer than `timeout.idle` (distinct from the
+  wall-clock `timeout`), turning a wedged agent into a retryable failure. The
+  `openai/codex` live adapter forwards codex's reasoning-summary heartbeat and
+  gets a generous default idle (~300s); every other adapter is opt-in, and
+  `AWF3016` warns when `idle:` is set on an adapter that surfaces no liveness
+  signal. On a stall, a persistent-session step resumes the *same* conversation
+  thread — `retry: { recovery: continue }`, the default for session adapters —
+  instead of restarting from scratch; `recovery: restart` is the escape hatch
+  (`AWF1064` rejects any other value at validation time).
 - **`awf validate` strictly rejects unknown workflow/step keys (`AWF1062`).** A
   stray or typo'd key anywhere in a workflow document — previously silently
   tolerated — is now a hard validation error.

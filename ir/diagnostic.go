@@ -219,6 +219,7 @@ var catalog = map[string]string{
 	"AWF1061": "a reserved step-level key is nested inside with: (it will be ignored by the engine); move it to the step level (sibling of with:)",
 	"AWF1062": "unknown key (not part of the workflow or step schema; typo'd keys silently do nothing — remove or correct it)",
 	"AWF1063": "duration must be a quoted string (e.g. \"300s\", \"5m\"); a bare integer is not accepted (it would be read as nanoseconds)",
+	"AWF1064": "retry.recovery must be one of \"continue\", \"restart\", or unset; an unrecognized value would silently fall back to the per-adapter default",
 	// AWF1065 is a run-start CLI capability guard (cli/backend_features.go,
 	// checkContainerlessRunCapability), not a static ir.Validate rule — whether
 	// a bare `run:` step is a problem depends on the resolved --backend, which

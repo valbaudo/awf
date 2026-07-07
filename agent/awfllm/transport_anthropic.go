@@ -168,6 +168,16 @@ func (a *Adapter) callAnthropic(ctx context.Context, cfg reqConfig, prompt strin
 				full.WriteString(ev.Delta.Text)
 				emit(ev.Delta.Text, append([]byte(nil), payload...))
 			}
+		case "ping", "content_block_start", "content_block_stop":
+			// Keep-alive / structural events carry no display text, but receiving
+			// one proves the turn is still alive. Emit an empty liveness event
+			// (Live:true, no display) so an author-set idle watchdog resets its
+			// deadline during a reasoning gap between visible text deltas. Anthropic
+			// sends `ping` periodically during such gaps. The adapter still declares
+			// SurfacesLiveness = None statically: Capabilities() can't tell this
+			// streaming transport from Gemini's non-streaming path, so it can't
+			// guarantee a signal — this reset only helps when an author opted into idle.
+			emit("", append([]byte(nil), payload...))
 		case "message_delta":
 			if ev.Delta.StopReason != "" {
 				finish = ev.Delta.StopReason

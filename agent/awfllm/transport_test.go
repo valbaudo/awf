@@ -1034,6 +1034,36 @@ func TestCallAnthropic_StreamsAndParses(t *testing.T) {
 	}
 }
 
+// D4: an Anthropic `ping` keep-alive event (and other non-text/structural events)
+// must produce a liveness emit (empty delta) so the engine's idle watchdog resets
+// its deadline during reasoning gaps between visible text deltas. Before D4 the
+// SSE reader emitted ONLY on text_delta and dropped ping entirely.
+func TestCallAnthropic_PingEmitsLiveness(t *testing.T) {
+	const sse = "event: ping\n" +
+		"data: {\"type\":\"ping\"}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) { return sseAnthropicResponse(sse), nil })
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{Provider: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-sonnet-4-6"}
+
+	var deltas []string
+	full, _, _, _, err := a.StreamForTest(context.Background(), cfg, "x", nil, nil,
+		func(d string, _ []byte) { deltas = append(deltas, d) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full != "hi" {
+		t.Errorf("full = %q, want hi (ping must not pollute the reassembled text)", full)
+	}
+	// ping -> empty liveness emit; text_delta -> "hi".
+	if len(deltas) != 2 || deltas[0] != "" || deltas[1] != "hi" {
+		t.Errorf("emits = %q, want [\"\" \"hi\"] (ping emits an empty liveness event, then the text delta)", deltas)
+	}
+}
+
 // C2: a max_tokens truncation must normalize to "length" so launch.go's existing
 // truncation path (full=="" || finish=="length") fires uniformly across providers.
 func TestCallAnthropic_MaxTokensNormalizedToLength(t *testing.T) {
