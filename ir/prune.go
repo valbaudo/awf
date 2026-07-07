@@ -41,7 +41,7 @@ type Prune struct {
 // F21: the wire form used to be the function-call-shaped string "top(<k>)" —
 // the format's only literal of that shape, and pure noise since top-k was
 // always the only mode. It is now a plain positive integer; the removed
-// string form is a hard validate-time rejection, not a silent alias.
+// string form is a hard decode-time rejection, not a silent alias.
 type PruneKeep struct {
 	K int
 }

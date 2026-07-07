@@ -10,8 +10,42 @@ is tracked independently of the `awf` tool version.
 
 ## [Unreleased]
 
+### BREAKING (v0.3.0 format)
+
+- **`reduce`'s quorum `over:` is renamed to `field:`.** The per-branch boolean
+  field a `quorum` counts is now declared as `reduce: { quorum: <k>, field: <field> }`.
+  Migration: rename `over:` to `field:` under `reduce.quorum` only — a `map`'s
+  own `over:` (the fan-out worklist) is unrelated and unchanged.
+- **The top-level workflow `input:` schema is renamed to `input_schema:`.**
+  Migration: rename the workflow's top-level `input:` key to `input_schema:` —
+  `{{ input.<field> }}` template references and a `call` step's own `input:`
+  (the instance binding passed to a subworkflow) are unrelated and unchanged.
+- **`prune`'s `keep: top(<k>)` is now `keep: <k>`.** The function-call-shaped
+  wrapper is removed since top-k was always the only mode. Migration: replace
+  `keep: top(<k>)` with the plain integer `keep: <k>`.
+- **A signal `where:` clause now requires the `{{ }}` envelope, and correlates
+  against the payload via a `signal.<field>` root.** The old bare-identifier
+  form (an implicit substitute-into-string-then-parse against the payload,
+  with a string-quoting hazard) is removed. Migration: wrap the clause in
+  `{{ }}` and prefix payload fields with `signal.` — e.g.
+  `where: 'candidate_id == "{{ hyp.id }}"'` becomes
+  `where: "{{ signal.candidate_id == hyp.id }}"`. Every other root (`input.*`,
+  `step.*`, `run.*`, an `as:` binding, …) resolves against the surrounding
+  engine scope exactly as in `if`/`loop`/`gate` conditions, and the value is
+  compared as typed data — no more quoting workaround for strings.
+
 ### Added
 
+- **`output_artifact` is no longer containerless-only.** Any agent step that
+  declares `output_schema` — container-backed or containerless — may now also
+  declare `output_artifact: <name>` to publish its typed output as a
+  content-addressed artifact. The requires-`output_schema` and
+  mutually-exclusive-with-`output_files` rules (`AWF3014`) are unchanged.
+- **`map`'s `over:` accepts a literal YAML sequence.** In addition to a
+  `{{ }}` expression evaluated at runtime, `over:` may now be an author-fixed
+  literal sequence (e.g. `over: [a, b, c]`) — a static, digest-pinned
+  parameter sweep known before the run, as opposed to a runtime-sized
+  worklist.
 - **`awf validate` strictly rejects unknown workflow/step keys (`AWF1062`).** A
   stray or typo'd key anywhere in a workflow document — previously silently
   tolerated — is now a hard validation error.

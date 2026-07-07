@@ -29,7 +29,7 @@ A workflow document has the following top-level shape:
 
     workflow: <id>
     version: 1
-    input: <json-schema>          # optional; run parameters
+    input_schema: <json-schema>   # optional; run parameters
     input_files: { <name>: <contract> }  # optional; imported workflow file inputs
     env: [ <NAME>, ... ]          # optional; host env-var names forwarded to agent AND run: steps
     imports:                      # optional; local subworkflows
@@ -58,7 +58,7 @@ A workflow document has the following top-level shape:
 **version**
 :   Required. The AWF format version. Current value: `1`.
 
-**input**
+**input_schema**
 :   Optional. A JSON Schema (see **TEMPLATING AND TYPED OUTPUTS**) for the run
     parameters, referenced as `{{ input.<field> }}`.
 
@@ -99,7 +99,8 @@ the validator flags any key that is not part of the workflow or step schema.
 Top-level `x-*` keys are exempt — they are reserved for YAML-anchor holders (for
 example `x-defaults: &defaults …`). Opaque and free-form value subtrees are not
 inspected: an agent step's `with:` block, JSON-Schema values (`output_schema`,
-`input`, a tool's `input_schema`), and `outputs:` values may contain any keys.
+the top-level `input_schema`, a tool's `input_schema`), and `outputs:` values may
+contain any keys.
 
 ## Imports
 
@@ -592,7 +593,7 @@ format never hard-codes one harness's options.
       continues: <id>                # optional; id of a prior agent turn this turn continues
       with: { ... }                  # opaque; validated by the runtime
       output_schema: { ... }         # required iff outputs are referenced downstream
-      output_artifact: <name>        # containerless only; mutually exclusive with output_files
+      output_artifact: <name>        # requires output_schema; mutually exclusive with output_files
       output_files: [<path>, ...]    # optional; or { <name>: <path|contract> } -> named
       input_files: { <label>: step.<id>.files.<name> }  # or asset.<id>; optional; label is an in-container path (container) or a logical name forwarded inline (containerless)
       skills:
@@ -666,31 +667,35 @@ only to typed fields, so `**verdict: pass**` versus `verdict: pass` can never
 silently break a gate.
 
 **output_artifact**
-:   Optional. **Agent-only; valid only on a containerless agent step** (one that
-    omits `container:`). When set, the engine serializes the step's fully-validated
-    `output_schema` object as canonical JSON at commit time and publishes the
-    result as a named artifact with the handle `step.<id>.files.<name>`.
-    Consumers reference it with the same `step.<id>.files.<name>` syntax used for
-    `output_files` artifacts — via a later step's `input_files` or the workflow-level
-    `output_files` alias map. The behavior is identical to a named `output_files`
-    entry in a container-backed step.
+:   Optional. **Agent-only; requires `output_schema`; valid on any agent step**,
+    container-backed or containerless. When set, the engine serializes the
+    step's fully-validated `output_schema` object as canonical JSON at commit
+    time and publishes the result as a named artifact with the handle
+    `step.<id>.files.<name>`. Consumers reference it with the same
+    `step.<id>.files.<name>` syntax used for `output_files` artifacts — via a
+    later step's `input_files` or the workflow-level `output_files` alias map.
+    A container-backed step's `output_artifact` is produced the same way and is
+    unrelated to any `output_files` that step separately captures from its
+    container filesystem.
 
-    Two constraints are enforced at validation (**AWF3014**):
+    Two constraints are enforced at validation (**AWF3014**), on either kind of
+    step:
 
     - `output_artifact` requires `output_schema` — the artifact is the serialized
       typed output, so there is nothing to emit without a schema.
     - `output_artifact` and `output_files` are **mutually exclusive** on the same
-      step (a containerless step has no container paths to capture via
-      `output_files`; use `output_artifact` instead).
+      step — the typed-output artifact and a container-captured `output_files`
+      set are distinct channels that cannot both be declared on one step.
+    - `output_artifact`'s name must be a valid step-id-shaped identifier.
 
     Setting `output_artifact` on a code (`run:`) step has no effect and is
     silently ignored — `output_artifact` is an agent-only field. Authors should
     not rely on this behavior; a future validator revision may warn.
 
-    **Known limitation (v1):** `react:` steps (the other containerless producer)
-    cannot emit `output_artifact`. A `react:` step's structured output is not
-    yet exposed as a whole-object artifact; individual typed fields remain
-    referenceable via `step.<id>.<field>` as usual.
+    **Known limitation (v1):** `react:` steps cannot emit `output_artifact`. A
+    `react:` step's structured output is not yet exposed as a whole-object
+    artifact; individual typed fields remain referenceable via
+    `step.<id>.<field>` as usual.
 
     Example — a containerless `awf/llm` extract step that exposes its typed
     output as a named artifact:
@@ -802,8 +807,8 @@ exports.
 **input**
 :   Optional. Defaults to `{}`. Each value is evaluated with the same typed
     template rules as step input values, then the resulting object is validated
-    against the imported workflow's top-level `input` schema. If the imported
-    workflow has no `input` schema, only `{}` is valid.
+    against the imported workflow's top-level `input_schema`. If the imported
+    workflow has no `input_schema`, only `{}` is valid.
 
 **input_files**
 :   Optional. Maps the child workflow's public file input name to a parent
@@ -965,7 +970,7 @@ streaming is out of scope; route big payloads as a single artifact, not many.
 
     - id: approve
       await: <signal-name>
-      where: 'candidate_id == "{{ <ref> }}"'   # optional; consume the signal whose payload matches
+      where: "{{ signal.candidate_id == <ref> }}"   # optional; consume the signal whose payload matches
       timeout: <dur>                 # optional; on expiry -> retryable_failure (no payload)
       output_schema: { ... }         # optional; validates the delivered payload
 
@@ -976,8 +981,9 @@ across a restart. No container is needed. Deliver one with **awf signal** (see
 **awf**(1)).
 
 **where**
-:   Optional. A **bounded boolean** expression selecting *which* buffered signal
-    of that name to consume. Without `where:`, signals are consumed
+:   Optional. A **bounded boolean** expression, in the same single `{{ }}`
+    envelope as `if.cond`/`loop.until`/`gate.until`, selecting *which* buffered
+    signal of that name to consume. Without `where:`, signals are consumed
     earliest-first per name (the default above). With `where:`, the engine
     consumes the **earliest-seq** buffered signal whose **payload satisfies the
     expression**; non-matching signals stay buffered for other awaits. This
@@ -985,33 +991,30 @@ across a restart. No container is needed. Deliver one with **awf signal** (see
     a `map` body that awaits the `oob-hit` whose `candidate_id` equals its own
     item, regardless of arrival order.
 
-    The expression is the same bounded boolean form as `if`/`loop`/`gate`
-    conditions: comparisons plus `&&` / `||` / `!`, **no arithmetic**. `{{ … }}`
-    slots inside it substitute from the surrounding scope (e.g. `{{ hyp.id }}`
-    for a `map` item's `as` binding) **before** matching; **bare identifiers
-    resolve against the delivered signal's JSON payload** (e.g. `candidate_id` is
-    `payload.candidate_id`).
+    The clause is **one `{{ }}`-enveloped expression**, parsed once with the
+    same bounded evaluator `if`/`loop`/`gate` conditions use: comparisons plus
+    `&&` / `||` / `!`, **no arithmetic**. The reserved `signal.<field>` root
+    resolves against the **candidate signal's JSON payload** (e.g.
+    `signal.candidate_id`, `signal.meta.id`); every other root — `input.*`,
+    `step.*`, `run.*`, a `map`/`loop` `as:` binding, … — resolves against the
+    **surrounding engine scope**, exactly like any other `{{ }}` field:
 
-    **Quoting (required for string correlation values).** A `{{ … }}` slot
-    substitutes its *rendered text* into the expression before the expression is
-    parsed. To compare against a **string** value you MUST wrap the slot in
-    literal double-quotes: `where: 'candidate_id == "{{ hyp.id }}"'`. With a
-    string `hyp.id` of `a`, the unquoted form `candidate_id == {{ hyp.id }}`
-    renders to `candidate_id == a`, where the bare `a` parses as a *payload
-    reference* (an identifier), not the string literal `"a"` — so it never
-    matches (and typically fails to resolve). The quoted form renders to
-    `candidate_id == "a"`, a string-literal comparison, which is what you want.
-    Numeric correlation values (e.g. `count == {{ n }}`) need no quotes — a bare
-    number parses as a number literal. (This mirrors how any bounded-boolean
-    field treats a bare identifier as a reference; see **TEMPLATING AND TYPED
-    OUTPUTS**.)
+        where: "{{ signal.candidate_id == hyp.id }}"
+
+    A value is never rendered into the clause as text before parsing: the
+    expression is parsed once and then evaluated per candidate as **typed
+    data**, so neither a payload field nor an outer ref's value can alter the
+    clause's grammar. Comparing against a string correlation value therefore
+    needs no quoting workaround — it is an ordinary typed comparison, not a
+    text substitution.
 
     A signal whose payload is not a JSON object is skipped by the matcher (never
     consumed by a `where:`). If no buffered signal matches before `timeout`, the
     await is a `retryable_failure` exactly as if no signal had arrived. Because
     matching reads payload fields, pair `where:` with `output_schema:` when the
-    payload shape matters. A `where:` clause that is not a valid bounded boolean
-    expression is rejected at validation (**AWF1036**).
+    payload shape matters. A `where:` clause that omits the `{{ }}` envelope, or
+    whose contents are not a valid bounded boolean expression, is rejected at
+    validation (**AWF1036**).
 
 # CONTROL FLOW AND THE GATE
 
@@ -1149,7 +1152,7 @@ not `break`: it ends the current iteration/branch, not a whole loop.
 
     - map:
         id: <id>                     # optional; named aggregate product
-        over: <expr>                 # a typed array, size known only at runtime
+        over: <expr>|[<literal>, ...] # a typed array ({{ }} expr, runtime-sized) OR a literal sequence, e.g. [a, b, c]
         as: <name>                   # each element bound as {{ <name>.<...> }} and {{ <name>.index }}
         container: <name>            # per-item container/compose instance (one per element)
         image: <template>            # optional; the per-element container's image, resolved at runtime
@@ -1157,8 +1160,8 @@ not `break`: it ends the current iteration/branch, not a whole loop.
         min_success: <ratio|n>       # optional; fan-in succeeds if at least this many do (default: all)
         body: [<node>...]
         reduce:                      # optional; fan-IN — collapse the N branch outputs to one
-          quorum: <n|ratio>          #   built-in: succeeds iff at least this many branches pass `over`
-          over: <field>              #   the per-branch boolean output field quorum counts
+          quorum: <n|ratio>          #   built-in: succeeds iff at least this many branches pass `field:`
+          field: <field>             #   the per-branch boolean output field quorum counts
           # — OR an author reducer (declare exactly one of quorum: or run:) —
           run: <command>             #   a shell reducer (a CODE step)
           container: <name>          #   REQUIRED on a run: reducer — the declared container it runs in
@@ -1166,7 +1169,7 @@ not `break`: it ends the current iteration/branch, not a whole loop.
           output_files: { <name>: <path> } #   the reduced node's artifacts
         prune:                       # optional; frontier — cancel result-blind losers as items commit
           score: <field>             #   a NUMERIC field the body's last step declares in output_schema
-          keep: top(<k>)             #   keep the k highest scorers; prune the rest
+          keep: <k>                  #   keep the k highest scorers (a positive integer); prune the rest
           # — OR (declare exactly one of keep: or stop_when:) —
           stop_when: "<bool-expr>"   #   over best.score; once true, prune everything still running
 
@@ -1177,6 +1180,14 @@ container instance (the distinct-container rule applied per element), up to
 instead of cancelling every sibling on the first one. Use `parallel` for a
 static, author-known set of distinct branches; use `map` for a runtime-sized set
 of identical ones.
+
+`over:` accepts either of two forms: a `{{ }}` expression evaluated once at the
+map's turn (the runtime-sized case above), or a literal YAML sequence such as
+`over: [a, b, c]` — an author-fixed, digest-pinned worklist known before the run
+(the matrix case: a static parameter sweep). A literal item may be a scalar or a
+flat object/array; it is never `{{ }}`-templated — the literal form is fully
+static, with no engine-scope substitution. `over:` is one form or the other,
+never both.
 
 `container: <name>` inside a `map` body is **per-item-isolated**: item *N* runs
 its own backend container (`<name>-item-<N>`), a separate filesystem from every
@@ -1249,14 +1260,14 @@ or `run:` (**AWF1035**). `reduce:` is supported on `map` only (parallel does not
 accept it — see *parallel*).
 
 `quorum: k` (the debate / cohort case) succeeds iff at least `k` branches produced
-a true `over` field; the reduced output is `{passed, votes, agree}`. `quorum`
+a true `field:` value; the reduced output is `{passed, votes, agree}`. `quorum`
 generalizes `min_success`: `min_success` is quorum over the mechanical success
 predicate. There are no named-threshold keywords; a quorum is always the numeric
 `k` (an int count or a fraction). Conceptually, "any" is quorum(1), a "majority"
 is quorum(⌈N/2⌉), and "unanimous" is quorum(N) — but each is written as that
 numeric `k`, never as the word. A `quorum` ratio reuses the `min_success` int-or-
 fraction form. Declaring both `min_success` and `reduce: {quorum}` on one node is
-rejected (**AWF5006**), as is a `quorum` whose `over:` names a field no body step
+rejected (**AWF5006**), as is a `quorum` whose `field:` names a field no body step
 declares in its `output_schema` (**AWF5006**). A `quorum` reduce that is not met
 ends the node as `retryable_failure`, exactly like an unmet `min_success`.
 
@@ -1328,8 +1339,8 @@ items commit, the engine reads a typed `score` per item and cancels the losers
 still in flight or not yet started — a hypothesis search that does not pay for the
 branches it has already beaten. It is an optional clause on `map` only; `parallel`
 has no `prune:` (see *parallel*). Declare a required `score:` and **exactly one**
-of `keep: top(<k>)` or `stop_when: "<bool-expr>"` — neither, both, an empty
-`score`, or a `keep` that is not `top(<positive int>)` is rejected by the
+of `keep: <k>` or `stop_when: "<bool-expr>"` — neither, both, an empty
+`score`, or a `keep` that is not a positive integer is rejected by the
 validator (**AWF1037**).
 
 `score:` names a **numeric** field the body's **last step** declares in its
@@ -1337,7 +1348,7 @@ validator (**AWF1037**).
 never parsed from text; a `score:` that does not name a numeric field of that
 schema is rejected (**AWF5008**).
 
-`keep: top(k)`: as items complete, the engine keeps the `k` highest-scoring items
+`keep: k`: as items complete, the engine keeps the `k` highest-scoring items
 and prunes the rest — in-flight items are cancelled, not-yet-started items never
 start. Ties beyond `k` are broken by **item index (lowest index wins)**, so the
 survivor set is deterministic.
@@ -1361,7 +1372,7 @@ durable record once the frontier settles; on resume that record is **replayed
 verbatim** — surviving items' bodies are not re-run and the prune is not
 re-decided. The committed journal is authoritative for which items survived; the
 frontier is never re-derived from a partial score set, because items can commit in
-a different order across runs and a re-derived `top(k)` tie-break or first-firing
+a different order across runs and a re-derived `keep: k` tie-break or first-firing
 `stop_when` could pick a different survivor set. A crash before the disposition
 commits leaves **no partial frontier**: the whole map re-runs from its already-
 committed per-item bodies and the frontier is decided once, cleanly.
@@ -1715,7 +1726,7 @@ Condition evaluation, for `if.cond`, `loop.until`, and `gate.until`, is a bounde
 evaluator over references, literals, comparisons (`== != < <= > >=`), and boolean
 operators (`&& || !`). No arithmetic, calls, or loops.
 
-Schemas (`input` and every `output_schema`) are JSON Schema 2020-12. For agent
+Schemas (`input_schema` and every `output_schema`) are JSON Schema 2020-12. For agent
 outputs AWF defines a deliberately conservative cross-backend floor: objects with
 all properties `required` and `additionalProperties: false`, scalar types,
 `enum`, arrays, and bounded nesting; no `oneOf`, `not`, or numeric/string-length
@@ -2016,7 +2027,7 @@ is torn down with the run.
 
     workflow: cve-pipeline
     version: 1
-    input:
+    input_schema:
       type: object
       required: [cve_id]
       properties: { cve_id: { type: string } }
@@ -2097,7 +2108,7 @@ index-ordered array of A's per-item `scan` outputs, each element bound as `f`.
 
     workflow: scan-then-verify
     version: 1
-    input:
+    input_schema:
       type: object
       required: [hosts]
       properties:
