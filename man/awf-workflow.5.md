@@ -678,7 +678,7 @@ silently break a gate.
     unrelated to any `output_files` that step separately captures from its
     container filesystem.
 
-    Two constraints are enforced at validation (**AWF3014**), on either kind of
+    Three constraints are enforced at validation (**AWF3014**), on either kind of
     step:
 
     - `output_artifact` requires `output_schema` — the artifact is the serialized
@@ -688,9 +688,10 @@ silently break a gate.
       set are distinct channels that cannot both be declared on one step.
     - `output_artifact`'s name must be a valid step-id-shaped identifier.
 
-    Setting `output_artifact` on a code (`run:`) step has no effect and is
-    silently ignored — `output_artifact` is an agent-only field. Authors should
-    not rely on this behavior; a future validator revision may warn.
+    `output_artifact` is valid only on an agent step with `output_schema`. On a
+    code (`run:`) step it is not a recognized field, so the strict unknown-key
+    pass (**AWF1062**) rejects it as an unknown key — a hard validation error,
+    not a silent no-op.
 
     **Known limitation (v1):** `react:` steps cannot emit `output_artifact`. A
     `react:` step's structured output is not yet exposed as a whole-object

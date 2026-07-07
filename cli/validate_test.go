@@ -190,6 +190,57 @@ func TestValidateLoadErrorJSONDiagnostic(t *testing.T) {
 	}
 }
 
+// invalidPruneKeepTopK triggers a DECODE-time (not validation-time) rejection:
+// PruneKeep.UnmarshalJSON (ir/prune.go, F21) rejects the removed `top(<k>)`
+// wrapper with a migration-specific guidance message. That happens inside
+// yaml.DecodeWithRaw, before ir.Validate ever runs — so the loader returns an
+// AWF_IMPORT_DECODE *loader.LoadError, not an ir.Diagnostic.
+const invalidPruneKeepTopK = `workflow: prune-decode
+version: 1
+containers:
+  c:
+    image: oci://example.com/x@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - map:
+      over: "{{ input.items }}"
+      as: x
+      container: c
+      body:
+        - id: hyp
+          container: c
+          run: "./hyp.sh"
+          output_schema:
+            type: object
+            properties:
+              score: { type: number }
+      prune:
+        score: score
+        keep: "top(3)"
+`
+
+// TestValidateDecodeErrorSurfacesDetail: a decode-time migration rejection (F21's
+// removed `keep: top(k)` wrapper) must be visible via `awf validate`, not just
+// `awf run`. Before the fix, cli/validate.go only fell back to le.Err.Error()
+// when le.Message == "" — but AWF_IMPORT_DECODE always sets a generic Message
+// ("decode workflow YAML"), so the real guidance carried in le.Err was silently
+// dropped for every decode-time diagnostic. RED before the fix (output contains
+// only "decode workflow YAML"); GREEN after (output contains the guidance).
+func TestValidateDecodeErrorSurfacesDetail(t *testing.T) {
+	path := writeFixture(t, "wf.yaml", invalidPruneKeepTopK)
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"validate", path}, &stdout, &stderr)
+	if code != ExitInvalid {
+		t.Fatalf("Run(validate) = %d, want %d (stderr=%q)", code, ExitInvalid, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "AWF_IMPORT_DECODE") {
+		t.Errorf("expected AWF_IMPORT_DECODE in stdout; got %q", out)
+	}
+	if !strings.Contains(out, "top(") || !strings.Contains(out, "positive integer") {
+		t.Errorf("expected the top(k)-removed guidance message on stdout; got %q", out)
+	}
+}
+
 func TestValidateCleanWorkflowExitsOKText(t *testing.T) {
 	path := writeFixture(t, "wf.yaml", validMinimal)
 	var stdout, stderr bytes.Buffer

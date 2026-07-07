@@ -87,6 +87,17 @@ func cliValidate(args []string, stdout, stderr io.Writer) int {
 			msg := le.Message
 			if msg == "" && le.Err != nil {
 				msg = le.Err.Error()
+			} else if le.Code == "AWF_IMPORT_DECODE" && le.Err != nil {
+				// Decode failures (bad YAML, or a decode-time migration rejection
+				// like F21's `keep: top(k)` removal) carry their real guidance in
+				// le.Err, with le.Message left as the generic "decode workflow
+				// YAML" banner. Surface the full detail here so `awf validate`
+				// shows the same actionable message `awf run` already does —
+				// Detail() renders "<Message>: <Err>" (see loader/errors.go).
+				// Scoped to AWF_IMPORT_DECODE only: other LoadError codes (e.g.
+				// AWF_IMPORT_READ) intentionally keep their plain Message, since
+				// their wrapped Err is a lower-level OS error, not user guidance.
+				msg = le.Detail()
 			}
 			diags := []ir.Diagnostic{{
 				Severity: ir.Error,
