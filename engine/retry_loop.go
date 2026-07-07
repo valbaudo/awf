@@ -3,8 +3,10 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/retry"
@@ -54,6 +56,13 @@ func RunWithRetry(
 	var chunks <-chan container.IOChunk
 	var lastErr error
 
+	// R3: thread the resolved recovery strategy onto the local intent copy so the
+	// dispatcher hands it to a PersistentSession adapter (which resumes its live
+	// session on a retry when recovery:continue). Constant across attempts; intent
+	// is a value copy owned by this call, so mutating it is safe.
+	continueRecovery := policy.Recovery == recoveryContinue
+	intent.RecoveryContinue = continueRecovery
+
 	for attempt := 1; attempt <= policy.Attempts; attempt++ {
 		// Stamp the 1-based attempt index on the local intent copy so the
 		// dispatcher can thread it into the AgentInvocation (per-attempt signal).
@@ -76,7 +85,19 @@ func RunWithRetry(
 		// Interpreter-bug class (unknown container, unsupported kind): halt
 		// immediately, surface as-is. NOT a retryable failure.
 		if lastErr != nil {
-			return dr, nil, lastErr
+			// R3: under recovery:continue, a live-replay-required signal from a
+			// PersistentSession adapter is recoverable in-process — the next attempt
+			// resumes the session and abandons the stalled turn (R5). Demote it to a
+			// retryable_failure and let the loop retry instead of hard-halting for a
+			// cross-process resume. Every other dispatch error, and recovery:restart,
+			// still halts here. dr.Outcome is "" on this path (the adapter returned an
+			// error, not an outcome), so set it to retryable_failure and fall through to
+			// the shared retry accounting below (which re-derives lastErr from dr.Err).
+			if continueRecovery && errors.Is(lastErr, agent.ErrLiveReplayRequired) {
+				dr.Outcome = OutcomeRetryableFailure
+			} else {
+				return dr, nil, lastErr
+			}
 		}
 
 		switch dr.Outcome {

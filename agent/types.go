@@ -183,6 +183,15 @@ type AgentInvocation struct {
 	// with: config; json:"-": never journaled. Zero when a caller builds an
 	// AgentInvocation directly (tests) without wiring it.
 	Attempt int `json:"-"`
+	// RecoveryContinue is true when the resolved retry.recovery strategy for this
+	// step is "continue" (resume the persistent session on a retry) rather than
+	// "restart". Set by the engine from the merged retry.Policy (engine resolves an
+	// unset value to a per-adapter default); meaningful only for a PersistentSession
+	// adapter. Combined with Attempt>0 it tells the adapter that a leftover
+	// in-progress turn from a prior attempt in THIS run may be abandoned and the
+	// thread resumed, instead of hard-halting for a cross-process replay. Engine
+	// operational state like Attempt/ResumeSession; json:"-": never journaled.
+	RecoveryContinue bool `json:"-"`
 	// ResumeSession is set true by the engine when it successfully restored a
 	// committed session transcript for this node before calling adapter.Launch.
 	// The adapter uses it to select the correct CLI flag:

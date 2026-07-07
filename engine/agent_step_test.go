@@ -600,6 +600,10 @@ graph:
 }
 
 func TestRunAgentStep_LiveReplayRequiredLaunchErrHaltsWithoutFailureOrRetry(t *testing.T) {
+	// recovery: restart pins the pre-stall-feature disposition: ErrLiveReplayRequired
+	// is a hard internal halt (needs a cross-process resume). Under the new
+	// PersistentSession default (recovery: continue) R3 instead demotes it to a
+	// retryable_failure and resumes — covered by TestRunWithRetry_LiveReplayRecoveryPolicy.
 	const yaml = `workflow: live-replay-launch
 version: 1
 graph:
@@ -607,6 +611,8 @@ graph:
     uses: live/agent
     with:
       prompt: "p"
+    retry:
+      recovery: restart
 `
 	ld := loadAgentSimpleDef(t, yaml)
 
@@ -642,6 +648,8 @@ graph:
 }
 
 func TestRunAgentStep_LiveReplayRequiredOutcomeErrAppendsPriorEventsThenHalts(t *testing.T) {
+	// recovery: restart pins the hard-halt disposition (see the launch-err test);
+	// the continue-path reclassification (R3) is covered separately.
 	const yaml = `workflow: live-replay-outcome
 version: 1
 graph:
@@ -649,6 +657,8 @@ graph:
     uses: live/agent
     with:
       prompt: "p"
+    retry:
+      recovery: restart
 `
 	ld := loadAgentSimpleDef(t, yaml)
 
@@ -699,6 +709,7 @@ graph:
       prompt: "p"
     retry:
       attempts: 3
+      recovery: restart
     output_schema:
       type: object
       additionalProperties: false

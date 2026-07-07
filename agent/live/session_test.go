@@ -324,3 +324,45 @@ func TestActiveTurnPhaseClearRequiresNoProviderTurnID(t *testing.T) {
 		t.Fatalf("ClearActiveTurnIfSafe provider turn err = %v, want ErrActiveTurnNotClearable", err)
 	}
 }
+
+// TestClearActiveTurnForRecoveryAbandonsProviderTurn (R4): the stall-recovery
+// disposition clears an ActiveTurn even at PhaseProviderTurnStarted — the case
+// ClearActiveTurnIfSafe refuses — so a continue-retry can resume the session.
+// It is a no-op when there is no ActiveTurn.
+func TestClearActiveTurnForRecoveryAbandonsProviderTurn(t *testing.T) {
+	root, err := live.OpenRoot(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	rec := live.SessionRecord{
+		AdapterRef:   "openai/codex-live",
+		SessionKey:   "builder",
+		CanonicalCWD: t.TempDir(),
+		ActiveTurn: &live.ActiveTurn{
+			Phase:          live.PhaseProviderTurnStarted,
+			ProviderTurnID: "provider-1",
+		},
+	}
+	if err := live.WriteSessionRecord(root, rec); err != nil {
+		t.Fatalf("WriteSessionRecord: %v", err)
+	}
+	// ClearActiveTurnIfSafe must still refuse this phase (guard unchanged).
+	if err := live.ClearActiveTurnIfSafe(root, rec.AdapterRef, rec.SessionKey); !errors.Is(err, live.ErrActiveTurnNotClearable) {
+		t.Fatalf("ClearActiveTurnIfSafe err = %v, want ErrActiveTurnNotClearable", err)
+	}
+	// ClearActiveTurnForRecovery abandons it.
+	if err := live.ClearActiveTurnForRecovery(root, rec.AdapterRef, rec.SessionKey); err != nil {
+		t.Fatalf("ClearActiveTurnForRecovery: %v", err)
+	}
+	got, err := live.ReadSessionRecord(root, rec.AdapterRef, rec.SessionKey)
+	if err != nil {
+		t.Fatalf("ReadSessionRecord: %v", err)
+	}
+	if got.ActiveTurn != nil {
+		t.Fatalf("ActiveTurn after recovery clear = %+v, want nil", got.ActiveTurn)
+	}
+	// Idempotent no-op when already clear.
+	if err := live.ClearActiveTurnForRecovery(root, rec.AdapterRef, rec.SessionKey); err != nil {
+		t.Fatalf("ClearActiveTurnForRecovery no-op: %v", err)
+	}
+}

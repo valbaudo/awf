@@ -58,6 +58,13 @@ type NodeIntent struct {
 	// enters any digest (NodeIntent is not addressed/journaled).
 	Attempt int
 
+	// RecoveryContinue is true when the merged retry.Policy resolved to
+	// recovery:continue. Set by RunWithRetry from policy.Recovery; the dispatcher
+	// threads it into agent.AgentInvocation.RecoveryContinue so a PersistentSession
+	// adapter knows a retry may resume its session. Runtime-only — never enters any
+	// digest.
+	RecoveryContinue bool
+
 	agentEventSink *agentEventSink
 }
 
