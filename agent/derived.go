@@ -18,7 +18,8 @@ import (
 //
 // Independence (spec §5.5) and the no-session contract are the base adapter's
 // concern — DerivedAdapter holds no per-call state; the role with: is fixed at
-// construction.
+// construction, though a per-call engine-resolved override (AgentInvocation.RoleWith)
+// may replace it at Launch (see mergeRole).
 type DerivedAdapter struct {
 	roleName string
 	base     Adapter
@@ -53,12 +54,43 @@ func (d *DerivedAdapter) merge(step ir.RawConfig) ir.RawConfig {
 	return out
 }
 
+// RoleWithProvider is implemented by a role-bound adapter (DerivedAdapter). The
+// engine reads the raw (possibly {{ input.* }}-templated) role with: so it can
+// substitute it against the step scope before launch. A base adapter does not
+// implement it (nil role layer).
+type RoleWithProvider interface {
+	RoleWith() ir.RawConfig
+}
+
+// RoleWith returns a fresh copy of the role's raw with: (may contain templates).
+func (d *DerivedAdapter) RoleWith() ir.RawConfig {
+	if len(d.roleWith) == 0 {
+		return nil
+	}
+	cp := make(ir.RawConfig, len(d.roleWith))
+	maps.Copy(cp, d.roleWith)
+	return cp
+}
+
+// mergeRole overlays step ON TOP of the role layer (step wins). The role layer is
+// the engine-resolved override when present, else the stored raw role with:.
+func (d *DerivedAdapter) mergeRole(roleOverride, step ir.RawConfig) ir.RawConfig {
+	role := roleOverride
+	if role == nil {
+		role = d.roleWith
+	}
+	out := make(ir.RawConfig, len(role)+len(step))
+	maps.Copy(out, role)
+	maps.Copy(out, step) // step wins
+	return out
+}
+
 func (d *DerivedAdapter) ValidateConfig(with ir.RawConfig) error {
 	return d.base.ValidateConfig(d.merge(with))
 }
 
 func (d *DerivedAdapter) Launch(ctx context.Context, h container.Handle, inv AgentInvocation) (<-chan AgentEvent, <-chan AgentOutcome, error) {
-	inv.With = d.merge(inv.With)
+	inv.With = d.mergeRole(inv.RoleWith, inv.With)
 	return d.base.Launch(ctx, h, inv)
 }
 

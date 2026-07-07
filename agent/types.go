@@ -166,6 +166,13 @@ type AgentInvocation struct {
 	Uses            string         `json:"uses"`                       // agent-runtime ref (must match Adapter.Ref())
 	RunContext      RunContext     `json:"run_context"`                // explicit run/epoch identity for live-capable adapters
 	With            ir.RawConfig   `json:"with,omitempty"`             // opaque per-runtime config; validated by Adapter.ValidateConfig
+	// RoleWith is the engine-resolved (scope-substituted) role with: for a
+	// DerivedAdapter-backed step. The engine substitutes the role's raw templated
+	// with: against the step scope and threads it here so the role layer merges as
+	// already-rendered config. Nil for a non-role step or a direct caller (tests) —
+	// then DerivedAdapter falls back to its stored raw role with:. Engine
+	// operational state like Thread/ResumeSession; json:"-": never journaled.
+	RoleWith ir.RawConfig `json:"-"`
 	OutputSchema    *ir.JSONSchema `json:"output_schema,omitempty"`    // step's output_schema (the adapter passes to harness as --json-schema or layer-2 extractor schema)
 	Env             SecretEnv      `json:"-"`                          // env vars forwarded into the harness exec (slice 5.3 reads ANTHROPIC_API_KEY etc.); never JSON-marshaled so secrets cannot reach the state log
 	IdempotencyKey  string         `json:"idempotency_key,omitempty"`  // resolved-template; passed to harness env per spec §10
