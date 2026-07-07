@@ -17,6 +17,9 @@ is tracked independently of the `awf` tool version.
   module's run input at step execution — so one `awf run --input model=…` steers a
   whole fleet, and a child workflow's own role reads a model forwarded via
   `call: input:`. Guarded by AWF1067 (`input.*` only; no nested templates).
+  Behavior change: a role `with:` value that previously carried a literal
+  non-`input` `{{ … }}` (e.g. `{{ run.id }}`) — which used to pass validation
+  and reach the adapter as literal text — now fails validation with AWF1067.
 
 ## [0.3.0] - 2026-07-07
 

@@ -2415,3 +2415,117 @@ graph:
 		t.Errorf("With[model] = %v, want %q (role model should resolve from input.model, not leak the literal template)", got, "opus")
 	}
 }
+
+// allowlistAdapter is a bespoke base adapter (embeds *fake.Fake for
+// Launch/Ref/Capabilities/Version) whose ValidateConfig REJECTS its one
+// value-validated with-key unless the value is exactly "ok" — standing in
+// for a real value-validated key like codex's `effort` (agent/codex/validate.go's
+// slices.Contains(EffortValues, ...)). Used to prove dispatch-time
+// ValidateConfig validates the RESOLVED role with: (what Launch sends), not
+// the raw `{{ input.* }}` template (which is never "ok" and would always be
+// rejected pre-fix, independent of the resolved input value).
+type allowlistAdapter struct {
+	*fake.Fake
+	key string
+}
+
+func (a *allowlistAdapter) ValidateConfig(with ir.RawConfig) error {
+	v, present := with[a.key]
+	if !present {
+		return nil
+	}
+	s, _ := v.(string)
+	if s == "ok" {
+		return nil
+	}
+	return &agent.ErrInvalidConfig{Ref: a.Ref(), Key: a.key, Reason: fmt.Sprintf("must be %q, got %q", "ok", s)}
+}
+
+// TestRunAgentStep_RoleResolvedConfigValidatedAtDispatch — review fix. A
+// role's with: templates a value-validated key ({{ input.effort }}); the
+// base adapter's ValidateConfig rejects anything but the literal "ok". Before
+// the fix, dispatch validated the RAW role with: (agent.DerivedAdapter.ValidateConfig
+// merges d.roleWith, never the engine-resolved intent.ResolvedInputs.RoleWith)
+// — the raw `{{ input.effort }}` is never "ok", so the step always failed
+// dispatch-time validation regardless of the resolved input, even though
+// Launch (which uses the resolved layer) would have sent a valid config.
+func TestRunAgentStep_RoleResolvedConfigValidatedAtDispatch(t *testing.T) {
+	const yaml = `workflow: agent-step-role-resolved-validate
+version: 1
+input_schema:
+  type: object
+  required: [effort]
+  additionalProperties: false
+  properties:
+    effort: { type: string }
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+agents:
+  reviewer:
+    uses: test/allowlist
+    with:
+      effort: "{{ input.effort }}"
+graph:
+  - id: triage
+    container: lab
+    uses: reviewer
+    with:
+      prompt: "hi"
+`
+	ld := loadAgentSimpleDef(t, yaml)
+
+	run := func(t *testing.T, effort string) (engine.Outcome, *allowlistAdapter, error) {
+		t.Helper()
+		var reg agent.Registry
+		base := &allowlistAdapter{Fake: fake.New("test/allowlist").Script(0, fake.Result{}), key: "effort"}
+		if err := reg.Register(base); err != nil {
+			t.Fatalf("Register base: %v", err)
+		}
+		if err := reg.Register(agent.NewDerivedAdapter("reviewer", base, ir.RawConfig{"effort": "{{ input.effort }}"})); err != nil {
+			t.Fatalf("Register role: %v", err)
+		}
+
+		be := container.NewFake()
+		handles := map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}}
+		dispatcher := &engine.LocalDispatcher{Backend: be, Handles: handles, Resolver: &reg}
+
+		clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+		log := state.NewInMemoryLog(clk)
+		if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+			t.Fatalf("append run.started: %v", err)
+		}
+		blobs := state.NewInMemoryBlobs()
+		rs := engine.NewRunState("r1", "d", map[string]any{"effort": effort})
+
+		oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, blobs, clk, engine.RunOptions{Tap: io.Discard})
+		return oc, base, err
+	}
+
+	t.Run("resolved value valid: dispatch validates the resolved role with:, not the raw template (GREEN)", func(t *testing.T) {
+		oc, base, err := run(t, "ok")
+		if err != nil {
+			t.Fatalf("engine.Run: %v", err)
+		}
+		if oc != engine.OutcomeOK {
+			t.Fatalf("Outcome = %q, want %q — dispatch should validate the RESOLVED role with: (effort=%q), not the raw {{ input.effort }} template (which pre-fix always failed allowlistAdapter.ValidateConfig)", oc, engine.OutcomeOK, "ok")
+		}
+		calls := base.Calls()
+		if len(calls) != 1 {
+			t.Fatalf("fake.Calls len = %d, want 1", len(calls))
+		}
+		if got := calls[0].With["effort"]; got != "ok" {
+			t.Errorf("With[effort] = %v, want %q", got, "ok")
+		}
+	})
+
+	t.Run("resolved value invalid: still rejected at dispatch (negative control — fix must not disable validation)", func(t *testing.T) {
+		oc, _, err := run(t, "bogus")
+		if err == nil {
+			t.Fatal("engine.Run err = nil, want ValidateConfig rejection error")
+		}
+		if oc != engine.OutcomePermanentFailure {
+			t.Fatalf("Outcome = %q, want %q — a resolved-but-invalid role value must still fail ValidateConfig at dispatch", oc, engine.OutcomePermanentFailure)
+		}
+	})
+}

@@ -89,6 +89,21 @@ func (d *DerivedAdapter) ValidateConfig(with ir.RawConfig) error {
 	return d.base.ValidateConfig(d.merge(with))
 }
 
+// RoleResolvedValidator validates the config a role-backed Launch will actually
+// send: the ENGINE-RESOLVED role layer (not the raw template) overlaid by the
+// step. Without this, dispatch-time ValidateConfig(with) validates the raw
+// (still `{{ input.* }}`-templated) d.roleWith via merge/ValidateConfig above,
+// which disagrees with what Launch forwards (mergeRole(inv.RoleWith, inv.With)).
+type RoleResolvedValidator interface {
+	ValidateResolvedConfig(resolvedRole, step ir.RawConfig) error
+}
+
+// ValidateResolvedConfig validates base config against the resolved role layer
+// (mergeRole) — the exact map Launch forwards — instead of the raw d.roleWith.
+func (d *DerivedAdapter) ValidateResolvedConfig(resolvedRole, step ir.RawConfig) error {
+	return d.base.ValidateConfig(d.mergeRole(resolvedRole, step))
+}
+
 func (d *DerivedAdapter) Launch(ctx context.Context, h container.Handle, inv AgentInvocation) (<-chan AgentEvent, <-chan AgentOutcome, error) {
 	inv.With = d.mergeRole(inv.RoleWith, inv.With)
 	return d.base.Launch(ctx, h, inv)
