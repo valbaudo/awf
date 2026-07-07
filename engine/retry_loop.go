@@ -55,6 +55,12 @@ func RunWithRetry(
 	var lastErr error
 
 	for attempt := 1; attempt <= policy.Attempts; attempt++ {
+		// Stamp the 1-based attempt index on the local intent copy so the
+		// dispatcher can thread it into the AgentInvocation (per-attempt signal).
+		// intent is a value copy owned by this call, so mutating it per iteration
+		// is safe and does not leak across dispatches.
+		intent.Attempt = attempt
+
 		// Preceding-sleep for attempts > 1 (EffectiveBackoff(1, …) = 0; spec §6
 		// backoff). dr still holds the PREVIOUS attempt's result here (it's
 		// reassigned below), so dr.RetryAfter is that attempt's server hint —

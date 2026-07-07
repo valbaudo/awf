@@ -176,6 +176,13 @@ type AgentInvocation struct {
 	// containerless analog of container.InputFile staging). Empty for
 	// container-backed steps. json:"-": bytes never reach the state log.
 	InputFiles []InputFile `json:"-"`
+	// Attempt is the 1-based retry-attempt index the engine is currently on for
+	// this node (1 on the first try, 2 on the first retry, …). Threaded from
+	// NodeIntent.Attempt by the dispatcher so an adapter can distinguish a fresh
+	// try from a retry. Engine operational state like ResumeSession, not author
+	// with: config; json:"-": never journaled. Zero when a caller builds an
+	// AgentInvocation directly (tests) without wiring it.
+	Attempt int `json:"-"`
 	// ResumeSession is set true by the engine when it successfully restored a
 	// committed session transcript for this node before calling adapter.Launch.
 	// The adapter uses it to select the correct CLI flag:

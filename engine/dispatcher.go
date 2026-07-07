@@ -51,6 +51,13 @@ type NodeIntent struct {
 	IsGateEvaluate bool
 	RunContext     agent.RunContext
 
+	// Attempt is the 1-based index of the current retry attempt within
+	// RunWithRetry (1 on the first try, 2 on the first retry, …). Set per attempt
+	// by RunWithRetry on its local intent copy before each dispatcher.Run; the
+	// dispatcher threads it into agent.AgentInvocation.Attempt. Runtime-only — never
+	// enters any digest (NodeIntent is not addressed/journaled).
+	Attempt int
+
 	agentEventSink *agentEventSink
 }
 
