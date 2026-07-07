@@ -108,13 +108,14 @@ func New(opts ...Option) (*Adapter, error) {
 // Ref returns the agent-runtime identifier this adapter satisfies.
 func (*Adapter) Ref() string { return AdapterRef }
 
-// Capabilities returns Caps{NativeSchema: true, IsolatedConfigDir: true} —
-// Claude Code's --json-schema flag handles spec §4.2 layers 1+3 natively, and
-// even though this adapter passes --no-session-persistence (no session reuse) it
-// still wants a per-run CLAUDE_CONFIG_DIR so concurrent native runs don't collide
-// on shared ~/.claude config/registry/statsig.
+// Capabilities returns Caps{NativeSchema: true, IsolatedConfigDir: true,
+// SurfacesLiveness: Fine} — Claude Code's --json-schema flag handles spec §4.2
+// layers 1+3 natively, and even though this adapter passes
+// --no-session-persistence (no session reuse) it still wants a per-run
+// CLAUDE_CONFIG_DIR so concurrent native runs don't collide on shared ~/.claude
+// config/registry/statsig. Fine liveness: it streams thinking_delta tokens.
 func (*Adapter) Capabilities() agent.Caps {
-	return agent.Caps{NativeSchema: true, IsolatedConfigDir: true}
+	return agent.Caps{NativeSchema: true, IsolatedConfigDir: true, SurfacesLiveness: agent.LivenessFine}
 }
 
 // RequiredEnv implements agent.CredentialNamer. Returns the CREDENTIAL env var

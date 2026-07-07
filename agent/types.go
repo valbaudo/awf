@@ -65,7 +65,27 @@ type Caps struct {
 	// filesystem to isolate). Orthogonal to PersistentSession, which ADDITIONALLY
 	// captures/restores the session as that dir's projects/ subtree.
 	IsolatedConfigDir bool `json:"isolated_config_dir,omitempty"`
+
+	// SurfacesLiveness grades how finely this adapter streams live progress
+	// signals a stall watchdog can trust as proof the turn is still working.
+	// The zero value LivenessNone means "not measured / no signal", so an
+	// adapter that hasn't been characterized never overclaims. Only adapters we
+	// have MEASURED set a higher tier (codexlive = Coarse, claude-family = Fine).
+	SurfacesLiveness Liveness `json:"surfaces_liveness,omitempty"`
 }
+
+// Liveness grades the degree to which an Adapter surfaces live progress
+// signals (streamed deltas) between the start and end of a turn. A stall
+// watchdog reads this to decide how confidently a quiet stretch means "hung"
+// rather than "working silently". The zero value is LivenessNone so an
+// unmeasured adapter honestly declares no signal instead of overclaiming.
+type Liveness uint8
+
+const (
+	LivenessNone   Liveness = iota // no live progress signal (default; unmeasured)
+	LivenessCoarse                 // coarse progress deltas (e.g. reasoning-summary chunks)
+	LivenessFine                   // fine-grained streamed deltas (e.g. thinking_delta tokens)
+)
 
 // SecretEnv is the type used for env-passthrough values that contain secrets
 // (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN).

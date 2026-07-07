@@ -92,15 +92,17 @@ func New(opts ...Option) (*Adapter, error) {
 // Ref returns the agent-runtime identifier.
 func (*Adapter) Ref() string { return AdapterRef }
 
-// Capabilities returns Caps{NativeSchema: true, PersistentSession: true}.
-// Not Containerless — this adapter requires a container (like the base
-// claude adapter). Gate independence is enforced by the engine's PR0a guard
-// that rejects PersistentSession adapters in gate.evaluate.
+// Capabilities returns Caps{NativeSchema: true, PersistentSession: true,
+// SurfacesLiveness: Fine}. Not Containerless — this adapter requires a container
+// (like the base claude adapter). Gate independence is enforced by the engine's
+// PR0a guard that rejects PersistentSession adapters in gate.evaluate. Fine
+// liveness: like the base claude adapter, it streams thinking_delta tokens.
 func (*Adapter) Capabilities() agent.Caps {
 	return agent.Caps{
 		NativeSchema:      true,
 		PersistentSession: true,
 		IsolatedConfigDir: true,
+		SurfacesLiveness:  agent.LivenessFine,
 	}
 }
 
