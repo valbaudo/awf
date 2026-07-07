@@ -286,6 +286,14 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
 					return
 				}
+			case EventReasoningSummaryDelta:
+				// Reasoning is codex's only signal while thinking; forward it as a
+				// liveness heartbeat to keep the idle timer fed. It is NOT the answer,
+				// so it never joins finalText. Bound the preview like other displays.
+				if !sendLiveEvent(ctx, events, ev.Type, agent.Elide(ev.Text, agent.ToolResultHeadTail, agent.ToolResultHeadTail)) {
+					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
+					return
+				}
 			case EventItemCompleted:
 				finalText = ev.Text
 				if ev.Text != "" && !sendLiveEvent(ctx, events, ev.Type, ev.Text) {

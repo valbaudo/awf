@@ -50,6 +50,45 @@ func TestCodexLiveLaunchPrependsGateFeedback(t *testing.T) {
 	}
 }
 
+// TestCodexLiveForwardsReasoningDeltaAsLiveness locks D1: codex reasoning-summary
+// deltas are the only signal codex emits while it is thinking. The drain loop must
+// forward each one as a Live AgentEvent so awf's idle timer stays fed during
+// reasoning instead of tripping a false stall.
+func TestCodexLiveForwardsReasoningDeltaAsLiveness(t *testing.T) {
+	root := testRoot(t)
+	fake := &fakeClient{
+		info:        ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"},
+		startThread: ThreadInfo{ID: "thread-1"},
+		turns: []fakeTurn{{
+			turnID: "turn-1",
+			events: []ProviderEvent{
+				{Type: EventReasoningSummaryDelta, Text: "planning the change"},
+				{Type: EventTurnCompleted, Output: map[string]any{"ok": true}},
+			},
+		}},
+	}
+	a := newTestAdapter(t, root, fake)
+	events, outcome := drainLaunchWithEvents(t, a, testInvocation(t.TempDir(), "reasoning"))
+	if outcome.Err != nil {
+		t.Fatalf("Launch outcome err: %v", outcome.Err)
+	}
+	var found bool
+	for _, ev := range events {
+		if ev.Kind == EventReasoningSummaryDelta {
+			found = true
+			if !ev.Live {
+				t.Fatalf("reasoning-summary delta event Live = false: %+v", ev)
+			}
+			if !strings.Contains(string(ev.Payload), "planning the change") {
+				t.Fatalf("reasoning delta payload missing text: %s", ev.Payload)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no %q liveness event emitted; events = %+v", EventReasoningSummaryDelta, events)
+	}
+}
+
 // TestCodexLiveLaunchNoFeedbackLeavesPromptUnchanged locks the empty-feedback
 // no-op path (attempt 1, or any invocation carrying no gate verdict): the
 // prompt sent to the provider must be byte-identical to the raw input, same

@@ -76,6 +76,29 @@ func TestProviderEventFromNotificationCarriesTokenUsage(t *testing.T) {
 	}
 }
 
+func TestProviderEventFromNotificationForwardsReasoningSummaryDelta(t *testing.T) {
+	// item/reasoning/summaryTextDelta is the ONLY liveness signal codex exposes
+	// during reasoning. It must map to a non-terminal ProviderEvent (closeTurn
+	// false) carrying the delta text so the drain loop can beat the idle timer.
+	params := []byte(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"analyzing the repo"}`)
+	ev, turnID, closeTurn, ok := providerEventFromNotification(EventReasoningSummaryDelta, params)
+	if !ok {
+		t.Fatal("providerEventFromNotification ok = false")
+	}
+	if closeTurn {
+		t.Fatal("reasoning-summary delta must not close the turn")
+	}
+	if turnID != "turn-1" {
+		t.Fatalf("turnID = %q, want turn-1", turnID)
+	}
+	if ev.Type != EventReasoningSummaryDelta {
+		t.Fatalf("ev.Type = %q, want %q", ev.Type, EventReasoningSummaryDelta)
+	}
+	if ev.Text != "analyzing the repo" {
+		t.Fatalf("ev.Text = %q, want %q", ev.Text, "analyzing the repo")
+	}
+}
+
 func TestProviderEventFromNotificationCarriesTurnFailureStatus(t *testing.T) {
 	ev, turnID, closeTurn, ok := providerEventFromNotification(EventTurnCompleted, []byte(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":{"message":"boom","codexErrorInfo":null,"additionalDetails":null}}}`))
 	if !ok {
