@@ -330,7 +330,11 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 				output = ev.Output
 				if output == nil && inv.OutputSchema != nil && strings.TrimSpace(finalText) != "" {
 					if err := json.Unmarshal([]byte(strings.TrimSpace(finalText)), &output); err != nil {
-						outcomes <- agent.AgentOutcome{Err: agent.ErrLiveReplayRequired}
+						// R2: the turn completed but its output did not parse — a failed
+						// session attempt needing replay. Surface the live session key
+						// (via the data-only Live handoff) so the engine can journal a
+						// resume.hint for a cross-process continue; the thread is alive.
+						outcomes <- agent.AgentOutcome{Result: agent.AgentResult{Live: &meta}, Err: agent.ErrLiveReplayRequired}
 						return
 					}
 				}

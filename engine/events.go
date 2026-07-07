@@ -474,6 +474,25 @@ type RetryAttemptData struct {
 	Error   string `json:"error,omitempty"`
 }
 
+const (
+	// EventResumeHint carries a stalled live session's key for crash-safe
+	// cross-process continue. RunWithRetry appends it beside retry.attempt when a
+	// PersistentSession attempt fails needing a replay (DispatchResult.ResumeHint
+	// set). Unlike node.completed's SessionRef (a content-addressed transcript
+	// blob), this is a bare STRING hint — RunWithRetry has no Blobs handle, so it
+	// journals no artifact; Fold folds it into RunState.ResumeHints. Non-critical
+	// durability (rides the next fsync, like retry.attempt).
+	EventResumeHint = "resume.hint"
+)
+
+// ResumeHintData is the payload of a resume.hint event. Key is the live session
+// key (defaultSessionKey(runID,nodePath) OR an explicit with.session) the failed
+// attempt used — a plain string breadcrumb, never a Blobs/CAS ref, so the
+// "a done record never references a missing artifact" invariant holds trivially.
+type ResumeHintData struct {
+	Key string `json:"key"`
+}
+
 // NodeFailedData is the payload of a node.failed event — emitted by the
 // interpreter when a step terminates without committing. Outcome is always
 // "retryable_failure" (exhausted retries) or "permanent_failure" (declared

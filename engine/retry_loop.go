@@ -157,9 +157,29 @@ func RunWithRetry(
 		}); err != nil {
 			return dr, nil, fmt.Errorf("engine.RunWithRetry: append retry.attempt at path %q: %w", intent.Path, err)
 		}
-		// Note: retry.attempt rides the next Log.Sync (the eventual
-		// node.completed / node.failed) per the durability class decision in
-		// the slice 2.4 plan Design question 3.
+
+		// R2: a stalled PersistentSession attempt surfaces its live session key on
+		// DispatchResult.ResumeHint (the ACTUAL key the adapter used — engine never
+		// re-derives an adapter formula). Journal it as a resume.hint event so a
+		// later `awf resume` process can find and continue the session. Only the
+		// interpreter layer (this loop) appends; the dispatcher merely surfaced the
+		// string. Empty for code steps, non-session adapters, and successful attempts.
+		if dr.ResumeHint != "" {
+			hintData, err := json.Marshal(ResumeHintData{Key: dr.ResumeHint})
+			if err != nil {
+				return dr, nil, fmt.Errorf("engine.RunWithRetry: marshal resume.hint at path %q: %w", intent.Path, err)
+			}
+			if err := log.Append(state.Event{
+				Type: EventResumeHint,
+				Path: intent.Path,
+				Data: hintData,
+			}); err != nil {
+				return dr, nil, fmt.Errorf("engine.RunWithRetry: append resume.hint at path %q: %w", intent.Path, err)
+			}
+		}
+		// Note: retry.attempt (and the resume.hint beside it) ride the next Log.Sync
+		// (the eventual node.completed / node.failed) per the durability class
+		// decision in the slice 2.4 plan Design question 3.
 	}
 
 	// Unreachable — the loop above always returns inside the body.

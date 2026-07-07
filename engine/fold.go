@@ -54,6 +54,11 @@ import (
 //     bug on resume).
 //   - run.cancelled sets Cancelled to true (slice 3.5; TERMINAL — cli/resume.go
 //     refuses).
+//   - resume.hint populates ResumeHints[path] (R2) — a stalled live session's key
+//     for crash-safe cross-process continue. A BARE STRING (no Blobs.Get): unlike a
+//     node.completed SessionRef (content-addressed transcript blob), the hint is
+//     journaled on FAILURE with no artifact, so the commit-atomicity invariant is
+//     untouched. Last write wins.
 //   - Anything else (future event types not yet written by Phase 2 slices) → ignored.
 //
 // Errors (any fold error → resume cannot proceed safely):
@@ -91,6 +96,7 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 	rs.SignalReceivedAt = make(map[string]SignalReceivedEntry, len(events)/16)
 	rs.SnapshotRefs = make(map[string]string) // slice 7.1 — snapshot:workspace containers only; sparse
 	rs.SessionRefs = make(map[string]string)  // M1 — native-session transcript refs; keyed by node path
+	rs.ResumeHints = make(map[string]string)  // R2 — stalled-session resume-hint keys (bare strings, not blob refs); keyed by node path
 	rs.SelectedSkills = make(map[string]SkillsSelectedData, len(events)/16)
 
 	seenRunStarted := false
@@ -386,6 +392,18 @@ func Fold(events []state.Event, blobs state.Blobs) (*RunState, error) {
 				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d: %w", EventNodeInvalidated, e.Seq, err)
 			}
 			clearInvalidatedPaths(rs, d.Paths)
+
+		case EventResumeHint:
+			// R2: a stalled-session resume hint (parallel to the SessionRef handling
+			// in EventNodeCompleted, but a BARE STRING keyed by node path — NOT a
+			// content-addressed blob ref, so no Blobs.Get here). Last write wins: the
+			// latest failed attempt's key is the one a resume should continue from.
+			var d ResumeHintData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				return nil, fmt.Errorf("engine.Fold: parse %s at seq=%d (path=%q): %w",
+					EventResumeHint, e.Seq, e.Path, err)
+			}
+			rs.ResumeHints[e.Path] = d.Key
 
 		default:
 			// Observational / future event types ignored by Fold (state effect, if

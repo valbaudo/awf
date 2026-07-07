@@ -220,6 +220,17 @@ type DispatchResult struct {
 	// Commit reads named fields off DispatchResult, not this one.
 	RetryAfter time.Duration
 
+	// ResumeHint is the live-session key a PersistentSession adapter surfaced on a
+	// FAILED/stalled attempt that needs a cross-process replay (agent.ErrLiveReplayRequired).
+	// It is the ACTUAL key the adapter used (default derivation OR an explicit
+	// with.session), so the engine never re-derives an adapter-specific formula.
+	// RunWithRetry journals it as a resume.hint event beside retry.attempt; Fold
+	// folds it into RunState.ResumeHints so a later `awf resume` process can find the
+	// stalled session. NOT a committed artifact: a plain string, no Blobs ref, never
+	// referenced by node.completed. Empty for code steps, non-session adapters, and
+	// successful attempts. Runtime-only: Commit reads named fields, not this one.
+	ResumeHint string
+
 	// Slice 5.2 — agent-step events. The dispatcher's runAgent drains the
 	// adapter's <-chan AgentEvent and buffers each here for the
 	// interpreter-level engine/agent_step.go to write as agent.event log

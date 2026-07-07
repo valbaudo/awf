@@ -344,6 +344,14 @@ type RunState struct {
 	// (rerun.go) — a re-run generate node must drop its stale session.
 	SessionRefs map[string]string
 
+	// ResumeHints maps a NODE PATH to the live session key of a FAILED/stalled
+	// attempt (from a resume.hint event), so a cross-process `awf resume` can find
+	// and continue the session. DISTINCT from SessionRefs: a SessionRef is a
+	// content-addressed transcript blob ref of a COMMITTED turn; a ResumeHint is a
+	// bare, un-addressed key string journaled on FAILURE (RunWithRetry has no Blobs
+	// handle) — never a committed artifact. Fold-populated; last write wins.
+	ResumeHints map[string]string
+
 	// SelectedSkills records skills.selected decisions by runtime node path.
 	// Agent steps consult it on resume to replay routed skill IDs without
 	// re-running the router against a possibly changed query.
@@ -407,6 +415,7 @@ func NewRunState(runID, workflowDigest string, input map[string]any) *RunState {
 		SignalReceivedAt: map[string]SignalReceivedEntry{},
 		SnapshotRefs:     map[string]string{},
 		SessionRefs:      map[string]string{},
+		ResumeHints:      map[string]string{},
 		SelectedSkills:   map[string]SkillsSelectedData{},
 		// Paused, Cancelled, CancelReason — zero values are correct
 	}
