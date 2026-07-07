@@ -424,6 +424,12 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
+	// Advisory idle-vs-liveness preflight (same as run-start). Warns when a step
+	// sets timeout.idle on a blind adapter (SurfacesLiveness=None); never fails.
+	if err := checkIdleLivenessForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf resume: %v\n", err)
+		return ExitUsage
+	}
 	// Run-start with:-config guard, same as run-start (U1). Runs before
 	// preflightLiveResume / run.resumed so a rejected resume is a no-op on
 	// the log.

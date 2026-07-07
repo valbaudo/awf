@@ -329,6 +329,13 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf run: %v\n", err)
 		return ExitUsage
 	}
+	// Advisory idle-vs-liveness preflight: warns (never fails) when a step sets
+	// timeout.idle on a blind adapter (SurfacesLiveness=None), where idle can only
+	// behave as a wall-clock deadline. Surfaces the footgun before any container boots.
+	if err := checkIdleLivenessForLoadedDefinition(ld, resolverOrEmpty(resolver), stderr); err != nil {
+		fprintf(stderr, "awf run: %v\n", err)
+		return ExitUsage
+	}
 	// Run-start with:-config guard: validate each agent step's adapter config
 	// before the log opens, so config errors fail pre-spend (ExitUsage) rather
 	// than mid-run (permanent_failure). Delegates to each adapter's
