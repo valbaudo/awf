@@ -10,6 +10,15 @@ is tracked independently of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-08
+
+A workflow-format release adding input-parameterizable agent roles: a reusable
+role's `model`/`system_prompt`/top-level-string `with:` may reference
+`{{ input.* }}`, resolved against the owning module's run input at step
+execution, so one `--input` steers a whole fleet and forwards across a `call:`
+boundary into a child workflow's own role. The workflow-format version
+(`version: 1`) is unchanged.
+
 ### Added
 
 - **Input-parameterizable agent roles.** A role's `model`/`system_prompt`/top-level
