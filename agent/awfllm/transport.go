@@ -627,7 +627,14 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 		CacheRead: gr.UsageMetadata.CachedContentTokenCount,
 	}
 	text := full.String()
-	emit(text, respBytes) // single emit: non-streaming v1
+	// single emit: non-streaming v1. Gemini surfaces NO intermediate liveness — the
+	// first and only AgentEvent is this terminal one, so it cannot reset an idle
+	// watchdog mid-generation. The adapter's static Capabilities() (SurfacesLiveness
+	// = Coarse) can't distinguish this transport from the streaming ones, so a
+	// Gemini step relies on the Coarse startup-grace (and any author-set
+	// timeout.idle) rather than a tight per-delta idle. If Gemini ever gains its own
+	// Capabilities surface, this transport should declare LivenessNone.
+	emit(text, respBytes)
 	return text, usage, cfg.Model, finish, nil
 }
 

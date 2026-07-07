@@ -90,8 +90,17 @@ func (*Adapter) Ref() string { return AdapterRef }
 
 // Capabilities: layer-2 typed output (NativeSchema:false) + no container needed +
 // threading supported (engine-supplied continues: message history prepended by launch).
+//
+// SurfacesLiveness=Coarse: the streaming transports emit one AgentEvent per
+// content-delta AND a liveness event on each Anthropic `ping`/structural event
+// (transport_anthropic.go), so a quiet stretch resets the idle watchdog. It is not
+// Fine because SDKs/gateways can hide pings during a reasoning gap. The transport
+// is chosen per-Launch (with:), so Capabilities() cannot statically tell the
+// streaming path from Gemini's single-shot non-streaming callGemini; Coarse is the
+// conservative static default (Gemini leans on the Coarse startup-grace, not a
+// tight idle — see the callGemini comment).
 func (*Adapter) Capabilities() agent.Caps {
-	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true, InlineInputFiles: true}
+	return agent.Caps{NativeSchema: false, Containerless: true, Threaded: true, ContextEvidence: true, InlineInputFiles: true, SurfacesLiveness: agent.LivenessCoarse}
 }
 
 // RequiredEnv implements agent.CredentialNamer. Returns the full forward-

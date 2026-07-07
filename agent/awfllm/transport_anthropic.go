@@ -168,6 +168,15 @@ func (a *Adapter) callAnthropic(ctx context.Context, cfg reqConfig, prompt strin
 				full.WriteString(ev.Delta.Text)
 				emit(ev.Delta.Text, append([]byte(nil), payload...))
 			}
+		case "ping", "content_block_start", "content_block_stop":
+			// Keep-alive / structural events carry no display text, but receiving
+			// one proves the turn is still alive. Emit an empty liveness event
+			// (Live:true, no display) so the engine's idle watchdog resets its
+			// deadline during a reasoning gap between visible text deltas. Anthropic
+			// sends `ping` periodically during such gaps; this is why awfllm declares
+			// SurfacesLiveness = Coarse (streaming + ping reset, but SDKs can hide
+			// pings so it is not Fine).
+			emit("", append([]byte(nil), payload...))
 		case "message_delta":
 			if ev.Delta.StopReason != "" {
 				finish = ev.Delta.StopReason
