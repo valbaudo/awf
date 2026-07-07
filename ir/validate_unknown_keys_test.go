@@ -143,42 +143,42 @@ func reduceMapWorkflowSrc(reduceKV string) string {
 }
 
 // TestUnknownKeys_ReduceFieldAccepted confirms reduce's renamed `field:` key
-// (F16) decodes clean — no AWF1062, no AWF1064.
+// (F16) decodes clean — no AWF1062, no AWF1066.
 func TestUnknownKeys_ReduceFieldAccepted(t *testing.T) {
 	diags := validateForTest(t, reduceMapWorkflowSrc("field: vulnerable"))
 	if hasCode(diags, "AWF1062") {
 		t.Fatalf("reduce field: must not be flagged unknown, got %v", diags)
 	}
-	if hasCode(diags, "AWF1064") {
+	if hasCode(diags, "AWF1066") {
 		t.Fatalf("reduce field: must not be flagged renamed, got %v", diags)
 	}
 }
 
 // TestUnknownKeys_ReduceOverRenamed confirms the OLD reduce `over:` spelling
-// (retired F16) is caught as a specific hard rename (AWF1064), not the generic
+// (retired F16) is caught as a specific hard rename (AWF1066), not the generic
 // unknown-key AWF1062.
 func TestUnknownKeys_ReduceOverRenamed(t *testing.T) {
 	diags := validateForTest(t, reduceMapWorkflowSrc("over: vulnerable"))
-	if !hasCode(diags, "AWF1064") {
-		t.Fatalf("expected AWF1064 for reduce over:, got %v", diags)
+	if !hasCode(diags, "AWF1066") {
+		t.Fatalf("expected AWF1066 for reduce over:, got %v", diags)
 	}
 	if hasCode(diags, "AWF1062") {
-		t.Fatalf("reduce over: must get the specific AWF1064, not also the generic AWF1062, got %v", diags)
+		t.Fatalf("reduce over: must get the specific AWF1066, not also the generic AWF1062, got %v", diags)
 	}
 	var msg string
 	for _, d := range diags {
-		if d.Code == "AWF1064" {
+		if d.Code == "AWF1066" {
 			msg = d.Message
 		}
 	}
 	if msg != "reduce over: renamed to field:" {
-		t.Errorf("AWF1064 message = %q, want %q", msg, "reduce over: renamed to field:")
+		t.Errorf("AWF1066 message = %q, want %q", msg, "reduce over: renamed to field:")
 	}
 }
 
 // TestUnknownKeys_MapOverStillValid is the position-awareness proof: a Map's
 // OWN `over:` (the fan-out expression, unrelated to Reduce's renamed field) must
-// NOT be flagged by either AWF1062 or AWF1064 — the renamed-key registry is
+// NOT be flagged by either AWF1062 or AWF1066 — the renamed-key registry is
 // scoped per Go struct type (Reduce), not by bare key string, so Map.over is
 // untouched.
 func TestUnknownKeys_MapOverStillValid(t *testing.T) {
@@ -197,13 +197,13 @@ func TestUnknownKeys_MapOverStillValid(t *testing.T) {
 	if hasCode(diags, "AWF1062") {
 		t.Fatalf("map over: must not be flagged unknown, got %v", diags)
 	}
-	if hasCode(diags, "AWF1064") {
+	if hasCode(diags, "AWF1066") {
 		t.Fatalf("map over: must not be flagged renamed (position-aware: only Reduce.over is a hard rename), got %v", diags)
 	}
 }
 
 // TestUnknownKeys_TopLevelInputSchemaAccepted confirms the renamed top-level
-// input_schema: (F17) decodes clean — no AWF1062, no AWF1064.
+// input_schema: (F17) decodes clean — no AWF1062, no AWF1066.
 func TestUnknownKeys_TopLevelInputSchemaAccepted(t *testing.T) {
 	src := "workflow: x\nversion: 1\n" +
 		"input_schema: {type: object, properties: {foo: {type: string}}}\n" +
@@ -213,13 +213,13 @@ func TestUnknownKeys_TopLevelInputSchemaAccepted(t *testing.T) {
 	if hasCode(diags, "AWF1062") {
 		t.Fatalf("input_schema: must not be flagged unknown, got %v", diags)
 	}
-	if hasCode(diags, "AWF1064") {
+	if hasCode(diags, "AWF1066") {
 		t.Fatalf("input_schema: must not be flagged renamed, got %v", diags)
 	}
 }
 
 // TestUnknownKeys_TopLevelInputRenamed confirms the OLD top-level `input:`
-// spelling (retired F17) is caught as a specific hard rename (AWF1064), not
+// spelling (retired F17) is caught as a specific hard rename (AWF1066), not
 // the generic unknown-key AWF1062 — the position-aware counterpart of
 // TestUnknownKeys_ReduceOverRenamed, but for the Workflow shape.
 func TestUnknownKeys_TopLevelInputRenamed(t *testing.T) {
@@ -227,27 +227,27 @@ func TestUnknownKeys_TopLevelInputRenamed(t *testing.T) {
 		"input: {type: object, properties: {foo: {type: string}}}\n" +
 		"graph: []\n"
 	diags := validateForTest(t, src)
-	if !hasCode(diags, "AWF1064") {
-		t.Fatalf("expected AWF1064 for top-level input:, got %v", diags)
+	if !hasCode(diags, "AWF1066") {
+		t.Fatalf("expected AWF1066 for top-level input:, got %v", diags)
 	}
 	if hasCode(diags, "AWF1062") {
-		t.Fatalf("top-level input: must get the specific AWF1064, not also the generic AWF1062, got %v", diags)
+		t.Fatalf("top-level input: must get the specific AWF1066, not also the generic AWF1062, got %v", diags)
 	}
 	var msg string
 	for _, d := range diags {
-		if d.Code == "AWF1064" {
+		if d.Code == "AWF1066" {
 			msg = d.Message
 		}
 	}
 	if msg != "top-level input: renamed to input_schema:" {
-		t.Errorf("AWF1064 message = %q, want %q", msg, "top-level input: renamed to input_schema:")
+		t.Errorf("AWF1066 message = %q, want %q", msg, "top-level input: renamed to input_schema:")
 	}
 }
 
 // TestUnknownKeys_InputTemplateRefsStillResolve confirms the runtime
 // {{ input.* }} namespace is UNRELATED to the input_schema: rename: a step
 // referencing input.foo still resolves against the (renamed) schema producer,
-// with no AWF1062/AWF1064/AWF3001.
+// with no AWF1062/AWF1066/AWF3001.
 func TestUnknownKeys_InputTemplateRefsStillResolve(t *testing.T) {
 	src := "workflow: x\nversion: 1\n" +
 		"input_schema: {type: object, required: [foo], properties: {foo: {type: string}}, additionalProperties: false}\n" +
@@ -255,7 +255,7 @@ func TestUnknownKeys_InputTemplateRefsStillResolve(t *testing.T) {
 		"graph:\n  - id: a\n    container: c\n    run: \"echo {{ input.foo }}\"\n"
 	diags := validateForTest(t, src)
 	for _, d := range diags {
-		if d.Code == "AWF1062" || d.Code == "AWF1064" || d.Code == "AWF3001" {
+		if d.Code == "AWF1062" || d.Code == "AWF1066" || d.Code == "AWF3001" {
 			t.Errorf("did not expect %s: %+v", d.Code, d)
 		}
 	}
@@ -273,7 +273,7 @@ func TestUnknownKeys_CallStepInputUnaffected(t *testing.T) {
 	if hasCode(diags, "AWF1062") {
 		t.Fatalf("call-step input: must not be flagged unknown, got %v", diags)
 	}
-	if hasCode(diags, "AWF1064") {
+	if hasCode(diags, "AWF1066") {
 		t.Fatalf("call-step input: must not be flagged renamed (position-aware: only Workflow.input is a hard rename), got %v", diags)
 	}
 }

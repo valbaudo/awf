@@ -17,7 +17,7 @@ package ir
 // Field was named Over through v0.2.0 (json:"over"); renamed (F16) because it
 // collides in spelling — but not in meaning — with Map.Over (the fan-out
 // expression). The old `over:` spelling under reduce: is now a hard rename,
-// detected position-aware by validateUnknownKeys (AWF1064): Map's own `over:`
+// detected position-aware by validateUnknownKeys (AWF1066): Map's own `over:`
 // is unaffected since the renamed-key set is registered per Go struct type.
 type Reduce struct {
 	Quorum       *Ratio      `json:"quorum,omitempty"`

@@ -31,7 +31,7 @@ import (
 // unreachable Root() fallback — nil means "no strict check available", so the pass
 // no-ops.
 //
-// Hard renames (AWF1064): a wire key that moved to a new spelling is a special
+// Hard renames (AWF1066): a wire key that moved to a new spelling is a special
 // case of "unknown key" — the tolerant unmarshal layer drops it exactly like a
 // typo would, but the author's intent is unambiguous, so it gets a specific
 // "renamed to X" message instead of the generic AWF1062 one. renamedKeysByType
@@ -59,7 +59,7 @@ func validateUnknownKeys(mod validationModule, c *collector) {
 	walkRawNodeList("", graph, c)
 }
 
-// renamedKey describes one hard-renamed wire key: the full AWF1064 diagnostic
+// renamedKey describes one hard-renamed wire key: the full AWF1066 diagnostic
 // message to emit for the old spelling. (There used to be a NewName field here
 // too, but nothing ever read it back out — the Message string is already
 // self-contained, so it was dropped rather than wired in for its own sake.)
@@ -74,7 +74,7 @@ type renamedKey struct {
 //
 // Register a new hard rename here when retiring a wire key: this single entry
 // both suppresses the generic AWF1062 for the old spelling and emits the
-// specific AWF1064 message instead — see validateUnknownKeys' doc comment.
+// specific AWF1066 message instead — see validateUnknownKeys' doc comment.
 var renamedKeysByType = map[reflect.Type]map[string]renamedKey{
 	reflect.TypeOf(Reduce{}): {
 		"over": {Message: "reduce over: renamed to field:"},
@@ -108,7 +108,7 @@ func allowedJSONKeys(t reflect.Type) map[string]struct{} {
 }
 
 // checkUnknownKeys emits AWF1062 for every key in m not present in allowed, or
-// AWF1064 (checked FIRST, so a renamed key never also gets the generic message)
+// AWF1066 (checked FIRST, so a renamed key never also gets the generic message)
 // for a key registered in renamed — see renamedKeysByType. label names the kind
 // of key for the message ("top-level key", "step key", "key", "reduce key").
 // When tolerateX is set, x-* keys are skipped (YAML-anchor holders). renamed may
@@ -122,7 +122,7 @@ func checkUnknownKeys(c *collector, path string, m map[string]any, allowed map[s
 			continue
 		}
 		if rk, ok := renamed[k]; ok {
-			c.errf(path, "AWF1064", rk.Message)
+			c.errf(path, "AWF1066", rk.Message)
 			continue
 		}
 		c.errf(path, "AWF1062", "unknown "+label+" "+quoteKey(k)+didYouMean(k, allowed))
