@@ -145,6 +145,135 @@ func TestCodexLiveDerivesCostFromResolvedModelAndInclusionTotals(t *testing.T) {
 	}
 }
 
+func TestCodexLiveLiveEventsCarryDisplay(t *testing.T) {
+	root := testRoot(t)
+	cwd := t.TempDir()
+	zero := 0
+	fake := &fakeClient{
+		info:        ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"},
+		startThread: ThreadInfo{ID: "thread-1"},
+		turns: []fakeTurn{{
+			turnID: "turn-1",
+			// Realistic order: reason, run a command, then stream the answer in two
+			// deltas, then commit the completed agentMessage.
+			events: []ProviderEvent{
+				{Type: EventReasoningSummaryDelta, Text: "mulling"},
+				{Type: EventItemCompleted, ItemType: "commandExecution", Command: "echo hi", Text: "hi\n", ExitCode: &zero},
+				{Type: EventAgentMessageDelta, Text: "Hi "},
+				{Type: EventAgentMessageDelta, Text: "there"},
+				{Type: EventItemCompleted, ItemType: "agentMessage", Text: "Hi there"},
+				{Type: EventTurnCompleted, Output: map[string]any{"ok": true}},
+			},
+		}},
+	}
+	a := newTestAdapter(t, root, fake)
+	events, outcome := drainLaunchWithEvents(t, a, testInvocation(cwd, "displayed"))
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v, want nil", outcome.Err)
+	}
+
+	byClass := map[agent.DisplayClass][]agent.AgentEvent{}
+	for _, ev := range events {
+		byClass[ev.Display.Class] = append(byClass[ev.Display.Class], ev)
+	}
+	// P1: reasoning + streamed answer deltas each carry a real Display class.
+	if got := byClass[agent.DisplayReasoning]; len(got) != 1 {
+		t.Fatalf("DisplayReasoning events = %d, want 1", len(got))
+	}
+	if got := byClass[agent.DisplayAssistantDelta]; len(got) != 2 || got[0].Display.Text != "Hi " || got[1].Display.Text != "there" {
+		t.Fatalf("DisplayAssistantDelta events = %+v, want 2 chunks 'Hi ' + 'there'", got)
+	}
+	// The completed agentMessage is a bare terminator (empty text) since the answer
+	// already streamed — it must NOT reprint the whole answer.
+	if got := byClass[agent.DisplayFinal]; len(got) != 1 || got[0].Display.Text != "" {
+		t.Fatalf("DisplayFinal events = %+v, want 1 empty-text terminator (no duplicate answer)", got)
+	}
+	// P2: command_execution surfaces a tool call + tool result.
+	call := byClass[agent.DisplayToolCall]
+	if len(call) != 1 || call[0].Display.Tool != "shell" || !strings.Contains(call[0].Display.Text, "echo hi") {
+		t.Fatalf("DisplayToolCall events = %+v, want 1 shell 'echo hi'", call)
+	}
+	res := byClass[agent.DisplayToolResult]
+	if len(res) != 1 || res[0].Display.Tool != "shell" || res[0].Display.IsError {
+		t.Fatalf("DisplayToolResult events = %+v, want 1 shell success", res)
+	}
+	if res[0].Display.Bytes != len("hi\n") || res[0].Display.Lines < 1 {
+		t.Fatalf("DisplayToolResult sizing = Bytes %d Lines %d, want Bytes %d Lines>=1", res[0].Display.Bytes, res[0].Display.Lines, len("hi\n"))
+	}
+	// Nothing falls back to the terse DisplayOther preview.
+	if got := byClass[agent.DisplayOther]; len(got) != 0 {
+		t.Fatalf("DisplayOther events = %d (%+v), want 0", len(got), got)
+	}
+}
+
+func TestCodexLiveNonStreamedAnswerRendersFinal(t *testing.T) {
+	// A model that emits only item/completed (no agentMessage deltas) still gets
+	// its answer rendered in full as DisplayFinal.
+	root := testRoot(t)
+	cwd := t.TempDir()
+	fake := &fakeClient{
+		info:        ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"},
+		startThread: ThreadInfo{ID: "thread-1"},
+		turns: []fakeTurn{{
+			turnID: "turn-1",
+			events: []ProviderEvent{
+				{Type: EventItemCompleted, ItemType: "agentMessage", Text: "the answer"},
+				{Type: EventTurnCompleted, Output: map[string]any{"ok": true}},
+			},
+		}},
+	}
+	a := newTestAdapter(t, root, fake)
+	events, outcome := drainLaunchWithEvents(t, a, testInvocation(cwd, "nonstream"))
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v, want nil", outcome.Err)
+	}
+	var finals []agent.AgentEvent
+	for _, ev := range events {
+		if ev.Display.Class == agent.DisplayFinal {
+			finals = append(finals, ev)
+		}
+	}
+	if len(finals) != 1 || finals[0].Display.Text != "the answer" {
+		t.Fatalf("DisplayFinal events = %+v, want 1 with full text 'the answer'", finals)
+	}
+}
+
+func TestCodexLiveFailedTurnEmitsErrorDisplay(t *testing.T) {
+	root := testRoot(t)
+	cwd := t.TempDir()
+	fake := &fakeClient{
+		info:        ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"},
+		startThread: ThreadInfo{ID: "thread-1"},
+		turns: []fakeTurn{{
+			turnID: "turn-1",
+			events: []ProviderEvent{
+				{Type: EventTurnCompleted, Status: "failed", Error: "model overloaded"},
+			},
+		}},
+	}
+	a := newTestAdapter(t, root, fake)
+	events, outcome := drainLaunchWithEvents(t, a, testInvocation(cwd, "failed"))
+	if outcome.Err == nil {
+		t.Fatal("outcome.Err = nil, want a turn-failure error")
+	}
+	var found bool
+	for _, ev := range events {
+		if ev.Display.Class != agent.DisplayError {
+			continue
+		}
+		found = true
+		if !ev.Display.IsError {
+			t.Error("DisplayError event IsError = false, want true")
+		}
+		if !strings.Contains(ev.Display.Text, "model overloaded") {
+			t.Errorf("DisplayError text = %q, want to contain 'model overloaded'", ev.Display.Text)
+		}
+	}
+	if !found {
+		t.Fatal("no DisplayError live event emitted on turn failure (P3)")
+	}
+}
+
 func approxUSD(a, b float64) bool {
 	d := a - b
 	if d < 0 {

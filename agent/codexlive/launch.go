@@ -267,6 +267,7 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 	var finalText string
 	var output map[string]any
 	var usage Usage
+	var streamedDelta bool // the answer arrived as agentMessage deltas (already rendered)
 	for {
 		select {
 		case <-ctx.Done():
@@ -300,7 +301,8 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 				}
 			case EventAgentMessageDelta:
 				finalText += ev.Text
-				if !sendLiveEvent(ctx, events, ev.Type, ev.Text) {
+				streamedDelta = true
+				if !sendLiveEvent(ctx, events, ev.Type, ev.Text, agent.EventDisplay{Class: agent.DisplayAssistantDelta, Text: ev.Text}) {
 					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
 					return
 				}
@@ -308,15 +310,49 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 				// Reasoning is codex's only signal while thinking; forward it as a
 				// liveness heartbeat to keep the idle timer fed. It is NOT the answer,
 				// so it never joins finalText. Bound the preview like other displays.
-				if !sendLiveEvent(ctx, events, ev.Type, agent.Elide(ev.Text, agent.ToolResultHeadTail, agent.ToolResultHeadTail)) {
+				reasoning := agent.Elide(ev.Text, agent.ToolResultHeadTail, agent.ToolResultHeadTail)
+				if !sendLiveEvent(ctx, events, ev.Type, reasoning, agent.EventDisplay{Class: agent.DisplayReasoning, Text: reasoning}) {
 					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
 					return
 				}
 			case EventItemCompleted:
-				finalText = ev.Text
-				if ev.Text != "" && !sendLiveEvent(ctx, events, ev.Type, ev.Text) {
-					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
-					return
+				switch ev.ItemType {
+				case itemTypeCommandExecution:
+					// P2: surface the shell command and its output as tool call/result
+					// displays (mirrors agent/codex's mapping). Not the answer, so it
+					// never touches finalText.
+					if !sendLiveEvent(ctx, events, ev.Type, ev.Command, agent.EventDisplay{
+						Class: agent.DisplayToolCall, Tool: "shell",
+						Text: agent.Elide(ev.Command, agent.ToolResultHeadTail, agent.ToolResultHeadTail),
+					}) {
+						outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
+						return
+					}
+					if !sendLiveEvent(ctx, events, ev.Type, ev.Text, agent.EventDisplay{
+						Class: agent.DisplayToolResult, Tool: "shell",
+						Text:    agent.Elide(ev.Text, agent.ToolResultHeadTail, agent.ToolResultHeadTail),
+						Lines:   agent.CountLines(ev.Text),
+						Bytes:   len(ev.Text),
+						IsError: ev.ExitCode != nil && *ev.ExitCode != 0,
+					}) {
+						outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
+						return
+					}
+				default:
+					// agentMessage: the final answer. When it already streamed as
+					// deltas, emit a bare terminator (empty display text) so the streamed
+					// line gets its closing newline WITHOUT reprinting the whole answer;
+					// the full text still rides in the payload for the durable record.
+					// Non-streaming models (no deltas) render it in full here.
+					finalText = ev.Text
+					display := agent.EventDisplay{Class: agent.DisplayFinal, Text: ev.Text}
+					if streamedDelta {
+						display.Text = ""
+					}
+					if (ev.Text != "" || streamedDelta) && !sendLiveEvent(ctx, events, ev.Type, ev.Text, display) {
+						outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
+						return
+					}
 				}
 			case EventThreadTokenUsage:
 				// Usage rides its own notification (the turn/completed payload has
@@ -324,6 +360,13 @@ func (a *Adapter) drainTurn(ctx context.Context, events chan<- agent.AgentEvent,
 				usage = ev.Usage
 			case EventTurnCompleted:
 				if !turnCompletedSuccessfully(ev) {
+					detail := ev.Error
+					if detail == "" {
+						detail = fmt.Sprintf("turn ended with status %q", ev.Status)
+					}
+					// P3: surface the failure as a live error line (best-effort) so it
+					// shows inline, not only in the terminal outcome.
+					_ = sendLiveEvent(ctx, events, ev.Type, detail, agent.EventDisplay{Class: agent.DisplayError, IsError: true, Text: detail})
 					outcomes <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: fmt.Errorf("agent/codexlive: turn %s ended with status %q: %s", turn.TurnID, ev.Status, ev.Error)}}
 					return
 				}
@@ -382,7 +425,7 @@ func closeClientIfSupported(client Client) {
 	}
 }
 
-func sendLiveEvent(ctx context.Context, events chan<- agent.AgentEvent, kind, text string) bool {
+func sendLiveEvent(ctx context.Context, events chan<- agent.AgentEvent, kind, text string, display agent.EventDisplay) bool {
 	payload, err := json.Marshal(map[string]string{
 		"type": kind,
 		"text": live.RedactKnownSecretShapes(text),
@@ -391,7 +434,7 @@ func sendLiveEvent(ctx context.Context, events chan<- agent.AgentEvent, kind, te
 		return false
 	}
 	select {
-	case events <- agent.AgentEvent{Kind: kind, Payload: payload, Stream: "live", Live: true}:
+	case events <- agent.AgentEvent{Kind: kind, Payload: payload, Stream: "live", Live: true, Display: display}:
 		return true
 	case <-ctx.Done():
 		return false
