@@ -1935,6 +1935,73 @@ validate time.
 **Constraints.** Like `anthropic/claude-code-session`, this runtime is
 **generator-only** (rejected as a gate evaluator) for the same independence reason.
 
+## Output binding — what binds and what doesn't
+
+Every `{{ }}` reference binds to a *validated typed value*, never raw text, and
+**awf validate** resolves it statically before a run starts. The forms and scope
+rules are defined throughout this section; this is the one place that lists them
+together — including the *rejections* the prose above only implies, each with the
+diagnostic **awf validate** emits.
+
+**What binds.** A reference names a root and a path:
+
+- `input.<field>` — a field of the workflow's `input_schema`.
+- `step.<id>.<field>` — a producer step's typed `output_schema` field. On a *code*
+  step, `<field>` may also be `exit_code` or `stdout` (defined for code steps only).
+- `step.<id>.files.<name>` — a named artifact from that step's `output_files`.
+- `run.id` — the run identifier (the only defined `run` field).
+- `<as>` / `<as>.<field>` / `<as>.index` — the current item (whole, or one field)
+  and its position inside a `map` or `compose` body, where `<as>` is the declared
+  loop variable.
+- `signal.<field>` — a field of the delivered signal payload, inside an `await`
+  step's `where:` clause.
+- `evaluate.<field>` — a gate evaluator's typed output, usable inside that gate's
+  `generate` steps (as feedback) and its `until:` condition.
+- `<react-id>.<field>` — a top-level `react:` node's typed output, addressed by the
+  node's own id (not `step.<id>`), plus the synthetic `<react-id>.stop_reason`.
+- `asset.<id>` — a run-start asset, in `input_files:` and `skills:` (a static
+  reference, not a `{{ }}` slot).
+- `step.<map-id>` / `step.<map-id>.<field>` — a *map aggregate*: the whole product
+  (or one field) of a `map`, read from outside it (see **map**). This bare,
+  field-less `step.<id>` form is defined **only** for map aggregates and reducers.
+
+**A whole-step reference into an ordinary step is rejected.** `{{ step.x }}` with
+no `.<field>` is **AWF3001** — *"malformed step reference (need `step.<id>.<field>`)"*.
+A step's typed output is an object and substitution renders only scalars, so you
+must name a field. The bare `step.<id>` form binds *only* a map aggregate or
+reducer product (above), never an ordinary step. Referencing a field the
+producer's `output_schema` does not declare, or `exit_code`/`stdout` on a
+non-code step, is the same code.
+
+**A gate- or map-internal step cannot be referenced from another scope.** A step
+inside a `gate` or a `map` body resolves only within the same attempt or item; from
+outside there is no single instance to bind to. Referencing a gate-internal step
+from outside is **AWF5003** — read the gate's product through `{{ evaluate.<field> }}`
+instead. A `map`-internal producer binds only as an *aggregate* (see **map**), and
+only for the single-map shape: aggregating a producer nested in two or more maps, or
+in a map that an enclosing `loop` multiplies, is not yet defined and is rejected as
+**AWF5002**; and because a map aggregate is per-item, not per-run, `exit_code`/`stdout`
+are not defined on it — referencing either is **AWF5005**. A plain `loop` body is
+**transparent**: it introduces no scope of its own, so a producer inside it resolves
+to its most recent iteration and binds from anywhere — it is *not* rejected on these
+grounds. (`try` and `parallel` likewise add no multiplicity.)
+
+**`outputs:` requires a top-level `output_schema`.** The workflow export contract
+is typed: an `outputs:` block with no `output_schema` to satisfy is **AWF1048**.
+The same code also fires when a schema-`required` field has no `outputs:` binding,
+or an `outputs:` key is not declared in `output_schema`.
+
+**Binding a step inside a transparent conditional scope is a warning.** When an
+`outputs:` value binds a step that lives inside an `if` branch or a `loop` body,
+**awf validate** emits **AWF3012** — a *warning*, not an error. The reference is
+well-formed, but that branch may not run: if it does not, the output key is omitted
+(see **Workflow Exports**), and if `output_schema` marks the field `required` the
+export then fails. Because the static validator cannot prove whether the branch
+runs, it warns rather than rejects.
+
+None of these are shape errors, so a structural JSON Schema of the document cannot
+catch them — **awf validate** is the authority for every rule in this section.
+
 ## Workflow Exports
 
 Imported workflows return explicit typed outputs and named artifact aliases.

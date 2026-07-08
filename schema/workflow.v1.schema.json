@@ -1,0 +1,471 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://awf.dev/schema/workflow/v1.json",
+  "$comment": "PROVISIONAL host: the awf.dev domain / $id URL is unconfirmed and need not resolve for v1 — the $id is an identity string, not a fetch target. See spec-workflow-json-schema.md (Ask-First: canonical $id host).",
+  "title": "AWF workflow document (v1)",
+  "description": "Hand-authored STRUCTURAL schema for the Agentic Workflow Format workflow document. It mirrors the ir.Workflow wire shape (github.com/valbaudo/awf/ir) and is a shape/typo sieve for editors and CI in any language. It is STRUCTURAL ONLY: it does not and cannot enforce AWF's semantic rules — output-binding/reference validity (AWF3001/5002/5003/1048/3012), unknown-key rejection semantics, adapter `with:` validation, the §7 agent-output floor, or duration typo-catching (the integer `duration` arm accepts a bare `timeout: 300`, which AWF1063 flags — a quoted \"300s\"/\"5m\" is required). `awf validate` stays the semantic authority. Embedded JSON Schemas (`input_schema`, `output_schema`) and opaque adapter config (`with:`) are deliberately left permissive. Versioned in-URI: additive changes stay v1, breaking changes mint v2.",
+  "type": "object",
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {
+      "$comment": "Top-level x-* keys are reserved YAML-anchor holders (spec convention); awf validate tolerates them (ir/validate_unknown_keys.go, AWF1062) and never reads them, so the authored form must pass here too. An empty schema accepts any value. Tolerated only at the root, matching the validator."
+    }
+  },
+  "required": ["workflow", "version", "graph"],
+  "properties": {
+    "workflow": { "type": "string" },
+    "version": { "type": "integer", "const": 1 },
+    "input_schema": { "$ref": "#/$defs/jsonSchema" },
+    "input_files": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/artifactContract" }
+    },
+    "env": { "type": "array", "items": { "type": "string" } },
+    "assets": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/skillCorpus" }
+    },
+    "imports": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/agentRole" }
+    },
+    "containers": {
+      "type": ["object", "null"],
+      "additionalProperties": { "$ref": "#/$defs/container" }
+    },
+    "output_schema": { "$ref": "#/$defs/jsonSchema" },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "output_files": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/tool" }
+    },
+    "graph": { "$ref": "#/$defs/nodeList" }
+  },
+
+  "$defs": {
+    "jsonSchema": {
+      "$comment": "Embedded JSON Schema (input_schema / output_schema / a tool or artifact contract schema). Left permissive — awf validate compiles it against the 2020-12 metaschema and applies the §7 floor.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "withConfig": {
+      "$comment": "Opaque adapter config (`with:`, RawConfig). The core never reads its keys; the named agent.Adapter validates it.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "template": {
+      "$comment": "An unparsed templated scalar (e.g. \"{{ input.cve }}\") or a plain string. Templating is validated by awf validate, not here.",
+      "type": "string"
+    },
+    "duration": {
+      "$comment": "Duration wire form: integer nanoseconds (the marshaled IR form) OR a Go-duration string (e.g. \"5m\", the authored form).",
+      "oneOf": [{ "type": "integer" }, { "type": "string" }]
+    },
+    "timeout": {
+      "$comment": "Step timeout: a bare Duration scalar (wall-clock) OR a { wall?, idle? } map.",
+      "oneOf": [
+        { "$ref": "#/$defs/duration" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "wall": { "$ref": "#/$defs/duration" },
+            "idle": { "$ref": "#/$defs/duration" }
+          }
+        }
+      ]
+    },
+    "ratio": {
+      "$comment": "map.min_success / reduce.quorum: a count (e.g. 3) or a (0,1] fraction (e.g. 0.8). Marshals as a bare JSON number.",
+      "type": "number"
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": { "type": "string" },
+        "mem": { "type": "string" }
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": { "type": "string" },
+        "compose": { "type": "string" },
+        "service": { "type": "string" },
+        "snapshot": { "type": "string" },
+        "cmd": { "type": "array", "items": { "type": "string" } },
+        "keepalive": { "type": "boolean" },
+        "resources": { "$ref": "#/$defs/resources" }
+      }
+    },
+    "skillCorpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string" },
+        "layout": { "type": "string" },
+        "router": { "type": "string" }
+      }
+    },
+    "agentRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uses"],
+      "properties": {
+        "uses": { "type": "string" },
+        "model": { "type": "string" },
+        "system_prompt": { "type": "string" },
+        "with": { "$ref": "#/$defs/withConfig" }
+      }
+    },
+    "artifactContract": {
+      "$comment": "A workflow-level input_files contract: format + an inline or referenced schema. No path (the map key is the label).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format": { "type": "string" },
+        "schema": { "$ref": "#/$defs/jsonSchema" },
+        "schema_ref": { "type": "string" }
+      }
+    },
+    "outputFileContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string" },
+        "format": { "type": "string" },
+        "schema": { "$ref": "#/$defs/jsonSchema" },
+        "schema_ref": { "type": "string" }
+      }
+    },
+    "outputFiles": {
+      "$comment": "Step-level output_files: EITHER a bare list of container paths (unnamed, capture-only) OR a name -> path-or-contract map (named, referenceable as step.<id>.files.<name>).",
+      "oneOf": [
+        { "type": "array", "items": { "type": "string" } },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "$ref": "#/$defs/outputFileContract" }
+            ]
+          }
+        }
+      ]
+    },
+    "inputFilesMap": {
+      "$comment": "Step-level input_files: in-container destination path -> static artifact/asset reference (step.<id>.files.<name> or asset.<id>). Never a {{ }} template (AWF3007).",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attempts": { "type": "integer" },
+        "backoff": { "type": "string" },
+        "initial": { "$ref": "#/$defs/duration" },
+        "max": { "$ref": "#/$defs/duration" },
+        "non_retryable_exit_codes": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "recovery": { "type": "string" }
+      }
+    },
+    "stepSkillRouting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string" },
+        "query": { "$ref": "#/$defs/template" },
+        "limit": { "type": "integer" },
+        "into": { "type": "string" }
+      }
+    },
+    "toolImpl": {
+      "$comment": "A tool's executable body: a run: step naming a declared container. `timeout` here is a bare Duration scalar (not the {wall,idle} map form).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run": { "type": "string" },
+        "container": { "type": "string" },
+        "timeout": { "$ref": "#/$defs/duration" },
+        "output_files": { "$ref": "#/$defs/outputFiles" },
+        "input_files": { "$ref": "#/$defs/inputFilesMap" },
+        "retry": { "$ref": "#/$defs/retry" }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "impl"],
+      "properties": {
+        "description": { "type": "string" },
+        "input_schema": { "$ref": "#/$defs/jsonSchema" },
+        "impl": { "$ref": "#/$defs/toolImpl" }
+      }
+    },
+    "reduce": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "quorum": { "$ref": "#/$defs/ratio" },
+        "field": { "type": "string" },
+        "run": { "type": "string" },
+        "container": { "type": "string" },
+        "output_schema": { "$ref": "#/$defs/jsonSchema" },
+        "output_files": { "$ref": "#/$defs/outputFiles" }
+      }
+    },
+    "prune": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score"],
+      "properties": {
+        "score": { "type": "string" },
+        "keep": { "type": "integer" },
+        "stop_when": { "type": "string" }
+      }
+    },
+
+    "codeStep": {
+      "$comment": "run: — a shell/code step (CodeStep). Discriminated by the `run` key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "run"],
+      "properties": {
+        "id": { "type": "string" },
+        "container": { "type": "string" },
+        "run": { "type": "string" },
+        "timeout": { "$ref": "#/$defs/timeout" },
+        "output_schema": { "$ref": "#/$defs/jsonSchema" },
+        "output_files": { "$ref": "#/$defs/outputFiles" },
+        "input_files": { "$ref": "#/$defs/inputFilesMap" },
+        "idempotency_key": { "$ref": "#/$defs/template" },
+        "retry": { "$ref": "#/$defs/retry" }
+      }
+    },
+    "agentStep": {
+      "$comment": "uses: — an agent step (AgentStep). Discriminated by the `uses` key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "uses"],
+      "properties": {
+        "id": { "type": "string" },
+        "container": { "type": "string" },
+        "uses": { "type": "string" },
+        "with": { "$ref": "#/$defs/withConfig" },
+        "continues": { "type": "string" },
+        "output_schema": { "$ref": "#/$defs/jsonSchema" },
+        "output_files": { "$ref": "#/$defs/outputFiles" },
+        "output_artifact": { "type": "string" },
+        "skills": { "$ref": "#/$defs/stepSkillRouting" },
+        "input_files": { "$ref": "#/$defs/inputFilesMap" },
+        "timeout": { "$ref": "#/$defs/timeout" },
+        "idempotency_key": { "$ref": "#/$defs/template" },
+        "retry": { "$ref": "#/$defs/retry" }
+      }
+    },
+    "signalStep": {
+      "$comment": "await: — a signal step (SignalStep). Discriminated by the `await` key. `timeout` here is a bare Duration scalar.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "await"],
+      "properties": {
+        "id": { "type": "string" },
+        "await": { "type": "string" },
+        "where": { "type": "string" },
+        "timeout": { "$ref": "#/$defs/duration" },
+        "output_schema": { "$ref": "#/$defs/jsonSchema" }
+      }
+    },
+    "callStep": {
+      "$comment": "call: — a sub-workflow call (CallStep). Discriminated by the `call` key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "call"],
+      "properties": {
+        "id": { "type": "string" },
+        "call": { "type": "string" },
+        "input": { "type": "object", "additionalProperties": true },
+        "input_files": { "$ref": "#/$defs/inputFilesMap" }
+      }
+    },
+
+    "if": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cond", "then"],
+      "properties": {
+        "cond": { "type": "string" },
+        "then": { "$ref": "#/$defs/nodeList" },
+        "else": { "$ref": "#/$defs/nodeList" }
+      }
+    },
+    "loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body"],
+      "properties": {
+        "until": { "type": "string" },
+        "max_iters": { "type": "integer" },
+        "body": { "$ref": "#/$defs/nodeList" }
+      }
+    },
+    "try": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["do"],
+      "properties": {
+        "do": { "$ref": "#/$defs/nodeList" },
+        "catch": { "$ref": "#/$defs/nodeList" },
+        "finally": { "$ref": "#/$defs/nodeList" }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generate", "evaluate", "until", "max_attempts"],
+      "properties": {
+        "generate": { "$ref": "#/$defs/nodeList" },
+        "evaluate": { "$ref": "#/$defs/nodeList" },
+        "until": { "type": "string" },
+        "max_attempts": { "type": "integer" }
+      }
+    },
+    "map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["over", "as", "body"],
+      "properties": {
+        "id": { "type": "string" },
+        "over": {
+          "$comment": "F51 two-arm union: a {{ }} expression string OR a literal (fully static) sequence.",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array" }
+          ]
+        },
+        "as": { "type": "string" },
+        "container": { "type": "string" },
+        "image": { "$ref": "#/$defs/template" },
+        "concurrency": { "type": "integer" },
+        "min_success": { "$ref": "#/$defs/ratio" },
+        "body": { "$ref": "#/$defs/nodeList" },
+        "reduce": { "$ref": "#/$defs/reduce" },
+        "prune": { "$ref": "#/$defs/prune" }
+      }
+    },
+    "compose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["as", "from", "service", "body"],
+      "properties": {
+        "as": { "type": "string" },
+        "from": { "type": "string" },
+        "service": { "$ref": "#/$defs/template" },
+        "body": { "$ref": "#/$defs/nodeList" }
+      }
+    },
+    "react": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt", "tools"],
+      "properties": {
+        "id": { "type": "string" },
+        "with": { "$ref": "#/$defs/withConfig" },
+        "prompt": { "type": "string" },
+        "tools": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "max_turns": { "type": "integer" },
+        "output_schema": { "$ref": "#/$defs/jsonSchema" }
+      }
+    },
+
+    "node": {
+      "$comment": "One of the 13 node kinds, discriminated by key-presence (mirrors ir.unmarshalNode). 4 flat step kinds keyed run/uses/await/call; 9 control kinds as single-key wrappers (parallel's inner is an array, skip's is a string).",
+      "oneOf": [
+        { "$ref": "#/$defs/codeStep" },
+        { "$ref": "#/$defs/agentStep" },
+        { "$ref": "#/$defs/signalStep" },
+        { "$ref": "#/$defs/callStep" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["if"],
+          "properties": { "if": { "$ref": "#/$defs/if" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["loop"],
+          "properties": { "loop": { "$ref": "#/$defs/loop" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["try"],
+          "properties": { "try": { "$ref": "#/$defs/try" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["parallel"],
+          "properties": { "parallel": { "$ref": "#/$defs/nodeList" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["gate"],
+          "properties": { "gate": { "$ref": "#/$defs/gate" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["skip"],
+          "properties": { "skip": { "type": "string" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["map"],
+          "properties": { "map": { "$ref": "#/$defs/map" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["compose"],
+          "properties": { "compose": { "$ref": "#/$defs/compose" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["react"],
+          "properties": { "react": { "$ref": "#/$defs/react" } }
+        }
+      ]
+    },
+    "nodeList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    }
+  }
+}

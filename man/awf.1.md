@@ -417,8 +417,11 @@ not taken. When an `if` branch was not taken, the bound output key is
 an error. If `output_schema` marks the omitted field `required`, the
 schema check then fails and the command exits 1 instead. Binding a gate-
 or map-internal step is a hard validation error (**awf validate** rejects
-it as exit 1). Use **awf ls** or check the run's terminal status to
-determine whether the run itself succeeded before reading outputs.
+it as exit 1). For the full set of binding rules — every valid reference
+form and every rejection with its code — see the *Output binding — what
+binds and what doesn't* section of **awf-workflow**(5). Use **awf ls** or
+check the run's terminal status to determine whether the run itself
+succeeded before reading outputs.
 
 ## awf graph _path_
 
