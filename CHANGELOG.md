@@ -13,6 +13,11 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-08
+
+A minor release adding the Contract-v1 machine-contract stability policy and
+richer live visibility for the `openai/codex-live` agent adapter.
+
 ### Added
 
 - **Machine-contract stability policy** ([COMPATIBILITY.md](COMPATIBILITY.md)):
@@ -21,6 +26,22 @@ of the `awf` tool version.
   versioned **Contract v1**, decoupled from the binary's `0.x` version. Adds a
   consolidated output-binding-rules section to `awf-workflow(5)` and a
   `COMPATIBILITY` section to `awf(1)`.
+- **Live event visibility for `openai/codex-live`.** The adapter now maps its
+  app-server events onto the shared display vocabulary instead of the raw
+  `[kind] {json}` fallback, and fills the previously-empty durable per-event
+  journal record: assistant answers stream as prose, reasoning renders dimmed,
+  shell commands surface as tool call/result lines (command, elided output,
+  line/byte counts, exit status), and a failed turn surfaces a live error. A
+  streamed answer that also arrives as a completed item no longer prints twice.
+
+### Fixed
+
+- **`openai/codex-live` misread every successful app-server response as an
+  error.** A nil `*RPCError` was copied into the `error`-typed response field,
+  producing a non-nil (typed-nil) interface, so each successful JSON-RPC call
+  returned a bogus `"<nil>"` error and `turn/start` could nil-panic — the
+  adapter could not complete a turn. Success responses now carry a true nil
+  error.
 
 ## [0.4.1] - 2026-07-08
 
