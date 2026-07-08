@@ -13,6 +13,23 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-08
+
+A patch release that clears resolvable dependency advisories. No functional
+changes to the tool.
+
+### Security
+
+- **Dependency bumps clearing 11 of 20 Dependabot advisories**, including the
+  sole critical. Go: `containerd/v2` 2.1.5 → 2.1.9 (5 advisories) and
+  `in-toto-golang` 0.9.0 → 0.11.0 (1). UI dev tooling: `vite` 5 → 6.4.3 and
+  `vitest` 2 → 3.2.6 (5, including the critical `vitest` UI-server file-read;
+  these packages are build-time only and never ship in the `awf` binary). The
+  nine remaining advisories are all in the Docker/Moby client chain and are
+  either unfixed upstream or blocked on the Docker v29 / `moby/moby` migration
+  that `docker/compose` has not yet adopted; [SECURITY.md](SECURITY.md) tracks
+  each one and why it is still present.
+
 ## [0.5.0] - 2026-07-08
 
 A minor release adding the Contract-v1 machine-contract stability policy and
