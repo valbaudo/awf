@@ -320,7 +320,15 @@ func (c *processClient) deliverResponse(msg rpcMessage) {
 	if ch == nil {
 		return
 	}
-	ch <- rpcResponse{Result: msg.Result, Error: msg.Error}
+	// msg.Error is a *RPCError; assigning a nil pointer straight into the
+	// error-typed field would yield a non-nil interface (typed-nil), so every
+	// SUCCESSFUL response would be misread as an error whose Error() is "<nil>".
+	// Convert explicitly so a success stays a true nil error.
+	var rerr error
+	if msg.Error != nil {
+		rerr = msg.Error
+	}
+	ch <- rpcResponse{Result: msg.Result, Error: rerr}
 }
 
 func (c *processClient) handleServerRequest(msg rpcMessage) {
@@ -628,10 +636,23 @@ func providerEventFromNotification(method string, params json.RawMessage) (Provi
 			return ProviderEvent{}, "", false, false
 		}
 		var item threadItemProbe
-		if err := json.Unmarshal(p.Item, &item); err != nil || item.Type != "agentMessage" {
+		if err := json.Unmarshal(p.Item, &item); err != nil {
 			return ProviderEvent{}, "", false, false
 		}
-		return ProviderEvent{Type: EventItemCompleted, Text: item.Text}, p.TurnID, false, true
+		switch item.Type {
+		case itemTypeAgentMessage:
+			return ProviderEvent{Type: EventItemCompleted, ItemType: item.Type, Text: item.Text}, p.TurnID, false, true
+		case itemTypeCommandExecution:
+			// P2: surface the shell command + its output; Text carries the
+			// aggregated output, Command the command line, ExitCode the status.
+			// The app-server names this item "commandExecution" (camelCase) — verified
+			// against a live codex app-server, NOT the codex CLI's "command_execution".
+			return ProviderEvent{Type: EventItemCompleted, ItemType: item.Type, Command: item.Command, Text: item.AggregatedOutput, ExitCode: item.ExitCode}, p.TurnID, false, true
+		default:
+			// Other item types (reasoning, fileChange, …) stream via their own
+			// events or aren't surfaced; dropping avoids duplicate/raw output.
+			return ProviderEvent{}, "", false, false
+		}
 	case EventThreadTokenUsage:
 		var p threadTokenUsageNotification
 		if err := json.Unmarshal(params, &p); err != nil {

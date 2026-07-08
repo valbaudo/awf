@@ -111,3 +111,64 @@ func TestProviderEventFromNotificationCarriesTurnFailureStatus(t *testing.T) {
 		t.Fatalf("event = %+v, want failed turn with message", ev)
 	}
 }
+
+func TestDeliverResponseSuccessCarriesNilError(t *testing.T) {
+	// Regression: msg.Error is a *RPCError. A success response has no "error"
+	// field, so msg.Error is a nil *RPCError. Assigning it straight into the
+	// error-typed rpcResponse.Error yields a typed-nil (non-nil interface),
+	// making every successful call return a bogus error "<nil>" — and panic in
+	// isBackpressure's type assertion.
+	c := &processClient{pending: map[string]chan rpcResponse{}}
+	ch := make(chan rpcResponse, 1)
+	c.pending["req-1"] = ch
+	c.handleLine([]byte(`{"jsonrpc":"2.0","id":"req-1","result":{"ok":true}}`))
+	resp := <-ch
+	if resp.Error != nil {
+		t.Fatalf("success response yielded non-nil error (typed-nil bug): %v", resp.Error)
+	}
+
+	// A real error response must still surface a non-nil, usable error.
+	ch2 := make(chan rpcResponse, 1)
+	c.pending["req-2"] = ch2
+	c.handleLine([]byte(`{"jsonrpc":"2.0","id":"req-2","error":{"code":-32001,"message":"overloaded"}}`))
+	resp2 := <-ch2
+	if resp2.Error == nil {
+		t.Fatal("error response yielded nil error, want non-nil")
+	}
+	if !isBackpressure(resp2.Error) {
+		t.Fatalf("isBackpressure(%v) = false, want true for code -32001", resp2.Error)
+	}
+}
+
+func TestProviderEventFromCommandExecutionItem(t *testing.T) {
+	// P2: a completed command_execution item is surfaced (not dropped) so the
+	// drain loop can render tool call/result visibility.
+	params := []byte(`{"threadId":"t1","turnId":"turn-1","item":{"type":"commandExecution","command":"ls -la","aggregatedOutput":"total 0\nfile.txt","exitCode":0}}`)
+	ev, turnID, terminal, ok := providerEventFromNotification(EventItemCompleted, params)
+	if !ok || terminal {
+		t.Fatalf("ok=%v terminal=%v, want ok=true terminal=false", ok, terminal)
+	}
+	if turnID != "turn-1" {
+		t.Fatalf("turnID=%q, want turn-1", turnID)
+	}
+	if ev.ItemType != "commandExecution" || ev.Command != "ls -la" || ev.Text != "total 0\nfile.txt" {
+		t.Fatalf("ev = %+v, want commandExecution 'ls -la' with aggregated output", ev)
+	}
+	if ev.ExitCode == nil || *ev.ExitCode != 0 {
+		t.Fatalf("ev.ExitCode = %v, want 0", ev.ExitCode)
+	}
+
+	// agentMessage still carries the answer text and its item type.
+	agentParams := []byte(`{"threadId":"t1","turnId":"turn-1","item":{"type":"agentMessage","text":"done"}}`)
+	aev, _, _, aok := providerEventFromNotification(EventItemCompleted, agentParams)
+	if !aok || aev.ItemType != "agentMessage" || aev.Text != "done" {
+		t.Fatalf("agentMessage ev = %+v ok=%v, want agentMessage 'done'", aev, aok)
+	}
+
+	// An unmapped item type (e.g. reasoning) is still dropped — reasoning streams
+	// via its own delta event, so surfacing the completed item would duplicate it.
+	reasoningParams := []byte(`{"threadId":"t1","turnId":"turn-1","item":{"type":"reasoning","text":"hmm"}}`)
+	if _, _, _, rok := providerEventFromNotification(EventItemCompleted, reasoningParams); rok {
+		t.Fatal("reasoning item/completed should be dropped (ok=false)")
+	}
+}

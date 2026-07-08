@@ -16,6 +16,14 @@ const (
 	EventPermissionRequest     = "server/request/permission"
 )
 
+// App-server thread item types, as they appear in an item/completed payload.
+// Verified against a live codex app-server: these are camelCase, unlike the
+// codex CLI's snake_case ("command_execution").
+const (
+	itemTypeAgentMessage     = "agentMessage"
+	itemTypeCommandExecution = "commandExecution"
+)
+
 type Client interface {
 	ProviderInfo(context.Context) (ProviderInfo, error)
 	StartThread(context.Context, ThreadStartRequest) (ThreadInfo, error)
@@ -66,12 +74,19 @@ type TurnHandle struct {
 }
 
 type ProviderEvent struct {
-	Type       string
-	Text       string
-	Output     map[string]any
-	Usage      Usage
-	Status     string
-	Error      string
+	Type   string
+	Text   string
+	Output map[string]any
+	Usage  Usage
+	Status string
+	Error  string
+	// ItemType is the completed item's type on an EventItemCompleted event
+	// (e.g. "agentMessage", "command_execution"); empty on other events.
+	ItemType string
+	// Command / ExitCode carry a completed command_execution item's command line
+	// and exit status (ExitCode nil = unknown); Text carries its aggregated output.
+	Command    string
+	ExitCode   *int
 	Permission *PermissionRequest
 }
 
