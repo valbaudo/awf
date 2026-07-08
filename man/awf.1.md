@@ -92,7 +92,8 @@ its image or Compose recipe, and execute the graph. Code-step output streams to
 standard output as a live tap, while agent-step progress — assistant text,
 reasoning, tool calls and results — streams to standard error (plain when piped
 or under `NO_COLOR`). The final line on standard output reports the run id and
-terminal outcome (for example `run 1a2b3c4d: ok`). Run state is written under
+terminal outcome (for example `run 1a2b3c4d: ok`). That line is porcelain —
+machine callers read the exit code (see **COMPATIBILITY**). Run state is written under
 _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 **FILES**).
 
@@ -526,6 +527,19 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     active in another process). The split is "whose artifact failed": code `2`
     means your input is wrong; code `3` means AWF's environment is broken, so CI
     can retry a transient infra failure without masking a real usage error.
+
+# COMPATIBILITY
+
+The machine-facing surfaces form a versioned stability contract, **Contract v1**,
+tracked separately from the `awf` binary version (which is pre-1.0; see
+`SECURITY.md` and `COMPATIBILITY.md`). Stable from `awf` v0.5.0 (the first release
+with this policy): the **awf run**
+invocation flags and the **EXIT STATUS** codes above; the **awf outputs** JSON and
+its exit codes; and the workflow format with its published JSON Schema (see
+**awf-workflow**(5)). A machine caller keys off the **exit code** — the
+`run <id>: <outcome>` line on standard output is human-facing (porcelain), not
+part of the contract. The `awf trace --output json` span projection is
+*experimental* and may change. See `COMPATIBILITY.md` for the full policy.
 
 # ENVIRONMENT
 

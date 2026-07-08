@@ -11,6 +11,9 @@ reporting.
 | latest `v0.x` | ✅        |
 | older         | ❌        |
 
+The pre-1.0 caveat above is about the *binary*. AWF's machine-facing interfaces
+carry a separate stability promise — see [COMPATIBILITY.md](COMPATIBILITY.md).
+
 ## Reporting a vulnerability
 
 Report security issues **privately** through GitHub's

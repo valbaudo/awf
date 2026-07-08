@@ -4,11 +4,23 @@ All notable changes to `awf` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and `awf` aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-While `awf` is pre-1.0, the workflow format and CLI may still change between
-minor versions. The workflow-format version (`version: 1` in a workflow file)
-is tracked independently of the `awf` tool version.
+While `awf` is pre-1.0, surfaces outside the machine contract may still change
+between minor versions. The machine-facing contract — the `awf run` / `awf outputs`
+interface, the exit codes, and the workflow format with its JSON Schema — is a
+versioned stability promise; see [COMPATIBILITY.md](COMPATIBILITY.md). The
+workflow-format version (`version: 1` in a workflow file) is tracked independently
+of the `awf` tool version.
 
 ## [Unreleased]
+
+### Added
+
+- **Machine-contract stability policy** ([COMPATIBILITY.md](COMPATIBILITY.md)):
+  the `awf run` / `awf outputs` interface, the exit codes, and the workflow format
+  plus a published JSON Schema (`schema/workflow.v1.schema.json`) are now a
+  versioned **Contract v1**, decoupled from the binary's `0.x` version. Adds a
+  consolidated output-binding-rules section to `awf-workflow(5)` and a
+  `COMPATIBILITY` section to `awf(1)`.
 
 ## [0.4.1] - 2026-07-08
 

@@ -40,6 +40,10 @@ import (
 // itself owns and sets up — the blob store, the backend/daemon client,
 // container create/restore, the run-dir/log I/O, the live-home, or the run-lock
 // — is ExitInfra (3). 2 = "your input is wrong"; 3 = "my environment is broken".
+//
+// STABILITY: these values are the Contract v1 stable CLI exit-code contract (see
+// COMPATIBILITY.md at the repo root). Changing any value is a breaking change;
+// TestValidateExitCodesAreStable (validate_test.go) pins them.
 const (
 	ExitOK        = 0 // success: validation produced zero error-severity diagnostics, OR run terminated ok
 	ExitInvalid   = 1 // `awf validate` produced ≥1 error-severity diagnostic (also returned by `awf run` if its pre-run validation finds errors)

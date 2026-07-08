@@ -344,6 +344,8 @@ security caveats, and CLI flags.
 - [awf-workflow(5)](man/awf-workflow.5.md): the workflow-format reference and
   stable contract for fields, control flow, templating, typed outputs, and
   checkpoint/resume.
+- [COMPATIBILITY.md](COMPATIBILITY.md): the machine-contract stability policy —
+  the Contract v1 stability ladder, the plumbing/porcelain split, and schema versioning.
 - [examples/](examples/): runnable examples for `awf/llm`, droid BYOK, and
   engine-owned conversation threads.
 
