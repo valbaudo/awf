@@ -43,3 +43,6 @@ Customer's issue/
 # awf-ui SPA: node deps are local; the built bundle (ui/dist) IS committed and
 # embedded via //go:embed (rebuild with `make ui`).
 ui/node_modules/
+
+_bmad-output/
+_bmad/
