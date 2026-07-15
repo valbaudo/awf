@@ -4,7 +4,7 @@
 
 **Goal:** Publish and verify one clean-room Claude Code gated example against the downloaded AWF v0.5.1 Darwin arm64 binary without Docker, Ollama, or runtime changes.
 
-**Architecture:** A Claude Code generator emits the typed value `{"ready": true}` and promotes it to a content-addressed artifact. A deterministic shell evaluator receives that artifact through `input_files`, checks it, removes the staged absolute temporary file, and emits the gate verdict through `$AWF_OUTPUT`. The workflow is forced onto the native backend; documentation explains the current image-declaration/native-backend constraint.
+**Architecture:** A Claude Code generator emits the typed value `{"ready": true}`. A deterministic shell evaluator receives the schema-validated boolean through AWF's typed-reference channel and emits the gate verdict through `$AWF_OUTPUT`. The evaluator uses one mechanical attempt so fixture failures surface immediately. The workflow is forced onto the native backend with an absolute `--state-dir`; documentation explains both the current image-declaration/native-backend constraint and the v0.5.1 macOS relative-scratch bug.
 
 **Tech Stack:** AWF workflow YAML v1, `anthropic/claude-code`, POSIX `sh`, AWF v0.5.1 Darwin arm64 release, Markdown, npm-free Go repository checks through `make lint test`.
 
@@ -17,6 +17,7 @@
 - Never expose the OAuth token in chat, captured tool output, logs, workflow YAML, Markdown, git, or the adoption ledger. The operator performs the authenticated run in a private terminal and reports only the sanitized result.
 - Use exactly one Claude model call and a deterministic shell evaluator.
 - Require explicit `--backend native`; do not invoke Docker or Ollama.
+- On macOS v0.5.1, require an absolute `--state-dir "$PWD/.awf"`; do not disable the native sandbox to work around its relative-scratch bug.
 - Stop before committing implementation if v0.5.1 cannot validate, run, clean up, and expose the fixture as documented.
 - Do not start the 14-day adoption clock merely because the founder's machine passes.
 
@@ -102,21 +103,16 @@ graph:
             required: [ready]
             properties:
               ready: { type: boolean }
-          output_artifact: readiness
 
       evaluate:
         - id: judge
           container: workspace
-          input_files:
-            /tmp/awf-{{ run.id }}-readiness.json: step.draft.files.readiness
+          retry: { attempts: 1 }
           run: |
             set -eu
-            staged="/tmp/awf-{{ run.id }}-readiness.json"
-            actual="$(tr -d '[:space:]' < "$staged")"
             typed_ready="{{ step.draft.ready }}"
-            rm -f "$staged"
             mkdir -p "$(dirname "$AWF_OUTPUT")"
-            if [ "$actual" = '{"ready":true}' ] && [ "$typed_ready" = 'true' ]; then
+            if [ "$typed_ready" = 'true' ]; then
               printf '%s\n' '{"approved":true,"feedback":""}' > "$AWF_OUTPUT"
             else
               printf '%s\n' '{"approved":false,"feedback":"typed readiness value did not match"}' > "$AWF_OUTPUT"
@@ -160,6 +156,7 @@ The operator follows Claude Code's on-screen instructions to set `CLAUDE_CODE_OA
 ```sh
 test -n "$CLAUDE_CODE_OAUTH_TOKEN"
 /tmp/awf-readiness-v0.5.1-20260715/awf_0.5.1_darwin_arm64/awf run \
+  --state-dir "$PWD/.awf" \
   --backend native \
   --agent-env CLAUDE_CODE_OAUTH_TOKEN \
   examples/claude-code-gated/workflow.yaml \
@@ -174,14 +171,13 @@ Expected:
 - exactly one Claude generator invocation appears;
 - AWF's credential warning is absent because `CLAUDE_CODE_OAUTH_TOKEN` was explicitly forwarded;
 - Docker and Ollama are never invoked;
-- the evaluator successfully removes `/tmp/awf-<run-id>-readiness.json`.
+- the deterministic evaluator succeeds on its single mechanical attempt.
 
 Extract the run id without guessing:
 
 ```sh
 RUN_ID="$(sed -n 's/^run \([^:]*\): ok$/\1/p' /tmp/awf-claude-code-gated-run.log | tail -1)"
 test -n "$RUN_ID"
-test ! -e "/tmp/awf-${RUN_ID}-readiness.json"
 ```
 
 The operator reports only whether the command exited successfully and the non-secret run id. If token setup, the run, cleanup, or sandbox fails, stop. Preserve the sanitized run log, remove the uncommitted fixture, record product-readiness failure, and do not modify runtime code.
@@ -191,7 +187,10 @@ The operator reports only whether the command exited successfully and the non-se
 Run:
 
 ```sh
-"$AWF_RELEASE" outputs "$RUN_ID" --step 'gate[0].attempt-1.generate.draft' | tee /tmp/awf-claude-code-gated-output.json
+"$AWF_RELEASE" outputs "$RUN_ID" \
+  --state-dir "$PWD/.awf" \
+  --step 'gate[0].attempt-1.generate.draft' \
+  | tee /tmp/awf-claude-code-gated-output.json
 tr -d '[:space:]' < /tmp/awf-claude-code-gated-output.json | grep -F '"ready":true'
 ```
 
@@ -331,6 +330,7 @@ test -f examples/claude-code-gated/README.md
 rg -n 'VERSION=0\.5\.1' README.md
 rg -n 'examples/claude-code-gated/README\.md' README.md
 rg -n -- '--backend native' examples/claude-code-gated/README.md
+rg -n -- '--state-dir "\$PWD/\.awf"' examples/claude-code-gated/README.md
 rg -n -- '--agent-env CLAUDE_CODE_OAUTH_TOKEN' examples/claude-code-gated/README.md
 rg -n -- 'claude setup-token' examples/claude-code-gated/README.md
 rg -n -- "gate\[0\]\.attempt-1\.generate\.draft" examples/claude-code-gated/README.md
@@ -342,7 +342,7 @@ Expected: every command exits `0`; the fixture link appears twice in root README
 
 Open a fresh shell in the repository root and follow only `examples/claude-code-gated/README.md`, using the already-downloaded archive. Do not substitute a source build or undocumented command.
 
-Expected: checksum passes, validation exits `0`, run ends `ok`, the staged temporary artifact is absent afterward, and the documented `outputs --step` command returns the typed readiness value.
+Expected: checksum passes, validation exits `0`, run ends `ok`, and the documented `outputs --step` command returns the typed readiness value.
 
 - [ ] **Step 6: Commit the onboarding documentation**
 
