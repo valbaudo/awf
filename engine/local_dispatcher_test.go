@@ -293,6 +293,8 @@ func TestLocalDispatcherUnparseableAWFOutputIsRetryable(t *testing.T) {
 	}
 	if dr.Err == nil {
 		t.Error("DispatchResult.Err is nil; want parse error")
+	} else if strings.Contains(dr.Err.Error(), "process exited") {
+		t.Errorf("DispatchResult.Err = %v, want ordinary exit-0 parse cause directly", dr.Err)
 	}
 }
 
