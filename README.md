@@ -181,7 +181,7 @@ published checksums, and put `awf` on your `PATH`. Prebuilt binaries are
 published for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`.
 
 ```sh
-VERSION=0.1.0
+VERSION=0.5.1
 OS=linux ARCH=amd64        # or: OS=darwin ARCH=arm64
 BASE="https://github.com/valbaudo/awf/releases/download/v${VERSION}"
 
@@ -235,6 +235,12 @@ into workflow files.
 export OPENAI_API_KEY=ollama
 bin/awf run examples/awf-llm-ollama/workflow.yaml
 ```
+
+To exercise a Claude Code subscription through a typed, deterministic gate
+without Docker or Ollama, follow the [Claude Code gated readiness
+example](examples/claude-code-gated/README.md). It uses the published v0.5.1
+binary, a `claude setup-token` credential handoff, and the explicit native
+backend.
 
 Use Docker when you want resumable runs or workflows that need isolated
 containers/Compose labs:
@@ -313,7 +319,8 @@ engine; only the named adapter validates and interprets it.
 
 Built-in adapters:
 
-- `anthropic/claude-code`
+- `anthropic/claude-code` — see the [gated native readiness
+  example](examples/claude-code-gated/README.md)
 - `factory/droid`
 - `block/goose`
 - `openai/codex`
