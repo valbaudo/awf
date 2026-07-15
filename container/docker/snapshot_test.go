@@ -257,22 +257,52 @@ func readDiffTar(r io.Reader) (adds map[string][]byte, syms map[string]string, d
 	return
 }
 
-func TestShellQuotePath(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"/work/a.txt", "'/work/a.txt'"},
-		{"-rf", "'-rf'"},
-		{"/tmp/with space.txt", "'/tmp/with space.txt'"},
-		{"with'quote", `'with'\''quote'`},
-		{"two''quotes", `'two'\'''\''quotes'`},
-		{"", "''"},
+func TestRestoreContainerConfigWithoutDeletesPreservesOriginalArgv(t *testing.T) {
+	original := snapshotCmdSpec{
+		Entrypoint: []string{"/usr/bin/original", "--entry-flag"},
+		Cmd:        []string{"arg one", "arg'two", "arg\nthree"},
 	}
-	for _, c := range cases {
-		got := shellQuotePath(c.in)
-		if got != c.want {
-			t.Errorf("shellQuotePath(%q) = %q, want %q", c.in, got, c.want)
+
+	cfg := restoreContainerConfig("example.invalid/image@sha256:abc", original, nil)
+	if !reflect.DeepEqual([]string(cfg.Entrypoint), original.Entrypoint) {
+		t.Errorf("Entrypoint = %#v, want %#v", cfg.Entrypoint, original.Entrypoint)
+	}
+	if !reflect.DeepEqual([]string(cfg.Cmd), original.Cmd) {
+		t.Errorf("Cmd = %#v, want %#v", cfg.Cmd, original.Cmd)
+	}
+}
+
+func TestRestoreContainerConfigWithDeletesArgumentizesPathsAndPreservesOriginalArgv(t *testing.T) {
+	deletes := []string{"/work/space name", "/work/quote'and\nnewline"}
+	original := snapshotCmdSpec{
+		Entrypoint: []string{"/usr/bin/original", "--entry-flag"},
+		Cmd:        []string{"arg one", "arg'two", "arg\nthree"},
+	}
+
+	cfg := restoreContainerConfig("example.invalid/image@sha256:abc", original, deletes)
+	wantEntrypoint := []string{"sh", "-c", restoreDeleteWrapperScript, "awf-restore"}
+	if !reflect.DeepEqual([]string(cfg.Entrypoint), wantEntrypoint) {
+		t.Errorf("Entrypoint = %#v, want %#v", cfg.Entrypoint, wantEntrypoint)
+	}
+	wantCmd := append([]string{"2"}, deletes...)
+	wantCmd = append(wantCmd, original.Entrypoint...)
+	wantCmd = append(wantCmd, original.Cmd...)
+	if !reflect.DeepEqual([]string(cfg.Cmd), wantCmd) {
+		t.Errorf("Cmd = %#v, want %#v", cfg.Cmd, wantCmd)
+	}
+	for _, path := range deletes {
+		if strings.Contains(restoreDeleteWrapperScript, path) {
+			t.Errorf("wrapper script interpolates delete path %q; paths must remain argv", path)
 		}
+	}
+
+	deleteAt := strings.Index(restoreDeleteWrapperScript, `rm -rf -- "$1"`)
+	prepareAt := strings.Index(restoreDeleteWrapperScript, "mkdir -p /work/.awf /tmp/awf")
+	preparedAt := strings.Index(restoreDeleteWrapperScript, restorePreparedPath)
+	releaseAt := strings.Index(restoreDeleteWrapperScript, restoreReleasePath)
+	execAt := strings.Index(restoreDeleteWrapperScript, `exec "$@"`)
+	if deleteAt < 0 || prepareAt <= deleteAt || preparedAt <= prepareAt || releaseAt <= preparedAt || execAt <= releaseAt {
+		t.Fatalf("wrapper order must be delete -> runtime prep -> host handshake -> workload exec; script = %q", restoreDeleteWrapperScript)
 	}
 }
 

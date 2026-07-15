@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/docker/compose/v2/pkg/api"
+	dockerContainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 
 	"github.com/valbaudo/awf/container"
@@ -265,12 +267,116 @@ func TestCreateRuntimeDirFailureForceRemovesPartialContainer(t *testing.T) {
 	}
 }
 
+func TestCreateFailureCleanupUsesDetachedContextAndJoinsCleanupError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var events []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create"):
+			events = append(events, "create")
+			writeJSON(t, w, map[string]any{"Id": "created"})
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/created/archive"):
+			events = append(events, "prepare-fail")
+			cancel()
+			http.Error(w, `{"message":"prepare denied"}`, http.StatusInternalServerError)
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/containers/created"):
+			events = append(events, "remove-fail")
+			if r.URL.Query().Get("force") != "1" {
+				t.Errorf("force = %q, want 1", r.URL.Query().Get("force"))
+			}
+			http.Error(w, `{"message":"cleanup denied"}`, http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	b := backendForServer(t, srv)
+	_, err := b.Create(ctx, container.ContainerSpec{Name: "lab", Image: "example.invalid/image@sha256:abc"})
+	if err == nil {
+		t.Fatal("Create error = nil, want joined prepare and cleanup errors")
+	}
+	if !strings.Contains(err.Error(), "prepare") || !strings.Contains(err.Error(), "cleanup denied") {
+		t.Fatalf("Create error = %v, want both prepare and cleanup causes", err)
+	}
+	want := []string{"create", "prepare-fail", "remove-fail"}
+	if strings.Join(events, ",") != strings.Join(want, ",") {
+		t.Errorf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRestoreFailureCleanupUsesDetachedContextAndJoinsCleanupError(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	var diff bytes.Buffer
+	dw := newDiffTarWriter(&diff, 1<<20)
+	if err := dw.Close(); err != nil {
+		t.Fatalf("diff Close: %v", err)
+	}
+	blobRef, err := blobs.Put(diff.Bytes())
+	if err != nil {
+		t.Fatalf("blobs.Put: %v", err)
+	}
+	ref, err := formatSnapshotRef(blobRef, "example.invalid/image@sha256:abc", snapshotCmdSpec{Cmd: []string{"sleep", "infinity"}})
+	if err != nil {
+		t.Fatalf("formatSnapshotRef: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var events []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create"):
+			events = append(events, "create")
+			writeJSON(t, w, map[string]any{"Id": "restored"})
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
+			events = append(events, "snapshot-fail")
+			cancel()
+			http.Error(w, `{"message":"snapshot denied"}`, http.StatusInternalServerError)
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/containers/restored"):
+			events = append(events, "remove-fail")
+			if r.URL.Query().Get("force") != "1" {
+				t.Errorf("force = %q, want 1", r.URL.Query().Get("force"))
+			}
+			http.Error(w, `{"message":"cleanup denied"}`, http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	cli, err := dockerClientForServer(srv)
+	if err != nil {
+		t.Fatalf("dockerClientForServer: %v", err)
+	}
+	b, err := New(cli, "test-restore-cleanup", blobs)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = b.Restore(ctx, ref, "lab")
+	if err == nil {
+		t.Fatal("Restore error = nil, want joined snapshot and cleanup errors")
+	}
+	if !strings.Contains(err.Error(), "CopyToContainer") || !strings.Contains(err.Error(), "cleanup denied") {
+		t.Fatalf("Restore error = %v, want both copy and cleanup causes", err)
+	}
+	want := []string{"create", "snapshot-fail", "remove-fail"}
+	if strings.Join(events, ",") != strings.Join(want, ",") {
+		t.Errorf("events = %v, want %v", events, want)
+	}
+}
+
 func TestRestoreExtractsSnapshotAndRuntimeDirsBeforeStart(t *testing.T) {
 	blobs := state.NewInMemoryBlobs()
 	var diff bytes.Buffer
 	dw := newDiffTarWriter(&diff, 1<<20)
 	if err := dw.WriteRegular("/work/restored.txt", bytes.NewReader([]byte("restored")), int64(len("restored"))); err != nil {
 		t.Fatalf("WriteRegular: %v", err)
+	}
+	deletePath := "/work/old ' file"
+	if err := dw.WriteDeletes([]string{deletePath}); err != nil {
+		t.Fatalf("WriteDeletes: %v", err)
 	}
 	if err := dw.Close(); err != nil {
 		t.Fatalf("diff Close: %v", err)
@@ -286,28 +392,56 @@ func TestRestoreExtractsSnapshotAndRuntimeDirsBeforeStart(t *testing.T) {
 
 	var events []string
 	archiveCall := 0
+	released := false
+	inspectCall := 0
+	var createdConfig struct {
+		Entrypoint []string `json:"Entrypoint"`
+		Cmd        []string `json:"Cmd"`
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create"):
 			events = append(events, "create")
+			if err := json.NewDecoder(r.Body).Decode(&createdConfig); err != nil {
+				t.Errorf("decode create config: %v", err)
+			}
 			writeJSON(t, w, map[string]any{"Id": "restored"})
 		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
 			archiveCall++
 			if r.URL.Query().Get("copyUIDGID") != "true" {
 				t.Errorf("archive call %d copyUIDGID = %q, want true", archiveCall, r.URL.Query().Get("copyUIDGID"))
 			}
-			if archiveCall == 1 {
+			switch archiveCall {
+			case 1:
 				events = append(events, "snapshot")
-			} else {
+			case 2:
 				events = append(events, "prepare")
+			case 3:
+				events = append(events, "release")
+				released = true
+			default:
+				t.Errorf("unexpected archive call %d", archiveCall)
 			}
 			_, _ = io.Copy(io.Discard, r.Body)
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/restored/start"):
 			events = append(events, "start")
 			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
+			if !released {
+				events = append(events, "prepared")
+				writeContainerPathTar(t, w, restorePreparedPath)
+			} else {
+				events = append(events, "handoff")
+				http.Error(w, `{"message":"path not found"}`, http.StatusNotFound)
+			}
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/restored/json"):
-			events = append(events, "inspect")
+			inspectCall++
+			if inspectCall == 1 {
+				events = append(events, "handoff-inspect")
+			} else {
+				events = append(events, "readiness-inspect")
+			}
 			writeJSON(t, w, map[string]any{"Id": "restored", "State": map[string]any{"Running": true}})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
@@ -327,7 +461,104 @@ func TestRestoreExtractsSnapshotAndRuntimeDirsBeforeStart(t *testing.T) {
 	if _, err := b.Restore(context.Background(), ref, "lab"); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	want := []string{"create", "snapshot", "prepare", "start", "inspect"}
+	wantEntrypoint := []string{"sh", "-c", restoreDeleteWrapperScript, "awf-restore"}
+	if strings.Join(createdConfig.Entrypoint, "\x00") != strings.Join(wantEntrypoint, "\x00") {
+		t.Errorf("created Entrypoint = %#v, want %#v", createdConfig.Entrypoint, wantEntrypoint)
+	}
+	wantCmd := []string{"1", deletePath, "sleep", "infinity"}
+	if strings.Join(createdConfig.Cmd, "\x00") != strings.Join(wantCmd, "\x00") {
+		t.Errorf("created Cmd = %#v, want %#v", createdConfig.Cmd, wantCmd)
+	}
+	want := []string{"create", "snapshot", "prepare", "start", "prepared", "release", "handoff", "handoff-inspect", "readiness-inspect"}
+	if strings.Join(events, ",") != strings.Join(want, ",") {
+		t.Errorf("events = %v, want %v", events, want)
+	}
+}
+
+func writeContainerPathTar(t *testing.T, w http.ResponseWriter, path string) {
+	t.Helper()
+	statJSON, err := json.Marshal(dockerContainer.PathStat{Name: path, Size: 0, Mode: 0o600})
+	if err != nil {
+		t.Fatalf("marshal path stat: %v", err)
+	}
+	w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString(statJSON))
+	tw := tar.NewWriter(w)
+	if err := tw.WriteHeader(&tar.Header{Name: strings.TrimPrefix(path, "/"), Mode: 0o600, Typeflag: tar.TypeReg}); err != nil {
+		t.Errorf("write path tar header: %v", err)
+		return
+	}
+	if err := tw.Close(); err != nil {
+		t.Errorf("close path tar: %v", err)
+	}
+}
+
+func TestRestoreDeleteWrapperExitReportsShellRequirementAndCleansUp(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	var diff bytes.Buffer
+	dw := newDiffTarWriter(&diff, 1<<20)
+	if err := dw.WriteDeletes([]string{"/work/removed"}); err != nil {
+		t.Fatalf("WriteDeletes: %v", err)
+	}
+	if err := dw.Close(); err != nil {
+		t.Fatalf("diff Close: %v", err)
+	}
+	blobRef, err := blobs.Put(diff.Bytes())
+	if err != nil {
+		t.Fatalf("blobs.Put: %v", err)
+	}
+	ref, err := formatSnapshotRef(blobRef, "example.invalid/no-shell@sha256:abc", snapshotCmdSpec{Cmd: []string{"original"}})
+	if err != nil {
+		t.Fatalf("formatSnapshotRef: %v", err)
+	}
+
+	var events []string
+	archiveCall := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create"):
+			events = append(events, "create")
+			writeJSON(t, w, map[string]any{"Id": "restored"})
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
+			archiveCall++
+			if archiveCall == 1 {
+				events = append(events, "snapshot")
+			} else {
+				events = append(events, "prepare")
+			}
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/restored/start"):
+			events = append(events, "start")
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
+			events = append(events, "prepared-missing")
+			http.Error(w, `{"message":"path not found"}`, http.StatusNotFound)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/restored/json"):
+			events = append(events, "inspect-exited")
+			writeJSON(t, w, map[string]any{"Id": "restored", "State": map[string]any{"Running": false}})
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/containers/restored"):
+			events = append(events, "remove")
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	cli, err := dockerClientForServer(srv)
+	if err != nil {
+		t.Fatalf("dockerClientForServer: %v", err)
+	}
+	b, err := New(cli, "test-no-shell", blobs)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = b.Restore(context.Background(), ref, "lab")
+	if err == nil || !strings.Contains(err.Error(), "must provide POSIX sh") {
+		t.Fatalf("Restore error = %v, want explicit POSIX sh requirement", err)
+	}
+	want := []string{"create", "snapshot", "prepare", "start", "prepared-missing", "inspect-exited", "remove"}
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Errorf("events = %v, want %v", events, want)
 	}

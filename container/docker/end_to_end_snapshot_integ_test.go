@@ -20,8 +20,8 @@ import (
 //
 // Slice-4.4 Design Q8: the injected Cmd is captured into the SnapshotRef
 // via ContainerInspect; Restore re-creates with the same Cmd → restored
-// container also runs sleep-infinity → stays alive for CopyToContainer +
-// per-delete Exec.
+// container also runs sleep-infinity after the internal delete wrapper
+// atomically hands off to the captured workload argv.
 //
 // Production snapshot:workspace images would supply their own long-running
 // ENTRYPOINT in the image; the adapter is a test-only fixture quirk.

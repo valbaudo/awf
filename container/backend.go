@@ -174,9 +174,12 @@ type Backend interface {
 	// Phase 4 Docker (slice 4.4): parses the 3-segment SnapshotRef, Blobs.Get
 	// the diff-tar, ContainerCreate against the embedded image + Cmd +
 	// Entrypoint, stream-CopyToContainer the data entries via io.Pipe (peak
-	// memory ~64 KiB + the diff blob bytes already in RAM from Get),
-	// Exec "rm -rf -- '<path>'" for each .awf-deletes entry. waitReady runs
-	// on the restored container so the spec §3 readiness contract holds.
+	// memory ~64 KiB + the diff blob bytes already in RAM from Get). For a
+	// diff with .awf-deletes, an internal argv-only POSIX-sh wrapper applies
+	// every deletion and recreates AWF runtime directories before exec-replacing
+	// itself with the captured effective Entrypoint+Cmd; a host handshake keeps
+	// waitReady and handle registration behind that workload handoff. A diff
+	// without deletions preserves Entrypoint+Cmd directly, with no wrapper.
 	// The embedded image is NOT auto-pulled; callers responsible for prior
 	// ImagePull (same as Backend.Create's image-mode path).
 	Restore(ctx context.Context, ref SnapshotRef, name string) (Handle, error)

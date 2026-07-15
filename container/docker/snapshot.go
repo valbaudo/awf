@@ -10,9 +10,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	dockerContainer "github.com/docker/docker/api/types/container"
 
 	"github.com/valbaudo/awf/container"
@@ -60,6 +64,50 @@ func (e *ErrSnapshotTooLarge) Is(target error) bool {
 type snapshotCmdSpec struct {
 	Cmd        []string `json:"cmd,omitempty"`
 	Entrypoint []string `json:"entrypoint,omitempty"`
+}
+
+// restoreDeleteWrapperScript runs only when a snapshot carries deletions.
+// Delete paths and the original workload argv are supplied as distinct
+// arguments, never interpolated into shell source. The workload entrypoint is
+// exec'd only after every deletion and AWF runtime-directory recreation has
+// completed successfully.
+const restoreDeleteWrapperScript = `n=$1
+shift
+while [ "$n" -gt 0 ]; do
+	rm -rf -- "$1" || exit
+	shift
+	n=$((n - 1))
+done
+mkdir -p /work/.awf /tmp/awf || exit
+: > /tmp/awf/.restore-prepared || exit
+while [ ! -e /tmp/awf/.restore-release ]; do :; done
+rm -f /tmp/awf/.restore-prepared /tmp/awf/.restore-release || exit
+exec "$@"`
+
+const (
+	restorePreparedPath = "/tmp/awf/.restore-prepared"
+	restoreReleasePath  = "/tmp/awf/.restore-release"
+)
+
+func restoreContainerConfig(image string, cmd snapshotCmdSpec, deletes []string) *dockerContainer.Config {
+	if len(deletes) == 0 {
+		return &dockerContainer.Config{
+			Image:      image,
+			Cmd:        cmd.Cmd,
+			Entrypoint: cmd.Entrypoint,
+		}
+	}
+
+	args := make([]string, 0, 1+len(deletes)+len(cmd.Entrypoint)+len(cmd.Cmd))
+	args = append(args, strconv.Itoa(len(deletes)))
+	args = append(args, deletes...)
+	args = append(args, cmd.Entrypoint...)
+	args = append(args, cmd.Cmd...)
+	return &dockerContainer.Config{
+		Image:      image,
+		Entrypoint: []string{"sh", "-c", restoreDeleteWrapperScript, "awf-restore"},
+		Cmd:        args,
+	}
 }
 
 // formatSnapshotRef encodes a (blob-ref, image, cmd) triple into a
@@ -313,12 +361,15 @@ func (b *Backend) captureOneIntoDiffTar(ctx context.Context, containerID, path s
 // precedent). If the image is absent from the local cache, ContainerCreate
 // errors with "no such image" and Restore propagates.
 //
-// Per-delete Exec is O(N) sequential. A workspace with N deletes does N
-// sequential rm -rf calls (~50-100ms each); a 1000-delete workspace takes
-// ~50-100 seconds. Acceptable for slice 4.4 (Restore is rare); a future
-// optimization could batch via xargs. If a delete-Exec fails, Restore
-// aborts cleanly (force-removes the partially-restored container) — the
-// engine resume re-calls Restore from scratch.
+// Docker's archive API cannot delete paths from a stopped container. When the
+// snapshot carries .awf-deletes, Restore therefore uses a narrow internal
+// entrypoint wrapper: delete paths are passed as argv, the wrapper applies all
+// deletes and recreates AWF runtime directories, then exec-replaces itself
+// with the captured effective Entrypoint+Cmd. A host/wrapper handshake keeps
+// readiness and handle registration behind that handoff. Images used with a
+// delete-bearing snapshot must provide POSIX sh, matching Docker Exec's
+// existing shell baseline. Any wrapper/extract/start/readiness failure
+// force-removes the partial container with a detached cleanup context.
 func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name string) (container.Handle, error) {
 	if err := ctx.Err(); err != nil {
 		return container.Handle{}, err
@@ -336,13 +387,18 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	if err != nil {
 		return container.Handle{}, fmt.Errorf("container/docker: Restore: blobs.Get(%s): %w", blobRef, err)
 	}
+	// Container archive extraction cannot apply whiteouts/deletions to a
+	// stopped container. Read the compressed diff once without materializing
+	// its plain tar so the final container can be created with a short internal
+	// wrapper only when deletions exist. The real extraction below remains
+	// streamed through io.Pipe.
+	deletes, err := streamPlainTarFromDiff(io.Discard, diffBytes)
+	if err != nil {
+		return container.Handle{}, fmt.Errorf("container/docker: Restore: inspect diff: %w", err)
+	}
 
 	containerNameStr := containerName(b.runID, name)
-	cfg := &dockerContainer.Config{
-		Image:      image,
-		Cmd:        cmdSpec.Cmd,
-		Entrypoint: cmdSpec.Entrypoint,
-	}
+	cfg := restoreContainerConfig(image, cmdSpec, deletes)
 	resp, err := b.cli.ContainerCreate(ctx, cfg, &dockerContainer.HostConfig{}, nil, nil, containerNameStr)
 	if err != nil {
 		return container.Handle{}, fmt.Errorf("container/docker: Restore: ContainerCreate: %w", err)
@@ -378,40 +434,35 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	// inside streamPlainTarFromDiff would block forever and we'd deadlock on
 	// the <-deletesCh receive below.
 	_ = pr.CloseWithError(copyErr)
-	deletes := <-deletesCh
+	streamedDeletes := <-deletesCh
 	if copyErr != nil {
-		return b.restoreFail(ctx, resp.ID, "CopyToContainer", copyErr)
+		return b.restoreFail(resp.ID, "CopyToContainer", copyErr)
+	}
+	if !slices.Equal(streamedDeletes, deletes) {
+		return b.restoreFail(resp.ID, "diff changed between validation and extraction", nil)
 	}
 	if err := b.prepareRuntimeDirs(ctx, resp.ID); err != nil {
-		return b.restoreFail(ctx, resp.ID, "prepareRuntimeDirs", err)
+		return b.restoreFail(resp.ID, "prepareRuntimeDirs", err)
 	}
 
 	// Extraction happens before startup so entrypoints observe the restored
 	// workspace atomically and cannot race the snapshot copy.
 	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
-		return b.restoreFail(ctx, resp.ID, "ContainerStart", err)
+		return b.restoreFail(resp.ID, "ContainerStart", err)
+	}
+	if len(deletes) > 0 {
+		if err := b.waitForRestorePath(ctx, resp.ID, restorePreparedPath, true); err != nil {
+			return b.restoreFail(resp.ID, "delete wrapper preparation", err)
+		}
+		if err := b.releaseRestoreEntrypoint(ctx, resp.ID); err != nil {
+			return b.restoreFail(resp.ID, "delete wrapper release", err)
+		}
+		if err := b.waitForRestorePath(ctx, resp.ID, restorePreparedPath, false); err != nil {
+			return b.restoreFail(resp.ID, "delete wrapper handoff", err)
+		}
 	}
 	if err := b.waitReady(ctx, resp.ID); err != nil {
-		return b.restoreFail(ctx, resp.ID, "waitReady", err)
-	}
-
-	for _, del := range deletes {
-		chunks, resultCh, execErr := b.execImage(ctx, resp.ID, container.Cmd{Run: "rm -rf -- " + shellQuotePath(del)})
-		if execErr != nil {
-			return b.restoreFail(ctx, resp.ID, fmt.Sprintf("delete %q", del), execErr)
-		}
-		// Drain chunks (slice 5.3 streaming contract); the rm command's
-		// output is irrelevant to Restore, but the channel must be drained
-		// before the result is delivered.
-		for range chunks {
-		}
-		result := <-resultCh
-		if result.Err != nil {
-			return b.restoreFail(ctx, resp.ID, fmt.Sprintf("delete %q", del), result.Err)
-		}
-		if result.ExitCode != 0 {
-			return b.restoreFail(ctx, resp.ID, fmt.Sprintf("delete %q exited %d", del, result.ExitCode), nil)
-		}
+		return b.restoreFail(resp.ID, "waitReady", err)
 	}
 
 	b.mu.Lock()
@@ -421,16 +472,84 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	return container.Handle{Name: name, ID: resp.ID}, nil
 }
 
-// restoreFail force-removes the partially-created container and returns a
-// wrapped error for the caller. Used by Restore's mid-flight failure paths
-// (ContainerStart, waitReady, CopyToContainer, per-delete Exec). When cause
-// is nil, the message itself carries the diagnostic.
-func (b *Backend) restoreFail(ctx context.Context, containerID, stage string, cause error) (container.Handle, error) {
-	_ = b.cli.ContainerRemove(ctx, containerID, dockerContainer.RemoveOptions{Force: true})
-	if cause != nil {
-		return container.Handle{}, fmt.Errorf("container/docker: Restore: %s: %w", stage, cause)
+// waitForRestorePath is the narrow host/wrapper handshake used only by a
+// delete-bearing Restore. The wrapper creates restorePreparedPath after all
+// deletes and runtime-directory recreation, then removes it immediately
+// before exec-replacing itself with the original workload. The host waits for
+// both transitions, so it cannot evaluate readiness or return the handle while
+// the wrapper is still applying snapshot state.
+func (b *Backend) waitForRestorePath(ctx context.Context, containerID, path string, wantExists bool) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		rc, _, err := b.cli.CopyFromContainer(ctx, containerID, path)
+		if err == nil {
+			_ = rc.Close()
+			if wantExists {
+				return nil
+			}
+			info, inspectErr := b.cli.ContainerInspect(ctx, containerID)
+			if inspectErr != nil {
+				return fmt.Errorf("ContainerInspect while waiting for wrapper handoff: %w", inspectErr)
+			}
+			if info.State == nil || !info.State.Running {
+				return fmt.Errorf("restore delete wrapper exited before workload handoff (the image must provide POSIX sh for delete-bearing snapshots)")
+			}
+		} else if !cerrdefs.IsNotFound(err) {
+			return fmt.Errorf("CopyFromContainer %q: %w", path, err)
+		} else if !wantExists {
+			info, inspectErr := b.cli.ContainerInspect(ctx, containerID)
+			if inspectErr != nil {
+				return fmt.Errorf("ContainerInspect after wrapper handoff: %w", inspectErr)
+			}
+			if info.State == nil || !info.State.Running {
+				return fmt.Errorf("restore delete wrapper exited before workload handoff (the image must provide POSIX sh for delete-bearing snapshots)")
+			}
+			return nil
+		} else {
+			info, inspectErr := b.cli.ContainerInspect(ctx, containerID)
+			if inspectErr != nil {
+				return fmt.Errorf("ContainerInspect while waiting for wrapper: %w", inspectErr)
+			}
+			if info.State == nil || !info.State.Running {
+				return fmt.Errorf("restore delete wrapper exited before preparation (the image must provide POSIX sh for delete-bearing snapshots)")
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
-	return container.Handle{}, fmt.Errorf("container/docker: Restore: %s", stage)
+}
+
+func (b *Backend) releaseRestoreEntrypoint(ctx context.Context, containerID string) error {
+	var archive bytes.Buffer
+	tw := tar.NewWriter(&archive)
+	if err := tw.WriteHeader(&tar.Header{Name: strings.TrimPrefix(restoreReleasePath, "/"), Mode: 0o600, Typeflag: tar.TypeReg}); err != nil {
+		return fmt.Errorf("build release archive: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("close release archive: %w", err)
+	}
+	if err := b.extractToContainer(ctx, containerID, "/", bytes.NewReader(archive.Bytes()), ownByContainerUser); err != nil {
+		return fmt.Errorf("CopyToContainer release marker: %w", err)
+	}
+	return nil
+}
+
+// restoreFail force-removes the partially-created container through the
+// detached cleanup path and returns the stage error, joined with any cleanup
+// failure. When cause is nil, the stage itself carries the diagnostic.
+func (b *Backend) restoreFail(containerID, stage string, cause error) (container.Handle, error) {
+	var primary error
+	if cause != nil {
+		primary = fmt.Errorf("container/docker: Restore: %s: %w", stage, cause)
+	} else {
+		primary = fmt.Errorf("container/docker: Restore: %s", stage)
+	}
+	return container.Handle{}, b.cleanupPartialContainer(containerID, primary)
 }
 
 // Decision: docker Restore is intentionally UNbounded (no decompression-bomb
@@ -490,11 +609,4 @@ func streamPlainTarFromDiff(w io.Writer, diffBytes []byte) ([]string, error) {
 		}
 	}
 	return deletes, nil
-}
-
-// shellQuotePath wraps p in single quotes and escapes embedded single
-// quotes. Paired with the `--` argument terminator (`rm -rf -- '<path>'`)
-// so paths starting with `-` aren't parsed as flags.
-func shellQuotePath(p string) string {
-	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
