@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
@@ -211,6 +213,7 @@ func TestRunWithRetryRejectsInconsistentDispatchResults(t *testing.T) {
 		{name: "empty result without direct error", dr: engine.DispatchResult{}},
 		{name: "typed outcome with direct error", dr: engine.DispatchResult{Outcome: engine.OutcomeRetryableFailure}, directErr: errors.New("direct")},
 		{name: "direct error with result cause", dr: engine.DispatchResult{Err: cause}, directErr: errors.New("direct")},
+		{name: "direct error with outputs", dr: engine.DispatchResult{Outputs: map[string]any{"leaked": true}}, directErr: errors.New("direct")},
 		{name: "unknown outcome", dr: engine.DispatchResult{Outcome: engine.Outcome("mystery"), Err: cause}},
 	}
 
@@ -230,6 +233,31 @@ func TestRunWithRetryRejectsInconsistentDispatchResults(t *testing.T) {
 				t.Errorf("Outcome = %q, want empty on internal error", dr.Outcome)
 			}
 		})
+	}
+}
+
+func TestRunWithRetryRecoveryContinueRejectsMixedLiveReplayTuple(t *testing.T) {
+	t.Parallel()
+	dsp := &stubDispatcher{results: []stubResult{{
+		dr: engine.DispatchResult{
+			Outcome: engine.OutcomeRetryableFailure,
+			Err:     errors.New("typed cause"),
+		},
+		err: fmt.Errorf("wrapped: %w", agent.ErrLiveReplayRequired),
+	}}}
+	log := state.NewInMemoryLog(clock.System{})
+	clk := &clock.Fake{}
+	policy := retry.Policy{Attempts: 2, Recovery: "continue"}
+
+	dr, _, err := engine.RunWithRetry(context.Background(), dsp, defaultIntent(), policy, clk, log)
+	if err == nil || !strings.Contains(err.Error(), "engine.RunWithRetry") {
+		t.Fatalf("err = %v, want RunWithRetry invariant error", err)
+	}
+	if dr.Outcome != "" {
+		t.Errorf("Outcome = %q, want empty on internal error", dr.Outcome)
+	}
+	if dsp.calls != 1 {
+		t.Errorf("dispatcher called %d times, want 1", dsp.calls)
 	}
 }
 

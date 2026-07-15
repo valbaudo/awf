@@ -29,9 +29,10 @@ import (
 // receive-only direction keeps both compatible). Mechanical failures return a
 // typed non-ok DispatchResult with its cause in DispatchResult.Err and a nil
 // direct error. A non-nil direct error is reserved for dispatcher/internal
-// failures and requires both an empty Outcome and nil DispatchResult.Err; its
-// channel is nil. Callers MUST nil-check before ranging (a `for range nil-chan`
-// deadlocks).
+// failures and requires an otherwise empty DispatchResult; buffered AgentEvents
+// are the sole exception so the interpreter can persist progress observed before
+// the halt. Its channel is nil. Callers MUST nil-check before ranging (a `for
+// range nil-chan` deadlocks).
 type Dispatcher interface {
 	Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error)
 }

@@ -185,6 +185,35 @@ func TestLocalDispatcherPermanentExitCode(t *testing.T) {
 	}
 }
 
+func TestLocalDispatcherNonzeroExitRetainsExitCauseWhenOutputParsingFails(t *testing.T) {
+	d, fake, _ := newDispatcher(t)
+	fake.ProgramExec("./misconfig.sh", container.ExecResult{
+		ExitCode:  78,
+		AWFOutput: []byte(`not valid json`),
+	}, nil)
+	schema := ir.JSONSchema{"type": "object", "additionalProperties": false}
+	intent := engine.NodeIntent{
+		Path: "misconfig",
+		Node: &ir.CodeStep{ID: "misconfig", Container: "lab"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Command:               "./misconfig.sh",
+			OutputSchema:          &schema,
+			NonRetryableExitCodes: []int{78},
+		},
+	}
+
+	dr, _, err := d.Run(context.Background(), intent)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if dr.Outcome != engine.OutcomePermanentFailure {
+		t.Errorf("Outcome = %v, want permanent", dr.Outcome)
+	}
+	if dr.Err == nil || !strings.Contains(dr.Err.Error(), "code 78") {
+		t.Errorf("Err = %v, want cause containing exit code 78", dr.Err)
+	}
+}
+
 func TestLocalDispatcherUnparseableAWFOutputIsRetryable(t *testing.T) {
 	d, fake, _ := newDispatcher(t)
 	fake.ProgramExec("./broken.sh", container.ExecResult{

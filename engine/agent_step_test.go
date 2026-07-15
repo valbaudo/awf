@@ -719,7 +719,7 @@ func TestLocalDispatcher_LiveReplayRequiredUsesDirectErrorTuple(t *testing.T) {
 		ResolvedInputs: engine.ResolvedInputs{Uses: "live/agent"},
 	}
 
-	dr, _, err := dispatcher.Run(context.Background(), intent)
+	dr, chunks, err := dispatcher.Run(context.Background(), intent)
 	if !errors.Is(err, agent.ErrLiveReplayRequired) {
 		t.Fatalf("err = %v, want direct ErrLiveReplayRequired", err)
 	}
@@ -728,6 +728,67 @@ func TestLocalDispatcher_LiveReplayRequiredUsesDirectErrorTuple(t *testing.T) {
 	}
 	if len(dr.AgentEvents) != 1 {
 		t.Fatalf("AgentEvents len = %d, want 1 buffered event", len(dr.AgentEvents))
+	}
+	if chunks != nil {
+		t.Fatal("chunks is non-nil on direct error")
+	}
+}
+
+func TestLocalDispatcherLiveSchemaMismatchUsesPayloadFreeDirectErrorTuple(t *testing.T) {
+	t.Parallel()
+	liveMeta := &agent.LiveDispatch{
+		AdapterRef:     "live/agent",
+		SessionKey:     "builder",
+		SessionKeyHash: "sha256:session",
+		LeaseID:        "lease-1",
+		ActiveTurnID:   "turn-1",
+		ProviderTurnID: "provider-turn-1",
+		RunID:          "r1",
+		NodePath:       "live",
+		Epoch:          1,
+		CommittedUnix:  1,
+	}
+	fk := fake.New("live/agent").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true, PersistentSession: true}).
+		Script(0, fake.Result{
+			Output: map[string]any{"ok": "not-bool"},
+			Events: []agent.AgentEvent{{Kind: "assistant", Stream: "stdout", Payload: []byte("working")}},
+			Live:   liveMeta,
+		})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	schema := ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"ok"},
+		"properties": map[string]any{
+			"ok": map[string]any{"type": "boolean"},
+		},
+	}
+	dispatcher := &engine.LocalDispatcher{Resolver: &reg}
+	intent := engine.NodeIntent{
+		Path: "live",
+		Node: &ir.AgentStep{ID: "live", Uses: "live/agent"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:         "live/agent",
+			OutputSchema: &schema,
+		},
+	}
+
+	dr, chunks, err := dispatcher.Run(context.Background(), intent)
+	if !errors.Is(err, agent.ErrLiveReplayRequired) {
+		t.Fatalf("err = %v, want direct ErrLiveReplayRequired", err)
+	}
+	if dr.Outcome != "" || dr.Err != nil || dr.Outputs != nil {
+		t.Fatalf("DispatchResult = {Outcome:%q Err:%v Outputs:%v}, want payload-free direct-error tuple", dr.Outcome, dr.Err, dr.Outputs)
+	}
+	if len(dr.AgentEvents) != 1 {
+		t.Fatalf("AgentEvents len = %d, want 1 buffered event", len(dr.AgentEvents))
+	}
+	if chunks != nil {
+		t.Fatal("chunks is non-nil on direct error")
 	}
 }
 

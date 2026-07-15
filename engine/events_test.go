@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/clock"
+	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -880,6 +882,45 @@ func TestAgentEventSinkAppendFailureCancelsProvider(t *testing.T) {
 	case <-providerCtx.Done():
 	case <-time.After(time.Second):
 		t.Fatal("provider context was not cancelled after append failure")
+	}
+}
+
+func TestLocalDispatcherAgentEventSinkDirectErrorReturnsNilChunks(t *testing.T) {
+	wantErr := errors.New("sink failed")
+	sinkCtx, stopSink := context.WithCancel(context.Background())
+	defer stopSink()
+	sink := newAgentEventSink(sinkCtx, func() {}, &clock.Fake{T: time.Now()}, state.NewInMemoryLog(clock.System{}), state.NewInMemoryBlobs(), "live")
+	sink.setErr(wantErr)
+	defer func() {
+		if err := sink.closeWait(); !errors.Is(err, wantErr) {
+			t.Errorf("closeWait err = %v, want %v", err, wantErr)
+		}
+	}()
+
+	fk := fake.New("live/agent").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true}).
+		Script(0, fake.Result{
+			Events: []agent.AgentEvent{{Kind: "delta", Stream: "stdout", Live: true, Payload: []byte("working")}},
+			Output: map[string]any{"ok": true},
+		})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &LocalDispatcher{Resolver: &reg}
+	intent := NodeIntent{
+		Path:           "live",
+		Node:           &ir.AgentStep{ID: "live", Uses: "live/agent"},
+		ResolvedInputs: ResolvedInputs{Uses: "live/agent"},
+		agentEventSink: sink,
+	}
+
+	_, chunks, err := dispatcher.Run(context.Background(), intent)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+	if chunks != nil {
+		t.Fatal("chunks is non-nil on direct sink error")
 	}
 }
 

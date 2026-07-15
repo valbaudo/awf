@@ -326,7 +326,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	if drained.err != nil {
 		return DispatchResult{
 			AgentEvents: bufferedEvents,
-		}, closedChunks(), drained.err
+		}, nil, drained.err
 	}
 
 	// In-flight failure surfaced via launchOutcome.Err.
@@ -339,7 +339,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 			// to read the on-disk live.SessionRecord — no journaled hint needed.
 			return DispatchResult{
 				AgentEvents: bufferedEvents,
-			}, closedChunks(), launchOutcome.Err
+			}, nil, launchOutcome.Err
 		}
 		dispatchOutcome := classifyAgentLaunchErr(launchOutcome.Err)
 		return DispatchResult{
@@ -360,9 +360,8 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 				// re-derives defaultSessionKey(runID,nodePath) to read the on-disk
 				// live.SessionRecord — no journaled hint needed.
 				return DispatchResult{
-					Outputs:     launchOutcome.Result.Output,
 					AgentEvents: bufferedEvents,
-				}, closedChunks(), agent.ErrLiveReplayRequired
+				}, nil, agent.ErrLiveReplayRequired
 			}
 			return DispatchResult{
 				Outcome:     OutcomeRetryableFailure,

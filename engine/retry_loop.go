@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
@@ -82,6 +83,13 @@ func RunWithRetry(
 		}
 
 		dr, chunks, lastErr = dispatcher.Run(ctx, intent)
+		// Validate the dispatcher's original tuple before applying the one
+		// engine-owned transformation below. Otherwise a mixed typed/direct tuple
+		// carrying ErrLiveReplayRequired could be overwritten into a valid-looking
+		// retryable result and conceal a dispatcher contract violation.
+		if err := validateDispatchResult(intent.Path, dr, lastErr); err != nil {
+			return DispatchResult{}, nil, err
+		}
 		// Interpreter-bug class (unknown container, unsupported kind): halt
 		// immediately, surface as-is. NOT a retryable failure.
 		if lastErr != nil {
@@ -98,9 +106,6 @@ func RunWithRetry(
 				dr.Err = lastErr
 				lastErr = nil
 			}
-		}
-		if err := validateDispatchResult(intent.Path, dr, lastErr); err != nil {
-			return DispatchResult{}, nil, err
 		}
 		if lastErr != nil {
 			return dr, nil, lastErr
@@ -178,8 +183,10 @@ func RunWithRetry(
 }
 
 func validateDispatchResult(path string, dr DispatchResult, dispatchErr error) error {
+	directResult := dr
+	directResult.AgentEvents = nil
 	switch {
-	case dispatchErr != nil && dr.Outcome == "" && dr.Err == nil:
+	case dispatchErr != nil && reflect.DeepEqual(directResult, DispatchResult{}):
 		return nil
 	case dispatchErr != nil:
 		return fmt.Errorf("engine.RunWithRetry: dispatcher returned outcome %q with direct error at path %q: %w", dr.Outcome, path, dispatchErr)
