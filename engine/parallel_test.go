@@ -238,7 +238,7 @@ func TestRunParallelSiblingCancelInterruptsRetrySleepUnderSynctest(t *testing.T)
 			&ir.CodeStep{ID: "b0-fail", Run: "exit 1", Container: "ca",
 				Retry: &ir.RetryPolicy{Attempts: 1}},
 			&ir.CodeStep{ID: "b1-transient", Run: "fail", Container: "cb",
-				Retry: &ir.RetryPolicy{Attempts: 3}}, // defaults: exp/1s/60s via retry.Default
+				Retry: &ir.RetryPolicy{Attempts: 3}}, // remaining fields overlay retry.CodeDefault (exp/1s/60s)
 		}}
 		disp, lg, blobs := tryTestRig(t, map[string]scriptedResult{
 			"b0-fail":      {outcome: OutcomeRetryableFailure, err: errors.New("b0 err")},
