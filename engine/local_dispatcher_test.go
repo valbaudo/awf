@@ -157,6 +157,9 @@ func TestLocalDispatcherNonzeroExitIsRetryable(t *testing.T) {
 	if dr.Outcome != engine.OutcomeRetryableFailure {
 		t.Errorf("Outcome = %v, want retryable", dr.Outcome)
 	}
+	if dr.Err == nil || !strings.Contains(dr.Err.Error(), "code 1") {
+		t.Errorf("Err = %v, want cause containing exit code 1", dr.Err)
+	}
 }
 
 func TestLocalDispatcherPermanentExitCode(t *testing.T) {
@@ -176,6 +179,9 @@ func TestLocalDispatcherPermanentExitCode(t *testing.T) {
 	}
 	if dr.Outcome != engine.OutcomePermanentFailure {
 		t.Errorf("Outcome = %v, want permanent", dr.Outcome)
+	}
+	if dr.Err == nil || !strings.Contains(dr.Err.Error(), "code 78") {
+		t.Errorf("Err = %v, want cause containing exit code 78", dr.Err)
 	}
 }
 

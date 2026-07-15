@@ -95,9 +95,15 @@ func RunWithRetry(
 			// the shared retry accounting below (which re-derives lastErr from dr.Err).
 			if continueRecovery && errors.Is(lastErr, agent.ErrLiveReplayRequired) {
 				dr.Outcome = OutcomeRetryableFailure
-			} else {
-				return dr, nil, lastErr
+				dr.Err = lastErr
+				lastErr = nil
 			}
+		}
+		if err := validateDispatchResult(intent.Path, dr, lastErr); err != nil {
+			return DispatchResult{}, nil, err
+		}
+		if lastErr != nil {
+			return dr, nil, lastErr
 		}
 
 		switch dr.Outcome {
@@ -169,4 +175,19 @@ func RunWithRetry(
 
 	// Unreachable — the loop above always returns inside the body.
 	return dr, chunks, lastErr
+}
+
+func validateDispatchResult(path string, dr DispatchResult, dispatchErr error) error {
+	switch {
+	case dispatchErr != nil && dr.Outcome == "" && dr.Err == nil:
+		return nil
+	case dispatchErr != nil:
+		return fmt.Errorf("engine.RunWithRetry: dispatcher returned outcome %q with direct error at path %q: %w", dr.Outcome, path, dispatchErr)
+	case dr.Outcome == OutcomeOK && dr.Err == nil:
+		return nil
+	case (dr.Outcome == OutcomeRetryableFailure || dr.Outcome == OutcomePermanentFailure) && dr.Err != nil:
+		return nil
+	default:
+		return fmt.Errorf("engine.RunWithRetry: inconsistent dispatch result at path %q: outcome=%q cause=%v", path, dr.Outcome, dr.Err)
+	}
 }

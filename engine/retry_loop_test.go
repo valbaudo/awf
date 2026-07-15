@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -193,6 +194,42 @@ func TestRunWithRetryPermanentStopsImmediately(t *testing.T) {
 	}
 	if !clk.Now().Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("clock advanced on permanent failure: %v", clk.Now())
+	}
+}
+
+func TestRunWithRetryRejectsInconsistentDispatchResults(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("cause")
+	tests := []struct {
+		name      string
+		dr        engine.DispatchResult
+		directErr error
+	}{
+		{name: "ok with cause", dr: engine.DispatchResult{Outcome: engine.OutcomeOK, Err: cause}},
+		{name: "retryable without cause", dr: engine.DispatchResult{Outcome: engine.OutcomeRetryableFailure}},
+		{name: "permanent without cause", dr: engine.DispatchResult{Outcome: engine.OutcomePermanentFailure}},
+		{name: "empty result without direct error", dr: engine.DispatchResult{}},
+		{name: "typed outcome with direct error", dr: engine.DispatchResult{Outcome: engine.OutcomeRetryableFailure}, directErr: errors.New("direct")},
+		{name: "direct error with result cause", dr: engine.DispatchResult{Err: cause}, directErr: errors.New("direct")},
+		{name: "unknown outcome", dr: engine.DispatchResult{Outcome: engine.Outcome("mystery"), Err: cause}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dsp := &stubDispatcher{results: []stubResult{{dr: tt.dr, err: tt.directErr}}}
+			log := state.NewInMemoryLog(clock.System{})
+			clk := &clock.Fake{}
+			policy := retry.Policy{Attempts: 1}
+
+			dr, _, err := engine.RunWithRetry(context.Background(), dsp, defaultIntent(), policy, clk, log)
+			if err == nil || !strings.Contains(err.Error(), "engine.RunWithRetry") {
+				t.Fatalf("err = %v, want RunWithRetry invariant error", err)
+			}
+			if dr.Outcome != "" {
+				t.Errorf("Outcome = %q, want empty on internal error", dr.Outcome)
+			}
+		})
 	}
 }
 

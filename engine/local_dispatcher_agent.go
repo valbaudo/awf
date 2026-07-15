@@ -276,7 +276,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	events, outcomeCh, launchErr := adapter.Launch(ctx, h, inv)
 	if launchErr != nil {
 		if errors.Is(launchErr, agent.ErrLiveReplayRequired) {
-			return DispatchResult{Err: launchErr}, nil, launchErr
+			return DispatchResult{}, nil, launchErr
 		}
 		dispatchOutcome := classifyAgentLaunchErr(launchErr)
 		return DispatchResult{Outcome: dispatchOutcome, Err: launchErr}, nil, nil
@@ -325,7 +325,6 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	bufferedEvents := drained.events
 	if drained.err != nil {
 		return DispatchResult{
-			Err:         drained.err,
 			AgentEvents: bufferedEvents,
 		}, closedChunks(), drained.err
 	}
@@ -339,7 +338,6 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 			// halts and a later `awf resume` re-derives defaultSessionKey(runID,nodePath)
 			// to read the on-disk live.SessionRecord — no journaled hint needed.
 			return DispatchResult{
-				Err:         launchOutcome.Err,
 				AgentEvents: bufferedEvents,
 			}, closedChunks(), launchOutcome.Err
 		}
@@ -364,7 +362,6 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 				return DispatchResult{
 					Outputs:     launchOutcome.Result.Output,
 					AgentEvents: bufferedEvents,
-					Err:         agent.ErrLiveReplayRequired,
 				}, closedChunks(), agent.ErrLiveReplayRequired
 			}
 			return DispatchResult{

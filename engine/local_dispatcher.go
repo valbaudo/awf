@@ -333,6 +333,8 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 	}
 	if parseErr != nil {
 		dr.Err = parseErr
+	} else if dr.Outcome != OutcomeOK {
+		dr.Err = fmt.Errorf("process exited with code %d", exec.ExitCode)
 	}
 
 	// Record the container for OK (committed) steps; failed steps carry none

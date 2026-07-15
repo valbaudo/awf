@@ -699,6 +699,38 @@ graph:
 	}
 }
 
+func TestLocalDispatcher_LiveReplayRequiredUsesDirectErrorTuple(t *testing.T) {
+	t.Parallel()
+	ad := &replayRequiredAdapter{
+		ref:        "live/agent",
+		outcomeErr: fmt.Errorf("wrapped: %w", agent.ErrLiveReplayRequired),
+		events: []agent.AgentEvent{
+			{Kind: "assistant", Stream: "stdout", Payload: []byte(`{"delta":"working"}`)},
+		},
+	}
+	var reg agent.Registry
+	if err := reg.Register(ad); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{Resolver: &reg}
+	intent := engine.NodeIntent{
+		Path:           "live",
+		Node:           &ir.AgentStep{ID: "live", Uses: "live/agent"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "live/agent"},
+	}
+
+	dr, _, err := dispatcher.Run(context.Background(), intent)
+	if !errors.Is(err, agent.ErrLiveReplayRequired) {
+		t.Fatalf("err = %v, want direct ErrLiveReplayRequired", err)
+	}
+	if dr.Outcome != "" || dr.Err != nil {
+		t.Fatalf("DispatchResult = {Outcome:%q Err:%v}, want empty direct-error tuple", dr.Outcome, dr.Err)
+	}
+	if len(dr.AgentEvents) != 1 {
+		t.Fatalf("AgentEvents len = %d, want 1 buffered event", len(dr.AgentEvents))
+	}
+}
+
 func TestRunAgentStep_LiveSchemaMismatchHaltsWithoutFailureOrRetry(t *testing.T) {
 	const yaml = `workflow: live-schema-replay
 version: 1

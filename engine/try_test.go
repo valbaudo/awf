@@ -16,8 +16,8 @@ import (
 // and Parallel (slice 3.2) handler tests. For each Run call it consults the
 // script keyed by step id and returns the scripted outcome / error.
 //
-// If a result's ctxAware flag is set, Run pre-checks ctx.Err() and returns
-// (RetryableFailure, ctx.Err()) without consulting the script — mirrors what
+// If a result's ctxAware flag is set, Run pre-checks ctx.Err() and returns a
+// retryable failure carrying ctx.Err() as DispatchResult.Err — mirrors what
 // container.Fake does. The ctx-unaware path is the default (Phase 2 / slice
 // 3.1 patterns); ctx-aware is required to exercise sibling-cancellation
 // semantics (slice 3.2 parallel + the slice 3.1 try-finally-on-ctx-cancel
@@ -30,7 +30,7 @@ type scriptedDispatcher struct {
 
 type scriptedResult struct {
 	outcome  Outcome
-	err      error          // if non-nil, the dispatcher returns this error directly
+	err      error          // mechanical failure cause, returned in DispatchResult.Err
 	ctxAware bool           // if true, return (RetryableFailure, ctx.Err()) when ctx is cancelled
 	outputs  map[string]any // if non-nil, propagated to DispatchResult.Outputs (gate tests need this)
 }
@@ -51,13 +51,13 @@ func (d *scriptedDispatcher) Run(ctx context.Context, intent NodeIntent) (Dispat
 		if err := ctx.Err(); err != nil {
 			closed := make(chan container.IOChunk)
 			close(closed)
-			return DispatchResult{Outcome: OutcomeRetryableFailure}, closed, err
+			return DispatchResult{Outcome: OutcomeRetryableFailure, Err: err}, closed, nil
 		}
 	}
 	closedCh := make(chan container.IOChunk)
 	close(closedCh)
 	if res.err != nil {
-		return DispatchResult{Outcome: res.outcome}, closedCh, res.err
+		return DispatchResult{Outcome: res.outcome, Err: res.err}, closedCh, nil
 	}
 	return DispatchResult{Outcome: res.outcome, ExitCode: intPtr(0), Outputs: res.outputs}, closedCh, nil
 }
