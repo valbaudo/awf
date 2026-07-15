@@ -10,8 +10,6 @@ import (
 	"path"
 	"strings"
 
-	dockerContainer "github.com/docker/docker/api/types/container"
-
 	"github.com/valbaudo/awf/container"
 )
 
@@ -228,7 +226,7 @@ func (b *Backend) WriteTreeAt(ctx context.Context, h container.Handle, dir strin
 		return fmt.Errorf("container/docker: WriteTreeAt: reroot entries: %w", err)
 	}
 
-	if err := b.cli.CopyToContainer(ctx, dockerID, "/", bytes.NewReader(rerootedTar), dockerContainer.CopyToContainerOptions{}); err != nil {
+	if err := b.extractToContainer(ctx, dockerID, "/", bytes.NewReader(rerootedTar), ownByContainerUser); err != nil {
 		return fmt.Errorf("container/docker: WriteTreeAt: CopyToContainer %q: %w", cleanDir, err)
 	}
 	return nil

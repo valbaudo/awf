@@ -32,8 +32,8 @@ const TeardownGrace = 30 * time.Second
 // AWFOutputDir is the docker/fake Backend's Caps.OutputRoot value: the
 // directory under which the engine dispatcher derives AWF_OUTPUT tempfile
 // paths — AWFOutputDir/<sanitized-step>.json (see engine/awf_output.go) —
-// inside a container's own private /tmp, so it needs no pre-creation there
-// (each container's /tmp is fresh). Native does NOT use this constant: since
+// inside a container's own private /tmp. Docker prepares this directory for
+// the configured container user before AWF steps run. Native does NOT use this constant: since
 // U3, native's Caps.OutputRoot is ".awf/output" (workdir-relative), pre-created
 // per container by native's Backend.Create, not by a process-global
 // bootstrap. There is no longer a single native/docker OutputRoot to keep in

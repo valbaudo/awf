@@ -348,13 +348,6 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 		return container.Handle{}, fmt.Errorf("container/docker: Restore: ContainerCreate: %w", err)
 	}
 
-	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
-		return b.restoreFail(ctx, resp.ID, "ContainerStart", err)
-	}
-	if err := b.waitReady(ctx, resp.ID); err != nil {
-		return b.restoreFail(ctx, resp.ID, "waitReady", err)
-	}
-
 	// Stream the diff via io.Pipe: one goroutine writes plain tar to pw;
 	// CopyToContainer reads from pr in lockstep.
 	deletesCh := make(chan []string, 1)
@@ -375,7 +368,11 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 		deletes = out
 	}()
 
-	copyErr := b.cli.CopyToContainer(ctx, resp.ID, "/", pr, dockerContainer.CopyToContainerOptions{})
+	// Snapshot headers intentionally do not retain archive UID/GID fidelity.
+	// Normalize restored workspace content to the image's configured user,
+	// matching CopyTo/WriteFileAt/WriteTreeAt and the single-user workspace
+	// contract.
+	copyErr := b.extractToContainer(ctx, resp.ID, "/", pr, ownByContainerUser)
 	// Close the reader so the writer goroutine unblocks even if CopyToContainer
 	// aborted mid-stream (ctx-cancel, daemon error). Without this, pw.Write
 	// inside streamPlainTarFromDiff would block forever and we'd deadlock on
@@ -384,6 +381,18 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	deletes := <-deletesCh
 	if copyErr != nil {
 		return b.restoreFail(ctx, resp.ID, "CopyToContainer", copyErr)
+	}
+	if err := b.prepareRuntimeDirs(ctx, resp.ID); err != nil {
+		return b.restoreFail(ctx, resp.ID, "prepareRuntimeDirs", err)
+	}
+
+	// Extraction happens before startup so entrypoints observe the restored
+	// workspace atomically and cannot race the snapshot copy.
+	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
+		return b.restoreFail(ctx, resp.ID, "ContainerStart", err)
+	}
+	if err := b.waitReady(ctx, resp.ID); err != nil {
+		return b.restoreFail(ctx, resp.ID, "waitReady", err)
 	}
 
 	for _, del := range deletes {

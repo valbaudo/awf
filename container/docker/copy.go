@@ -7,8 +7,6 @@ import (
 	"io"
 	"strings"
 
-	dockerContainer "github.com/docker/docker/api/types/container"
-
 	"github.com/valbaudo/awf/container"
 )
 
@@ -59,7 +57,7 @@ func (b *Backend) CopyTo(ctx context.Context, h container.Handle, files []contai
 		_ = pw.CloseWithError(werr)
 	}()
 
-	copyErr := b.cli.CopyToContainer(ctx, dockerID, "/", pr, dockerContainer.CopyToContainerOptions{})
+	copyErr := b.extractToContainer(ctx, dockerID, "/", pr, ownByContainerUser)
 	_ = pr.CloseWithError(copyErr)
 	if copyErr != nil {
 		return fmt.Errorf("container/docker: CopyTo: CopyToContainer: %w", copyErr)

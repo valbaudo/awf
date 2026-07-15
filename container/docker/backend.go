@@ -271,6 +271,14 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 		}
 	}
 
+	// Provision AWF's staging and output roots while the container is still
+	// stopped. CopyUIDGID normalizes the directory ownership to the image's
+	// configured execution user, so non-root images can write immediately.
+	if err := b.prepareRuntimeDirs(ctx, resp.ID); err != nil {
+		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
+		return container.Handle{}, fmt.Errorf("container/docker: Create: prepareRuntimeDirs: %w", err)
+	}
+
 	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
 		// Cleanup the created-but-not-started container.
 		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
