@@ -177,8 +177,9 @@ type Backend interface {
 	// memory ~64 KiB + the diff blob bytes already in RAM from Get). For a
 	// diff with .awf-deletes, an internal argv-only POSIX-sh wrapper applies
 	// every deletion and recreates AWF runtime directories before exec-replacing
-	// itself with the captured effective Entrypoint+Cmd; a host handshake keeps
-	// waitReady and handle registration behind that workload handoff. A diff
+	// itself with the captured effective Entrypoint+Cmd; a deterministic
+	// snapshot-derived, exact-content host handshake is reset before start and
+	// keeps waitReady and handle registration behind that workload handoff. A diff
 	// without deletions preserves Entrypoint+Cmd directly, with no wrapper.
 	// The embedded image is NOT auto-pulled; callers responsible for prior
 	// ImagePull (same as Backend.Create's image-mode path).

@@ -389,11 +389,17 @@ func TestRestoreExtractsSnapshotAndRuntimeDirsBeforeStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("formatSnapshotRef: %v", err)
 	}
+	hs := restoreHandshakeForRef(ref)
 
 	var events []string
 	archiveCall := 0
-	released := false
 	inspectCall := 0
+	markers := map[string]string{
+		hs.PreparedPath: "stale-prepared\n",
+		hs.ReleasePath:  "stale-release\n",
+		hs.HandoffPath:  "stale-handoff\n",
+		hs.AckPath:      "stale-ack\n",
+	}
 	var createdConfig struct {
 		Entrypoint []string `json:"Entrypoint"`
 		Cmd        []string `json:"Cmd"`
@@ -417,8 +423,39 @@ func TestRestoreExtractsSnapshotAndRuntimeDirsBeforeStart(t *testing.T) {
 			case 2:
 				events = append(events, "prepare")
 			case 3:
+				events = append(events, "seed")
+				got := readTarFiles(t, r.Body)
+				for _, path := range []string{hs.PreparedPath, hs.ReleasePath, hs.HandoffPath, hs.AckPath} {
+					name := strings.TrimPrefix(path, "/")
+					if got[name] != hs.ResetToken {
+						t.Errorf("seed marker %q = %q, want %q", name, got[name], hs.ResetToken)
+					}
+					markers[path] = got[name]
+				}
+				w.WriteHeader(http.StatusOK)
+				return
+			case 4:
 				events = append(events, "release")
-				released = true
+				got := readTarFiles(t, r.Body)
+				markers[hs.ReleasePath] = got[strings.TrimPrefix(hs.ReleasePath, "/")]
+				if markers[hs.ReleasePath] == hs.ReleaseToken {
+					markers[hs.HandoffPath] = hs.HandoffToken
+				}
+				w.WriteHeader(http.StatusOK)
+				return
+			case 5:
+				events = append(events, "ack")
+				got := readTarFiles(t, r.Body)
+				markers[hs.AckPath] = got[strings.TrimPrefix(hs.AckPath, "/")]
+				if markers[hs.AckPath] == hs.AckToken {
+					delete(markers, hs.PreparedPath)
+					delete(markers, hs.ReleasePath)
+					delete(markers, hs.HandoffPath)
+					delete(markers, hs.AckPath)
+					events = append(events, "exec")
+				}
+				w.WriteHeader(http.StatusOK)
+				return
 			default:
 				t.Errorf("unexpected archive call %d", archiveCall)
 			}
@@ -426,15 +463,28 @@ func TestRestoreExtractsSnapshotAndRuntimeDirsBeforeStart(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/restored/start"):
 			events = append(events, "start")
+			if markers[hs.PreparedPath] != hs.ResetToken || markers[hs.ReleasePath] != hs.ResetToken {
+				t.Errorf("start observed unreset markers: %#v", markers)
+			}
+			markers[hs.PreparedPath] = hs.PreparedToken
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
-			if !released {
-				events = append(events, "prepared")
-				writeContainerPathTar(t, w, restorePreparedPath)
-			} else {
-				events = append(events, "handoff")
+			path := r.URL.Query().Get("path")
+			content, ok := markers[path]
+			if !ok {
+				events = append(events, "handoff-absent")
 				http.Error(w, `{"message":"path not found"}`, http.StatusNotFound)
+				return
 			}
+			switch path {
+			case hs.PreparedPath:
+				events = append(events, "prepared")
+			case hs.HandoffPath:
+				events = append(events, "handoff")
+			default:
+				t.Errorf("unexpected marker read %q", path)
+			}
+			writeContainerPathTar(t, w, path, content)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/restored/json"):
 			inspectCall++
 			if inspectCall == 1 {
@@ -465,30 +515,54 @@ func TestRestoreExtractsSnapshotAndRuntimeDirsBeforeStart(t *testing.T) {
 	if strings.Join(createdConfig.Entrypoint, "\x00") != strings.Join(wantEntrypoint, "\x00") {
 		t.Errorf("created Entrypoint = %#v, want %#v", createdConfig.Entrypoint, wantEntrypoint)
 	}
-	wantCmd := []string{"1", deletePath, "sleep", "infinity"}
+	wantCmd := restoreWrapperArgs([]string{deletePath}, hs, "/work/.awf", "/tmp/awf", []string{"sleep", "infinity"})
 	if strings.Join(createdConfig.Cmd, "\x00") != strings.Join(wantCmd, "\x00") {
 		t.Errorf("created Cmd = %#v, want %#v", createdConfig.Cmd, wantCmd)
 	}
-	want := []string{"create", "snapshot", "prepare", "start", "prepared", "release", "handoff", "handoff-inspect", "readiness-inspect"}
+	want := []string{"create", "snapshot", "prepare", "seed", "start", "prepared", "release", "handoff", "ack", "exec", "handoff-absent", "handoff-inspect", "readiness-inspect"}
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Errorf("events = %v, want %v", events, want)
 	}
 }
 
-func writeContainerPathTar(t *testing.T, w http.ResponseWriter, path string) {
+func writeContainerPathTar(t *testing.T, w http.ResponseWriter, path, content string) {
 	t.Helper()
-	statJSON, err := json.Marshal(dockerContainer.PathStat{Name: path, Size: 0, Mode: 0o600})
+	statJSON, err := json.Marshal(dockerContainer.PathStat{Name: path, Size: int64(len(content)), Mode: 0o600})
 	if err != nil {
 		t.Fatalf("marshal path stat: %v", err)
 	}
 	w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString(statJSON))
 	tw := tar.NewWriter(w)
-	if err := tw.WriteHeader(&tar.Header{Name: strings.TrimPrefix(path, "/"), Mode: 0o600, Typeflag: tar.TypeReg}); err != nil {
+	if err := tw.WriteHeader(&tar.Header{Name: strings.TrimPrefix(path, "/"), Mode: 0o600, Typeflag: tar.TypeReg, Size: int64(len(content))}); err != nil {
 		t.Errorf("write path tar header: %v", err)
+		return
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Errorf("write path tar body: %v", err)
 		return
 	}
 	if err := tw.Close(); err != nil {
 		t.Errorf("close path tar: %v", err)
+	}
+}
+
+func readTarFiles(t *testing.T, r io.Reader) map[string]string {
+	t.Helper()
+	got := map[string]string{}
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return got
+		}
+		if err != nil {
+			t.Fatalf("read tar header: %v", err)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read tar body %q: %v", hdr.Name, err)
+		}
+		got[hdr.Name] = string(body)
 	}
 }
 
@@ -520,10 +594,15 @@ func TestRestoreDeleteWrapperExitReportsShellRequirementAndCleansUp(t *testing.T
 			writeJSON(t, w, map[string]any{"Id": "restored"})
 		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
 			archiveCall++
-			if archiveCall == 1 {
+			switch archiveCall {
+			case 1:
 				events = append(events, "snapshot")
-			} else {
+			case 2:
 				events = append(events, "prepare")
+			case 3:
+				events = append(events, "seed")
+			default:
+				t.Errorf("unexpected archive call %d", archiveCall)
 			}
 			_, _ = io.Copy(io.Discard, r.Body)
 			w.WriteHeader(http.StatusOK)
@@ -558,7 +637,7 @@ func TestRestoreDeleteWrapperExitReportsShellRequirementAndCleansUp(t *testing.T
 	if err == nil || !strings.Contains(err.Error(), "must provide POSIX sh") {
 		t.Fatalf("Restore error = %v, want explicit POSIX sh requirement", err)
 	}
-	want := []string{"create", "snapshot", "prepare", "start", "prepared-missing", "inspect-exited", "remove"}
+	want := []string{"create", "snapshot", "prepare", "seed", "start", "prepared-missing", "inspect-exited", "remove"}
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Errorf("events = %v, want %v", events, want)
 	}

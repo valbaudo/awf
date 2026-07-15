@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -68,9 +69,10 @@ type snapshotCmdSpec struct {
 
 // restoreDeleteWrapperScript runs only when a snapshot carries deletions.
 // Delete paths and the original workload argv are supplied as distinct
-// arguments, never interpolated into shell source. The workload entrypoint is
-// exec'd only after every deletion and AWF runtime-directory recreation has
-// completed successfully.
+// arguments, never interpolated into shell source. Every handshake path and
+// phase token is derived deterministically from the SnapshotRef; existence is
+// never sufficient. The workload entrypoint is exec'd only after every
+// deletion, runtime-directory recreation, and exact host acknowledgment.
 const restoreDeleteWrapperScript = `n=$1
 shift
 while [ "$n" -gt 0 ]; do
@@ -78,18 +80,85 @@ while [ "$n" -gt 0 ]; do
 	shift
 	n=$((n - 1))
 done
-mkdir -p /work/.awf /tmp/awf || exit
-: > /tmp/awf/.restore-prepared || exit
-while [ ! -e /tmp/awf/.restore-release ]; do :; done
-rm -f /tmp/awf/.restore-prepared /tmp/awf/.restore-release || exit
+prepared_path=$1; shift
+release_path=$1; shift
+handoff_path=$1; shift
+ack_path=$1; shift
+prepared_token=$1; shift
+release_token=$1; shift
+handoff_token=$1; shift
+ack_token=$1; shift
+work_runtime=$1; shift
+tmp_runtime=$1; shift
+mkdir -p "$work_runtime" "$tmp_runtime" || exit
+printf '%s\n' "$prepared_token" > "$prepared_path" || exit
+while :; do
+	release=
+	IFS= read -r release < "$release_path" || :
+	[ "$release" = "$release_token" ] && break
+done
+printf '%s\n' "$handoff_token" > "$handoff_path" || exit
+while :; do
+	ack=
+	IFS= read -r ack < "$ack_path" || :
+	[ "$ack" = "$ack_token" ] && break
+done
+rm -f "$prepared_path" "$release_path" "$handoff_path" "$ack_path" || exit
 exec "$@"`
 
-const (
-	restorePreparedPath = "/tmp/awf/.restore-prepared"
-	restoreReleasePath  = "/tmp/awf/.restore-release"
-)
+type restoreHandshake struct {
+	Token         string
+	PreparedPath  string
+	ReleasePath   string
+	HandoffPath   string
+	AckPath       string
+	PreparedToken string
+	ReleaseToken  string
+	HandoffToken  string
+	AckToken      string
+	ResetToken    string
+}
 
-func restoreContainerConfig(image string, cmd snapshotCmdSpec, deletes []string) *dockerContainer.Config {
+func restoreHandshakeForRef(ref container.SnapshotRef) restoreHandshake {
+	// SnapshotRef contains the content-addressed diff ref plus the pinned image
+	// and captured argv. Hashing it gives this restore a stable identity without
+	// introducing a clock, random ID, or resume-time reseed.
+	token := fmt.Sprintf("%x", sha256.Sum256([]byte(ref)))
+	prefix := "/tmp/awf/.restore-" + token
+	return restoreHandshake{
+		Token:         token,
+		PreparedPath:  prefix + ".prepared",
+		ReleasePath:   prefix + ".release",
+		HandoffPath:   prefix + ".handoff",
+		AckPath:       prefix + ".ack",
+		PreparedToken: "prepared:" + token + "\n",
+		ReleaseToken:  "release:" + token + "\n",
+		HandoffToken:  "handoff:" + token + "\n",
+		AckToken:      "ack:" + token + "\n",
+		ResetToken:    "reset:" + token + "\n",
+	}
+}
+
+func restoreWrapperArgs(deletes []string, hs restoreHandshake, workRuntime, tmpRuntime string, workload []string) []string {
+	args := make([]string, 0, 11+len(deletes)+len(workload))
+	args = append(args, strconv.Itoa(len(deletes)))
+	args = append(args, deletes...)
+	args = append(args,
+		hs.PreparedPath,
+		hs.ReleasePath,
+		hs.HandoffPath,
+		hs.AckPath,
+		strings.TrimSuffix(hs.PreparedToken, "\n"),
+		strings.TrimSuffix(hs.ReleaseToken, "\n"),
+		strings.TrimSuffix(hs.HandoffToken, "\n"),
+		strings.TrimSuffix(hs.AckToken, "\n"),
+		workRuntime,
+		tmpRuntime,
+	)
+	return append(args, workload...)
+}
+
+func restoreContainerConfig(image string, cmd snapshotCmdSpec, deletes []string, hs restoreHandshake) *dockerContainer.Config {
 	if len(deletes) == 0 {
 		return &dockerContainer.Config{
 			Image:      image,
@@ -98,11 +167,8 @@ func restoreContainerConfig(image string, cmd snapshotCmdSpec, deletes []string)
 		}
 	}
 
-	args := make([]string, 0, 1+len(deletes)+len(cmd.Entrypoint)+len(cmd.Cmd))
-	args = append(args, strconv.Itoa(len(deletes)))
-	args = append(args, deletes...)
-	args = append(args, cmd.Entrypoint...)
-	args = append(args, cmd.Cmd...)
+	workload := append(append([]string(nil), cmd.Entrypoint...), cmd.Cmd...)
+	args := restoreWrapperArgs(deletes, hs, "/work/.awf", "/tmp/awf", workload)
 	return &dockerContainer.Config{
 		Image:      image,
 		Entrypoint: []string{"sh", "-c", restoreDeleteWrapperScript, "awf-restore"},
@@ -365,8 +431,9 @@ func (b *Backend) captureOneIntoDiffTar(ctx context.Context, containerID, path s
 // snapshot carries .awf-deletes, Restore therefore uses a narrow internal
 // entrypoint wrapper: delete paths are passed as argv, the wrapper applies all
 // deletes and recreates AWF runtime directories, then exec-replaces itself
-// with the captured effective Entrypoint+Cmd. A host/wrapper handshake keeps
-// readiness and handle registration behind that handoff. Images used with a
+// with the captured effective Entrypoint+Cmd. A deterministic, per-snapshot
+// token handshake is reset before start and validates exact marker contents,
+// keeping readiness and handle registration behind that handoff. Images used with a
 // delete-bearing snapshot must provide POSIX sh, matching Docker Exec's
 // existing shell baseline. Any wrapper/extract/start/readiness failure
 // force-removes the partial container with a detached cleanup context.
@@ -396,9 +463,10 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	if err != nil {
 		return container.Handle{}, fmt.Errorf("container/docker: Restore: inspect diff: %w", err)
 	}
+	hs := restoreHandshakeForRef(ref)
 
 	containerNameStr := containerName(b.runID, name)
-	cfg := restoreContainerConfig(image, cmdSpec, deletes)
+	cfg := restoreContainerConfig(image, cmdSpec, deletes, hs)
 	resp, err := b.cli.ContainerCreate(ctx, cfg, &dockerContainer.HostConfig{}, nil, nil, containerNameStr)
 	if err != nil {
 		return container.Handle{}, fmt.Errorf("container/docker: Restore: ContainerCreate: %w", err)
@@ -444,6 +512,11 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	if err := b.prepareRuntimeDirs(ctx, resp.ID); err != nil {
 		return b.restoreFail(resp.ID, "prepareRuntimeDirs", err)
 	}
+	if len(deletes) > 0 {
+		if err := b.seedRestoreHandshake(ctx, resp.ID, hs); err != nil {
+			return b.restoreFail(resp.ID, "delete wrapper reset", err)
+		}
+	}
 
 	// Extraction happens before startup so entrypoints observe the restored
 	// workspace atomically and cannot race the snapshot copy.
@@ -451,14 +524,20 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 		return b.restoreFail(resp.ID, "ContainerStart", err)
 	}
 	if len(deletes) > 0 {
-		if err := b.waitForRestorePath(ctx, resp.ID, restorePreparedPath, true); err != nil {
+		if err := b.waitForRestoreMarker(ctx, resp.ID, hs.PreparedPath, hs.PreparedToken); err != nil {
 			return b.restoreFail(resp.ID, "delete wrapper preparation", err)
 		}
-		if err := b.releaseRestoreEntrypoint(ctx, resp.ID); err != nil {
+		if err := b.writeRestoreMarkers(ctx, resp.ID, map[string]string{hs.ReleasePath: hs.ReleaseToken}); err != nil {
 			return b.restoreFail(resp.ID, "delete wrapper release", err)
 		}
-		if err := b.waitForRestorePath(ctx, resp.ID, restorePreparedPath, false); err != nil {
+		if err := b.waitForRestoreMarker(ctx, resp.ID, hs.HandoffPath, hs.HandoffToken); err != nil {
 			return b.restoreFail(resp.ID, "delete wrapper handoff", err)
+		}
+		if err := b.writeRestoreMarkers(ctx, resp.ID, map[string]string{hs.AckPath: hs.AckToken}); err != nil {
+			return b.restoreFail(resp.ID, "delete wrapper acknowledgment", err)
+		}
+		if err := b.waitForRestoreMarkerAbsent(ctx, resp.ID, hs.HandoffPath); err != nil {
+			return b.restoreFail(resp.ID, "delete wrapper exec", err)
 		}
 	}
 	if err := b.waitReady(ctx, resp.ID); err != nil {
@@ -472,48 +551,31 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	return container.Handle{Name: name, ID: resp.ID}, nil
 }
 
-// waitForRestorePath is the narrow host/wrapper handshake used only by a
-// delete-bearing Restore. The wrapper creates restorePreparedPath after all
-// deletes and runtime-directory recreation, then removes it immediately
-// before exec-replacing itself with the original workload. The host waits for
-// both transitions, so it cannot evaluate readiness or return the handle while
-// the wrapper is still applying snapshot state.
-func (b *Backend) waitForRestorePath(ctx context.Context, containerID, path string, wantExists bool) error {
+func (b *Backend) seedRestoreHandshake(ctx context.Context, containerID string, hs restoreHandshake) error {
+	return b.writeRestoreMarkers(ctx, containerID, map[string]string{
+		hs.PreparedPath: hs.ResetToken,
+		hs.ReleasePath:  hs.ResetToken,
+		hs.HandoffPath:  hs.ResetToken,
+		hs.AckPath:      hs.ResetToken,
+	})
+}
+
+// waitForRestoreMarker accepts only the exact snapshot-specific marker
+// content. Existing files with stale or malicious content are non-matches.
+func (b *Backend) waitForRestoreMarker(ctx context.Context, containerID, path, want string) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		rc, _, err := b.cli.CopyFromContainer(ctx, containerID, path)
+		got, err := b.readRestoreMarker(ctx, containerID, path)
 		if err == nil {
-			_ = rc.Close()
-			if wantExists {
+			if got == want {
 				return nil
-			}
-			info, inspectErr := b.cli.ContainerInspect(ctx, containerID)
-			if inspectErr != nil {
-				return fmt.Errorf("ContainerInspect while waiting for wrapper handoff: %w", inspectErr)
-			}
-			if info.State == nil || !info.State.Running {
-				return fmt.Errorf("restore delete wrapper exited before workload handoff (the image must provide POSIX sh for delete-bearing snapshots)")
 			}
 		} else if !cerrdefs.IsNotFound(err) {
 			return fmt.Errorf("CopyFromContainer %q: %w", path, err)
-		} else if !wantExists {
-			info, inspectErr := b.cli.ContainerInspect(ctx, containerID)
-			if inspectErr != nil {
-				return fmt.Errorf("ContainerInspect after wrapper handoff: %w", inspectErr)
-			}
-			if info.State == nil || !info.State.Running {
-				return fmt.Errorf("restore delete wrapper exited before workload handoff (the image must provide POSIX sh for delete-bearing snapshots)")
-			}
-			return nil
-		} else {
-			info, inspectErr := b.cli.ContainerInspect(ctx, containerID)
-			if inspectErr != nil {
-				return fmt.Errorf("ContainerInspect while waiting for wrapper: %w", inspectErr)
-			}
-			if info.State == nil || !info.State.Running {
-				return fmt.Errorf("restore delete wrapper exited before preparation (the image must provide POSIX sh for delete-bearing snapshots)")
-			}
+		}
+		if err := b.ensureRestoreWrapperRunning(ctx, containerID); err != nil {
+			return err
 		}
 
 		select {
@@ -524,17 +586,79 @@ func (b *Backend) waitForRestorePath(ctx context.Context, containerID, path stri
 	}
 }
 
-func (b *Backend) releaseRestoreEntrypoint(ctx context.Context, containerID string) error {
+func (b *Backend) waitForRestoreMarkerAbsent(ctx context.Context, containerID, path string) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		rc, _, err := b.cli.CopyFromContainer(ctx, containerID, path)
+		if err == nil {
+			_ = rc.Close()
+		} else if cerrdefs.IsNotFound(err) {
+			return b.ensureRestoreWrapperRunning(ctx, containerID)
+		} else {
+			return fmt.Errorf("CopyFromContainer %q: %w", path, err)
+		}
+		if err := b.ensureRestoreWrapperRunning(ctx, containerID); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (b *Backend) ensureRestoreWrapperRunning(ctx context.Context, containerID string) error {
+	info, err := b.cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return fmt.Errorf("ContainerInspect while waiting for restore wrapper: %w", err)
+	}
+	if info.State == nil || !info.State.Running {
+		return fmt.Errorf("restore delete wrapper exited before workload handoff (the image must provide POSIX sh for delete-bearing snapshots)")
+	}
+	return nil
+}
+
+func (b *Backend) readRestoreMarker(ctx context.Context, containerID, path string) (string, error) {
+	rc, _, err := b.cli.CopyFromContainer(ctx, containerID, path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rc.Close() }()
+	tr := tar.NewReader(rc)
+	if _, err := tr.Next(); err != nil {
+		return "", fmt.Errorf("read marker tar header: %w", err)
+	}
+	body, err := io.ReadAll(tr)
+	if err != nil {
+		return "", fmt.Errorf("read marker body: %w", err)
+	}
+	return string(body), nil
+}
+
+func (b *Backend) writeRestoreMarkers(ctx context.Context, containerID string, markers map[string]string) error {
 	var archive bytes.Buffer
 	tw := tar.NewWriter(&archive)
-	if err := tw.WriteHeader(&tar.Header{Name: strings.TrimPrefix(restoreReleasePath, "/"), Mode: 0o600, Typeflag: tar.TypeReg}); err != nil {
-		return fmt.Errorf("build release archive: %w", err)
+	paths := make([]string, 0, len(markers))
+	for path := range markers {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		content := markers[path]
+		if err := tw.WriteHeader(&tar.Header{Name: strings.TrimPrefix(path, "/"), Mode: 0o600, Typeflag: tar.TypeReg, Size: int64(len(content))}); err != nil {
+			return fmt.Errorf("build marker archive header %q: %w", path, err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			return fmt.Errorf("build marker archive body %q: %w", path, err)
+		}
 	}
 	if err := tw.Close(); err != nil {
-		return fmt.Errorf("close release archive: %w", err)
+		return fmt.Errorf("close marker archive: %w", err)
 	}
 	if err := b.extractToContainer(ctx, containerID, "/", bytes.NewReader(archive.Bytes()), ownByContainerUser); err != nil {
-		return fmt.Errorf("CopyToContainer release marker: %w", err)
+		return fmt.Errorf("CopyToContainer restore markers: %w", err)
 	}
 	return nil
 }
