@@ -1,0 +1,49 @@
+workflow: claude-code-gated-readiness
+version: 1
+
+containers:
+  workspace:
+    image: alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+
+graph:
+  - gate:
+      generate:
+        - id: draft
+          container: workspace
+          uses: anthropic/claude-code
+          with:
+            bare: false
+            max_turns: 1
+            prompt: |
+              This is a deterministic AWF readiness check.
+              Return a JSON object whose only property is `ready` with boolean value `true`.
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ready]
+            properties:
+              ready: { type: boolean }
+
+      evaluate:
+        - id: judge
+          container: workspace
+          retry: { attempts: 1 }
+          run: |
+            set -eu
+            typed_ready="{{ step.draft.ready }}"
+            mkdir -p "$(dirname "$AWF_OUTPUT")"
+            if [ "$typed_ready" = 'true' ]; then
+              printf '%s\n' '{"approved":true,"feedback":""}' > "$AWF_OUTPUT"
+            else
+              printf '%s\n' '{"approved":false,"feedback":"typed readiness value did not match"}' > "$AWF_OUTPUT"
+            fi
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [approved, feedback]
+            properties:
+              approved: { type: boolean }
+              feedback: { type: string }
+
+      until: "{{ evaluate.approved }}"
+      max_attempts: 1
