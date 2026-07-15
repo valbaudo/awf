@@ -214,6 +214,61 @@ func TestLocalDispatcherNonzeroExitRetainsExitCauseWhenOutputParsingFails(t *tes
 	}
 }
 
+func TestLocalDispatcherConfiguredZeroExitAlwaysHasCause(t *testing.T) {
+	t.Run("clean output", func(t *testing.T) {
+		d, fake, _ := newDispatcher(t)
+		fake.ProgramExec("./zero.sh", container.ExecResult{ExitCode: 0}, nil)
+		intent := engine.NodeIntent{
+			Path: "zero",
+			Node: &ir.CodeStep{ID: "zero", Container: "lab"},
+			ResolvedInputs: engine.ResolvedInputs{
+				Command:               "./zero.sh",
+				NonRetryableExitCodes: []int{0},
+			},
+		}
+
+		dr, _, err := d.Run(context.Background(), intent)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if dr.Outcome != engine.OutcomePermanentFailure {
+			t.Errorf("Outcome = %v, want permanent", dr.Outcome)
+		}
+		if dr.Err == nil || !strings.Contains(dr.Err.Error(), "code 0") {
+			t.Errorf("Err = %v, want cause containing exit code 0", dr.Err)
+		}
+	})
+
+	t.Run("parse failure", func(t *testing.T) {
+		d, fake, _ := newDispatcher(t)
+		fake.ProgramExec("./zero.sh", container.ExecResult{
+			ExitCode:  0,
+			AWFOutput: []byte(`not valid json`),
+		}, nil)
+		schema := ir.JSONSchema{"type": "object", "additionalProperties": false}
+		intent := engine.NodeIntent{
+			Path: "zero",
+			Node: &ir.CodeStep{ID: "zero", Container: "lab"},
+			ResolvedInputs: engine.ResolvedInputs{
+				Command:               "./zero.sh",
+				OutputSchema:          &schema,
+				NonRetryableExitCodes: []int{0},
+			},
+		}
+
+		dr, _, err := d.Run(context.Background(), intent)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if dr.Outcome != engine.OutcomePermanentFailure {
+			t.Errorf("Outcome = %v, want permanent", dr.Outcome)
+		}
+		if dr.Err == nil || !strings.Contains(dr.Err.Error(), "code 0") || !strings.Contains(dr.Err.Error(), "ValidateAgainstSchema") {
+			t.Errorf("Err = %v, want exit code 0 cause wrapping parse detail", dr.Err)
+		}
+	})
+}
+
 func TestLocalDispatcherUnparseableAWFOutputIsRetryable(t *testing.T) {
 	d, fake, _ := newDispatcher(t)
 	fake.ProgramExec("./broken.sh", container.ExecResult{

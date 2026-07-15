@@ -331,14 +331,12 @@ func (d *LocalDispatcher) runCode(ctx context.Context, intent NodeIntent, cs *ir
 		Stdout:   exec.Stdout,
 		Files:    files,
 	}
-	if exec.ExitCode != 0 {
+	if dr.Outcome != OutcomeOK {
 		if parseErr != nil {
 			dr.Err = fmt.Errorf("process exited with code %d: %w", exec.ExitCode, parseErr)
 		} else {
 			dr.Err = fmt.Errorf("process exited with code %d", exec.ExitCode)
 		}
-	} else if parseErr != nil {
-		dr.Err = parseErr
 	}
 
 	// Record the container for OK (committed) steps; failed steps carry none
