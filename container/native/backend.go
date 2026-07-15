@@ -46,6 +46,7 @@ const (
 // <workdir>/.awf/output/<step>.json clobber failure mode).
 type Backend struct {
 	workdirRoot string
+	root        *os.Root
 
 	blobs                   state.Blobs
 	snapshotMaxBlobBytes    int64
@@ -76,11 +77,12 @@ type Backend struct {
 // Backend.handles keyed by Handle.ID.
 type nativeHandle struct {
 	workdir string
+	name    string
 }
 
-// New constructs a Backend with workdirRoot as the parent for per-
-// container workdirs. Validates only nil/empty workdirRoot — filesystem
-// errors surface lazily from Create's MkdirAll, matching docker's pattern.
+// New constructs a Backend with workdirRoot as the parent for per-container
+// workdirs. It eagerly creates and canonicalizes the root, then retains an
+// os.Root so later mutations stay anchored even if an ancestor path is moved.
 //
 // $AWF_OUTPUT (U3/F25): unlike the pre-U3 design, New no longer bootstraps a
 // process-global host directory — Create pre-creates <workdir>/.awf/output
@@ -90,8 +92,24 @@ func New(workdirRoot string, opts ...Option) (*Backend, error) {
 	if workdirRoot == "" {
 		return nil, errors.New("container/native: New: workdirRoot is required")
 	}
+	if err := os.MkdirAll(workdirRoot, 0o755); err != nil {
+		return nil, fmt.Errorf("container/native: New: create workdir root: %w", err)
+	}
+	absRoot, err := filepath.Abs(workdirRoot)
+	if err != nil {
+		return nil, fmt.Errorf("container/native: New: absolute workdir root: %w", err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("container/native: New: resolve workdir root: %w", err)
+	}
+	root, err := os.OpenRoot(canonicalRoot)
+	if err != nil {
+		return nil, fmt.Errorf("container/native: New: open workdir root: %w", err)
+	}
 	b := &Backend{
-		workdirRoot:             workdirRoot,
+		workdirRoot:             canonicalRoot,
+		root:                    root,
 		handles:                 map[string]nativeHandle{},
 		snapshotMaxBlobBytes:    snapshotDefaultMaxBlobBytes,
 		snapshotMaxRestoreBytes: snapshotDefaultMaxRestoreBytes,
@@ -100,6 +118,7 @@ func New(workdirRoot string, opts ...Option) (*Backend, error) {
 	}
 	for _, opt := range opts {
 		if err := opt(b); err != nil {
+			_ = root.Close()
 			return nil, err
 		}
 	}
@@ -245,15 +264,21 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 	if spec.Compose != nil {
 		return container.Handle{}, errors.New("container/native: Create: compose-mode not supported (use --backend docker for compose workflows)")
 	}
-	workdir := filepath.Join(b.workdirRoot, spec.Name)
-	if err := os.MkdirAll(workdir, 0o755); err != nil {
-		return container.Handle{}, err
+	if err := validateContainerName(spec.Name); err != nil {
+		return container.Handle{}, fmt.Errorf("container/native: Create: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(workdir, ".awf", "output"), 0o755); err != nil {
-		return container.Handle{}, err
+	if err := b.root.MkdirAll(spec.Name, 0o755); err != nil {
+		return container.Handle{}, fmt.Errorf("container/native: Create: mkdir %q: %w", spec.Name, err)
+	}
+	if err := b.root.MkdirAll(filepath.Join(spec.Name, ".awf", "output"), 0o755); err != nil {
+		return container.Handle{}, fmt.Errorf("container/native: Create: mkdir output: %w", err)
+	}
+	workdir, err := filepath.EvalSymlinks(filepath.Join(b.workdirRoot, spec.Name))
+	if err != nil {
+		return container.Handle{}, fmt.Errorf("container/native: Create: resolve workdir: %w", err)
 	}
 	b.mu.Lock()
-	b.handles[workdir] = nativeHandle{workdir: workdir}
+	b.handles[workdir] = nativeHandle{workdir: workdir, name: spec.Name}
 	b.mu.Unlock()
 	return container.Handle{Name: spec.Name, ID: workdir}, nil
 }
@@ -274,7 +299,17 @@ func (b *Backend) Destroy(ctx context.Context, h container.Handle) error {
 	}
 	delete(b.handles, h.ID)
 	b.mu.Unlock()
-	return os.RemoveAll(r.workdir)
+	if err := b.root.RemoveAll(r.name); err != nil {
+		return fmt.Errorf("container/native: Destroy: remove %q: %w", r.name, err)
+	}
+	return nil
+}
+
+func validateContainerName(name string) error {
+	if !filepath.IsLocal(name) || name == "." || filepath.Base(name) != name {
+		return fmt.Errorf("unsafe container name %q", name)
+	}
+	return nil
 }
 
 // Restore re-materializes a container workdir from a SnapshotRef; it lives in

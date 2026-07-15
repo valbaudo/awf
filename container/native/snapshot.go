@@ -186,22 +186,14 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	if err := ctx.Err(); err != nil {
 		return container.Handle{}, err
 	}
-	if name == "" {
-		return container.Handle{}, fmt.Errorf("container/native: Restore: name is required")
+	if err := validateContainerName(name); err != nil {
+		return container.Handle{}, fmt.Errorf("container/native: Restore: %w", err)
 	}
 	if b.blobs == nil {
 		return container.Handle{}, fmt.Errorf("container/native: Restore: no blob store (construct with native.WithBlobs): %w", container.ErrUnsupported)
 	}
-	if !filepath.IsLocal(name) { // rejects "", "..", "/abs", "a/../../b"; defense-in-depth before OpenRoot
-		return container.Handle{}, fmt.Errorf("container/native: Restore: unsafe container name %q", name)
-	}
 	workdir := filepath.Join(b.workdirRoot, name)
-
-	rootDir, err := os.OpenRoot(b.workdirRoot)
-	if err != nil {
-		return container.Handle{}, fmt.Errorf("container/native: Restore: open root: %w", err)
-	}
-	defer func() { _ = rootDir.Close() }()
+	rootDir := b.root
 
 	if err := rootDir.RemoveAll(name); err != nil {
 		return container.Handle{}, fmt.Errorf("container/native: Restore: remove %q: %w", name, err)
@@ -211,12 +203,17 @@ func (b *Backend) Restore(ctx context.Context, ref container.SnapshotRef, name s
 	}
 
 	if err := b.extractInto(rootDir, name, ref); err != nil {
-		_ = os.RemoveAll(workdir) // single cleanup path
+		_ = rootDir.RemoveAll(name) // single cleanup path
 		return container.Handle{}, err
+	}
+	workdir, err := filepath.EvalSymlinks(workdir)
+	if err != nil {
+		_ = rootDir.RemoveAll(name)
+		return container.Handle{}, fmt.Errorf("container/native: Restore: resolve workdir: %w", err)
 	}
 
 	b.mu.Lock()
-	b.handles[workdir] = nativeHandle{workdir: workdir}
+	b.handles[workdir] = nativeHandle{workdir: workdir, name: name}
 	b.mu.Unlock()
 	return container.Handle{Name: name, ID: workdir}, nil
 }

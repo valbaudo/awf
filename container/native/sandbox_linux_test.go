@@ -9,10 +9,15 @@ package native
 // cve-runner-pending: live isolation tests are in sandbox_linux_integ_test.go.
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/valbaudo/awf/container"
 )
 
 // TestBwrapLauncher_ArgvStructure asserts the bubblewrap launcher builds
@@ -308,35 +313,70 @@ func TestCredDirs_EmptyHomeSkipsRelativePaths(t *testing.T) {
 	}
 }
 
-// TestDetectPlatformSandbox_BwrapWins asserts that when bwrap is found
-// by lookPath, detectPlatformSandbox returns a non-nil launcher with
-// a "bwrap" label.
-func TestDetectPlatformSandbox_BwrapWins(t *testing.T) {
-	lookPath := func(name string) (string, error) {
-		if name == "bwrap" {
-			return "/usr/bin/bwrap", nil
+func TestDetectLinuxSandboxRequiresUsableBwrap(t *testing.T) {
+	errBroken := os.ErrPermission
+	tests := []struct {
+		name      string
+		probeErr  error
+		landlock  int
+		wantLabel string
+		wantType  string
+	}{
+		{name: "usable bwrap wins", landlock: 1, wantLabel: "bwrap", wantType: "*native.bwrapLauncherFactory"},
+		{name: "broken bwrap falls back to landlock", probeErr: errBroken, landlock: 1, wantLabel: "landlock-trampoline", wantType: "*native.trampolineLauncherFactory"},
+		{name: "broken bwrap and no landlock falls back to no-op caller", probeErr: errBroken, wantLabel: "", wantType: "<nil>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var probed string
+			launcher, label := detectLinuxSandbox(
+				func(name string) (string, error) {
+					if name != "bwrap" {
+						t.Fatalf("lookPath name = %q, want bwrap", name)
+					}
+					return "/fake/bwrap", nil
+				},
+				func(path string) error { probed = path; return tt.probeErr },
+				func() (int, error) { return tt.landlock, nil },
+			)
+			if probed != "/fake/bwrap" {
+				t.Fatalf("probe path = %q, want looked-up path", probed)
+			}
+			if label != tt.wantLabel {
+				t.Errorf("label = %q, want %q", label, tt.wantLabel)
+			}
+			if got := fmt.Sprintf("%T", launcher); got != tt.wantType {
+				t.Errorf("launcher type = %q, want %q", got, tt.wantType)
+			}
+		})
+	}
+}
+
+func TestLinuxSandboxPoliciesUseAbsoluteWorkdir(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	b, err := New("state/work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bwrapArgv := (bwrapLauncher{bwrapPath: "/bwrap", run: "true"}).prepend(h.ID, nil)
+	for i, arg := range bwrapArgv {
+		if (arg == "--bind" || arg == "--chdir") && !filepath.IsAbs(bwrapArgv[i+1]) {
+			t.Errorf("bwrap %s path = %q, want absolute", arg, bwrapArgv[i+1])
 		}
-		return "", os.ErrNotExist
 	}
 
-	l, label := detectPlatformSandbox(lookPath)
-	if l == nil {
-		t.Fatal("detectPlatformSandbox with bwrap: launcher = nil, want non-nil")
+	landlockArgv := (trampolineLauncher{self: "/awf", run: "true"}).prepend(h.ID, nil)
+	var policy SandboxPolicy
+	if err := json.Unmarshal([]byte(landlockArgv[2]), &policy); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(strings.ToLower(label), "bwrap") {
-		t.Errorf("label = %q, want to contain \"bwrap\"", label)
-	}
-
-	// detectPlatformSandbox returns a per-dispatch *factory*, not a ready
-	// launcher: the factory's own prepend is a sentinel that returns nil. The
-	// real bwrap argv comes from buildForRun(run).prepend(...), exactly as the
-	// dispatch path drives it (container/native/exec.go:58-63). Mirror that here.
-	factory, ok := l.(sandboxLauncherFactory)
-	if !ok {
-		t.Fatalf("bwrap launcher %T does not implement sandboxLauncherFactory", l)
-	}
-	argv := factory.buildForRun("echo hi").prepend("/tmp/s", nil)
-	if argv == nil {
-		t.Error("bwrap buildForRun(...).prepend returned nil")
+	if len(policy.RWDirs) == 0 || !filepath.IsAbs(policy.RWDirs[0]) {
+		t.Fatalf("Landlock scratch RW path = %q, want absolute", policy.RWDirs[0])
 	}
 }

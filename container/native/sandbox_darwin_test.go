@@ -105,6 +105,20 @@ func TestSandboxExecLauncher_ArgvStructure(t *testing.T) {
 	}
 }
 
+func TestSandboxExecLauncher_RelativeScratchBecomesAbsolute(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll("relative-scratch", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argv := (sandboxExecLauncher{run: "true"}).prepend("relative-scratch", nil)
+	if len(argv) < 3 || !strings.HasPrefix(argv[2], "SCRATCH=") {
+		t.Fatalf("argv = %v, want SCRATCH definition", argv)
+	}
+	if scratch := strings.TrimPrefix(argv[2], "SCRATCH="); !filepath.IsAbs(scratch) {
+		t.Fatalf("SCRATCH = %q, want absolute", scratch)
+	}
+}
+
 // TestSandboxExecLauncher_ProfileContent asserts the SBPL profile contains
 // all required clauses from the brief.
 func TestSandboxExecLauncher_ProfileContent(t *testing.T) {
