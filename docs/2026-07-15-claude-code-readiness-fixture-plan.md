@@ -13,7 +13,8 @@
 - Modify only `examples/claude-code-gated/workflow.yaml`, `examples/claude-code-gated/README.md`, and root `README.md` during implementation.
 - Do not modify Go source, runtime behavior, adapter behavior, schemas, release tags, packaging, or existing examples.
 - Verify with the downloaded public AWF v0.5.1 binary, never a source build.
-- Use the existing Claude Code subscription through `bare: false`; do not require an Anthropic API key.
+- Use an operator-generated `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` with `bare: false`; do not require an Anthropic API key or copy the host Claude config.
+- Never expose the OAuth token in chat, captured tool output, logs, workflow YAML, Markdown, git, or the adoption ledger. The operator performs the authenticated run in a private terminal and reports only the sanitized result.
 - Use exactly one Claude model call and a deterministic shell evaluator.
 - Require explicit `--backend native`; do not invoke Docker or Ollama.
 - Stop before committing implementation if v0.5.1 cannot validate, run, clean up, and expose the fixture as documented.
@@ -33,7 +34,7 @@
 - Create: `examples/claude-code-gated/workflow.yaml`
 
 **Interfaces:**
-- Consumes: public AWF v0.5.1 Darwin arm64 archive; host `claude` authenticated through the existing subscription.
+- Consumes: public AWF v0.5.1 Darwin arm64 archive; a Claude subscription; an operator-created `CLAUDE_CODE_OAUTH_TOKEN` held only in the operator's private shell.
 - Produces: a validated and live-tested workflow whose accepted generator output lives at `gate[0].attempt-1.generate.draft`.
 
 - [ ] **Step 1: Download and verify the immutable public release in an isolated directory**
@@ -112,9 +113,10 @@ graph:
             set -eu
             staged="/tmp/awf-{{ run.id }}-readiness.json"
             actual="$(tr -d '[:space:]' < "$staged")"
+            typed_ready="{{ step.draft.ready }}"
             rm -f "$staged"
             mkdir -p "$(dirname "$AWF_OUTPUT")"
-            if [ "$actual" = '{"ready":true}' ]; then
+            if [ "$actual" = '{"ready":true}' ] && [ "$typed_ready" = 'true' ]; then
               printf '%s\n' '{"approved":true,"feedback":""}' > "$AWF_OUTPUT"
             else
               printf '%s\n' '{"approved":false,"feedback":"typed readiness value did not match"}' > "$AWF_OUTPUT"
@@ -143,13 +145,26 @@ Expected: exit `0`, no validation errors, and no warning requiring a runtime or 
 
 If validation fails because v0.5.1 does not accept the documented workflow contract, stop. Remove the uncommitted fixture, record product-readiness failure, and do not continue to Task 2.
 
-- [ ] **Step 5: Run the live readiness fixture with subscription auth**
+- [ ] **Step 5: Have the operator run the live fixture with an explicit subscription token**
 
-Run:
+The operator—not the automation—opens a private terminal and runs:
 
 ```sh
+cd /Users/vabbb/Documents/GitHub/AgentWorkflowFormat/.worktrees/awf-claude-readiness
 claude --version
-"$AWF_RELEASE" run --backend native examples/claude-code-gated/workflow.yaml 2>&1 | tee /tmp/awf-claude-code-gated-run.log
+claude setup-token
+```
+
+The operator follows Claude Code's on-screen instructions to set `CLAUDE_CODE_OAUTH_TOKEN` in that same shell. The token is not pasted into chat or written into a command, file, log, workflow, or shell-history example. With the token present, the operator runs:
+
+```sh
+test -n "$CLAUDE_CODE_OAUTH_TOKEN"
+/tmp/awf-readiness-v0.5.1-20260715/awf_0.5.1_darwin_arm64/awf run \
+  --backend native \
+  --agent-env CLAUDE_CODE_OAUTH_TOKEN \
+  examples/claude-code-gated/workflow.yaml \
+  2>&1 | tee /tmp/awf-claude-code-gated-run.log
+unset CLAUDE_CODE_OAUTH_TOKEN
 ```
 
 Expected:
@@ -157,6 +172,7 @@ Expected:
 - Claude Code reports its installed version;
 - AWF reports `run <run-id>: ok`;
 - exactly one Claude generator invocation appears;
+- AWF's credential warning is absent because `CLAUDE_CODE_OAUTH_TOKEN` was explicitly forwarded;
 - Docker and Ollama are never invoked;
 - the evaluator successfully removes `/tmp/awf-<run-id>-readiness.json`.
 
@@ -168,7 +184,7 @@ test -n "$RUN_ID"
 test ! -e "/tmp/awf-${RUN_ID}-readiness.json"
 ```
 
-If the run, cleanup, or sandbox fails, stop. Preserve the run log, remove the uncommitted fixture, record product-readiness failure, and do not modify runtime code.
+The operator reports only whether the command exited successfully and the non-secret run id. If token setup, the run, cleanup, or sandbox fails, stop. Preserve the sanitized run log, remove the uncommitted fixture, record product-readiness failure, and do not modify runtime code.
 
 - [ ] **Step 6: Prove the gate-scoped typed output path**
 
@@ -227,12 +243,12 @@ Create `examples/claude-code-gated/README.md` with these sections and commands:
 ```markdown
 # Claude Code gated readiness
 
-This clean-room fixture proves that the published AWF v0.5.1 binary can run an existing Claude Code CLI as a black box, validate its typed output, and pass it through an independent deterministic gate. It uses one Claude call and does not require Docker, Ollama, or an Anthropic API key.
+This clean-room fixture proves that the published AWF v0.5.1 binary can run an existing Claude Code CLI as a black box, validate its typed output, and pass it through an independent deterministic gate. It uses one Claude call and does not require Docker, Ollama, or an Anthropic API key. Subscription authentication uses a long-lived token created by Claude Code itself.
 
 ## Prerequisites
 
 - macOS or Linux on a released AWF architecture
-- Claude Code installed and logged in through a subscription (`claude --version` succeeds)
+- Claude Code installed with an active subscription (`claude --version` succeeds)
 - `curl`, `shasum`, `tar`, and POSIX `sh`
 
 ## Install the pinned public binary
@@ -259,11 +275,18 @@ From the AWF repository checkout containing this fixture:
 
 ```sh
 claude --version
-"$AWF" validate examples/claude-code-gated/workflow.yaml
-"$AWF" run --backend native examples/claude-code-gated/workflow.yaml
+claude setup-token
 ```
 
-`--backend native` is required. The Claude Code adapter currently requires a declared container, which makes automatic selection choose Docker; native execution intentionally ignores the declared image and invokes the host `claude` binary.
+Follow Claude Code's instructions to set `CLAUDE_CODE_OAUTH_TOKEN` in the current private shell. Never paste the token into the workflow, a committed file, chat, or captured logs. Then run:
+
+```sh
+"$AWF" validate examples/claude-code-gated/workflow.yaml
+"$AWF" run --backend native --agent-env CLAUDE_CODE_OAUTH_TOKEN examples/claude-code-gated/workflow.yaml
+unset CLAUDE_CODE_OAUTH_TOKEN
+```
+
+`--backend native` is required. The Claude Code adapter currently requires a declared container, which makes automatic selection choose Docker; native execution intentionally ignores the declared image and invokes the host `claude` binary. The explicit `--agent-env` forwards only the subscription token into AWF's isolated per-run Claude configuration; the host's normal logged-in state is intentionally not reused.
 
 The run succeeds with `run <run-id>: ok`. Retrieve the typed generator output using the full gate runtime address:
 
@@ -275,7 +298,7 @@ The output contains `{"ready": true}`. Plain `awf outputs <run-id>` does not exp
 
 ## Troubleshooting
 
-- Authentication failure: run Claude Code interactively and log in; this fixture uses `bare: false` and your existing subscription.
+- Authentication failure: unset the token, rerun `claude setup-token`, and repeat from the same private shell. A normal interactive Claude login alone does not cross AWF's isolated `CLAUDE_CONFIG_DIR`.
 - Docker starts or an image pull is attempted: rerun with the explicit `--backend native` flag.
 - Native sandbox failure: keep the error and stop; do not weaken the sandbox.
 - Gate rejection or a missing typed output: keep the run id and output and report the fixture as a readiness failure.
@@ -289,7 +312,7 @@ Make exactly these changes in `README.md`:
 2. After the Ollama quickstart run command, add this paragraph:
 
 ```markdown
-To exercise an existing Claude Code subscription through a typed, deterministic gate without Docker or Ollama, follow the [Claude Code gated readiness example](examples/claude-code-gated/README.md). It uses the published v0.5.1 binary and the explicit native backend.
+To exercise a Claude Code subscription through a typed, deterministic gate without Docker or Ollama, follow the [Claude Code gated readiness example](examples/claude-code-gated/README.md). It uses the published v0.5.1 binary, a `claude setup-token` credential handoff, and the explicit native backend.
 ```
 
 3. Change the built-in adapter bullet to:
@@ -308,6 +331,8 @@ test -f examples/claude-code-gated/README.md
 rg -n 'VERSION=0\.5\.1' README.md
 rg -n 'examples/claude-code-gated/README\.md' README.md
 rg -n -- '--backend native' examples/claude-code-gated/README.md
+rg -n -- '--agent-env CLAUDE_CODE_OAUTH_TOKEN' examples/claude-code-gated/README.md
+rg -n -- 'claude setup-token' examples/claude-code-gated/README.md
 rg -n -- "gate\[0\]\.attempt-1\.generate\.draft" examples/claude-code-gated/README.md
 ```
 
