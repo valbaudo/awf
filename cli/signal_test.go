@@ -86,3 +86,30 @@ func TestCLISignalRejectsMalformedJSON(t *testing.T) {
 		t.Errorf("stderr: %q", stderr.String())
 	}
 }
+
+func TestCLISignalPermissionDiagnosticOnControlWriteFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	runID := "r"
+	runDir := filepath.Join(stateDir, "runs", runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "control"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+
+	rc := runner.Run([]string{"signal", "--state-dir", stateDir, runID, "ready"}, &stdout, &stderr)
+	if rc != cli.ExitInfra {
+		t.Fatalf("rc = %d, want ExitInfra; stderr: %s", rc, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty on failure", stdout.String())
+	}
+	for _, want := range []string{"write signal control file", "current UID", "owner UID"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr missing %q: %s", want, stderr.String())
+		}
+	}
+}

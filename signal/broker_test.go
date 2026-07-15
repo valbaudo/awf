@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,6 +160,153 @@ func TestBrokerReceiveTimeout(t *testing.T) {
 	_, err := b.Receive(context.Background(), "never", 10*time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Receive: err = %v, want DeadlineExceeded", err)
+	}
+}
+
+func TestBrokerReceiveReadDirErrorReturnsImmediately(t *testing.T) {
+	b := tempBroker(t)
+	b.ops.readDir = func(string) ([]os.DirEntry, error) { return nil, fs.ErrPermission }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := b.Receive(ctx, "ready", 0)
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Receive error = %v, want fs.ErrPermission before context cancellation", err)
+	}
+}
+
+func TestBrokerReceiveReadFileErrorReturnsImmediately(t *testing.T) {
+	b := tempBroker(t)
+	if err := os.WriteFile(filepath.Join(b.controlDir, signalFileName("ready", 1)), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.ops.readFile = func(string) ([]byte, error) { return nil, fs.ErrPermission }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := b.Receive(ctx, "ready", 0)
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Receive error = %v, want fs.ErrPermission before context cancellation", err)
+	}
+}
+
+func TestBrokerReceiveMatchingReadFileErrorReturnsImmediately(t *testing.T) {
+	b := tempBroker(t)
+	if err := os.WriteFile(filepath.Join(b.controlDir, signalFileName("ready", 1)), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.ops.readFile = func(string) ([]byte, error) { return nil, fs.ErrPermission }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := b.ReceiveMatching(ctx, "ready", 0, func([]byte) (bool, error) { return true, nil })
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("ReceiveMatching error = %v, want fs.ErrPermission before context cancellation", err)
+	}
+}
+
+func TestBrokerReceiveMkdirAllErrorReturnsImmediately(t *testing.T) {
+	b := tempBroker(t)
+	if err := os.WriteFile(filepath.Join(b.controlDir, signalFileName("ready", 1)), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.ops.mkdirAll = func(string, fs.FileMode) error { return fs.ErrPermission }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := b.Receive(ctx, "ready", 0)
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Receive error = %v, want fs.ErrPermission before context cancellation", err)
+	}
+}
+
+func TestBrokerReceiveMatchingMkdirAllErrorReturnsImmediately(t *testing.T) {
+	b := tempBroker(t)
+	if err := os.WriteFile(filepath.Join(b.controlDir, signalFileName("ready", 1)), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.ops.mkdirAll = func(string, fs.FileMode) error { return fs.ErrPermission }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := b.ReceiveMatching(ctx, "ready", 0, func([]byte) (bool, error) { return true, nil })
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("ReceiveMatching error = %v, want fs.ErrPermission before context cancellation", err)
+	}
+}
+
+func TestBrokerReceiveRenameErrorReturnsImmediately(t *testing.T) {
+	b := tempBroker(t)
+	if err := os.WriteFile(filepath.Join(b.controlDir, signalFileName("ready", 1)), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.ops.rename = func(string, string) error { return fs.ErrPermission }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := b.Receive(ctx, "ready", 0)
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Receive error = %v, want fs.ErrPermission before context cancellation", err)
+	}
+}
+
+func TestBrokerReceiveMatchingRenameErrorReturnsImmediately(t *testing.T) {
+	b := tempBroker(t)
+	if err := os.WriteFile(filepath.Join(b.controlDir, signalFileName("ready", 1)), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.ops.rename = func(string, string) error { return fs.ErrPermission }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := b.ReceiveMatching(ctx, "ready", 0, func([]byte) (bool, error) { return true, nil })
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("ReceiveMatching error = %v, want fs.ErrPermission before context cancellation", err)
+	}
+}
+
+func TestBrokerReceiveRenameNotExistWithSourcePresentReturnsError(t *testing.T) {
+	b := tempBroker(t)
+	if err := os.WriteFile(filepath.Join(b.controlDir, signalFileName("ready", 1)), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.ops.rename = func(string, string) error { return fs.ErrNotExist }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := b.Receive(ctx, "ready", 0)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Receive error = %v, want rename fs.ErrNotExist while source remains present", err)
+	}
+}
+
+func TestBrokerReceiveRenameNotExistIgnoredAfterSourceDisappears(t *testing.T) {
+	for _, matching := range []bool{false, true} {
+		matching := matching
+		t.Run(fmt.Sprintf("matching=%t", matching), func(t *testing.T) {
+			b := tempBroker(t)
+			if err := os.WriteFile(filepath.Join(b.controlDir, signalFileName("ready", 1)), []byte("payload"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			b.ops.rename = func(src, _ string) error {
+				if err := os.Remove(src); err != nil {
+					t.Fatal(err)
+				}
+				return fs.ErrNotExist
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			var err error
+			if matching {
+				_, err = b.ReceiveMatching(ctx, "ready", 0, func([]byte) (bool, error) { return true, nil })
+			} else {
+				_, err = b.Receive(ctx, "ready", 0)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("receive error = %v, want context.Canceled after concurrent source disappearance", err)
+			}
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +120,39 @@ func TestRunSignalStep_TimeoutIsRetryable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("err = %v, want 'timeout'", err)
+	}
+}
+
+func TestRunSignalStep_SignalBrokerErrorIsInternal(t *testing.T) {
+	b := tempBroker(t)
+	if err := os.RemoveAll(b.ControlDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b.ControlDir(), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs := NewRunState("r", "d", nil)
+	log := state.NewInMemoryLog(&clock.Fake{T: time.Now()})
+	ss := &ir.SignalStep{ID: "approve", Await: "human_review"}
+
+	oc, err := runSignalStep(context.Background(), ss, "approve", nil, rs, nil, log, state.NewInMemoryBlobs(), &clock.Fake{}, nil, b)
+	if err == nil {
+		t.Fatal("err = nil, want broker filesystem error")
+	}
+	if oc != "" {
+		t.Fatalf("outcome = %q, want empty internal outcome", oc)
+	}
+	if !strings.Contains(err.Error(), "signal: read") {
+		t.Fatalf("err = %v, want broker read context", err)
+	}
+	events, foldErr := log.Fold()
+	if foldErr != nil {
+		t.Fatal(foldErr)
+	}
+	for _, event := range events {
+		if event.Type == EventNodeFailed {
+			t.Fatalf("broker infrastructure error was journaled as node.failed: %+v", event)
+		}
 	}
 }
 

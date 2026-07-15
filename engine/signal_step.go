@@ -159,9 +159,14 @@ func runSignalStepWithContext(
 			if ictx.runstate.IsCancelled() || ictx.runstate.LookupPaused() != nil {
 				return "", rerr
 			}
-			// True transport / Ctrl-C error — emit node.failed.
-			return failStep(ictx.log, path, OutcomeRetryableFailure,
-				fmt.Errorf("signal %q await: %w", ss.Await, rerr))
+			if errors.Is(rerr, context.Canceled) {
+				// True Ctrl-C cancellation — emit node.failed.
+				return failStep(ictx.log, path, OutcomeRetryableFailure,
+					fmt.Errorf("signal %q await: %w", ss.Await, rerr))
+			}
+			// Broker filesystem failures are AWF infrastructure errors. They are
+			// not a missing signal and must not be journaled as a retryable step.
+			return "", fmt.Errorf("engine.runSignalStep: signal %q broker: %w", ss.Await, rerr)
 		}
 
 		// 5. Validate payload against output_schema if declared. Empty payload
