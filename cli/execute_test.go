@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/valbaudo/awf/agent"
@@ -228,11 +231,12 @@ func TestFinishRunResultNeverPrintsOKOrCommitsInvalidPairs(t *testing.T) {
 		name    string
 		outcome engine.Outcome
 		err     error
+		want    int
 	}{
-		{name: "ok with error", outcome: engine.OutcomeOK, err: errors.New("hidden")},
-		{name: "joined pause", err: errors.Join(signal.ErrPaused, errors.New("extra"))},
-		{name: "joined cancel", err: errors.Join(signal.ErrCancelled, errors.New("extra"))},
-		{name: "empty internal", err: errors.New("internal")},
+		{name: "ok with error", outcome: engine.OutcomeOK, err: errors.New("hidden"), want: ExitUsage},
+		{name: "joined pause", err: errors.Join(signal.ErrPaused, errors.New("extra")), want: ExitInfra},
+		{name: "joined cancel", err: errors.Join(signal.ErrCancelled, errors.New("extra")), want: ExitInfra},
+		{name: "empty internal", err: errors.New("internal"), want: ExitInfra},
 	}
 
 	for _, tt := range tests {
@@ -241,8 +245,8 @@ func TestFinishRunResultNeverPrintsOKOrCommitsInvalidPairs(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			skipTeardown := false
 			rc := (&Runner{}).finishRunResult(log, &stdout, &stderr, "run-1", "awf run", "", tt.outcome, tt.err, &skipTeardown)
-			if rc == ExitOK {
-				t.Fatalf("rc = 0; stdout=%q stderr=%q", stdout.String(), stderr.String())
+			if rc != tt.want {
+				t.Fatalf("rc = %d, want %d; stdout=%q stderr=%q", rc, tt.want, stdout.String(), stderr.String())
 			}
 			if strings.Contains(stdout.String(), "run run-1: ok") {
 				t.Fatalf("printed success for invalid pair: %q", stdout.String())
@@ -258,6 +262,100 @@ func TestFinishRunResultNeverPrintsOKOrCommitsInvalidPairs(t *testing.T) {
 				if event.Type == engine.EventRunFinished {
 					t.Fatalf("invalid pair appended run.finished: %+v", event)
 				}
+			}
+		})
+	}
+}
+
+func TestFinishRunResultMapsStatePersistenceFailuresToInfra(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "blob ENOSPC",
+			err: fmt.Errorf("engine.Commit: put outputs: %w", &os.PathError{
+				Op: "write", Path: "/state/blobs/sha256/ab/blob", Err: syscall.ENOSPC,
+			}),
+			want: "/state/blobs/sha256/ab/blob",
+		},
+		{
+			name: "log EIO",
+			err: fmt.Errorf("append node.completed: %w", &os.PathError{
+				Op: "write", Path: "/state/runs/run-1/log", Err: syscall.EIO,
+			}),
+			want: "/state/runs/run-1/log",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			log := state.NewInMemoryLog(&clock.Fake{})
+			var stdout, stderr bytes.Buffer
+			skipTeardown := false
+			rc := (&Runner{}).finishRunResultWithState(log, &stdout, &stderr, "run-1", "awf run", "", "/state", "", tt.err, &skipTeardown)
+			if rc != ExitInfra {
+				t.Fatalf("rc = %d, want ExitInfra; stderr=%q", rc, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("stderr missing failing path %q: %s", tt.want, stderr.String())
+			}
+			if strings.Contains(stderr.String(), statePermissionHint) {
+				t.Fatalf("non-permission persistence failure received no-sudo hint: %s", stderr.String())
+			}
+		})
+	}
+}
+
+func TestFinishRunResultDoesNotMislabelExternalPermissionFailureAsState(t *testing.T) {
+	err := fmt.Errorf("dispatcher input: %w", &os.PathError{Op: "read", Path: "/input/document.txt", Err: syscall.EACCES})
+	log := state.NewInMemoryLog(&clock.Fake{})
+	var stdout, stderr bytes.Buffer
+	skipTeardown := false
+	rc := (&Runner{}).finishRunResultWithState(log, &stdout, &stderr, "run-1", "awf run", "", "/state", "", err, &skipTeardown)
+	if rc != ExitInfra {
+		t.Fatalf("rc = %d, want ExitInfra; stderr=%s", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "/input/document.txt") {
+		t.Fatalf("stderr missing external failing path: %s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), statePermissionHint) {
+		t.Fatalf("external permission failure received state/no-sudo hint: %s", stderr.String())
+	}
+}
+
+func TestFinishRunResultPreservesControlAndTypedWorkflowResults(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		outcome      engine.Outcome
+		err          error
+		wantExit     int
+		wantFinished bool
+		wantSkip     bool
+	}{
+		{name: "exact pause", err: signal.ErrPaused, wantExit: ExitOK, wantSkip: true},
+		{name: "exact cancel", err: signal.ErrCancelled, wantExit: ExitOK},
+		{name: "typed retryable", outcome: engine.OutcomeRetryableFailure, err: errors.New("transient"), wantExit: ExitRunFailed, wantFinished: true},
+		{name: "typed permanent", outcome: engine.OutcomePermanentFailure, err: errors.New("invalid output"), wantExit: ExitRunFailed, wantFinished: true},
+		{name: "typed rejected", outcome: engine.OutcomeRejected, err: errors.New("gate exhausted"), wantExit: ExitRunFailed, wantFinished: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			log := state.NewInMemoryLog(&clock.Fake{})
+			var stdout, stderr bytes.Buffer
+			skipTeardown := false
+			rc := (&Runner{}).finishRunResult(log, &stdout, &stderr, "run-1", "awf run", "", tt.outcome, tt.err, &skipTeardown)
+			if rc != tt.wantExit || skipTeardown != tt.wantSkip {
+				t.Fatalf("rc/skip = %d/%v, want %d/%v; stdout=%q stderr=%q", rc, skipTeardown, tt.wantExit, tt.wantSkip, stdout.String(), stderr.String())
+			}
+			events, err := log.Fold()
+			if err != nil {
+				t.Fatal(err)
+			}
+			finished := false
+			for _, event := range events {
+				finished = finished || event.Type == engine.EventRunFinished
+			}
+			if finished != tt.wantFinished {
+				t.Fatalf("run.finished present = %v, want %v; events=%+v", finished, tt.wantFinished, events)
 			}
 		})
 	}

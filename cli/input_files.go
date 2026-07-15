@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -9,6 +11,30 @@ import (
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
+
+type inputFileSourceReadError struct {
+	Name string
+	Path string
+	Err  error
+}
+
+func (e *inputFileSourceReadError) Error() string {
+	return fmt.Sprintf("read input file %s (%q): %v", e.Name, e.Path, e.Err)
+}
+
+func (e *inputFileSourceReadError) Unwrap() error { return e.Err }
+
+type inputFileBlobStoreError struct {
+	Name string
+	Path string
+	Err  error
+}
+
+func (e *inputFileBlobStoreError) Error() string {
+	return fmt.Sprintf("put input file %s from %q: %v", e.Name, e.Path, e.Err)
+}
+
+func (e *inputFileBlobStoreError) Unwrap() error { return e.Err }
 
 // validateSuppliedInputFiles checks the --input-files supply against the
 // workflow's declared top-level input_files contract, BEFORE any state is
@@ -56,14 +82,14 @@ func validateSuppliedInputFiles(supplied map[string]string, declared ir.Workflow
 		path := supplied[name]
 		info, err := os.Stat(path)
 		if err != nil {
-			return fmt.Errorf("--input-files %s: %v", name, err)
+			return fmt.Errorf("--input-files %s: %w", name, err)
 		}
 		if info.IsDir() {
 			return fmt.Errorf("--input-files %s: %q is a directory, want a file", name, path)
 		}
 		f, err := os.Open(path)
 		if err != nil {
-			return fmt.Errorf("--input-files %s: %q is not readable: %v", name, path, err)
+			return fmt.Errorf("--input-files %s: %q is not readable: %w", name, path, err)
 		}
 		_ = f.Close()
 	}
@@ -90,6 +116,10 @@ func declaredInputFileNames(declared ir.WorkflowInputFiles) string {
 // run.started). Paths were existence/readability-checked by
 // validateSuppliedInputFiles; a read error here is an unexpected mid-run race.
 func storeInputFiles(blobs state.Blobs, supplied map[string]string) (map[string]string, error) {
+	return storeInputFilesWithRead(blobs, supplied, os.ReadFile)
+}
+
+func storeInputFilesWithRead(blobs state.Blobs, supplied map[string]string, readFile func(string) ([]byte, error)) (map[string]string, error) {
 	if len(supplied) == 0 {
 		return nil, nil
 	}
@@ -101,15 +131,24 @@ func storeInputFiles(blobs state.Blobs, supplied map[string]string) (map[string]
 	sort.Strings(names)
 	for _, name := range names {
 		path := supplied[name]
-		b, err := os.ReadFile(path)
+		b, err := readFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read input file %s (%q): %v", name, path, err)
+			return nil, &inputFileSourceReadError{Name: name, Path: path, Err: err}
 		}
 		ref, err := blobs.Put(b)
 		if err != nil {
-			return nil, fmt.Errorf("put input file %s: %v", name, err)
+			return nil, &inputFileBlobStoreError{Name: name, Path: path, Err: err}
 		}
 		out[name] = ref
 	}
 	return out, nil
+}
+
+func reportInputFilesFailure(stderr io.Writer, stateRoot, blobsDir string, err error, lookup stateIdentityLookup) int {
+	var sourceErr *inputFileSourceReadError
+	if errors.As(err, &sourceErr) {
+		fprintf(stderr, "awf run: store run input files: %v\n", err)
+		return ExitUsage
+	}
+	return reportStateFailure(stderr, "awf run", "store run input files", stateRoot, blobsDir, err, lookup, stateFailureInfra)
 }

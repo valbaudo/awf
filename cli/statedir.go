@@ -33,6 +33,26 @@ type stateIdentity struct {
 
 type stateIdentityLookup func() (stateIdentity, error)
 
+// statePathMetadata separates portable file information from Unix-only
+// ownership and permission semantics. Tests inject this value so policy does
+// not depend on the host running the suite.
+type statePathMetadata struct {
+	Mode            fs.FileMode
+	OwnerUID        int
+	OwnerGID        int
+	OwnershipKnown  bool
+	UnixPermissions bool
+}
+
+type stateMetadataLookup func(string) (statePathMetadata, error)
+
+func unixStatePathMetadata(mode fs.FileMode, uid, gid int) statePathMetadata {
+	return statePathMetadata{
+		Mode: mode, OwnerUID: uid, OwnerGID: gid,
+		OwnershipKnown: true, UnixPermissions: true,
+	}
+}
+
 var (
 	errUnsafeStateRoot       = errors.New("unsafe state root")
 	errElevatedStateMutation = errors.New("elevated state mutation refused")
@@ -43,7 +63,9 @@ const statePermissionHint = "AWF does not elevate privileges. The state director
 type unsafeStateRootError struct {
 	Path       string
 	CurrentUID int
+	CurrentGID int
 	OwnerUID   int
+	OwnerGID   int
 	OwnerKnown bool
 	Mode       fs.FileMode
 	Reason     string
@@ -52,10 +74,10 @@ type unsafeStateRootError struct {
 func (e *unsafeStateRootError) Error() string {
 	details := []string{fmt.Sprintf("mode %s", e.Mode.Perm())}
 	if e.OwnerKnown {
-		details = append(details, fmt.Sprintf("owner UID %d", e.OwnerUID))
+		details = append(details, fmt.Sprintf("owner UID %d, owner GID %d", e.OwnerUID, e.OwnerGID))
 	}
 	if e.CurrentUID >= 0 {
-		details = append(details, fmt.Sprintf("current UID %d", e.CurrentUID))
+		details = append(details, fmt.Sprintf("current UID %d, current GID %d", e.CurrentUID, e.CurrentGID))
 	}
 	return fmt.Sprintf("%v: state directory %q is not safe for writes (%s): %s", errUnsafeStateRoot, e.Path, strings.Join(details, ", "), e.Reason)
 }
@@ -92,6 +114,10 @@ func stateIdentityWithEnvironment(id stateIdentity, getenv func(string) string) 
 // one canonical root, applies the read-vs-write policy once, and leaves every
 // descendant operation to the package that owns it. It is not a state service.
 func accessStateDir(path string, mode stateAccessMode, lookup stateIdentityLookup) (string, error) {
+	return accessStateDirWithMetadata(path, mode, lookup, stateDirInfo)
+}
+
+func accessStateDirWithMetadata(path string, mode stateAccessMode, lookup stateIdentityLookup, metadata stateMetadataLookup) (string, error) {
 	if lookup == nil {
 		lookup = defaultStateIdentity
 	}
@@ -112,11 +138,11 @@ func accessStateDir(path string, mode stateAccessMode, lookup stateIdentityLooku
 			return root, err
 		}
 	}
-	ownerUID, ownerKnown, fileMode, err := stateDirInfo(root)
+	file, err := metadata(root)
 	if err != nil {
 		return root, err
 	}
-	if !fileMode.IsDir() {
+	if !file.Mode.IsDir() {
 		return root, &os.PathError{Op: "open state directory", Path: root, Err: syscallENOTDIR()}
 	}
 	if mode == stateReadOnly {
@@ -134,16 +160,18 @@ func accessStateDir(path string, mode stateAccessMode, lookup stateIdentityLooku
 		}
 		return root, nil
 	}
-	if ownerKnown && ownerUID != id.UID {
+	if file.UnixPermissions && file.OwnershipKnown && file.OwnerUID != id.UID {
 		return root, &unsafeStateRootError{
-			Path: root, CurrentUID: id.UID, OwnerUID: ownerUID, OwnerKnown: true,
-			Mode: fileMode, Reason: "directory is owned by another user",
+			Path: root, CurrentUID: id.UID, CurrentGID: id.GID,
+			OwnerUID: file.OwnerUID, OwnerGID: file.OwnerGID, OwnerKnown: true,
+			Mode: file.Mode, Reason: "directory is owned by another user",
 		}
 	}
-	if fileMode.Perm()&0o022 != 0 {
+	if file.UnixPermissions && file.Mode.Perm()&0o022 != 0 {
 		return root, &unsafeStateRootError{
-			Path: root, CurrentUID: id.UID, OwnerUID: ownerUID, OwnerKnown: ownerKnown,
-			Mode: fileMode, Reason: "directory is group- or world-writable",
+			Path: root, CurrentUID: id.UID, CurrentGID: id.GID,
+			OwnerUID: file.OwnerUID, OwnerGID: file.OwnerGID, OwnerKnown: file.OwnershipKnown,
+			Mode: file.Mode, Reason: "directory is group- or world-writable",
 		}
 	}
 	return root, nil
@@ -191,6 +219,10 @@ func canonicalStatePath(path string) (string, error) {
 }
 
 func formatStateError(operation, stateRoot, path string, err error, lookup stateIdentityLookup) string {
+	return formatStateErrorWithMetadata(operation, stateRoot, path, err, lookup, stateDirInfo)
+}
+
+func formatStateErrorWithMetadata(operation, stateRoot, path string, err error, lookup stateIdentityLookup, metadata stateMetadataLookup) string {
 	var pathError *os.PathError
 	if errors.As(err, &pathError) && pathError.Path != "" {
 		path = pathError.Path
@@ -209,17 +241,24 @@ func formatStateError(operation, stateRoot, path string, err error, lookup state
 	if lookup == nil {
 		lookup = defaultStateIdentity
 	}
+	details := make([]string, 0, 3)
+	file, fileKnown := stateMetadataForDiagnostic(diagnosticPath, stateRoot, metadata)
+	if fileKnown {
+		details = append(details, fmt.Sprintf("mode %s", file.Mode.Perm()))
+	}
 	if id, identityErr := lookup(); identityErr == nil && id.UID >= 0 {
-		fmt.Fprintf(b, " (current UID %d", id.UID)
-		if ownerUID, known := stateOwnerForDiagnostic(diagnosticPath, stateRoot); known {
-			fmt.Fprintf(b, "; owner UID %d", ownerUID)
+		details = append(details, fmt.Sprintf("current UID %d, current GID %d", id.UID, id.GID))
+		if fileKnown && file.OwnershipKnown {
+			details = append(details, fmt.Sprintf("owner UID %d, owner GID %d", file.OwnerUID, file.OwnerGID))
 		} else {
 			var unsafe *unsafeStateRootError
 			if errors.As(err, &unsafe) && unsafe.OwnerKnown {
-				fmt.Fprintf(b, "; owner UID %d", unsafe.OwnerUID)
+				details = append(details, fmt.Sprintf("owner UID %d, owner GID %d", unsafe.OwnerUID, unsafe.OwnerGID))
 			}
 		}
-		b.WriteString(")")
+	}
+	if len(details) > 0 {
+		fmt.Fprintf(b, " (%s)", strings.Join(details, "; "))
 	}
 	if errors.Is(err, fs.ErrPermission) || errors.Is(err, errUnsafeStateRoot) || errors.Is(err, errElevatedStateMutation) {
 		b.WriteString("\n")
@@ -228,7 +267,7 @@ func formatStateError(operation, stateRoot, path string, err error, lookup state
 	return b.String()
 }
 
-func stateOwnerForDiagnostic(path, stateRoot string) (int, bool) {
+func stateMetadataForDiagnostic(path, stateRoot string, metadata stateMetadataLookup) (statePathMetadata, bool) {
 	root, err := canonicalStatePath(stateRoot)
 	if err != nil {
 		root, err = filepath.Abs(stateRoot)
@@ -238,8 +277,8 @@ func stateOwnerForDiagnostic(path, stateRoot string) (int, bool) {
 	}
 	cur := filepath.Clean(path)
 	for {
-		if ownerUID, known, _, err := stateDirInfo(cur); err == nil && known {
-			return ownerUID, true
+		if file, err := metadata(cur); err == nil {
+			return file, true
 		}
 		if cur == root {
 			break
@@ -251,7 +290,7 @@ func stateOwnerForDiagnostic(path, stateRoot string) (int, bool) {
 		}
 		cur = parent
 	}
-	return 0, false
+	return statePathMetadata{}, false
 }
 
 func reportStateFailure(stderr io.Writer, command, operation, stateRoot, path string, err error, lookup stateIdentityLookup, policy stateFailurePolicy) int {

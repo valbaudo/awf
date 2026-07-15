@@ -88,6 +88,61 @@ func TestStateDirWriteRejectsGroupOrWorldWritableRoot(t *testing.T) {
 	}
 }
 
+func TestStateDirUnsupportedPlatformDoesNotApplyUnixPermissionBits(t *testing.T) {
+	root := t.TempDir()
+	canonicalRoot, err := canonicalStatePath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := func(path string) (statePathMetadata, error) {
+		if path != canonicalRoot {
+			t.Fatalf("metadata path = %q, want %q", path, canonicalRoot)
+		}
+		return statePathMetadata{
+			Mode:            os.ModeDir | 0o777,
+			OwnerUID:        0,
+			OwnerGID:        0,
+			OwnershipKnown:  false,
+			UnixPermissions: false,
+		}, nil
+	}
+
+	got, err := accessStateDirWithMetadata(root, stateWriteExisting, fakeStateIdentity(1000, 1000, ""), metadata)
+	if err != nil {
+		t.Fatalf("unsupported-platform write rejected Unix mode bits: %v", err)
+	}
+	if got != canonicalRoot {
+		t.Fatalf("root = %q, want %q", got, canonicalRoot)
+	}
+}
+
+func TestStateDirUnixMetadataCarriesUIDGIDAndMode(t *testing.T) {
+	got := unixStatePathMetadata(os.ModeDir|0o700, 42, 84)
+	if !got.UnixPermissions || !got.OwnershipKnown {
+		t.Fatalf("Unix metadata flags = %+v, want Unix permissions and known ownership", got)
+	}
+	if got.OwnerUID != 42 || got.OwnerGID != 84 || got.Mode != os.ModeDir|0o700 {
+		t.Fatalf("Unix metadata = %+v, want UID 42 GID 84 mode %s", got, os.ModeDir|0o700)
+	}
+}
+
+func TestStateErrorUnsupportedPlatformReportsPathAndModeWithoutOwnerClaim(t *testing.T) {
+	root := t.TempDir()
+	metadata := func(string) (statePathMetadata, error) {
+		return statePathMetadata{Mode: os.ModeDir | 0o777}, nil
+	}
+	err := &os.PathError{Op: "open", Path: root, Err: syscall.EACCES}
+	got := formatStateErrorWithMetadata("access state directory", root, root, err, fakeStateIdentity(-1, -1, ""), metadata)
+	for _, want := range []string{root, "mode -rwxrwxrwx"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diagnostic missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "owner UID") || strings.Contains(got, "owner GID") {
+		t.Fatalf("unsupported-platform diagnostic claimed an owner:\n%s", got)
+	}
+}
+
 func TestStateDirMutationRejectsElevationProvenanceBeforeCreate(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "missing-state")
 	_, err := accessStateDir(root, stateWriteCreate, fakeStateIdentity(0, 0, "sudo (SUDO_UID)"))

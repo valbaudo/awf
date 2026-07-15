@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/valbaudo/awf/agent"
@@ -59,7 +60,7 @@ func newRetryProgressRenderer(stderr io.Writer) func(engine.RetryNotice) {
 //     OutcomeOK              → ExitOK,        success line on stdout.
 //     Retryable/Permanent    → ExitRunFailed, cause on stderr.
 //     Rejected               → ExitRunFailed, gate-rejection cause on stderr.
-//     "" (interpreter bug)   → ExitUsage,     "internal error" on stderr.
+//     "" (engine/infra fault) → ExitInfra,     "internal error" on stderr.
 //
 // opName is the verb-prefix for error messages ("awf run" or "awf resume").
 // successSuffix is appended to the success line — "" for `awf run`,
@@ -157,8 +158,11 @@ func (r *Runner) finishRunResultWithState(
 		fprintf(stdout, "run %s: cancelled\n", runID)
 		return ExitOK
 	}
-	if outcome == "" && runErr != nil && errors.Is(runErr, fs.ErrPermission) && stateRoot != "" {
-		return reportStateFailure(stderr, opName, "persist run state", stateRoot, filepath.Join(stateRoot, "runs", runID, "log"), runErr, r.stateIdentity(), stateFailureInfra)
+	if outcome == "" && runErr != nil && stateRoot != "" {
+		statePath, stateFailure := statePersistenceErrorPath(stateRoot, runErr)
+		if stateFailure {
+			return reportStateFailure(stderr, opName, "persist run state", stateRoot, statePath, runErr, r.stateIdentity(), stateFailureInfra)
+		}
 	}
 
 	validPair := (outcome == engine.OutcomeOK && runErr == nil) ||
@@ -201,8 +205,25 @@ func (r *Runner) finishRunResultWithState(
 		return ExitRunFailed
 	default:
 		fprintf(stderr, "run %s: internal error: %v\n", runID, runErr)
-		return ExitUsage
+		return ExitInfra
 	}
+}
+
+func statePersistenceErrorPath(stateRoot string, err error) (string, bool) {
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Path == "" {
+		return "", false
+	}
+	absRoot, rootErr := filepath.Abs(stateRoot)
+	absPath, pathErrAbs := filepath.Abs(pathErr.Path)
+	if rootErr != nil || pathErrAbs != nil {
+		return "", false
+	}
+	rel, relErr := filepath.Rel(filepath.Clean(absRoot), filepath.Clean(absPath))
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return pathErr.Path, true
 }
 
 // runMetrics is a per-run cost/token rollup folded from node.completed events.

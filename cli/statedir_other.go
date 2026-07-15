@@ -10,12 +10,12 @@ import (
 
 func currentStateIdentity() stateIdentity { return stateIdentity{UID: -1, GID: -1} }
 
-func stateDirInfo(path string) (ownerUID int, ownerKnown bool, mode fs.FileMode, err error) {
+func stateDirInfo(path string) (statePathMetadata, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return 0, false, 0, err
+		return statePathMetadata{}, err
 	}
-	return 0, false, info.Mode(), nil
+	return statePathMetadata{Mode: info.Mode()}, nil
 }
 
 func syscallENOTDIR() error { return errors.New("not a directory") }

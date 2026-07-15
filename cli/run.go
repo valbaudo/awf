@@ -394,7 +394,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// log exists. Mirrors the typed-input Put above + the Assets channel.
 	inputFileRefs, err := storeInputFiles(blobs, inputFilePaths)
 	if err != nil {
-		return reportStateFailure(stderr, "awf run", "store run input files", *stateDir, blobsDir, err, r.stateIdentity(), stateFailureInfra)
+		return reportInputFilesFailure(stderr, *stateDir, blobsDir, err, r.stateIdentity())
 	}
 
 	assetSnapshots, err := engine.StoreRunStartedAssetsForLoadedDefinition(blobs, ld)
