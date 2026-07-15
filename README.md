@@ -181,7 +181,7 @@ published checksums, and put `awf` on your `PATH`. Prebuilt binaries are
 published for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`.
 
 ```sh
-VERSION=0.5.1
+VERSION=0.5.2
 OS=linux ARCH=amd64        # or: OS=darwin ARCH=arm64
 BASE="https://github.com/valbaudo/awf/releases/download/v${VERSION}"
 

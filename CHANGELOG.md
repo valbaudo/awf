@@ -13,6 +13,20 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-15
+
+A documentation-only patch release adding a clean-room Claude Code subscription
+readiness path. There are no runtime or workflow-format changes.
+
+### Added
+
+- **Claude Code gated readiness example.** A public, one-call workflow runs the
+  host Claude Code CLI as a black box, validates its typed output, and passes it
+  through an independent deterministic gate. The accompanying guide documents
+  private `claude setup-token` handoff, the explicit native backend, the
+  macOS-safe absolute state directory, gate-scoped output inspection, cleanup,
+  and troubleshooting.
+
 ## [0.5.1] - 2026-07-08
 
 A patch release that clears resolvable dependency advisories. No functional
