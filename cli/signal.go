@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 
 	"github.com/spf13/pflag"
 
@@ -22,7 +23,7 @@ func printSignalUsage(w io.Writer) {
 	fprintln(w, "  --state-dir <dir>  state directory (default: ./.awf)")
 }
 
-func cliSignal(args []string, stdout, stderr io.Writer) int {
+func cliSignalWithIdentity(args []string, stdout, stderr io.Writer, lookup stateIdentityLookup) int {
 	fs0 := pflag.NewFlagSet("signal", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
@@ -56,10 +57,18 @@ func cliSignal(args []string, stdout, stderr io.Writer) int {
 		}
 		payloadBytes = []byte(*payload)
 	}
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateWriteExisting, lookup)
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			return requireRunDir(*stateDir, runID, stderr)
+		}
+		return reportStateFailure(stderr, "awf signal", "access state directory", *stateDir, *stateDir, accessErr, lookup, stateFailureInfra)
+	}
+	*stateDir = canonicalStateDir
 
 	// Refuse if run dir doesn't exist (defense against typo'd run-ids that
 	// would create an orphan control dir).
-	if rc := requireRunDir(*stateDir, runID, stderr); rc != ExitOK {
+	if rc := requireRunDirForCommand(*stateDir, runID, stderr, "awf signal", lookup); rc != ExitOK {
 		return rc
 	}
 
@@ -67,8 +76,7 @@ func cliSignal(args []string, stdout, stderr io.Writer) int {
 	broker := signal.NewBroker(controlDir)
 	seq, err := broker.WriteSignal(name, payloadBytes)
 	if err != nil {
-		fprintf(stderr, "awf signal: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf signal", "write signal control file", *stateDir, controlDir, err, lookup, stateFailureInfra)
 	}
 	fprintf(stdout, "signal %s (seq %d) written to %s\n", name, seq, controlDir)
 	return ExitOK

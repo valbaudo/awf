@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"io"
+	"io/fs"
 
 	"github.com/spf13/pflag"
 
@@ -20,7 +21,7 @@ func printCancelUsage(w io.Writer) {
 	fprintln(w, "  --state-dir <dir>  state directory (default: ./.awf)")
 }
 
-func cliCancel(args []string, stdout, stderr io.Writer) int {
+func cliCancelWithIdentity(args []string, stdout, stderr io.Writer, lookup stateIdentityLookup) int {
 	fs0 := pflag.NewFlagSet("cancel", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
@@ -40,13 +41,20 @@ func cliCancel(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	runID := fs0.Arg(0)
-	if rc := requireRunDir(*stateDir, runID, stderr); rc != ExitOK {
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateWriteExisting, lookup)
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			return requireRunDir(*stateDir, runID, stderr)
+		}
+		return reportStateFailure(stderr, "awf cancel", "access state directory", *stateDir, *stateDir, accessErr, lookup, stateFailureInfra)
+	}
+	*stateDir = canonicalStateDir
+	if rc := requireRunDirForCommand(*stateDir, runID, stderr, "awf cancel", lookup); rc != ExitOK {
 		return rc
 	}
 	broker := signal.NewBroker(signal.ControlDir(*stateDir, runID))
 	if err := broker.WriteCancel(signal.CancelRequest{Reason: *reason}); err != nil {
-		fprintf(stderr, "awf cancel: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf cancel", "write cancel control file", *stateDir, signal.ControlDir(*stateDir, runID), err, lookup, stateFailureInfra)
 	}
 	fprintf(stdout, "cancel requested for run %s\n", runID)
 	return ExitOK

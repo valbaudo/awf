@@ -204,6 +204,13 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
+	canonicalStateDir, err := accessStateDir(*stateDir, stateWriteCreate, r.stateIdentity())
+	if err != nil {
+		fprintf(stderr, "awf run: %s\n", formatStateError("access state directory", *stateDir, *stateDir, err, r.stateIdentity()))
+		return ExitInfra
+	}
+	*stateDir = canonicalStateDir
+
 	// Step 4: wire signal handling.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -213,8 +220,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	blobsDir := filepath.Join(*stateDir, "blobs")
 	blobs, err := state.OpenBlobs(blobsDir)
 	if err != nil {
-		fprintf(stderr, "awf run: open blobs %q: %v\n", blobsDir, err)
-		return ExitInfra
+		return reportStateFailure(stderr, "awf run", "open blob store", *stateDir, blobsDir, err, r.stateIdentity(), stateFailureInfra)
 	}
 
 	// Step 6 (slice 4.5): determine the Backend for this invocation via
@@ -225,6 +231,9 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	workdirRoot := filepath.Join(*stateDir, "work", id)
 	backend, cleanup, err := r.resolveBackend(ctx, concreteBackendKind, id, workdirRoot, blobs, stderr)
 	if err != nil {
+		if concreteBackendKind == engine.BackendNative {
+			return reportStateFailure(stderr, "awf run", "prepare native work directory", *stateDir, workdirRoot, err, r.stateIdentity(), stateFailureInfra)
+		}
 		fprintf(stderr, "awf run: construct backend %q: %v\n", concreteBackendKind, err)
 		return ExitInfra
 	}
@@ -243,8 +252,11 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 
 	liveRoot, err := openLiveHomeRoot(*stateDir)
 	if err != nil {
-		fprintf(stderr, "awf run: open live home: %v\n", err)
-		return ExitInfra
+		livePath := filepath.Join(*stateDir, "live")
+		if override := liveHomeEnv()["AWF_LIVE_HOME"]; override != "" {
+			livePath = override
+		}
+		return reportStateFailure(stderr, "awf run", "open live home", *stateDir, livePath, err, r.stateIdentity(), stateFailureInfra)
 	}
 
 	// Slice 5.3: if Resolver isn't test-injected, build the production
@@ -302,6 +314,9 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		}
 		h, err := backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
 		if err != nil {
+			if concreteBackendKind == engine.BackendNative {
+				return reportStateFailure(stderr, "awf run", "create native work directory", *stateDir, workdirRoot, err, r.stateIdentity(), stateFailureInfra)
+			}
 			fprintf(stderr, "awf run: create container %q: %v\n", name, err)
 			return ExitInfra
 		}
@@ -368,8 +383,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	if haveInput {
 		ref, err := blobs.Put(inputBytes)
 		if err != nil {
-			fprintf(stderr, "awf run: put input: %v\n", err)
-			return ExitUsage
+			return reportStateFailure(stderr, "awf run", "store run input", *stateDir, blobsDir, err, r.stateIdentity(), stateFailureInfra)
 		}
 		inputRef = ref
 	}
@@ -380,14 +394,12 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// log exists. Mirrors the typed-input Put above + the Assets channel.
 	inputFileRefs, err := storeInputFiles(blobs, inputFilePaths)
 	if err != nil {
-		fprintf(stderr, "awf run: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf run", "store run input files", *stateDir, blobsDir, err, r.stateIdentity(), stateFailureInfra)
 	}
 
 	assetSnapshots, err := engine.StoreRunStartedAssetsForLoadedDefinition(blobs, ld)
 	if err != nil {
-		fprintf(stderr, "awf run: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf run", "store workflow assets", *stateDir, blobsDir, err, r.stateIdentity(), stateFailureInfra)
 	}
 	// Snapshot the run's full canonical definition into Blobs (view-only). Lets a reader
 	// render this run faithfully against the structure it executed against, even after the
@@ -396,14 +408,12 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// CAS dedup → one blob per distinct definition.
 	definitionRef, err := engine.StoreRunStartedDefinitionSnapshot(blobs, ld)
 	if err != nil {
-		fprintf(stderr, "awf run: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf run", "store workflow definition", *stateDir, blobsDir, err, r.stateIdentity(), stateFailureInfra)
 	}
 	// Step 9: OpenLogExclusive atomically claims the run.id.
 	runDir := filepath.Join(*stateDir, "runs", id)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		fprintf(stderr, "awf run: create run dir %q: %v\n", runDir, err)
-		return ExitInfra
+		return reportStateFailure(stderr, "awf run", "create run directory", *stateDir, runDir, err, r.stateIdentity(), stateFailureInfra)
 	}
 	logPath := filepath.Join(runDir, "log")
 	log, err := state.OpenLogExclusive(logPath, clock.System{})
@@ -415,8 +425,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 			return ExitUsage
 		}
 		// Any other open-log failure is AWF's own log-file I/O → ExitInfra.
-		fprintf(stderr, "awf run: open log %q: %v\n", logPath, err)
-		return ExitInfra
+		return reportStateFailure(stderr, "awf run", "open run log", *stateDir, logPath, err, r.stateIdentity(), stateFailureInfra)
 	}
 	runStartedAppended := false
 	defer func() {
@@ -435,7 +444,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(lockErr, ErrRunLockHeld) {
 			fprintf(stderr, "awf run: run id %q is already active in another process\n", id)
 		} else {
-			fprintf(stderr, "awf run: acquire run lock: %v\n", lockErr)
+			return reportStateFailure(stderr, "awf run", "acquire run lock", *stateDir, filepath.Join(runDir, "run.lock"), lockErr, r.stateIdentity(), stateFailureInfra)
 		}
 		// The run-lock is AWF-owned liveness metadata; a held lock (concurrent
 		// driver) or a lock I/O failure is an environment condition → ExitInfra.
@@ -494,12 +503,10 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: runStartedData}); err != nil {
-		fprintf(stderr, "awf run: append run.started: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf run", "append run.started", *stateDir, logPath, err, r.stateIdentity(), stateFailureInfra)
 	}
 	if err := log.Sync(); err != nil {
-		fprintf(stderr, "awf run: sync log after run.started: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf run", "sync run log after run.started", *stateDir, logPath, err, r.stateIdentity(), stateFailureInfra)
 	}
 	runStartedAppended = true
 
@@ -512,5 +519,5 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// r.BrokerOptions defaults to empty (100ms poll) in production; tests
 	// inject signal.WithPollInterval(time.Millisecond) for fast runs.
 	broker := awfsignal.NewBroker(awfsignal.ControlDir(*stateDir, id), r.BrokerOptions...)
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", false, assetSnapshots, inputFileRefs, broker, liveRoot, &skipTeardown, "")
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, id, "awf run", "", *stateDir, false, assetSnapshots, inputFileRefs, broker, liveRoot, &skipTeardown, "")
 }

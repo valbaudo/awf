@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"os/exec"
 	"runtime"
@@ -48,6 +50,16 @@ func cliUI(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf ui: compute digest: %v\n", err)
 		return ExitUsage
 	}
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateReadOnly, defaultStateIdentity)
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			canonicalStateDir, accessErr = canonicalStatePath(*stateDir)
+		}
+		if accessErr != nil {
+			return reportStateFailure(stderr, "awf ui", "access state directory", *stateDir, *stateDir, accessErr, defaultStateIdentity, stateFailureInfra)
+		}
+	}
+	*stateDir = canonicalStateDir
 
 	ln, err := ui.Listen(*port)
 	if err != nil {
@@ -57,7 +69,9 @@ func cliUI(args []string, stdout, stderr io.Writer) int {
 	url := "http://" + ln.Addr().String()
 	fprintf(stdout, "awf ui: serving %s on %s\n", path, url)
 
-	srv := ui.NewLoaded(ld, digest, *stateDir)
+	srv := ui.NewLoaded(ld, digest, *stateDir).WithStateErrorFormatter(func(operation, path string, err error) string {
+		return formatStateError(operation, *stateDir, path, err, defaultStateIdentity)
+	})
 	if *open {
 		openBrowser(url) // best-effort; the URL is already printed
 	}

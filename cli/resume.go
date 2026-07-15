@@ -106,6 +106,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	}
 	runID := fs0.Arg(0)
 	wfPath := fs0.Arg(1)
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateWriteExisting, r.stateIdentity())
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			fprintf(stderr, "awf resume: no run with id %q under state directory %q. Did you mean a different --state-dir?\n", runID, *stateDir)
+			return ExitUsage
+		}
+		return reportStateFailure(stderr, "awf resume", "access state directory", *stateDir, *stateDir, accessErr, r.stateIdentity(), stateFailureInfra)
+	}
+	*stateDir = canonicalStateDir
 
 	// Step 1: verify the log exists without taking a writable handle. This keeps
 	// an existing-but-incomplete run directory from gaining an empty log merely
@@ -116,7 +125,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, fs.ErrNotExist) {
 			fprintf(stderr, "awf resume: no run with id %q at %q. Did you mean a different --state-dir?\n", runID, logPath)
 		} else {
-			fprintf(stderr, "awf resume: stat log %q: %v\n", logPath, err)
+			return reportStateFailure(stderr, "awf resume", "stat run log", *stateDir, logPath, err, r.stateIdentity(), stateFailureInfra)
 		}
 		return ExitUsage
 	}
@@ -131,7 +140,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(lockErr, ErrRunLockHeld) {
 			fprintf(stderr, "awf resume: run %q is already active in another process; refusing to resume a live run\n", runID)
 		} else {
-			fprintf(stderr, "awf resume: acquire run lock: %v\n", lockErr)
+			return reportStateFailure(stderr, "awf resume", "acquire run lock", *stateDir, filepath.Join(runDir, "run.lock"), lockErr, r.stateIdentity(), stateFailureInfra)
 		}
 		// The run-lock is AWF-owned liveness metadata; a held lock (concurrent
 		// driver) or a lock I/O failure is an environment condition → ExitInfra.
@@ -144,7 +153,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, fs.ErrNotExist) {
 			fprintf(stderr, "awf resume: no run with id %q at %q. Did you mean a different --state-dir?\n", runID, logPath)
 		} else {
-			fprintf(stderr, "awf resume: open log %q: %v\n", logPath, err)
+			return reportStateFailure(stderr, "awf resume", "open run log", *stateDir, logPath, err, r.stateIdentity(), stateFailureInfra)
 		}
 		return ExitUsage
 	}
@@ -155,18 +164,15 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	blobsDir := filepath.Join(*stateDir, "blobs")
 	blobs, err := state.OpenBlobs(blobsDir)
 	if err != nil {
-		fprintf(stderr, "awf resume: open blobs %q: %v\n", blobsDir, err)
-		return ExitInfra
+		return reportStateFailure(stderr, "awf resume", "open blob store", *stateDir, blobsDir, err, r.stateIdentity(), stateFailureInfra)
 	}
 	events, err := log.Fold()
 	if err != nil {
-		fprintf(stderr, "awf resume: fold log: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf resume", "fold run log", *stateDir, logPath, err, r.stateIdentity(), stateFailureInfra)
 	}
 	rs, err := engine.Fold(events, blobs)
 	if err != nil {
-		fprintf(stderr, "awf resume: build RunState: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf resume", "read committed run state", *stateDir, blobsDir, err, r.stateIdentity(), stateFailureInfra)
 	}
 
 	// Step 3: terminal-outcome admission. resumeAdmission refuses ONLY a
@@ -209,6 +215,9 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	workdirRoot := filepath.Join(*stateDir, "work", runID)
 	backend, cleanup, err := r.resolveBackend(ctx, kind, runID, workdirRoot, blobs, stderr)
 	if err != nil {
+		if kind == engine.BackendNative {
+			return reportStateFailure(stderr, "awf resume", "prepare native work directory", *stateDir, workdirRoot, err, r.stateIdentity(), stateFailureInfra)
+		}
 		fprintf(stderr, "awf resume: construct backend %q: %v\n", kind, err)
 		return ExitInfra
 	}
@@ -295,13 +304,19 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	}
 	recordedAssets := started.Assets
 	if err := checkLiveHomePin(started.LiveHome, *stateDir); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return reportStateFailure(stderr, "awf resume", "check live-home pin", *stateDir, filepath.Join(*stateDir, "live"), err, r.stateIdentity(), stateFailureInfra)
+		}
 		fprintf(stderr, "awf resume: %v\n", err)
 		return ExitUsage
 	}
 	liveRoot, err := openLiveHomeRoot(*stateDir)
 	if err != nil {
-		fprintf(stderr, "awf resume: open live home: %v\n", err)
-		return ExitInfra
+		livePath := filepath.Join(*stateDir, "live")
+		if override := liveHomeEnv()["AWF_LIVE_HOME"]; override != "" {
+			livePath = override
+		}
+		return reportStateFailure(stderr, "awf resume", "open live home", *stateDir, livePath, err, r.stateIdentity(), stateFailureInfra)
 	}
 
 	// Slice 5.3: if Resolver isn't test-injected, build the production
@@ -337,8 +352,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	controlDir := awfsignal.ControlDir(*stateDir, runID)
 	broker := awfsignal.NewBroker(controlDir, r.BrokerOptions...)
 	if err := broker.ClearPauseCancel(); err != nil {
-		fprintf(stderr, "awf resume: clear pause/cancel files: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf resume", "clear pause/cancel files", *stateDir, controlDir, err, r.stateIdentity(), stateFailureInfra)
 	}
 
 	// Step 9: Create container handles. SAME pattern as cli/run.go — handles
@@ -396,6 +410,9 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 			h, err = backend.Create(ctx, engine.ContainerSpecFor(ld.Workflow, ld.ComposeFiles, name))
 		}
 		if err != nil {
+			if kind == engine.BackendNative {
+				return reportStateFailure(stderr, "awf resume", "create or restore native work directory", *stateDir, workdirRoot, err, r.stateIdentity(), stateFailureInfra)
+			}
 			fprintf(stderr, "awf resume: create/restore container %q: %v\n", name, err)
 			return ExitInfra
 		}
@@ -481,12 +498,10 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	if err := log.Append(state.Event{Type: engine.EventRunResumed, Data: resumedData}); err != nil {
-		fprintf(stderr, "awf resume: append run.resumed: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf resume", "append run.resumed", *stateDir, logPath, err, r.stateIdentity(), stateFailureInfra)
 	}
 	if err := log.Sync(); err != nil {
-		fprintf(stderr, "awf resume: sync log after run.resumed: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf resume", "sync run log after run.resumed", *stateDir, logPath, err, r.stateIdentity(), stateFailureInfra)
 	}
 	rs.Epoch = newEpoch
 
@@ -501,7 +516,7 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	// RunOptions.InputFiles when non-nil — so the folded value wins, exactly
 	// like the typed input and Assets channels. `awf resume` has no
 	// --input-files flag (per the same no-re-supply rule as --input).
-	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", true, recordedAssets, nil, broker, liveRoot, &skipTeardown, rerunFrom)
+	return r.runAndFinish(ctx, backend, resolverOrEmpty(resolver), ld, rs, handles, log, blobs, stdout, stderr, runID, "awf resume", " (resumed)", *stateDir, true, recordedAssets, nil, broker, liveRoot, &skipTeardown, rerunFrom)
 }
 
 func preflightLiveResume(ctx context.Context, ld *ir.LoadedDefinition, rs *engine.RunState, resolver agent.Resolver) error {

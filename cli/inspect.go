@@ -52,6 +52,15 @@ func cliInspect(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf inspect: unknown --output %q (want text or json)\n", *output)
 		return ExitUsage
 	}
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateReadOnly, defaultStateIdentity)
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			fprintf(stderr, "awf inspect: no run with id %q under state directory %q\n", runID, *stateDir)
+			return ExitUsage
+		}
+		return reportStateFailure(stderr, "awf inspect", "access state directory", *stateDir, *stateDir, accessErr, defaultStateIdentity, stateFailureInfra)
+	}
+	*stateDir = canonicalStateDir
 
 	logPath := filepath.Join(*stateDir, "runs", runID, "log")
 	events, err := state.FoldFile(logPath)
@@ -59,7 +68,7 @@ func cliInspect(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, fs.ErrNotExist) {
 			fprintf(stderr, "awf inspect: no run with id %q at %q\n", runID, logPath)
 		} else {
-			fprintf(stderr, "awf inspect: fold log %q: %v\n", logPath, err)
+			return reportStateFailure(stderr, "awf inspect", "fold run log", *stateDir, logPath, err, defaultStateIdentity, stateFailureInfra)
 		}
 		return ExitUsage
 	}

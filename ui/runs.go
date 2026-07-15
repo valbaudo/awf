@@ -2,6 +2,8 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,7 +49,10 @@ func listRuns(stateDir, wantID, wantDigest string) ([]RunRow, error) {
 		logPath := filepath.Join(runsDir, e.Name(), "log")
 		events, ferr := state.FoldFile(logPath)
 		if ferr != nil {
-			continue // a dir without a readable log is not a run; skip quietly
+			if errors.Is(ferr, fs.ErrNotExist) {
+				continue // an unrelated directory without a log is not a run
+			}
+			return nil, ferr
 		}
 		digest, wfID := runMeta(events)
 		if !runMatchesWorkflow(wfID, digest, wantID, wantDigest) {

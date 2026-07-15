@@ -3,7 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
+	"path/filepath"
 	"strconv"
 	"sync"
 
@@ -82,6 +85,7 @@ func (r *Runner) runAndFinish(
 	blobs state.Blobs,
 	stdout, stderr io.Writer,
 	runID, opName, successSuffix string,
+	stateRoot string,
 	resume bool,
 	assets map[string]engine.RunStartedAsset,
 	inputFiles map[string]string,
@@ -117,13 +121,24 @@ func (r *Runner) runAndFinish(
 		Resume:        resume,
 		RerunFrom:     rerunFrom,
 	})
-	return r.finishRunResult(log, stdout, stderr, runID, opName, successSuffix, outcome, runErr, skipTeardown)
+	return r.finishRunResultWithState(log, stdout, stderr, runID, opName, successSuffix, stateRoot, outcome, runErr, skipTeardown)
 }
 
 func (r *Runner) finishRunResult(
 	log state.Log,
 	stdout, stderr io.Writer,
 	runID, opName, successSuffix string,
+	outcome engine.Outcome,
+	runErr error,
+	skipTeardown *bool,
+) int {
+	return r.finishRunResultWithState(log, stdout, stderr, runID, opName, successSuffix, "", outcome, runErr, skipTeardown)
+}
+
+func (r *Runner) finishRunResultWithState(
+	log state.Log,
+	stdout, stderr io.Writer,
+	runID, opName, successSuffix, stateRoot string,
 	outcome engine.Outcome,
 	runErr error,
 	skipTeardown *bool,
@@ -142,6 +157,9 @@ func (r *Runner) finishRunResult(
 		fprintf(stdout, "run %s: cancelled\n", runID)
 		return ExitOK
 	}
+	if outcome == "" && runErr != nil && errors.Is(runErr, fs.ErrPermission) && stateRoot != "" {
+		return reportStateFailure(stderr, opName, "persist run state", stateRoot, filepath.Join(stateRoot, "runs", runID, "log"), runErr, r.stateIdentity(), stateFailureInfra)
+	}
 
 	validPair := (outcome == engine.OutcomeOK && runErr == nil) ||
 		((outcome == engine.OutcomeRetryableFailure || outcome == engine.OutcomePermanentFailure || outcome == engine.OutcomeRejected) && runErr != nil) ||
@@ -158,12 +176,10 @@ func (r *Runner) finishRunResult(
 			return ExitUsage
 		}
 		if err := log.Append(state.Event{Type: engine.EventRunFinished, Data: finishedData}); err != nil {
-			fprintf(stderr, "%s: append run.finished: %v\n", opName, err)
-			return ExitUsage
+			return reportStateFailure(stderr, opName, "append run.finished", stateRoot, filepath.Join(stateRoot, "runs", runID, "log"), err, r.stateIdentity(), stateFailureInfra)
 		}
 		if err := log.Sync(); err != nil {
-			fprintf(stderr, "%s: sync log after run.finished: %v\n", opName, err)
-			return ExitUsage
+			return reportStateFailure(stderr, opName, "sync run log after run.finished", stateRoot, filepath.Join(stateRoot, "runs", runID, "log"), err, r.stateIdentity(), stateFailureInfra)
 		}
 		printRunCostSummary(stdout, log)
 	}
