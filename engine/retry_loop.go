@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
@@ -13,6 +14,33 @@ import (
 	"github.com/valbaudo/awf/retry"
 	"github.com/valbaudo/awf/state"
 )
+
+// RetryNotice describes one retry wait scheduled after a retryable failure.
+// It is emitted after streams are drained and the retry event is appended,
+// immediately before the cancellable wait.
+type RetryNotice struct {
+	Path          string
+	FailedAttempt int
+	NextAttempt   int
+	Attempts      int
+	Outcome       Outcome
+	Cause         error
+	Delay         time.Duration
+}
+
+type runWithRetryOptions struct {
+	onRetry func(RetryNotice)
+}
+
+// RunWithRetryOption configures an optional retry-loop observer while keeping
+// existing direct RunWithRetry calls source-compatible.
+type RunWithRetryOption func(*runWithRetryOptions)
+
+// WithRetryNotice registers an observer for scheduled retry waits. Observer
+// panics propagate to the caller.
+func WithRetryNotice(observer func(RetryNotice)) RunWithRetryOption {
+	return func(opts *runWithRetryOptions) { opts.onRetry = observer }
+}
 
 // RunWithRetry runs dispatcher.Run up to policy.Attempts times. Between
 // attempts it sleeps policy.BackoffFor(attempt) via clk.Sleep (deterministic
@@ -48,6 +76,7 @@ func RunWithRetry(
 	policy retry.Policy,
 	clk clock.Clock,
 	log state.Log,
+	opts ...RunWithRetryOption,
 ) (DispatchResult, <-chan container.IOChunk, error) {
 	if policy.Attempts < 1 {
 		return DispatchResult{}, nil, fmt.Errorf("engine.RunWithRetry: policy.Attempts = %d, want ≥ 1", policy.Attempts)
@@ -56,6 +85,12 @@ func RunWithRetry(
 	var dr DispatchResult
 	var chunks <-chan container.IOChunk
 	var lastErr error
+	var cfg runWithRetryOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
 
 	// R3: thread the resolved recovery strategy onto the local intent copy so the
 	// dispatcher hands it to a PersistentSession adapter (which resumes its live
@@ -70,17 +105,6 @@ func RunWithRetry(
 		// intent is a value copy owned by this call, so mutating it per iteration
 		// is safe and does not leak across dispatches.
 		intent.Attempt = attempt
-
-		// Preceding-sleep for attempts > 1 (EffectiveBackoff(1, …) = 0; spec §6
-		// backoff). dr still holds the PREVIOUS attempt's result here (it's
-		// reassigned below), so dr.RetryAfter is that attempt's server hint —
-		// EffectiveBackoff waits the longer of the curve and the hint, plus
-		// path-keyed jitter. On attempt 1 dr is the zero value (RetryAfter 0).
-		if attempt > 1 {
-			if err := clk.Sleep(ctx, policy.EffectiveBackoff(attempt, dr.RetryAfter, intent.Path)); err != nil {
-				return dr, nil, err
-			}
-		}
 
 		dr, chunks, lastErr = dispatcher.Run(ctx, intent)
 		// Validate the dispatcher's original tuple before applying the one
@@ -176,6 +200,23 @@ func RunWithRetry(
 		// Note: retry.attempt rides the next Log.Sync (the eventual
 		// node.completed / node.failed) per the durability class decision in the
 		// slice 2.4 plan Design question 3.
+
+		nextAttempt := attempt + 1
+		delay := policy.EffectiveBackoff(nextAttempt, dr.RetryAfter, intent.Path)
+		if cfg.onRetry != nil {
+			cfg.onRetry(RetryNotice{
+				Path:          intent.Path,
+				FailedAttempt: attempt,
+				NextAttempt:   nextAttempt,
+				Attempts:      policy.Attempts,
+				Outcome:       dr.Outcome,
+				Cause:         dr.Err,
+				Delay:         delay,
+			})
+		}
+		if err := clk.Sleep(ctx, delay); err != nil {
+			return dr, nil, err
+		}
 	}
 
 	// Unreachable — the loop above always returns inside the body.

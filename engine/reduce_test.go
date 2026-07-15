@@ -535,6 +535,22 @@ func TestRunReduceDockerStagingRoot(t *testing.T) {
 	}
 }
 
+func TestRunReduceCommandDefaultsToOneAttempt(t *testing.T) {
+	rig := newReduceRig(t)
+	rig.fake.ProgramExec("./merge.sh", container.ExecResult{ExitCode: 0}, nil)
+	rig.fake.FailExecAfterN(0)
+	r := &ir.Reduce{Run: "./merge.sh", Container: reduceContainer}
+	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"k": "v"}}}
+
+	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
+	if oc != OutcomeRetryableFailure || err == nil {
+		t.Fatalf("runReduce = (%q, %v), want retryable failure", oc, err)
+	}
+	if got := len(rig.fake.Calls); got != 1 {
+		t.Errorf("reducer dispatches = %d, want 1", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // I1: env: forwarding into the reduce.run reducer (mirrors F15 for graph run:
 // steps) — a resolved workflow env: name reaches the reducer's Exec env on

@@ -88,6 +88,10 @@ type RunOptions struct {
 	// top-level ancestor (engine/rerun.go), re-running them. Set by
 	// `awf resume --from`.
 	RerunFrom string
+
+	// OnRetry, if non-nil, observes each retry wait after the failed attempt is
+	// drained and journaled, immediately before the cancellable sleep.
+	OnRetry func(RetryNotice)
 }
 
 // Run is the top-level interpreter entry point. Walks def.Workflow.Graph
@@ -154,6 +158,7 @@ func Run(
 		tap:           opts.Tap,
 		broker:        opts.Broker,
 		liveFinalizer: opts.LiveFinalizer,
+		onRetry:       opts.OnRetry,
 		resume:        opts.Resume,
 	}
 	// M2: wire the agent resolver so runAgentStepWithContext can set
@@ -350,7 +355,7 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 		}
 	}
 
-	policy, err := retry.Merge(retry.Default, cs.Retry)
+	policy, err := retry.Merge(retry.CodeDefault, cs.Retry)
 	if err != nil {
 		return "", fmt.Errorf("engine.Run: build retry policy at path %q: %w", path, err)
 	}
@@ -454,7 +459,7 @@ func runCodeStepWithContext(ctx context.Context, cs *ir.CodeStep, path string, i
 
 	appendNodeStarted(ictx.log, path, "code")
 
-	dr, chunks, runErr := RunWithRetry(ctx, dispatcher, intent, policy, ictx.clk, ictx.log)
+	dr, chunks, runErr := RunWithRetry(ctx, dispatcher, intent, policy, ictx.clk, ictx.log, WithRetryNotice(ictx.onRetry))
 	// Drain the live-tap channel (single consumer — fine for Phase 2's
 	// pre-closed fake channels; Phase 4's Docker streaming will require
 	// this be moved to a goroutine).

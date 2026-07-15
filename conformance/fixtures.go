@@ -50,7 +50,7 @@ graph:
 
 // fiveStepSeqWorkflow uses `retry: { attempts: 1 }` on every step — see
 // slice 2.6 Design question 7. Bucket 2's `FailExecAfterN(k)` is one-shot
-// per container.Fake's slice-2.4 contract; with retry.Default.Attempts=3
+// per container.Fake's slice-2.4 contract; with an explicit multi-attempt retry
 // the (k+2)-th call would succeed and the "crash" would be invisible.
 // Pinning attempts=1 makes the fault actually halt the step.
 var fiveStepSeqWorkflow = fmt.Sprintf(`workflow: conformance-five-step-seq

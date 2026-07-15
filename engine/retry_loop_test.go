@@ -131,6 +131,102 @@ func TestRunWithRetryRetryThenSuccess(t *testing.T) {
 	}
 }
 
+func TestRunWithRetryNoticeMatchesScheduledWait(t *testing.T) {
+	t.Parallel()
+	exit := 0
+	cause := errors.New("rate limited")
+	dsp := &stubDispatcher{results: []stubResult{
+		{dr: engine.DispatchResult{Outcome: engine.OutcomeRetryableFailure, Err: cause, RetryAfter: 45 * time.Second}},
+		{dr: engine.DispatchResult{Outcome: engine.OutcomeOK, ExitCode: &exit}},
+	}}
+	log := state.NewInMemoryLog(clock.System{})
+	clk := &clock.Fake{}
+	policy := retry.Policy{Attempts: 3, Backoff: retry.BackoffExp, Initial: time.Second, Max: time.Minute}
+	var notices []engine.RetryNotice
+
+	_, _, err := engine.RunWithRetry(context.Background(), dsp, defaultIntent(), policy, clk, log,
+		engine.WithRetryNotice(func(n engine.RetryNotice) { notices = append(notices, n) }))
+	if err != nil {
+		t.Fatalf("RunWithRetry: %v", err)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("notices = %d, want 1", len(notices))
+	}
+	wantDelay := policy.EffectiveBackoff(2, 45*time.Second, "x")
+	want := engine.RetryNotice{
+		Path: "x", FailedAttempt: 1, NextAttempt: 2, Attempts: 3,
+		Outcome: engine.OutcomeRetryableFailure, Cause: cause, Delay: wantDelay,
+	}
+	if notices[0] != want {
+		t.Errorf("notice = %+v, want %+v", notices[0], want)
+	}
+	if got := clk.Now().Sub(time.Time{}); got != wantDelay {
+		t.Errorf("sleep = %v, want notice delay %v", got, wantDelay)
+	}
+}
+
+func TestRunWithRetryNoticeOnlyForActualRetries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		results []stubResult
+		want    int
+	}{
+		{name: "first success", results: []stubResult{{dr: engine.DispatchResult{Outcome: engine.OutcomeOK}}}},
+		{name: "permanent", results: []stubResult{{dr: engine.DispatchResult{Outcome: engine.OutcomePermanentFailure, Err: errors.New("bad config")}}}},
+		{name: "final exhausted", results: []stubResult{{dr: engine.DispatchResult{Outcome: engine.OutcomeRetryableFailure, Err: errors.New("still broken")}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dsp := &stubDispatcher{results: tt.results}
+			var notices []engine.RetryNotice
+			_, _, _ = engine.RunWithRetry(context.Background(), dsp, defaultIntent(), retry.Policy{Attempts: 1}, &clock.Fake{}, state.NewInMemoryLog(clock.System{}),
+				engine.WithRetryNotice(func(n engine.RetryNotice) { notices = append(notices, n) }))
+			if len(notices) != tt.want {
+				t.Errorf("notices = %d, want %d", len(notices), tt.want)
+			}
+		})
+	}
+}
+
+type cancellingClock struct {
+	cancel context.CancelFunc
+	sleeps int
+}
+
+func (c *cancellingClock) Now() time.Time { return time.Time{} }
+func (c *cancellingClock) Sleep(ctx context.Context, _ time.Duration) error {
+	c.sleeps++
+	c.cancel()
+	return ctx.Err()
+}
+
+func TestRunWithRetryCancellationDuringNoticedWaitDoesNotDispatchAgain(t *testing.T) {
+	t.Parallel()
+	dsp := &stubDispatcher{results: []stubResult{
+		{dr: engine.DispatchResult{Outcome: engine.OutcomeRetryableFailure, Err: errors.New("first")}},
+		{dr: engine.DispatchResult{Outcome: engine.OutcomeOK}},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	clk := &cancellingClock{cancel: cancel}
+	var notices []engine.RetryNotice
+	_, _, err := engine.RunWithRetry(ctx, dsp, defaultIntent(), retry.Policy{Attempts: 2, Backoff: retry.BackoffNone}, clk, state.NewInMemoryLog(clock.System{}),
+		engine.WithRetryNotice(func(n engine.RetryNotice) { notices = append(notices, n) }))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if dsp.calls != 1 {
+		t.Errorf("dispatches = %d, want 1", dsp.calls)
+	}
+	if len(notices) != 1 {
+		t.Errorf("notices = %d, want 1 scheduled wait notice", len(notices))
+	}
+	if clk.sleeps != 1 {
+		t.Errorf("sleeps = %d, want 1", clk.sleeps)
+	}
+}
+
 func TestRunWithRetryExhaustedReturnsLastError(t *testing.T) {
 	t.Parallel()
 	dsp := &stubDispatcher{results: []stubResult{

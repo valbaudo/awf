@@ -12,6 +12,7 @@ import (
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/retry"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -316,6 +317,35 @@ func TestRunReactDispatchesToolThenAnswers(t *testing.T) {
 	tnr, _ := h.rs.LookupCompleted("react[0].round-1.tool-0")
 	if tnr.Outputs["stdout"] != "RESULT-OK" {
 		t.Fatalf("tool leaf stdout = %v", tnr.Outputs["stdout"])
+	}
+}
+
+func TestRunReactToolPartialRetryInheritsCodeBackoff(t *testing.T) {
+	wf := reactWorkflow("./check {{ args_file }}")
+	tool := wf.Tools["check"]
+	tool.Impl.Retry = &ir.RetryPolicy{Attempts: 2}
+	wf.Tools["check"] = tool
+	r := &ir.React{ID: "answer", Prompt: "use the tool", Tools: []string{"check"}, With: ir.RawConfig{"uses": "awf/llm"}}
+	runner := &scriptedToolLoop{results: []agent.ToolLoopResult{
+		{ToolCalls: []agent.ToolCall{{Index: 0, ID: "c1", Name: "check", Arguments: `{}`}}, FinishReason: "tool_calls"},
+		{Text: "done", FinishReason: "stop"},
+	}}
+	h := newReactTestHarness(t, r, wf, runner)
+	wantArgs := argsFilePath("react[0].round-1.tool-0", "/work/.awf")
+	h.programTool("./check "+wantArgs, container.ExecResult{ExitCode: 0, Stdout: []byte("ok")})
+	h.fake.FailExecAfterN(0)
+	start := h.clk.Now()
+
+	oc, err := h.run(t)
+	if err != nil || oc != OutcomeOK {
+		t.Fatalf("run: oc=%q err=%v", oc, err)
+	}
+	if got := len(h.fake.Calls); got != 2 {
+		t.Errorf("tool dispatches = %d, want 2", got)
+	}
+	wantDelay := retry.CodeDefault.EffectiveBackoff(2, 0, "react[0].round-1.tool-0")
+	if got := h.clk.Now().Sub(start); got != wantDelay {
+		t.Errorf("retry delay = %v, want inherited code default %v", got, wantDelay)
 	}
 }
 

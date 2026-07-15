@@ -8,22 +8,42 @@ import (
 	"github.com/valbaudo/awf/retry"
 )
 
-func TestDefaultPolicy(t *testing.T) {
-	d := retry.Default
-	if d.Attempts != 8 {
-		t.Errorf("Attempts = %d, want 8", d.Attempts)
+func TestDefaultPolicies(t *testing.T) {
+	for name, tc := range map[string]struct {
+		policy   retry.Policy
+		attempts int
+	}{
+		"code":             {policy: retry.CodeDefault, attempts: 1},
+		"agent":            {policy: retry.AgentDefault, attempts: 8},
+		"deprecated_alias": {policy: retry.Default, attempts: 8},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := tc.policy
+			if d.Attempts != tc.attempts {
+				t.Errorf("Attempts = %d, want %d", d.Attempts, tc.attempts)
+			}
+			if d.Backoff != retry.BackoffExp {
+				t.Errorf("Backoff = %v, want exp", d.Backoff)
+			}
+			if d.Initial != time.Second {
+				t.Errorf("Initial = %v, want 1s", d.Initial)
+			}
+			if d.Max != 60*time.Second {
+				t.Errorf("Max = %v, want 60s", d.Max)
+			}
+			if len(d.NonRetryableExitCodes) != 1 || d.NonRetryableExitCodes[0] != 78 {
+				t.Errorf("NonRetryableExitCodes = %v, want [78]", d.NonRetryableExitCodes)
+			}
+		})
 	}
-	if d.Backoff != retry.BackoffExp {
-		t.Errorf("Backoff = %v, want exp", d.Backoff)
+
+	// These are exported variables for compatibility, so each must own its slice.
+	// Otherwise mutating one class's exit-code list also mutates another class.
+	if &retry.CodeDefault.NonRetryableExitCodes[0] == &retry.AgentDefault.NonRetryableExitCodes[0] {
+		t.Error("CodeDefault and AgentDefault alias NonRetryableExitCodes")
 	}
-	if d.Initial != time.Second {
-		t.Errorf("Initial = %v, want 1s", d.Initial)
-	}
-	if d.Max != 60*time.Second {
-		t.Errorf("Max = %v, want 60s", d.Max)
-	}
-	if len(d.NonRetryableExitCodes) != 1 || d.NonRetryableExitCodes[0] != 78 {
-		t.Errorf("NonRetryableExitCodes = %v, want [78]", d.NonRetryableExitCodes)
+	if &retry.Default.NonRetryableExitCodes[0] == &retry.AgentDefault.NonRetryableExitCodes[0] {
+		t.Error("deprecated Default aliases AgentDefault.NonRetryableExitCodes")
 	}
 }
 

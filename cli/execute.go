@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"strconv"
+	"sync"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/live"
@@ -26,6 +27,19 @@ func (r *Runner) agentEventTap(stderr io.Writer) io.Writer {
 		return r.AgentEventTap
 	}
 	return stderr
+}
+
+// newRetryProgressRenderer returns the single retry-progress sink shared by
+// every branch in one run. Parallel and map branches may schedule retries at
+// the same time, so the closure serializes complete lines at the writer seam.
+func newRetryProgressRenderer(stderr io.Writer) func(engine.RetryNotice) {
+	var mu sync.Mutex
+	return func(n engine.RetryNotice) {
+		mu.Lock()
+		defer mu.Unlock()
+		fprintf(stderr, "[%s] attempt %d/%d failed: %v; retrying as %d/%d in %s\n",
+			n.Path, n.FailedAttempt, n.Attempts, n.Cause, n.NextAttempt, n.Attempts, n.Delay)
+	}
 }
 
 // runAndFinish is the shared tail of `awf run` and `awf resume`. Both
@@ -99,6 +113,7 @@ func (r *Runner) runAndFinish(
 		InputFiles:    inputFiles,
 		RunEnv:        resolveWorkflowRunEnv(ld),
 		LiveFinalizer: liveDispatchFinalizer(liveRoot),
+		OnRetry:       newRetryProgressRenderer(stderr),
 		Resume:        resume,
 		RerunFrom:     rerunFrom,
 	})
