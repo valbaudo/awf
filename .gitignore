@@ -8,6 +8,7 @@
 .cursor/
 .agents/
 .superpowers/
+.worktrees/
 .aider*
 CLAUDE.md
 CLAUDE.local.md
