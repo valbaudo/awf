@@ -1742,8 +1742,10 @@ together with `recovery:` (below), are the authored knobs.
 
 Before waiting for another attempt, **awf** writes a human-facing retry notice to
 stderr. The notice includes the node path, the failed, next, and maximum attempt
-numbers, the cause, and the wait duration. This progress text is not a stable
-machine stream; machine callers must not parse it.
+numbers, the cause, and the wait duration. The wait is cancellable; cancellation
+may make this the final notice without dispatching the announced next attempt.
+This progress text is not a stable machine stream; machine callers must not parse
+it.
 
 `recovery: continue|restart` selects how a retry re-runs an agent (`uses:`) step
 after a transient (idle- or wall-timeout) fault. `continue` resumes the *same*

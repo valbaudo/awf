@@ -93,8 +93,9 @@ standard output as a live tap, while agent-step progress — assistant text,
 reasoning, tool calls and results — streams to standard error (plain when piped
 or under `NO_COLOR`). Retry notices on that stream identify the node path,
 failed, next, and maximum attempt, cause, and wait duration; they are human-facing
-progress, not a stable machine stream. The final line on standard output reports the run id and
-terminal outcome (for example `run 1a2b3c4d: ok`). That line is porcelain —
+progress, not a stable machine stream. The wait is cancellable, so cancellation
+may leave a retry notice without a subsequent dispatch. The final line on standard
+output reports the run id and terminal outcome (for example `run 1a2b3c4d: ok`). That line is porcelain —
 machine callers read the exit code (see **COMPATIBILITY**). Run state is written under
 _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 **FILES**).

@@ -71,8 +71,9 @@ code** and the JSON from `awf outputs`. The human-facing output is *not*
 versioned: the `stderr` progress stream, including retry notices, and the
 `run <id>: <outcome>` line on `awf run`'s standard output. Retry notices include
 the node path, failed/next/max attempt, cause, and wait duration for an operator;
-do not parse them. Read the exit code, and pass `--run-id` when you need to know
-the run id up front.
+the wait is cancellable, so a notice may not be followed by another dispatch. Do
+not parse these notices. Read the exit code, and pass `--run-id` when you need to
+know the run id up front.
 
 ## Versioning
 
