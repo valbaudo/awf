@@ -11,6 +11,32 @@ import (
 	"testing"
 )
 
+func TestOpenBlobsReadOnlyMissingStoreDoesNoIO(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "blobs")
+	before, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bs, err := OpenBlobsReadOnly(root)
+	if err != nil {
+		t.Fatalf("OpenBlobsReadOnly: %v", err)
+	}
+	after, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("OpenBlobsReadOnly mutated parent: before=%v after=%v", before, after)
+	}
+
+	ref := "awf-d1:sha256:" + strings.Repeat("d", 64)
+	if _, err := bs.Get(ref); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Get from absent read-only store: err=%v, want fs.ErrNotExist", err)
+	}
+}
+
 func TestBlobsPutGetRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	bs, err := OpenBlobs(dir)

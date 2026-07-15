@@ -57,6 +57,15 @@ func OpenBlobs(root string) (*FSBlobs, error) {
 	return &FSBlobs{root: root}, nil
 }
 
+// OpenBlobsReadOnly returns a filesystem CAS handle without probing or preparing
+// the store. Observers can therefore start against an empty state directory
+// without creating blobs/sha256 as a side effect. A later Get performs the first
+// filesystem access and naturally returns a wrapped fs.ErrNotExist when the
+// requested blob (or the store itself) is absent.
+func OpenBlobsReadOnly(root string) (*FSBlobs, error) {
+	return &FSBlobs{root: root}, nil
+}
+
 // Put writes content to the store under its sha256 address and returns the ref string.
 // Idempotent: putting the same bytes a second time is a no-op (atomic rename onto the
 // existing file produces an identical file). Atomic on POSIX (same-directory rename).

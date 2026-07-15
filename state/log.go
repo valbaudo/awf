@@ -57,7 +57,19 @@ type FileLog struct {
 // in Phase 2 owns the run directory layout, so plumbing MkdirAll here would couple the
 // primitive to a layout it doesn't own.)
 func OpenLog(path string, clk clock.Clock) (*FileLog, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	return openLog(path, clk, os.O_RDWR|os.O_CREATE|os.O_APPEND)
+}
+
+// OpenLogExisting opens an existing log for append and performs the same
+// scan/torn-tail repair as OpenLog, but never creates the file. Resume uses this
+// only after it owns the run lock, ensuring that observers and losing resume
+// contenders cannot mutate a log merely by trying to open it.
+func OpenLogExisting(path string, clk clock.Clock) (*FileLog, error) {
+	return openLog(path, clk, os.O_RDWR|os.O_APPEND)
+}
+
+func openLog(path string, clk clock.Clock, flags int) (*FileLog, error) {
+	f, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("state: open log %q: %w", path, err)
 	}

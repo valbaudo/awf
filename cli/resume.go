@@ -72,7 +72,7 @@ func sampleRerunSet(set []string, n int) string {
 // cliResume implements `awf resume <run-id> <path>`. The flow:
 //
 //  1. Parse flags + positional args.
-//  2. Open the existing log (NOT exclusive — this is the resume primitive).
+//  2. Verify the log exists, acquire the run lock, then open the existing log.
 //  3. Open blobs; fold the log into a populated RunState.
 //  4. Refuse on terminal events: run.finished / run.cancelled / node.failed.
 //  5. (slice 4.5) Wire signal handling EARLY so newBackend gets a real ctx.
@@ -107,24 +107,24 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	runID := fs0.Arg(0)
 	wfPath := fs0.Arg(1)
 
-	// Step 1: open the existing log. errors.Is(err, fs.ErrNotExist) means
-	// unknown run id — distinct from a generic I/O error so the user gets a
-	// useful message.
+	// Step 1: verify the log exists without taking a writable handle. This keeps
+	// an existing-but-incomplete run directory from gaining an empty log merely
+	// because an observer tried to resume it.
 	logPath := filepath.Join(*stateDir, "runs", runID, "log")
-	log, err := state.OpenLog(logPath, clock.System{})
+	_, err := os.Stat(logPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			fprintf(stderr, "awf resume: no run with id %q at %q. Did you mean a different --state-dir?\n", runID, logPath)
 		} else {
-			fprintf(stderr, "awf resume: open log %q: %v\n", logPath, err)
+			fprintf(stderr, "awf resume: stat log %q: %v\n", logPath, err)
 		}
 		return ExitUsage
 	}
-	defer func() { _ = log.Close() }()
 
-	// Slice 6.2: hold the run-lifetime flock for this resume epoch so `awf ls`
+	// Step 2: hold the run-lifetime flock for this resume epoch so `awf ls`
 	// sees the run as running again. Refuse if another process already drives
-	// it (double-driving one run corrupts nothing durable but is never intended).
+	// it. The lock must precede OpenLogExisting: opening repairs a torn tail and
+	// only the winning interpreter may perform that mutation.
 	runDir := filepath.Join(*stateDir, "runs", runID)
 	lock, lockErr := acquireRunLock(runDir)
 	if lockErr != nil {
@@ -139,7 +139,18 @@ func (r *Runner) cliResume(args []string, stdout, stderr io.Writer) int {
 	}
 	defer lock.Release()
 
-	// Step 2: fold the log into a populated RunState. The blobs need to be
+	log, err := state.OpenLogExisting(logPath, clock.System{})
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			fprintf(stderr, "awf resume: no run with id %q at %q. Did you mean a different --state-dir?\n", runID, logPath)
+		} else {
+			fprintf(stderr, "awf resume: open log %q: %v\n", logPath, err)
+		}
+		return ExitUsage
+	}
+	defer func() { _ = log.Close() }()
+
+	// Step 3: fold the log into a populated RunState. The blobs need to be
 	// available so engine.Fold can resolve OutputsRef / StdoutRef / InputRef.
 	blobsDir := filepath.Join(*stateDir, "blobs")
 	blobs, err := state.OpenBlobs(blobsDir)

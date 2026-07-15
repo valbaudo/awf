@@ -102,6 +102,52 @@ func TestGraphStatic(t *testing.T) {
 	}
 }
 
+func TestNewLoadedReadOnlyEmptyStateDoesNotCreateBlobStore(t *testing.T) {
+	stateDir := t.TempDir()
+	before, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(demoWorkflow(), testDigest, stateDir)
+	if _, err := srv.projectionFor(""); err != nil {
+		t.Fatalf("static projection: %v", err)
+	}
+	after, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("UI startup mutated state dir: before=%v after=%v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "blobs")); !os.IsNotExist(err) {
+		t.Fatalf("UI startup created blob store: err=%v", err)
+	}
+}
+
+func TestGraphSurfacesMissingCommittedDefinitionBlob(t *testing.T) {
+	stateDir := t.TempDir()
+	missingRef := "awf-d1:sha256:" + strings.Repeat("d", 64)
+	writeRunLog(t, stateDir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{
+			RunID: "r1", WorkflowDigest: testDigest, DefinitionRef: missingRef,
+		})},
+	)
+	ts := newTestServer(t, stateDir)
+	r, err := http.Get(ts.URL + "/api/graph?run=r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Body.Close() }()
+	if r.StatusCode != http.StatusInternalServerError {
+		body, _ := io.ReadAll(r.Body)
+		t.Fatalf("missing committed definition blob -> %d, want 500; body=%s", r.StatusCode, body)
+	}
+	body, _ := io.ReadAll(r.Body)
+	if !strings.Contains(string(body), "definition snapshot") || !strings.Contains(string(body), "no such file") {
+		t.Fatalf("missing blob error not surfaced: %q", body)
+	}
+}
+
 func TestGraphSnapshotOverlay(t *testing.T) {
 	dir := t.TempDir()
 	writeRunLog(t, dir, "r1",

@@ -65,7 +65,7 @@ func cliTrace(args []string, stdout, stderr io.Writer) int {
 	opts := obs.ProjectOptions{CaptureContent: *capture}
 	var blobs state.Blobs
 	if *capture {
-		fb, berr := state.OpenBlobs(filepath.Join(*stateDir, "blobs"))
+		fb, berr := state.OpenBlobsReadOnly(filepath.Join(*stateDir, "blobs"))
 		if berr != nil {
 			fprintf(stderr, "awf trace: open blobs: %v\n", berr)
 			return ExitInfra

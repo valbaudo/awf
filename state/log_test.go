@@ -391,6 +391,57 @@ func TestOpenLogExclusiveRefusesExistingFile(t *testing.T) {
 	}
 }
 
+func TestOpenLogExistingMissingDoesNoIO(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	path := filepath.Join(parent, "log")
+	before, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = OpenLogExisting(path, clock.System{})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("OpenLogExisting missing: err=%v, want fs.ErrNotExist", err)
+	}
+	after, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("OpenLogExisting mutated parent: before=%v after=%v", before, after)
+	}
+}
+
+func TestOpenLogExistingRepairsTornTail(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "log")
+	lg, err := OpenLogExclusive(path, fixedClock(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lg.Append(Event{Type: "valid"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lg.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wantSize := fileSize(t, path)
+	if err := appendBytesTo(path, []byte{0x01, 0x02, 0x03}); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenLogExisting(path, fixedClock(t))
+	if err != nil {
+		t.Fatalf("OpenLogExisting: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if got := fileSize(t, path); got != wantSize {
+		t.Fatalf("repaired size=%d, want valid prefix size=%d", got, wantSize)
+	}
+}
+
 func TestFoldFileDoesNotTruncate(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()

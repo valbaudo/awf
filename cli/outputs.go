@@ -63,7 +63,7 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf outputs: fold log %q: %v\n", logPath, err)
 		return ExitRunFailed // corrupt/unreadable log is a read failure
 	}
-	blobs, err := state.OpenBlobs(filepath.Join(*stateDir, "blobs"))
+	blobs, err := state.OpenBlobsReadOnly(filepath.Join(*stateDir, "blobs"))
 	if err != nil {
 		fprintf(stderr, "awf outputs: open blobs: %v\n", err)
 		return ExitRunFailed // blob-store open failure is a read-infra failure

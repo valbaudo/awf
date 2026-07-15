@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -87,5 +89,30 @@ func TestTraceNoSuchRun(t *testing.T) {
 	var out, errb bytes.Buffer
 	if rc := cliTrace([]string{"ghost", "--state-dir", t.TempDir()}, &out, &errb); rc != ExitUsage {
 		t.Fatalf("trace missing-run rc = %d, want ExitUsage", rc)
+	}
+}
+
+func TestTraceCaptureContentReadOnlyDoesNotCreateBlobStore(t *testing.T) {
+	stateDir := t.TempDir()
+	traceFixture(t, stateDir)
+	before, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	rc := cliTrace([]string{"r1", "--state-dir", stateDir, "--output", "json", "--capture-content"}, &out, &errb)
+	if rc != ExitOK {
+		t.Fatalf("trace rc=%d, want ExitOK; stderr=%s", rc, errb.String())
+	}
+	after, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("trace mutated state dir: before=%v after=%v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "blobs")); !os.IsNotExist(err) {
+		t.Fatalf("trace created blob store: err=%v", err)
 	}
 }
