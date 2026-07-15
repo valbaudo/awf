@@ -525,6 +525,112 @@ func TestRestoreExtractsSnapshotAndRuntimeDirsBeforeStart(t *testing.T) {
 	}
 }
 
+func TestRestoreRejectsNoHealthWorkloadThatExitsAfterHandoffAndJoinsCleanupError(t *testing.T) {
+	blobs := state.NewInMemoryBlobs()
+	var diff bytes.Buffer
+	dw := newDiffTarWriter(&diff, 1<<20)
+	if err := dw.WriteDeletes([]string{"/work/removed"}); err != nil {
+		t.Fatalf("WriteDeletes: %v", err)
+	}
+	if err := dw.Close(); err != nil {
+		t.Fatalf("diff Close: %v", err)
+	}
+	blobRef, err := blobs.Put(diff.Bytes())
+	if err != nil {
+		t.Fatalf("blobs.Put: %v", err)
+	}
+	ref, err := formatSnapshotRef(blobRef, "example.invalid/workload@sha256:abc", snapshotCmdSpec{Cmd: []string{"original"}})
+	if err != nil {
+		t.Fatalf("formatSnapshotRef: %v", err)
+	}
+	hs := restoreHandshakeForRef(ref)
+
+	markers := map[string]string{}
+	archiveCall := 0
+	inspectCall := 0
+	var events []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create"):
+			events = append(events, "create")
+			writeJSON(t, w, map[string]any{"Id": "restored"})
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
+			archiveCall++
+			files := readTarFiles(t, r.Body)
+			switch archiveCall {
+			case 1:
+				events = append(events, "snapshot")
+			case 2:
+				events = append(events, "prepare")
+			case 3:
+				events = append(events, "seed")
+				markers[hs.PreparedPath] = hs.PreparedToken
+			case 4:
+				events = append(events, "release")
+				if files[strings.TrimPrefix(hs.ReleasePath, "/")] == hs.ReleaseToken {
+					markers[hs.HandoffPath] = hs.HandoffToken
+				}
+			case 5:
+				events = append(events, "ack")
+				if files[strings.TrimPrefix(hs.AckPath, "/")] == hs.AckToken {
+					delete(markers, hs.PreparedPath)
+					delete(markers, hs.HandoffPath)
+					events = append(events, "handoff-complete")
+				}
+			default:
+				t.Errorf("unexpected archive call %d", archiveCall)
+			}
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/restored/start"):
+			events = append(events, "start")
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/restored/archive"):
+			path := r.URL.Query().Get("path")
+			if content, ok := markers[path]; ok {
+				writeContainerPathTar(t, w, path, content)
+				return
+			}
+			http.Error(w, `{"message":"path not found"}`, http.StatusNotFound)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/restored/json"):
+			inspectCall++
+			if inspectCall == 1 {
+				events = append(events, "handoff-running")
+				writeJSON(t, w, map[string]any{"Id": "restored", "State": map[string]any{"Running": true}})
+				return
+			}
+			events = append(events, "workload-exited")
+			writeJSON(t, w, map[string]any{"Id": "restored", "State": map[string]any{"Running": false}})
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/containers/restored"):
+			events = append(events, "remove-fail")
+			http.Error(w, `{"message":"cleanup denied"}`, http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	cli, err := dockerClientForServer(srv)
+	if err != nil {
+		t.Fatalf("dockerClientForServer: %v", err)
+	}
+	b, err := New(cli, "test-post-handoff-exit", blobs)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h, err := b.Restore(context.Background(), ref, "lab")
+	if err == nil {
+		t.Fatalf("Restore = (%+v, nil), want post-handoff workload-exit error", h)
+	}
+	if !strings.Contains(err.Error(), "workload exited") || !strings.Contains(err.Error(), "cleanup denied") {
+		t.Fatalf("Restore error = %v, want workload liveness and cleanup failures", err)
+	}
+	want := []string{"create", "snapshot", "prepare", "seed", "start", "release", "ack", "handoff-complete", "handoff-running", "workload-exited", "remove-fail"}
+	if strings.Join(events, ",") != strings.Join(want, ",") {
+		t.Errorf("events = %v, want %v", events, want)
+	}
+}
+
 func writeContainerPathTar(t *testing.T, w http.ResponseWriter, path, content string) {
 	t.Helper()
 	statJSON, err := json.Marshal(dockerContainer.PathStat{Name: path, Size: int64(len(content)), Mode: 0o600})

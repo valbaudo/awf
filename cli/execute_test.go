@@ -233,7 +233,7 @@ func TestFinishRunResultNeverPrintsOKOrCommitsInvalidPairs(t *testing.T) {
 		err     error
 		want    int
 	}{
-		{name: "ok with error", outcome: engine.OutcomeOK, err: errors.New("hidden"), want: ExitUsage},
+		{name: "ok with error", outcome: engine.OutcomeOK, err: errors.New("hidden"), want: ExitInfra},
 		{name: "joined pause", err: errors.Join(signal.ErrPaused, errors.New("extra")), want: ExitInfra},
 		{name: "joined cancel", err: errors.Join(signal.ErrCancelled, errors.New("extra")), want: ExitInfra},
 		{name: "empty internal", err: errors.New("internal"), want: ExitInfra},

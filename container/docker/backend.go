@@ -482,8 +482,9 @@ func (b *Backend) Close() error {
 }
 
 // waitReady polls ContainerInspect until State.Health.Status == "healthy" IF
-// the container has a healthcheck. Containers without a healthcheck return
-// ready immediately (the entrypoint is responsible for readiness — spec §3).
+// the container has a healthcheck. Containers without a healthcheck are ready
+// only while their workload is still running; a completed restore handshake
+// must never turn an already-exited workload into a live Handle.
 //
 // The deadline is derived from the image's HEALTHCHECK declaration:
 //
@@ -507,7 +508,13 @@ func (b *Backend) waitReady(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("container/docker: waitReady: ContainerInspect: %w", err)
 	}
-	if info.State == nil || info.State.Health == nil {
+	if info.State == nil {
+		return fmt.Errorf("container/docker: waitReady: ContainerInspect returned nil State")
+	}
+	if !info.State.Running {
+		return fmt.Errorf("container/docker: waitReady: workload exited before readiness")
+	}
+	if info.State.Health == nil {
 		// No healthcheck declared → ready immediately.
 		return nil
 	}
@@ -526,6 +533,9 @@ func (b *Backend) waitReady(ctx context.Context, id string) error {
 		info, err := b.cli.ContainerInspect(ctx, id)
 		if err != nil {
 			return fmt.Errorf("container/docker: waitReady: ContainerInspect: %w", err)
+		}
+		if info.State != nil && !info.State.Running {
+			return fmt.Errorf("container/docker: waitReady: workload exited before readiness")
 		}
 		if info.State == nil || info.State.Health == nil {
 			// Daemon returned partial data — treat as still-starting and

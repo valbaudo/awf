@@ -54,7 +54,7 @@ func newBackend(ctx context.Context, kind, runID, workdirRoot string, blobs stat
 		if label := b.SandboxWarnLabel(); label != "" {
 			fprintf(stderr, "awf run: --backend native: %s\n", label)
 		}
-		return b, func() {}, nil
+		return b, func() { _ = b.Close() }, nil
 	case engine.BackendDocker:
 		cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 		if err != nil {

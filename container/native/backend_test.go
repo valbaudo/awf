@@ -85,6 +85,22 @@ func TestNewRejectsEmptyWorkdirRoot(t *testing.T) {
 	}
 }
 
+func TestCloseReleasesRootAndIsIdempotent(t *testing.T) {
+	b, err := native.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if _, err := b.Create(context.Background(), container.ContainerSpec{Name: "after-close"}); err == nil {
+		t.Fatal("Create after Close: error = nil, want closed-root error")
+	}
+}
+
 func TestCanonicalRelativeWorkdirRoot(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)

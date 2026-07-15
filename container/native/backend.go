@@ -71,6 +71,9 @@ type Backend struct {
 
 	mu      sync.Mutex
 	handles map[string]nativeHandle
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // nativeHandle is the per-Create internal state. Stored in
@@ -200,6 +203,18 @@ func (b *Backend) SandboxWarnLabel() string {
 // status line (cli/run.go), independent of whether a warning fires.
 func (b *Backend) SandboxMode() string {
 	return b.sandboxMode
+}
+
+// Close releases the directory handle retained to anchor all native backend
+// filesystem operations. It is concrete lifecycle cleanup, intentionally not
+// part of container.Backend because no additional swappable seam is needed.
+// Close is idempotent; operations attempted afterward fail through os.Root's
+// closed-root errors.
+func (b *Backend) Close() error {
+	b.closeOnce.Do(func() {
+		b.closeErr = b.root.Close()
+	})
+	return b.closeErr
 }
 
 // WithSnapshotMaxBlobBytes overrides the compressed snapshot-blob cap (default

@@ -170,7 +170,7 @@ func (r *Runner) finishRunResultWithState(
 		(outcome == "" && runErr != nil)
 	if !validPair {
 		fprintf(stderr, "run %s: internal error: invalid engine result pair outcome=%q error=%v\n", runID, outcome, runErr)
-		return ExitUsage
+		return ExitInfra
 	}
 
 	if outcome != "" {

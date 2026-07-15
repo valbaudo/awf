@@ -53,7 +53,6 @@ func TestNewBackendNativeKindReturnsNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newBackend(native): %v", err)
 	}
-	defer cleanup()
 	if backend == nil {
 		t.Fatal("backend = nil")
 	}
@@ -62,6 +61,11 @@ func TestNewBackendNativeKindReturnsNative(t *testing.T) {
 	// SnapshotFSArchive (the snapshot: workspace facility), not SnapshotNone.
 	if got := backend.Capabilities().Snapshot; got != container.SnapshotFSArchive {
 		t.Errorf("Capabilities().Snapshot = %v, want SnapshotFSArchive (native + blobs)", got)
+	}
+	cleanup()
+	cleanup() // native cleanup is idempotent.
+	if _, err := backend.Create(context.Background(), container.ContainerSpec{Name: "after-cleanup"}); err == nil {
+		t.Fatal("native backend root remains usable after CLI cleanup")
 	}
 }
 
