@@ -192,6 +192,21 @@ func TestDetectPlatformSandbox_SandboxExecFound(t *testing.T) {
 	}
 }
 
+func TestNativeSandboxModeExposedSandboxExecFound(t *testing.T) {
+	b, err := New(t.TempDir(), withSandboxLookPath(true, func(name string) (string, error) {
+		if name == "sandbox-exec" {
+			return "/usr/bin/sandbox-exec", nil
+		}
+		return "", os.ErrNotExist
+	}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := b.SandboxMode(); got != "sandbox-exec" {
+		t.Fatalf("SandboxMode = %q, want sandbox-exec", got)
+	}
+}
+
 // TestDetectPlatformSandbox_NotFound asserts that when sandbox-exec is absent,
 // detectPlatformSandbox returns (nil, "") triggering the no-op fallback.
 func TestDetectPlatformSandbox_NotFound(t *testing.T) {
