@@ -12,9 +12,10 @@ import (
 )
 
 // runTry is the Try handler (Phase 3 spec §5.3 + design §B). Implements the
-// do → catch → finally state machine with the rules pinned in design decision
-// 7 (unconditional catch) and this slice's design question 3 (ctx-cancel
-// re-check after Finally).
+// do → catch → finally state machine. Catch recovers only typed workflow
+// failures selected by isTypedFailureOutcome; SkipUnwind remains a control
+// sentinel that propagates through try after Finally. The final ctx-cancel
+// re-check follows this slice's design question 3.
 //
 // State machine:
 //
