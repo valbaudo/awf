@@ -324,7 +324,7 @@ Recorded on `node.completed`/`node.failed`, emitted as `awf.node.outcome`. A **g
 **Propagation (spec §6).** A step that exhausts retries as a failure, or a gate that exhausts attempts as `rejected`, returns a typed `OutcomeError`. The interpreter propagates it to the nearest enclosing `try` (running `catch`), cancels parallel siblings on the way, and halts the run if no `try` encloses it.
 
 ### Retry vs repair — two axes
-- **Retry** (`retry`) wraps each dispatch for *transient* faults. Default `{attempts:3, backoff:exp, initial:1s, max:60s, non_retryable_exit_codes:[78]}`; `retryable_failure` retries, `permanent_failure` doesn't. Backoff via `Clock`. Emits `retry.attempt`.
+- **Retry** (`retry`) wraps each dispatch for *transient* faults. `run:` steps, synthesized `reduce` executions, and `react.tools[].impl.run` default to one attempt; synthesized reducers expose no `retry:` field and therefore remain at one. `uses:` agent steps default to `{attempts:8, backoff:exp, initial:1s, max:60s, non_retryable_exit_codes:[78]}`. Every explicit `retry:` field overlays the default for that step kind. `retryable_failure` retries and `permanent_failure` does not. Backoff runs through `Clock`. The engine emits `retry.attempt`; before sleeping, the CLI writes human-facing stderr progress containing node path, failed/next/max attempt, cause, and wait duration. That text is not a stable machine stream.
 - **Repair** is the gate (§5 control nodes) for *quality* faults: regenerate conditioned on the judge's feedback. A step can be retried for flakiness *and* sit in a gate that repairs it for quality; they compose.
 
 ### External effects (`idempotency_key`)

@@ -270,29 +270,36 @@ checkpoint integrity (committed replay plus digest and runtime-version pins) but
 does not pin the host base environment, so shell-step tooling runs against the
 current host; use **--backend docker** for a fully reproducible baseline.
 
-The native backend write-confines each step via an OS sandbox. Each step runs
+The native backend write-confines each step via an OS sandbox when a functional
+launcher is available. Each step runs
 directly on the host but may only write to the per-run scratch directory and
 **TMPDIR**; all other host paths are read-only or inaccessible for writes.
 Credential directories — **~/.claude**, **$CODEX\_HOME** (or **~/.codex**),
 **~/.factory**, **~/.config/goose**, and **~/.config** — are readable so
 agents can authenticate. The resolved sandbox mode is never left implicit: it
 is printed to stderr at run start and recorded in the `run.started` event (see
-**STEP EXECUTION CONTRACT**). The sandbox tool is selected by availability, in order:
+**STEP EXECUTION CONTRACT**). The runtime selects the first functionally usable
+launcher, in order:
 
 **bwrap** (bubblewrap)
-:   Default on Linux when **bwrap**(1) is on `PATH`. Wraps the step in a new
+:   First choice on Linux when **bwrap**(1) is on `PATH` and a probe successfully
+    creates the namespace and mount policy that AWF will use. Finding the binary
+    is not sufficient. A failed probe falls through to Landlock. **bwrap** wraps
+    the step in a new
     mount namespace: `$HOME` is overlaid with a tmpfs (blocking host credential
     reads outside the explicit ro-bind list), the scratch dir is bind-mounted
     read-write, system directories are bound read-only, and `/tmp` becomes a
-    fresh tmpfs. Detection: `exec.LookPath("bwrap")` (`container/native/sandbox_linux.go`).
+    fresh tmpfs (`container/native/sandbox_linux.go`).
 
 **landlock-trampoline**
-:   Fallback on Linux when **bwrap** is absent and the kernel reports Landlock
-    ABI version ≥ 1 (Linux 5.13+). The runtime re-execs the **awf** binary as a
+:   Fallback on Linux when **bwrap** is absent or its functional probe fails and
+    a Landlock restriction probe succeeds (ABI version ≥ 1; Linux 5.13+).
+    A failed probe falls through to the warned `none` mode. The runtime re-execs
+    the **awf** binary as a
     trampoline (`awf __sandbox <policy-json> -- sh -c <cmd>`); the trampoline
-    applies Landlock FS rules then `exec`s `/bin/sh`. Fail-closed: if
-    `landlock.RestrictPaths` fails, the trampoline exits 2 and the step fails
-    loudly — it never falls through to an unrestricted host (`cmd/awf/sandbox_linux.go`).
+    applies Landlock FS rules then `exec`s `/bin/sh`. After a successful probe,
+    a later `landlock.RestrictPaths` failure exits 2 and fails the step loudly;
+    it does not discard a runtime enforcement failure (`cmd/awf/sandbox_linux.go`).
 
 **sandbox-exec** (SBPL)
 :   macOS only. **sandbox-exec**(1) ships with every macOS installation. The
@@ -305,10 +312,12 @@ is printed to stderr at run start and recorded in the `run.started` event (see
     cannot be written to a temp file, the launcher returns a sentinel argv that
     exits 125 and the step fails.
 
-When no sandbox tool is detected at all, the native backend runs the step on the
+When no launcher is functionally usable, the native backend runs the step on the
 host without confinement and prints a loud warning on stderr (`cli/backend.go`).
-This is **process isolation, not a hardware boundary**: the sandbox stops a
-misbehaving step from writing to host paths, but it is not a VM or a seccomp
+This warned `none` mode is an explicit compatibility fallback, not fail-closed
+sandboxing; use the Docker backend when confinement is required.
+When enabled, this is **process isolation, not a hardware boundary**: the sandbox
+stops a misbehaving step from writing to host paths, but it is not a VM or a seccomp
 jail. Undeclared inputs a step reads from the host are not restricted. Linux
 sandbox enforcement is covered by integration tests run in CI (cve-runner);
 macOS sandbox-exec enforcement is host-verified.
@@ -1708,11 +1717,18 @@ a deliberate, mechanical cancellation by the coordinator, not a quality judgment
 clause — every step outside a pruned `map` still ends as exactly one of the three
 above.
 
-Retry — transient recovery, applied to every step by default:
+Retry is transient recovery. Defaults depend on the step kind:
 
     retry: { attempts: 8, backoff: exp, initial: 1s, max: 60s, non_retryable_exit_codes: [78] }
 
-Eight attempts (up from three) let a transient provider fault — a 429 rate limit,
+`run:` steps, synthesized `reduce` executions, and `react.tools[].impl.run`
+default to one attempt. They retry only when their own `retry:` block requests
+more attempts. `uses:` agent steps default to eight attempts with exponential
+backoff for transient provider and transport failures. Every explicit field in
+`retry:` overlays the default for that step kind.
+
+Synthesized `reduce` executions do not expose a `retry:` field, so they remain at
+one attempt. Eight attempts for agent steps let a transient provider fault — a 429 rate limit,
 a 529 overload, a 5xx, or a dropped connection — ride out its window without
 failing the pipeline; a `permanent_failure` (an `invalid_request` or exhausted
 quota) never consumes the budget. (Whether an authentication failure is permanent
@@ -1723,6 +1739,11 @@ decorrelate; and when a provider sends a wait hint — a `Retry-After` /
 for the next sleep (capped at 5m) instead of the curve, and `x-should-retry:
 false` suppresses the retry. These are runtime behaviors; the fields above,
 together with `recovery:` (below), are the authored knobs.
+
+Before waiting for another attempt, **awf** writes a human-facing retry notice to
+stderr. The notice includes the node path, the failed, next, and maximum attempt
+numbers, the cause, and the wait duration. This progress text is not a stable
+machine stream; machine callers must not parse it.
 
 `recovery: continue|restart` selects how a retry re-runs an agent (`uses:`) step
 after a transient (idle- or wall-timeout) fault. `continue` resumes the *same*
