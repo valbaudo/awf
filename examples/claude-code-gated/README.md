@@ -2,9 +2,14 @@
 
 This clean-room fixture proves that the published AWF v0.5.1 binary can run an
 existing Claude Code CLI as a black box, validate its typed output, and pass it
-through an independent deterministic gate. It uses one Claude call and does not
-require Docker, Ollama, or an Anthropic API key. Subscription authentication
-uses a long-lived token created by Claude Code itself.
+through an independent deterministic gate. It contains one AWF agent step and
+one Claude Code CLI invocation, followed by a deterministic shell evaluator.
+The generator and evaluator retries and the gate attempt limit are each one, so
+AWF performs no orchestration-level reruns. AWF does not measure how many
+provider requests occur inside the CLI; the accepted readiness run reported two
+Claude turns. The fixture does not require Docker, Ollama, or an Anthropic API
+key. Subscription authentication uses a long-lived token created by Claude Code
+itself.
 
 ## Prerequisites
 

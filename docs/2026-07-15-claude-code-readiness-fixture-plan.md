@@ -14,12 +14,11 @@
 - Do not modify Go source, runtime behavior, adapter behavior, schemas, release tags, packaging, or existing examples.
 - Verify with the downloaded public AWF v0.5.1 binary, never a source build.
 - Use an operator-generated `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` with `bare: false`; do not require an Anthropic API key or copy the host Claude config.
-- Never expose the OAuth token in chat, captured tool output, logs, workflow YAML, Markdown, git, or the adoption ledger. The operator performs the authenticated run in a private terminal and reports only the sanitized result.
-- Use exactly one Claude model call and a deterministic shell evaluator.
+- Never expose the OAuth token in chat, captured tool output, logs, workflow YAML, Markdown, git, or any committed record. The operator performs the authenticated run in a private terminal and reports only the sanitized result.
+- Use one AWF agent step and one Claude Code CLI invocation followed by a deterministic shell evaluator. Set both step retries and the gate attempt limit to one so AWF performs no orchestration-level reruns; do not claim that AWF measures provider-request count.
 - Require explicit `--backend native`; do not invoke Docker or Ollama.
 - On macOS v0.5.1, require an absolute `--state-dir "$PWD/.awf"`; do not disable the native sandbox to work around its relative-scratch bug.
 - Stop before committing implementation if v0.5.1 cannot validate, run, clean up, and expose the fixture as documented.
-- Do not start the 14-day adoption clock merely because the founder's machine passes.
 
 ---
 
@@ -140,14 +139,16 @@ Run:
 
 Expected: exit `0`, no validation errors, and no warning requiring a runtime or documentation change.
 
-If validation fails because v0.5.1 does not accept the documented workflow contract, stop. Remove the uncommitted fixture, record product-readiness failure, and do not continue to Task 2.
+If validation fails because v0.5.1 does not accept the documented workflow contract, stop. Remove the uncommitted fixture, record the fixture failure, and do not continue to Task 2.
 
 - [ ] **Step 5: Have the operator run the live fixture with an explicit subscription token**
 
 The operator—not the automation—opens a private terminal and runs:
 
 ```sh
-cd /Users/vabbb/Documents/GitHub/AgentWorkflowFormat/.worktrees/awf-claude-readiness
+WORKTREE_ROOT="<path-to-awf-checkout>"
+REPO_ROOT="$(git -C "$WORKTREE_ROOT" rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 claude --version
 claude setup-token
 ```
@@ -156,7 +157,8 @@ The operator follows Claude Code's on-screen instructions to set `CLAUDE_CODE_OA
 
 ```sh
 test -n "$CLAUDE_CODE_OAUTH_TOKEN"
-/tmp/awf-readiness-v0.5.1-20260715/awf_0.5.1_darwin_arm64/awf run \
+test -x "$AWF_RELEASE"
+"$AWF_RELEASE" run \
   --state-dir "$PWD/.awf" \
   --backend native \
   --agent-env CLAUDE_CODE_OAUTH_TOKEN \
@@ -169,7 +171,8 @@ Expected:
 
 - Claude Code reports its installed version;
 - AWF reports `run <run-id>: ok`;
-- exactly one Claude generator invocation appears;
+- exactly one AWF generator step invokes the Claude Code CLI, with no AWF-level
+  retry or gate rerun;
 - AWF's credential warning is absent because `CLAUDE_CODE_OAUTH_TOKEN` was explicitly forwarded;
 - Docker and Ollama are never invoked;
 - the deterministic evaluator succeeds on its single mechanical attempt.
@@ -181,7 +184,7 @@ RUN_ID="$(sed -n 's/^run \([^:]*\): ok$/\1/p' /tmp/awf-claude-code-gated-run.log
 test -n "$RUN_ID"
 ```
 
-The operator reports only whether the command exited successfully and the non-secret run id. If token setup, the run, cleanup, or sandbox fails, stop. Preserve the sanitized run log, remove the uncommitted fixture, record product-readiness failure, and do not modify runtime code.
+The operator reports only whether the command exited successfully and the non-secret run id. The accepted run reported two Claude turns; this is CLI telemetry, not a measurement of provider-request count. If token setup, the run, cleanup, or sandbox fails, stop. Preserve the sanitized run log, remove the uncommitted fixture, record the fixture failure, and do not modify runtime code.
 
 - [ ] **Step 6: Prove the gate-scoped typed output path**
 
@@ -243,7 +246,7 @@ Create `examples/claude-code-gated/README.md` with these sections and commands:
 ```markdown
 # Claude Code gated readiness
 
-This clean-room fixture proves that the published AWF v0.5.1 binary can run an existing Claude Code CLI as a black box, validate its typed output, and pass it through an independent deterministic gate. It uses one Claude call and does not require Docker, Ollama, or an Anthropic API key. Subscription authentication uses a long-lived token created by Claude Code itself.
+This clean-room fixture proves that the published AWF v0.5.1 binary can run an existing Claude Code CLI as a black box, validate its typed output, and pass it through an independent deterministic gate. It contains one AWF agent step and one Claude Code CLI invocation followed by a deterministic shell evaluator. Both step retries and the gate attempt limit are one, so AWF performs no orchestration-level reruns. AWF does not measure provider-request count; the accepted readiness run reported two Claude turns. The fixture does not require Docker, Ollama, or an Anthropic API key. Subscription authentication uses a long-lived token created by Claude Code itself.
 
 ## Prerequisites
 
@@ -411,6 +414,9 @@ Expected working tree: clean.
 
 - [ ] **Step 3: Record the readiness verdict**
 
-Pass only if all public-release, live-run, output-path, cleanup, documentation, lint, test, and scope checks succeeded. On pass, record the v0.5.1 tag, fixture/docs commit ids, Claude Code version, OS/architecture, run id, elapsed onboarding time, and result in the private adoption ledger.
+Pass only if all public-release, live-run, output-path, cleanup, documentation,
+lint, test, and scope checks succeeded. Retain only sanitized verification
+evidence; never record credentials.
 
-On any failure, record the exact failing command and error as product-readiness evidence. Do not begin prospect research, outreach, runtime fixes, or the 14-day clock inside this implementation task.
+On any failure, preserve the exact failing command and error for diagnosis. Do
+not begin unrelated runtime fixes inside this implementation task.

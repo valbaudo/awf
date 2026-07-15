@@ -20,9 +20,11 @@ readiness path. There are no runtime or workflow-format changes.
 
 ### Added
 
-- **Claude Code gated readiness example.** A public, one-call workflow runs the
-  host Claude Code CLI as a black box, validates its typed output, and passes it
-  through an independent deterministic gate. The accompanying guide documents
+- **Claude Code gated readiness example.** A public workflow invokes the host
+  Claude Code CLI as a black box from one AWF agent step, validates its typed
+  output, and passes it through an independent deterministic gate. Generator
+  and evaluator retries plus the gate attempt limit are each set to one, so AWF
+  performs no orchestration-level reruns. The accompanying guide documents
   private `claude setup-token` handoff, the explicit native backend, the
   macOS-safe absolute state directory, gate-scoped output inspection, cleanup,
   and troubleshooting.

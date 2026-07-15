@@ -2,13 +2,13 @@
 
 **Date:** 2026-07-15
 **Status:** Approved; corrected after live readiness runs
-**Purpose:** Public Day-0 readiness gate for the AWF external-adoption test
+**Purpose:** Public Claude Code subscription readiness fixture
 
 ## Problem
 
-AWF v0.5.1 supports `anthropic/claude-code`, independent gates, typed outputs, and the native backend, but the public onboarding path does not demonstrate those capabilities together. The current gated example depends on Ollama, the README install snippet still selects v0.1.0, and the gate-scoped output lookup planned for the adoption test is incorrect.
+AWF v0.5.1 supports `anthropic/claude-code`, independent gates, typed outputs, and the native backend, but the public onboarding path does not demonstrate those capabilities together. The current gated example depends on Ollama, the README install snippet still selects v0.1.0, and the planned gate-scoped output lookup is incorrect.
 
-The adoption clock must not start until a developer with an existing Claude Code subscription can follow public documentation, create an explicit long-lived subscription token with `claude setup-token`, and complete one clean-room gated run using the published v0.5.1 binary, without Docker, Ollama, a second model provider, or runtime changes.
+A successful readiness path requires a developer with an existing Claude Code subscription to follow public documentation, create an explicit long-lived subscription token with `claude setup-token`, and complete one clean-room gated run using the published v0.5.1 binary, without Docker, Ollama, a second model provider, or runtime changes.
 
 ## Chosen Approach
 
@@ -17,7 +17,8 @@ Add one committed public Claude Code fixture and correct the adjacent README ins
 The fixture uses:
 
 - one `anthropic/claude-code` generator with `bare: false` and a one-attempt mechanical retry budget, receiving an operator-generated `CLAUDE_CODE_OAUTH_TOKEN` through AWF's `--agent-env` allowlist while the per-run Claude config remains isolated;
-- one deterministic POSIX-shell evaluator, so onboarding costs one model call and cannot fail because a second model makes a stochastic judgment;
+- one deterministic POSIX-shell evaluator, so the fixture has one AWF agent
+  step and does not add a second model-based judgment;
 - one engine-owned `gate` with `max_attempts: 1`;
 - a static digest-pinned container declaration required by the current Claude adapter contract;
 - explicit `awf run --backend native`, which runs the host Claude Code binary and does not invoke Docker;
@@ -25,7 +26,15 @@ The fixture uses:
 - a tiny typed generator output consumed by the evaluator through AWF's bounded typed-reference channel;
 - a typed `{approved, feedback}` evaluator verdict used by `until`.
 
-This fixture proves the public binary can launch an unchanged Claude Code CLI, enforce a typed output, pass that output into an independent evaluator, apply a gate verdict, and expose the accepted generator output through the runtime-addressed `awf outputs --step` path. It does not attempt to prove artifact staging, repair behavior, model quality, Docker execution, or production workflow value.
+This fixture proves the public binary can launch an unchanged Claude Code CLI
+once at the AWF orchestration level, enforce a typed output, pass that output
+into an independent evaluator, apply a gate verdict, and expose the accepted
+generator output through the runtime-addressed `awf outputs --step` path. The
+generator and evaluator retries and the gate attempt limit are each one, so AWF
+does not rerun either step. AWF does not measure provider requests within the
+CLI; the accepted readiness run reported two Claude turns. The fixture does not
+attempt to prove artifact staging, repair behavior, model quality, Docker
+execution, or production workflow value.
 
 ## Files and Scope
 
@@ -73,8 +82,10 @@ The example explains why `--backend native` is mandatory: the Claude adapter is 
 - Missing native sandbox support: report the existing AWF native-backend error; do not weaken sandboxing.
 - Native macOS denies a relative `.awf/output/...` write: confirm the run command uses the absolute `--state-dir "$PWD/.awf"`; do not disable `sandbox-exec`.
 - `auto` or Docker selected: point back to the explicit native command; do not create a custom image containing credentials or Claude Code.
-- Typed output or gate failure: preserve the run id and output, classify the readiness gate as failed, and do not start adoption outreach.
-- v0.5.1 cannot validate or execute the fixture as documented: classify the result as product-readiness failure. Do not change runtime code inside this test.
+- Typed output or gate failure: preserve the run id and output and classify the
+  readiness fixture as failed.
+- v0.5.1 cannot validate or execute the fixture as documented: classify the
+  result as a fixture failure. Do not change runtime code inside this test.
 
 ## Verification
 
@@ -98,4 +109,4 @@ The implementation is complete only when all of the following pass:
 - No second Claude evaluator.
 - No repair-loop demonstration.
 - No token capture, credential-file copying, or weakening of AWF's per-run Claude config isolation.
-- No marketing claims or adoption-clock start merely because the founder's machine passes.
+- No marketing or broader product-readiness claims from a single operator run.
