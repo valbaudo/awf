@@ -343,6 +343,32 @@ func TestRunMapMinSuccessTolerates(t *testing.T) {
 	}
 }
 
+func TestRunMapInternalItemErrorIsNotToleratedByMinSuccess(t *testing.T) {
+	rig := newMapRig(t, ok("echo a"), ok("echo c"))
+	minSuccess := ir.Ratio("2")
+	body := ir.NodeList{&ir.If{
+		Cond: ir.Expr(`{{ x == "b" }}`),
+		Then: ir.NodeList{&ir.CodeStep{ID: "broken", Run: "echo broken", Container: "missing", Retry: &ir.RetryPolicy{Attempts: 1}}},
+		Else: echoStep("x", &ir.RetryPolicy{Attempts: 1}),
+	}}
+	wf := staticOverWorkflow("x", body, 1, &minSuccess)
+	mapNode := wf.Graph[0].(*ir.Map)
+	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
+
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != "" {
+		t.Errorf("outcome = %q, want empty internal outcome", oc)
+	}
+	if err == nil || !strings.Contains(err.Error(), "no handle for container") {
+		t.Fatalf("err = %v, want missing-container internal error", err)
+	}
+	for _, item := range rs.LookupMapItems(testMapPath) {
+		if item.N == 1 && item.Status == ItemFailed {
+			t.Fatalf("internal item was committed as tolerated item_failed: %+v", item)
+		}
+	}
+}
+
 func TestRunMapMinSuccessFailsBelow(t *testing.T) {
 	// 3 items, default min_success (= all); one fails → map fails.
 	rig := newMapRig(t, ok("echo a"), fail("echo b"), ok("echo c"))

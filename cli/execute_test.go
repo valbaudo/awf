@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/engine"
+	"github.com/valbaudo/awf/signal"
 	"github.com/valbaudo/awf/state"
 )
 
@@ -218,5 +220,45 @@ func TestPrintRunCostSummaryFullyPricedNoMarker(t *testing.T) {
 	}
 	if strings.Contains(got, "$1.0000+") {
 		t.Errorf("fully-priced summary must NOT show a '+' on the total, got:\n%s", got)
+	}
+}
+
+func TestFinishRunResultNeverPrintsOKOrCommitsInvalidPairs(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome engine.Outcome
+		err     error
+	}{
+		{name: "ok with error", outcome: engine.OutcomeOK, err: errors.New("hidden")},
+		{name: "joined pause", err: errors.Join(signal.ErrPaused, errors.New("extra"))},
+		{name: "joined cancel", err: errors.Join(signal.ErrCancelled, errors.New("extra"))},
+		{name: "empty internal", err: errors.New("internal")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := state.NewInMemoryLog(&clock.Fake{})
+			var stdout, stderr bytes.Buffer
+			skipTeardown := false
+			rc := (&Runner{}).finishRunResult(log, &stdout, &stderr, "run-1", "awf run", "", tt.outcome, tt.err, &skipTeardown)
+			if rc == ExitOK {
+				t.Fatalf("rc = 0; stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if strings.Contains(stdout.String(), "run run-1: ok") {
+				t.Fatalf("printed success for invalid pair: %q", stdout.String())
+			}
+			if skipTeardown {
+				t.Fatal("invalid joined control error skipped teardown")
+			}
+			events, err := log.Fold()
+			if err != nil {
+				t.Fatalf("Fold: %v", err)
+			}
+			for _, event := range events {
+				if event.Type == engine.EventRunFinished {
+					t.Fatalf("invalid pair appended run.finished: %+v", event)
+				}
+			}
+		})
 	}
 }

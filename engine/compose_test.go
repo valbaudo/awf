@@ -196,6 +196,71 @@ func TestRunComposeDestroyFailureFailsWhenBodySucceeded(t *testing.T) {
 	}
 }
 
+func TestRunComposeResultPrecedence(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		destroyFails   bool
+		wantOutcome    Outcome
+		wantBodyError  bool
+		wantSkip       bool
+		wantDestroyErr bool
+	}{
+		{name: "ok/destroy-ok", body: "ok", wantOutcome: OutcomeOK},
+		{name: "typed/destroy-ok", body: "typed", wantOutcome: OutcomeRetryableFailure, wantBodyError: true},
+		{name: "internal/destroy-ok", body: "internal", wantBodyError: true},
+		{name: "skip/destroy-ok", body: "skip", wantOutcome: OutcomeOK, wantBodyError: true, wantSkip: true},
+		{name: "ok/destroy-fails", body: "ok", destroyFails: true, wantOutcome: OutcomeRetryableFailure, wantDestroyErr: true},
+		{name: "typed/destroy-fails", body: "typed", destroyFails: true, wantOutcome: OutcomeRetryableFailure, wantBodyError: true, wantDestroyErr: true},
+		{name: "internal/destroy-fails", body: "internal", destroyFails: true, wantBodyError: true, wantDestroyErr: true},
+		{name: "skip/destroy-fails", body: "skip", destroyFails: true, wantOutcome: OutcomeRetryableFailure, wantDestroyErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body ir.NodeList
+			switch tt.body {
+			case "ok", "typed":
+				body = ir.NodeList{&ir.CodeStep{ID: "body", Container: "lab", Run: "./body.sh", Retry: &ir.RetryPolicy{Attempts: 1}}}
+			case "internal":
+				body = ir.NodeList{&ir.CodeStep{ID: "body", Container: "missing", Run: "./body.sh", Retry: &ir.RetryPolicy{Attempts: 1}}}
+			case "skip":
+				body = ir.NodeList{&ir.Skip{Reason: "stop compose"}}
+			default:
+				t.Fatalf("unknown body fixture %q", tt.body)
+			}
+
+			wf, node := runtimeComposeWorkflow(body)
+			rig := newComposeRig(t, wf, pinnedComposeBytes("web"), "web")
+			switch tt.body {
+			case "ok":
+				rig.fake.ProgramExec("./body.sh", container.ExecResult{ExitCode: 0}, nil)
+			case "typed":
+				rig.fake.ProgramExec("./body.sh", container.ExecResult{ExitCode: 1}, nil)
+			}
+			destroyErr := errors.New("destroy sentinel")
+			if tt.destroyFails {
+				rig.ld.Backend = &destroyFailingBackend{inner: rig.fake, err: destroyErr}
+			}
+
+			oc, err := runCompose(context.Background(), node, "compose[1]", wf, rig.rs, rig.ld, rig.log, rig.blobs, rig.clk, nil, nil)
+			if oc != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", oc, tt.wantOutcome)
+			}
+			if (err != nil) != (tt.wantBodyError || tt.wantDestroyErr) {
+				t.Fatalf("err = %v, want error=%v", err, tt.wantBodyError || tt.wantDestroyErr)
+			}
+			var su *SkipUnwind
+			if got := errors.As(err, &su); got != tt.wantSkip {
+				t.Errorf("errors.As(SkipUnwind) = %v, want %v; err=%v", got, tt.wantSkip, err)
+			}
+			if got := errors.Is(err, destroyErr); got != tt.wantDestroyErr {
+				t.Errorf("errors.Is(destroyErr) = %v, want %v; err=%v", got, tt.wantDestroyErr, err)
+			}
+		})
+	}
+}
+
 func TestRunComposeInvalidComposeFailsBeforeCreate(t *testing.T) {
 	wf, node := runtimeComposeWorkflow(ir.NodeList{
 		&ir.CodeStep{ID: "smoke", Container: "lab", Run: "./smoke.sh"},

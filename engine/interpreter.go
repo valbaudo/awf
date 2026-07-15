@@ -228,9 +228,27 @@ func Run(
 	// takes precedence over pause; both take precedence over the natural
 	// (oc, err) return.
 	if termErr := appendTerminalControlEvents(log, runstate); termErr != nil {
-		return "", termErr
+		oc, err = "", termErr
 	}
-	return oc, err
+	return validateRunResultPair(oc, err)
+}
+
+// validateRunResultPair enforces engine.Run's public result contract after
+// skip and pause/cancel normalization. Invalid combinations are always
+// converted to the empty-outcome internal-error class.
+func validateRunResultPair(outcome Outcome, err error) (Outcome, error) {
+	switch {
+	case outcome == OutcomeOK && err == nil:
+		return outcome, err
+	case isTypedFailureOutcome(outcome) && err != nil:
+		return outcome, err
+	case outcome == "" && err != nil:
+		return outcome, err
+	case err != nil:
+		return "", fmt.Errorf("engine.Run: result invariant violated: outcome=%q with error: %w", outcome, err)
+	default:
+		return "", fmt.Errorf("engine.Run: result invariant violated: outcome=%q with nil error", outcome)
+	}
 }
 
 // interpNodes recursively walks a NodeList in order. Each node's path is

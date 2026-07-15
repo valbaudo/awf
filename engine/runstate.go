@@ -34,6 +34,18 @@ const (
 	OutcomeRejected Outcome = "rejected"
 )
 
+// isTypedFailureOutcome reports the workflow-level mechanical outcomes that
+// recovery scopes may absorb. Empty outcomes are reserved for interpreter or
+// infrastructure errors and must propagate outside workflow recovery.
+func isTypedFailureOutcome(outcome Outcome) bool {
+	switch outcome {
+	case OutcomeRetryableFailure, OutcomePermanentFailure, OutcomeRejected:
+		return true
+	default:
+		return false
+	}
+}
+
 // ParseOutcome validates an on-disk / on-wire outcome string and returns the typed
 // Outcome. Unknown strings are an error — the fold uses this as the trust boundary
 // between the JSON wire format and in-memory typed state (CLAUDE.md invariant:

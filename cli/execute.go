@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"strconv"
 
@@ -103,19 +102,38 @@ func (r *Runner) runAndFinish(
 		Resume:        resume,
 		RerunFrom:     rerunFrom,
 	})
+	return r.finishRunResult(log, stdout, stderr, runID, opName, successSuffix, outcome, runErr, skipTeardown)
+}
+
+func (r *Runner) finishRunResult(
+	log state.Log,
+	stdout, stderr io.Writer,
+	runID, opName, successSuffix string,
+	outcome engine.Outcome,
+	runErr error,
+	skipTeardown *bool,
+) int {
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished
 	// event is written; containers stay up; resume continues in a new epoch.
-	if errors.Is(runErr, signal.ErrPaused) {
+	if outcome == "" && runErr == signal.ErrPaused {
 		*skipTeardown = true
 		fprintf(stdout, "run %s: paused — use `awf resume %s <workflow>` to continue\n", runID, runID)
 		return ExitOK
 	}
 	// ErrCancelled: the engine has ALREADY appended terminal run.cancelled.
 	// Containers DO tear down (the deferred Destroy fires normally).
-	if errors.Is(runErr, signal.ErrCancelled) {
+	if outcome == "" && runErr == signal.ErrCancelled {
 		fprintf(stdout, "run %s: cancelled\n", runID)
 		return ExitOK
+	}
+
+	validPair := (outcome == engine.OutcomeOK && runErr == nil) ||
+		((outcome == engine.OutcomeRetryableFailure || outcome == engine.OutcomePermanentFailure || outcome == engine.OutcomeRejected) && runErr != nil) ||
+		(outcome == "" && runErr != nil)
+	if !validPair {
+		fprintf(stderr, "run %s: internal error: invalid engine result pair outcome=%q error=%v\n", runID, outcome, runErr)
+		return ExitUsage
 	}
 
 	if outcome != "" {
