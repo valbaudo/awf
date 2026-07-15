@@ -1,7 +1,7 @@
 # Claude Code Readiness Fixture Design
 
 **Date:** 2026-07-15
-**Status:** Approved; corrected after the first live readiness run
+**Status:** Approved; corrected after live readiness runs
 **Purpose:** Public Day-0 readiness gate for the AWF external-adoption test
 
 ## Problem
@@ -16,7 +16,7 @@ Add one committed public Claude Code fixture and correct the adjacent README ins
 
 The fixture uses:
 
-- one `anthropic/claude-code` generator with `bare: false`, receiving an operator-generated `CLAUDE_CODE_OAUTH_TOKEN` through AWF's `--agent-env` allowlist while the per-run Claude config remains isolated;
+- one `anthropic/claude-code` generator with `bare: false` and a one-attempt mechanical retry budget, receiving an operator-generated `CLAUDE_CODE_OAUTH_TOKEN` through AWF's `--agent-env` allowlist while the per-run Claude config remains isolated;
 - one deterministic POSIX-shell evaluator, so onboarding costs one model call and cannot fail because a second model makes a stochastic judgment;
 - one engine-owned `gate` with `max_attempts: 1`;
 - a static digest-pinned container declaration required by the current Claude adapter contract;
@@ -43,7 +43,7 @@ The generator prompt requests the exact harmless value `{"ready": true}` under a
 
 The evaluator compares that typed value with the constant `true`. It writes `{"approved":true,"feedback":""}` to `$AWF_OUTPUT` on a match and a typed false verdict with a fixed non-secret feedback string on a mismatch. A content mismatch produces `approved: false`, allowing the gate to reject honestly. Its step-level retry budget is one attempt so a mechanical fixture error fails immediately instead of waiting through AWF's provider-oriented default retry backoff.
 
-The first live run established the reason for this correction: a container-backed `input_files` destination must be absolute, but native staging interprets an absolute destination as a host path. Staging at `/tmp/awf-<run-id>-readiness.json` succeeded, while macOS `sandbox-exec` correctly denied the evaluator's attempt to delete that host path because it was outside the per-run workdir and the host's real `$TMPDIR`. With `set -e`, the judge exited before writing `$AWF_OUTPUT`, and the default retry policy extended the failure to roughly two minutes. Removing that unnecessary artifact round-trip fixes the fixture without changing runtime behavior or weakening the sandbox.
+An authenticated live readiness run established the reason for this correction: a container-backed `input_files` destination must be absolute, but native staging interprets an absolute destination as a host path. Staging at `/tmp/awf-<run-id>-readiness.json` succeeded, while macOS `sandbox-exec` correctly denied the evaluator's attempt to delete that host path because it was outside the per-run workdir and the host's real `$TMPDIR`. With `set -e`, the judge exited before writing `$AWF_OUTPUT`, and the default retry policy extended the failure to roughly two minutes. Removing that unnecessary artifact round-trip fixes the fixture without changing runtime behavior or weakening the sandbox.
 
 The accepted output is retrieved with its full runtime address:
 

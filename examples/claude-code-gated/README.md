@@ -81,6 +81,14 @@ using the full gate runtime address:
 The output contains `{"ready": true}`. Plain `awf outputs <run-id>` does not
 expose a gate-internal generator step.
 
+## Cleanup
+
+The run command unsets `CLAUDE_CODE_OAUTH_TOKEN` when it finishes. AWF keeps
+the journal and typed output under `"$PWD/.awf"` so the `outputs` command and
+resume remain available. Keep that state while evaluating the fixture; after
+you no longer need any runs from this checkout, remove the state directory
+using your normal workspace-cleanup process.
+
 ## Troubleshooting
 
 - Authentication failure: unset the token, rerun `claude setup-token`, and

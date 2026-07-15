@@ -11,6 +11,7 @@ graph:
         - id: draft
           container: workspace
           uses: anthropic/claude-code
+          retry: { attempts: 1 }
           with:
             bare: false
             max_turns: 1
