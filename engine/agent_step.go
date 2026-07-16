@@ -114,7 +114,7 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// 3. Build retry policy. Verified pattern from runCodeStep
 	// (engine/interpreter.go:271): retry.Merge returns (retry.Policy, error);
 	// an error here is an author bug in the workflow's retry: block.
-	policy, err := retry.Merge(retry.Default, as.Retry)
+	policy, err := retry.Merge(retry.AgentDefault, as.Retry)
 	if err != nil {
 		return "", fmt.Errorf("engine.runAgentStep: build retry policy at path %q: %w", path, err)
 	}
@@ -400,7 +400,7 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 
 	appendNodeStarted(log, path, "agent")
 
-	dr, chunks, runErr := RunWithRetry(dispatchCtx, dispatcher, intent, policy, clk, log)
+	dr, chunks, runErr := RunWithRetry(dispatchCtx, dispatcher, intent, policy, clk, log, WithRetryNotice(ictx.onRetry))
 	// Drain via the canonical helper. Agent steps' chunks channel is the
 	// pre-closed one runAgent returns, so this is a no-op on the agent path,
 	// but using drainTap keeps the dispatch tail symmetric with runCodeStep

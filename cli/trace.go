@@ -50,6 +50,15 @@ func cliTrace(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf trace: unknown --output %q (want otel or json)\n", *output)
 		return ExitUsage
 	}
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateReadOnly, defaultStateIdentity)
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			fprintf(stderr, "awf trace: no run with id %q under state directory %q\n", runID, *stateDir)
+			return ExitUsage
+		}
+		return reportStateFailure(stderr, "awf trace", "access state directory", *stateDir, *stateDir, accessErr, defaultStateIdentity, stateFailureInfra)
+	}
+	*stateDir = canonicalStateDir
 
 	logPath := filepath.Join(*stateDir, "runs", runID, "log")
 	events, err := state.FoldFile(logPath)
@@ -57,7 +66,7 @@ func cliTrace(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, fs.ErrNotExist) {
 			fprintf(stderr, "awf trace: no run with id %q at %q\n", runID, logPath)
 		} else {
-			fprintf(stderr, "awf trace: fold log %q: %v\n", logPath, err)
+			return reportStateFailure(stderr, "awf trace", "fold run log", *stateDir, logPath, err, defaultStateIdentity, stateFailureInfra)
 		}
 		return ExitUsage
 	}
@@ -65,17 +74,15 @@ func cliTrace(args []string, stdout, stderr io.Writer) int {
 	opts := obs.ProjectOptions{CaptureContent: *capture}
 	var blobs state.Blobs
 	if *capture {
-		fb, berr := state.OpenBlobs(filepath.Join(*stateDir, "blobs"))
+		fb, berr := state.OpenBlobsReadOnly(filepath.Join(*stateDir, "blobs"))
 		if berr != nil {
-			fprintf(stderr, "awf trace: open blobs: %v\n", berr)
-			return ExitInfra
+			return reportStateFailure(stderr, "awf trace", "open blob store", *stateDir, filepath.Join(*stateDir, "blobs"), berr, defaultStateIdentity, stateFailureInfra)
 		}
 		blobs = fb
 	}
 	spans, err := obs.ProjectWithOptions(events, blobs, opts)
 	if err != nil {
-		fprintf(stderr, "awf trace: project log: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf trace", "read committed trace content", *stateDir, filepath.Join(*stateDir, "blobs"), err, defaultStateIdentity, stateFailureInfra)
 	}
 
 	if *output == "json" {

@@ -118,6 +118,22 @@ func (b *Backend) createCompose(ctx context.Context, spec cont.ContainerSpec) (c
 		return cont.Handle{}, fmt.Errorf("container/docker: createCompose: Up: %w", err)
 	}
 
+	serviceNames := make([]string, 0, len(project.Services))
+	for service := range project.Services {
+		serviceNames = append(serviceNames, service)
+	}
+	if err := b.prepareComposeRuntimeDirs(ctx, projectName, serviceNames); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cont.TeardownGrace)
+		defer cancel()
+		if cleanupErr := composeAPI.Down(cleanupCtx, project.Name, api.DownOptions{
+			RemoveOrphans: true,
+			Volumes:       true,
+		}); cleanupErr != nil {
+			return cont.Handle{}, fmt.Errorf("container/docker: createCompose: prepare runtime dirs failed and cleanup Down failed: %w", errors.Join(err, cleanupErr))
+		}
+		return cont.Handle{}, fmt.Errorf("container/docker: createCompose: prepare runtime dirs: %w", err)
+	}
+
 	b.mu.Lock()
 	b.handles[projectName] = registeredContainer{
 		kind:       kindCompose,
@@ -128,6 +144,24 @@ func (b *Backend) createCompose(ctx context.Context, spec cont.ContainerSpec) (c
 	b.mu.Unlock()
 
 	return cont.Handle{Name: spec.Name, ID: projectName, Service: spec.Service}, nil
+}
+
+// prepareComposeRuntimeDirs resolves and prepares each service container
+// independently. Sorting gives deterministic daemon-call order and stable
+// diagnostics regardless of map iteration order in the loaded Compose model.
+func (b *Backend) prepareComposeRuntimeDirs(ctx context.Context, project string, services []string) error {
+	sorted := append([]string(nil), services...)
+	sort.Strings(sorted)
+	for _, service := range sorted {
+		id, err := b.resolveComposeContainer(ctx, project, service)
+		if err != nil {
+			return fmt.Errorf("service %q: %w", service, err)
+		}
+		if err := b.prepareRuntimeDirs(ctx, id); err != nil {
+			return fmt.Errorf("service %q: %w", service, err)
+		}
+	}
+	return nil
 }
 
 // destroyCompose handles the compose-mode branch of Backend.Destroy. Calls

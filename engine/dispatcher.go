@@ -26,9 +26,13 @@ import (
 // The caller (RunWithRetry / interpreter) drains it for the live tap; the
 // channel is closed by the backend before Exec returns (matches the slice 2.2
 // fake's pre-buffered shape; the Docker impl in Phase 4 may stream live —
-// receive-only direction keeps both compatible). On non-nil error, the channel
-// is nil; callers MUST nil-check before ranging (a `for range nil-chan`
-// deadlocks).
+// receive-only direction keeps both compatible). Mechanical failures return a
+// typed non-ok DispatchResult with its cause in DispatchResult.Err and a nil
+// direct error. A non-nil direct error is reserved for dispatcher/internal
+// failures and requires an otherwise empty DispatchResult; buffered AgentEvents
+// are the sole exception so the interpreter can persist progress observed before
+// the halt. Its channel is nil. Callers MUST nil-check before ranging (a `for
+// range nil-chan` deadlocks).
 type Dispatcher interface {
 	Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error)
 }

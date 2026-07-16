@@ -176,15 +176,6 @@ func TestWithSandbox_CapabilitiesUnchanged(t *testing.T) {
 	}
 }
 
-// mockFound returns a lookPath func that reports every name as found, at a
-// synthetic path. Used to force detectPlatformSandbox down its "tool present"
-// branch deterministically, mirroring mockNotFound's role for the opposite case.
-func mockFound() func(string) (string, error) {
-	return func(name string) (string, error) {
-		return "/usr/bin/" + name, nil
-	}
-}
-
 // TestNative_SandboxModeExposed_Disabled asserts that SandboxMode() reports
 // "none" when sandboxing was never requested — both the explicit
 // WithSandbox(false) and the omitted-option default. detectSandbox is never
@@ -209,27 +200,6 @@ func TestNative_SandboxModeExposed_Disabled(t *testing.T) {
 	}
 	if got := b2.SandboxMode(); got != "none" {
 		t.Errorf("SandboxMode() with no WithSandbox option = %q, want %q", got, "none")
-	}
-}
-
-// TestNative_SandboxModeExposed_ToolFound asserts that when sandbox mode is
-// requested and an injected lookPath stub reports the platform tool present,
-// SandboxMode() surfaces the real launcher's label — never "none" — using the
-// lookPath-injectable core (withSandboxLookPath) so the assertion doesn't
-// depend on what's actually installed on the host running the test.
-func TestNative_SandboxModeExposed_ToolFound(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	b, err := New(dir, withSandboxLookPath(true, mockFound()))
-	if err != nil {
-		t.Fatalf("New with withSandboxLookPath(true, mockFound()): %v", err)
-	}
-	switch got := b.SandboxMode(); got {
-	case "bwrap", "landlock-trampoline", "sandbox-exec":
-		// ok — a real platform launcher was resolved.
-	default:
-		t.Errorf("SandboxMode() = %q, want one of \"bwrap\"/\"landlock-trampoline\"/\"sandbox-exec\"", got)
 	}
 }
 

@@ -68,6 +68,14 @@ func cliLS(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf ls: unknown --output %q (want text or json)\n", *output)
 		return ExitUsage
 	}
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateReadOnly, defaultStateIdentity)
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			return emitLS(stdout, *output, nil)
+		}
+		return reportStateFailure(stderr, "awf ls", "access state directory", *stateDir, *stateDir, accessErr, defaultStateIdentity, stateFailureInfra)
+	}
+	*stateDir = canonicalStateDir
 
 	runsDir := filepath.Join(*stateDir, "runs")
 	entries, err := os.ReadDir(runsDir)
@@ -75,8 +83,7 @@ func cliLS(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, fs.ErrNotExist) {
 			return emitLS(stdout, *output, nil)
 		}
-		fprintf(stderr, "awf ls: read runs dir %q: %v\n", runsDir, err)
-		return ExitInfra
+		return reportStateFailure(stderr, "awf ls", "read runs directory", *stateDir, runsDir, err, defaultStateIdentity, stateFailureInfra)
 	}
 
 	var rows []lsRow
@@ -88,15 +95,16 @@ func cliLS(args []string, stdout, stderr io.Writer) int {
 		logPath := filepath.Join(runDir, "log")
 		events, ferr := state.FoldFile(logPath)
 		if ferr != nil {
-			// A directory without a readable log is not a run; skip quietly.
-			continue
+			if errors.Is(ferr, fs.ErrNotExist) {
+				continue
+			}
+			return reportStateFailure(stderr, "awf ls", "fold run log", *stateDir, logPath, ferr, defaultStateIdentity, stateFailureInfra)
 		}
 		status := obs.DeriveStatus(events)
 		if status == obs.RunIncomplete {
 			held, herr := runLockHeld(runDir)
 			if herr != nil {
-				fprintf(stderr, "awf ls: probe liveness for %q: %v\n", e.Name(), herr)
-				return ExitInfra
+				return reportStateFailure(stderr, "awf ls", "probe run liveness", *stateDir, filepath.Join(runDir, "run.lock"), herr, defaultStateIdentity, stateFailureInfra)
 			}
 			if held {
 				status = obs.RunRunning

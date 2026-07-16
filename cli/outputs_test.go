@@ -47,6 +47,35 @@ func TestOutputsStep(t *testing.T) {
 	}
 }
 
+func TestOutputsReadOnlyMissingBlobStoreDoesNotCreateIt(t *testing.T) {
+	stateDir := t.TempDir()
+	missingRef := "awf-d1:sha256:" + strings.Repeat("d", 64)
+	writeRunLog(t, stateDir, "r1",
+		state.Event{Type: engine.EventRunStarted, Data: marshal(t, engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})},
+		state.Event{Type: engine.EventNodeCompleted, Path: "scan", Data: marshal(t, engine.NodeCompletedData{Outcome: "ok", OutputsRef: missingRef})},
+	)
+	before, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	rc := cliOutputs([]string{"r1", "--step", "scan", "--state-dir", stateDir}, &out, &errb)
+	if rc != ExitRunFailed {
+		t.Fatalf("rc=%d, want ExitRunFailed; stderr=%s", rc, errb.String())
+	}
+	after, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("outputs mutated state dir: before=%v after=%v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "blobs")); !os.IsNotExist(err) {
+		t.Fatalf("outputs created blob store: err=%v", err)
+	}
+}
+
 func TestOutputsStepSucceedsWhenUnrelatedBlobMissing(t *testing.T) {
 	// --step is a TARGETED read, not a full engine.Fold. "other"'s OutputsRef
 	// points at a blob NOT in the store; reading "scan" must still succeed.

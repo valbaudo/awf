@@ -16,8 +16,9 @@ package native
 //   - sandbox_darwin.go (darwin build tag) — T4 fills sandbox-exec.
 //   - sandbox_other.go  (!linux && !darwin) — permanent stub, no-op forever.
 //
-// detectSandbox takes a lookPath seam so unit tests don't shell out (mirrors
-// agent/codexlive/process_client.go:49 which uses exec.LookPath the same way).
+// detectSandbox takes a lookPath seam. Platform selectors may perform further
+// non-mutating capability probes: Linux functionally probes bwrap and checks
+// the Landlock ABI before returning a launcher.
 
 import (
 	"os"
@@ -40,8 +41,8 @@ type sandboxLauncher interface {
 // label (callers should surface this via the same stderr warning path as
 // cli/run.go:354 — see Backend.New + WithSandbox).
 //
-// lookPath is injectable for unit tests; production callers pass
-// exec.LookPath (the same pattern used at agent/codexlive/process_client.go:49).
+// lookPath is injectable for cross-platform unit tests; Linux's full selector
+// has additional injected probe seams in sandbox_linux.go.
 func detectSandbox(lookPath func(string) (string, error)) (sandboxLauncher, string) {
 	if l, label := detectPlatformSandbox(lookPath); l != nil {
 		return l, label

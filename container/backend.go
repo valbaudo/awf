@@ -32,8 +32,8 @@ const TeardownGrace = 30 * time.Second
 // AWFOutputDir is the docker/fake Backend's Caps.OutputRoot value: the
 // directory under which the engine dispatcher derives AWF_OUTPUT tempfile
 // paths — AWFOutputDir/<sanitized-step>.json (see engine/awf_output.go) —
-// inside a container's own private /tmp, so it needs no pre-creation there
-// (each container's /tmp is fresh). Native does NOT use this constant: since
+// inside a container's own private /tmp. Docker prepares this directory for
+// the configured container user before AWF steps run. Native does NOT use this constant: since
 // U3, native's Caps.OutputRoot is ".awf/output" (workdir-relative), pre-created
 // per container by native's Backend.Create, not by a process-global
 // bootstrap. There is no longer a single native/docker OutputRoot to keep in
@@ -174,9 +174,13 @@ type Backend interface {
 	// Phase 4 Docker (slice 4.4): parses the 3-segment SnapshotRef, Blobs.Get
 	// the diff-tar, ContainerCreate against the embedded image + Cmd +
 	// Entrypoint, stream-CopyToContainer the data entries via io.Pipe (peak
-	// memory ~64 KiB + the diff blob bytes already in RAM from Get),
-	// Exec "rm -rf -- '<path>'" for each .awf-deletes entry. waitReady runs
-	// on the restored container so the spec §3 readiness contract holds.
+	// memory ~64 KiB + the diff blob bytes already in RAM from Get). For a
+	// diff with .awf-deletes, an internal argv-only POSIX-sh wrapper applies
+	// every deletion and recreates AWF runtime directories before exec-replacing
+	// itself with the captured effective Entrypoint+Cmd; a deterministic
+	// snapshot-derived, exact-content host handshake is reset before start and
+	// keeps waitReady and handle registration behind that workload handoff. A diff
+	// without deletions preserves Entrypoint+Cmd directly, with no wrapper.
 	// The embedded image is NOT auto-pulled; callers responsible for prior
 	// ImagePull (same as Backend.Create's image-mode path).
 	Restore(ctx context.Context, ref SnapshotRef, name string) (Handle, error)

@@ -64,6 +64,37 @@ func TestCLIResumeRefusesUnknownRunID(t *testing.T) {
 	}
 }
 
+func TestCLIResumeMissingLogInExistingRunDirCreatesNothing(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runDir := filepath.Join(stateDir, "runs", "missing-log")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadDir(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{
+		"resume", "--state-dir", stateDir, "missing-log", "testdata/phase2/seq.yaml",
+	}, &stdout, &stderr)
+	if rc == cli.ExitOK {
+		t.Fatalf("resume missing log rc=%d, want nonzero", rc)
+	}
+	after, err := os.ReadDir(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("resume created state for missing log: before=%v after=%v", before, after)
+	}
+	if !strings.Contains(stderr.String(), "no run with id") {
+		t.Fatalf("stderr=%q, want friendly unknown-run message", stderr.String())
+	}
+}
+
 func TestCLIResumeRefusesTerminalRunFinished(t *testing.T) {
 	t.Parallel()
 	stateDir, runID := firstRunSeq(t)
@@ -663,6 +694,115 @@ func TestResumeRefusesWhenRunLockHeld(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "already active") {
 		t.Errorf("expected an 'already active' refusal, got: %s", stderr.String())
+	}
+}
+
+func TestResumeHeldLockDoesNotRepairTornTail(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runID := "locked-torn"
+	runDir := filepath.Join(stateDir, "runs", runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(runDir, "log")
+	lg, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsd, _ := json.Marshal(engine.RunStartedData{RunID: runID})
+	if err := lg.Append(state.Event{Type: engine.EventRunStarted, Data: rsd}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lg.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lf, err := os.OpenFile(filepath.Join(runDir, "run.lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lf.Close() }()
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0x01, 0x02, 0x03}); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	rc := runner.Run([]string{"resume", "--state-dir", stateDir, runID, "testdata/phase2/seq.yaml"}, &stdout, &stderr)
+	if rc != cli.ExitInfra {
+		t.Fatalf("rc=%d, want ExitInfra; stderr=%s", rc, stderr.String())
+	}
+	after, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("locked resume mutated torn log: before=%d bytes after=%d bytes", len(before), len(after))
+	}
+}
+
+func TestResumeAfterLockReleaseMayRepairTornTail(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	runID := "released-torn"
+	runDir := filepath.Join(stateDir, "runs", runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(runDir, "log")
+	lg, err := state.OpenLogExclusive(logPath, clock.System{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsd, _ := json.Marshal(engine.RunStartedData{RunID: runID})
+	if err := lg.Append(state.Event{Type: engine.EventRunStarted, Data: rsd}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lg.Close(); err != nil {
+		t.Fatal(err)
+	}
+	validSize := int64(0)
+	if info, err := os.Stat(logPath); err != nil {
+		t.Fatal(err)
+	} else {
+		validSize = info.Size()
+	}
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0x01, 0x02, 0x03}); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &cli.Runner{Backend: container.NewFake(), IDGen: &clock.Fake{}}
+	var stdout, stderr bytes.Buffer
+	_ = runner.Run([]string{"resume", "--state-dir", stateDir, runID, filepath.Join(stateDir, "missing-workflow.yaml")}, &stdout, &stderr)
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != validSize {
+		t.Fatalf("resume after lock release did not repair tail: size=%d want=%d", info.Size(), validSize)
 	}
 }
 

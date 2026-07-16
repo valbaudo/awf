@@ -311,7 +311,7 @@ func runCommandReduce(
 	intent := NodeIntent{Path: nodePath, Node: synth, ResolvedInputs: resolved}
 
 	appendNodeStarted(log, nodePath, "reduce")
-	dr, chunks, runErr := RunWithRetry(ctx, ld, intent, retry.Default, clk, log)
+	dr, chunks, runErr := RunWithRetry(ctx, ld, intent, retry.CodeDefault, clk, log)
 	drainTap(chunks, "reduce", tap)
 	if runErr != nil {
 		if dr.Outcome == "" {

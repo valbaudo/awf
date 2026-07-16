@@ -48,21 +48,36 @@ func Listen(port int) (net.Listener, error) {
 // Server holds the immutable loaded workflow and an overlay cache. The workflow is
 // loaded once at startup (editing the file requires a restart -- documented).
 type Server struct {
-	wf         *ir.Workflow
-	ld         *ir.LoadedDefinition
-	digest     string
-	workflowID string // the loaded workflow's `workflow:` id; scopes /api/runs across versions
-	stateDir   string
+	wf                  *ir.Workflow
+	ld                  *ir.LoadedDefinition
+	digest              string
+	workflowID          string // the loaded workflow's `workflow:` id; scopes /api/runs across versions
+	stateDir            string
+	stateErrorFormatter func(operation, path string, err error) string
 
 	// blobs is the run state's CAS, used read-only to load a run's definition snapshot
-	// (run.started.definition_ref) so a past run renders against its own structure. Nil if the
-	// store can't be opened; rendering then falls back to the currently loaded workflow.
+	// (run.started.definition_ref) so a past run renders against its own structure.
 	blobs state.Blobs
 
 	static graph.Projection // computed once; the workflow is immutable for the process
 
 	mu    sync.Mutex
 	cache map[string]cachedProjection // keyed by run id
+}
+
+// WithStateErrorFormatter lets the CLI apply its state-path ownership and
+// permission diagnostic policy to request-time reads without moving state
+// access policy into the UI package.
+func (s *Server) WithStateErrorFormatter(formatter func(operation, path string, err error) string) *Server {
+	s.stateErrorFormatter = formatter
+	return s
+}
+
+func (s *Server) formatStateError(operation, path string, err error) error {
+	if s.stateErrorFormatter == nil {
+		return err
+	}
+	return errors.New(s.stateErrorFormatter(operation, path, err))
 }
 
 type cachedProjection struct {
@@ -88,12 +103,9 @@ func NewLoaded(ld *ir.LoadedDefinition, digest, stateDir string) *Server {
 		}
 	}
 	// Open the run-state CAS read-only so a run's definition snapshot can be loaded. The blob
-	// store lives at <stateDir>/blobs by convention (cli/run.go). A failure here is non-fatal:
-	// rendering falls back to the loaded workflow (blobs stays nil).
-	var blobs state.Blobs
-	if b, err := state.OpenBlobs(filepath.Join(stateDir, "blobs")); err == nil {
-		blobs = b
-	}
+	// store lives at <stateDir>/blobs by convention (cli/run.go). Opening this handle performs
+	// no filesystem I/O, so an empty UI state remains valid and non-mutating.
+	blobs, _ := state.OpenBlobsReadOnly(filepath.Join(stateDir, "blobs"))
 	var wfID string
 	if wf != nil {
 		wfID = wf.ID
@@ -137,7 +149,7 @@ func (s *Server) projectionFor(runID string) (graph.Projection, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return graph.Projection{}, errNoRun
 		}
-		return graph.Projection{}, err
+		return graph.Projection{}, s.formatStateError("stat run log", logPath, err)
 	}
 
 	s.mu.Lock()
@@ -151,13 +163,13 @@ func (s *Server) projectionFor(runID string) (graph.Projection, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return graph.Projection{}, errNoRun
 		}
-		return graph.Projection{}, err
+		return graph.Projection{}, s.formatStateError("fold run log", logPath, err)
 	}
 	// Full run projection: static graph + runtime instance nodes/edges + overlay. Built against
 	// the run's own definition snapshot when present, else the currently loaded workflow.
 	proj, err := s.buildRunProjection(events)
 	if err != nil {
-		return graph.Projection{}, err
+		return graph.Projection{}, s.formatStateError("read committed run projection", filepath.Join(s.stateDir, "blobs"), err)
 	}
 	s.cache[runID] = cachedProjection{size: info.Size(), mtime: info.ModTime().UnixNano(), proj: proj}
 	return proj, nil
@@ -165,17 +177,17 @@ func (s *Server) projectionFor(runID string) (graph.Projection, error) {
 
 // buildRunProjection builds a run's projection against the run's OWN definition when it carries a
 // snapshot (run.started.definition_ref) — so a past run renders faithfully against the structure it
-// executed against, even after the on-disk file changed. Any failure to load/parse the snapshot
-// (absent ref, blobs unavailable, missing/corrupt blob) falls back to the currently loaded
-// workflow — the pre-snapshot behavior. This is read-only and never affects resume/pinning.
+// executed against, even after the on-disk file changed. Runs predating definition snapshots fall
+// back to the loaded workflow. Once a run commits a definition ref, failure to load it is surfaced:
+// silently substituting a different workflow would misrepresent what ran. This is read-only and
+// never affects resume/pinning.
 func (s *Server) buildRunProjection(events []state.Event) (graph.Projection, error) {
-	if s.blobs != nil {
-		if ref := runDefinitionRef(events); ref != "" {
-			if ld, err := engine.LoadRunStartedDefinitionSnapshot(s.blobs, ref); err == nil {
-				return graph.BuildWithRunLoaded(ld, events)
-			}
-			// fall through to the loaded workflow on any snapshot error
+	if ref := runDefinitionRef(events); ref != "" {
+		ld, err := engine.LoadRunStartedDefinitionSnapshot(s.blobs, ref)
+		if err != nil {
+			return graph.Projection{}, fmt.Errorf("ui: load committed definition snapshot: %w", err)
 		}
+		return graph.BuildWithRunLoaded(ld, events)
 	}
 	return graph.BuildWithRunLoaded(s.ld, events)
 }
@@ -196,7 +208,7 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRuns(w http.ResponseWriter, _ *http.Request) {
 	rows, err := listRuns(s.stateDir, s.workflowID, s.digest)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, s.formatStateError("list runs", filepath.Join(s.stateDir, "runs"), err).Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, map[string]any{"runs": rows})

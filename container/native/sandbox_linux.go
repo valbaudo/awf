@@ -3,8 +3,11 @@
 package native
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
+	"time"
 
 	llsyscall "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
@@ -12,28 +15,54 @@ import (
 // detectPlatformSandbox returns the best available sandbox launcher for the
 // Linux platform. Selection order:
 //
-//  1. bwrap — if found via lookPath → bwrapLauncherFactory (stored in
-//     Backend.sandbox); exec.go calls buildForRun per dispatch.
+//  1. bwrap — if found via lookPath and its namespace/mount capability probe
+//     succeeds → bwrapLauncherFactory (stored in Backend.sandbox); exec.go
+//     calls buildForRun per dispatch.
 //  2. go-landlock — if the kernel supports Landlock ABI ≥1 (probed via
 //     LandlockGetABIVersion, a non-mutating syscall) → trampolineLauncherFactory.
 //  3. Neither — return (nil, "") so detectSandbox falls back to no-op + warn.
 func detectPlatformSandbox(lookPath func(string) (string, error)) (sandboxLauncher, string) {
+	return detectLinuxSandbox(lookPath, probeBwrapSandbox, llsyscall.LandlockGetABIVersion)
+}
+
+// detectLinuxSandbox is the deterministic Linux selection core. A bwrap
+// executable is eligible only if it can actually establish the policy AWF
+// relies on; an installed-but-blocked binary is treated as unavailable.
+func detectLinuxSandbox(
+	lookPath func(string) (string, error),
+	probeBwrap func(string) error,
+	landlockABIVersion func() (int, error),
+) (sandboxLauncher, string) {
 	// ── 1. bubblewrap ────────────────────────────────────────────────────────
 	if bwrapPath, err := lookPath("bwrap"); err == nil && bwrapPath != "" {
-		home, _ := os.UserHomeDir()
-		return &bwrapLauncherFactory{bwrapPath: bwrapPath, home: home}, "bwrap"
+		if err := probeBwrap(bwrapPath); err == nil {
+			home, _ := os.UserHomeDir()
+			return &bwrapLauncherFactory{bwrapPath: bwrapPath, home: home}, "bwrap"
+		}
 	}
 
 	// ── 2. go-landlock trampoline ─────────────────────────────────────────────
 	// LandlockGetABIVersion is a pure probe (landlock_get_abi(2)); it does not
 	// create a ruleset or restrict the process. We require ABI ≥ 1 (Linux 5.13).
-	if ver, err := llsyscall.LandlockGetABIVersion(); err == nil && ver >= 1 {
+	if ver, err := landlockABIVersion(); err == nil && ver >= 1 {
 		self, _ := os.Executable()
 		return &trampolineLauncherFactory{self: self}, "landlock-trampoline"
 	}
 
 	// ── 3. no platform sandbox ────────────────────────────────────────────────
 	return nil, ""
+}
+
+func probeBwrapSandbox(bwrapPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, bwrapPath,
+		"--ro-bind", "/", "/",
+		"--unshare-pid",
+		"--die-with-parent",
+		"--new-session",
+		"--", "/bin/true",
+	).Run()
 }
 
 // ─── bubblewrap launcher ─────────────────────────────────────────────────────

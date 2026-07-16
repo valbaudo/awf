@@ -53,6 +53,15 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf outputs: provide --workflow <path> (to read the outputs: contract) or --step <node-id>\n")
 		return ExitUsage
 	}
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateReadOnly, defaultStateIdentity)
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			fprintf(stderr, "awf outputs: no run with id %q under state directory %q\n", runID, *stateDir)
+			return ExitUsage
+		}
+		return reportStateFailure(stderr, "awf outputs", "access state directory", *stateDir, *stateDir, accessErr, defaultStateIdentity, stateFailureOutputs)
+	}
+	*stateDir = canonicalStateDir
 	logPath := filepath.Join(*stateDir, "runs", runID, "log")
 	events, err := state.FoldFile(logPath)
 	if err != nil {
@@ -60,19 +69,17 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 			fprintf(stderr, "awf outputs: no run with id %q at %q\n", runID, logPath)
 			return ExitUsage // run-not-found is a bad invocation
 		}
-		fprintf(stderr, "awf outputs: fold log %q: %v\n", logPath, err)
-		return ExitRunFailed // corrupt/unreadable log is a read failure
+		return reportStateFailure(stderr, "awf outputs", "fold run log", *stateDir, logPath, err, defaultStateIdentity, stateFailureOutputs)
 	}
-	blobs, err := state.OpenBlobs(filepath.Join(*stateDir, "blobs"))
+	blobs, err := state.OpenBlobsReadOnly(filepath.Join(*stateDir, "blobs"))
 	if err != nil {
-		fprintf(stderr, "awf outputs: open blobs: %v\n", err)
-		return ExitRunFailed // blob-store open failure is a read-infra failure
+		return reportStateFailure(stderr, "awf outputs", "open blob store", *stateDir, filepath.Join(*stateDir, "blobs"), err, defaultStateIdentity, stateFailureOutputs)
 	}
 
 	if *step != "" {
-		return outputsStep(events, blobs, *step, stdout, stderr)
+		return outputsStep(events, blobs, *stateDir, *step, stdout, stderr)
 	}
-	return outputsContract(events, blobs, runID, *workflow, stdout, stderr)
+	return outputsContract(events, blobs, *stateDir, runID, *workflow, stdout, stderr)
 }
 
 // outputsStep emits one top-level CODE/AGENT/SIGNAL step's typed output via a
@@ -80,7 +87,7 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 // blob. Not a full engine.Fold (which errors if any UNRELATED committed blob is
 // missing). Map aggregates and sub-workflow call products commit different events
 // (map.item / call product) and are read via the outputs: form, not --step.
-func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout, stderr io.Writer) int {
+func outputsStep(events []state.Event, blobs state.Blobs, stateDir, nodeID string, stdout, stderr io.Writer) int {
 	ref := ""
 	found := false
 	// Last node.completed for this id wins (a resumed run may re-commit it).
@@ -107,8 +114,7 @@ func outputsStep(events []state.Event, blobs state.Blobs, nodeID string, stdout,
 	// (there is no enforced cap) so buffering is acceptable for a read command.
 	raw, err := blobs.Get(ref)
 	if err != nil {
-		fprintf(stderr, "awf outputs: read output blob for %q: %v\n", nodeID, err)
-		return ExitRunFailed
+		return reportStateFailure(stderr, "awf outputs", "read output blob for "+nodeID, stateDir, filepath.Join(stateDir, "blobs"), err, defaultStateIdentity, stateFailureOutputs)
 	}
 	var out any
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -137,11 +143,10 @@ func emitJSON(stdout, stderr io.Writer, v any) int {
 // optional output omits rather than hard-fails) with a top-level scope
 // (ctxPath="", input=nil → input.* resolves against the run's own input,
 // matching the engine).
-func outputsContract(events []state.Event, blobs state.Blobs, runID, wfPath string, stdout, stderr io.Writer) int {
+func outputsContract(events []state.Event, blobs state.Blobs, stateDir, runID, wfPath string, stdout, stderr io.Writer) int {
 	rs, err := engine.Fold(events, blobs)
 	if err != nil {
-		fprintf(stderr, "awf outputs: build run state: %v\n", err)
-		return ExitRunFailed
+		return reportStateFailure(stderr, "awf outputs", "read committed run state", stateDir, filepath.Join(stateDir, "blobs"), err, defaultStateIdentity, stateFailureOutputs)
 	}
 	ld, err := loader.Load(wfPath)
 	if err != nil {
@@ -170,8 +175,7 @@ func outputsContract(events []state.Event, blobs state.Blobs, runID, wfPath stri
 		// A referenced step did not commit (skipped or never ran), or a schema
 		// mismatch — a data condition (the run did not produce this output),
 		// distinct from a usage error. See spec §2.4 (run-success != output-success).
-		fprintf(stderr, "awf outputs: could not produce outputs (a referenced step did not commit, or schema mismatch): %v\n", err)
-		return ExitRunFailed
+		return reportStateFailure(stderr, "awf outputs", "evaluate committed outputs", stateDir, filepath.Join(stateDir, "blobs"), err, defaultStateIdentity, stateFailureOutputs)
 	}
 	return emitJSON(stdout, stderr, res.Outputs)
 }

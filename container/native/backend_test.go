@@ -85,6 +85,95 @@ func TestNewRejectsEmptyWorkdirRoot(t *testing.T) {
 	}
 }
 
+func TestCloseReleasesRootAndIsIdempotent(t *testing.T) {
+	b, err := native.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if _, err := b.Create(context.Background(), container.ContainerSpec{Name: "after-close"}); err == nil {
+		t.Fatal("Create after Close: error = nil, want closed-root error")
+	}
+}
+
+func TestCanonicalRelativeWorkdirRoot(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	b, err := native.New(filepath.Join(".awf", "work", "run"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(filepath.Join(cwd, ".awf", "work", "run", "lab"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.ID != want {
+		t.Fatalf("Handle.ID = %q, want canonical absolute path %q", h.ID, want)
+	}
+	if !filepath.IsAbs(h.ID) {
+		t.Fatalf("Handle.ID = %q, want absolute path", h.ID)
+	}
+	resolved := b.ResolveWorkdirPath(h, ".awf/output/result.json")
+	if !filepath.IsAbs(resolved) {
+		t.Fatalf("ResolveWorkdirPath = %q, want absolute path", resolved)
+	}
+}
+
+func TestCanonicalSymlinkedWorkdirRoot(t *testing.T) {
+	cwd := t.TempDir()
+	realRoot := filepath.Join(cwd, "real")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(cwd, "state")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+
+	b, err := native.New(filepath.Join("state", "work"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(filepath.Join(realRoot, "work", "lab"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.ID != want {
+		t.Fatalf("Handle.ID = %q, want symlink-resolved path %q", h.ID, want)
+	}
+	if got := b.ResolveWorkdirPath(h, "result.json"); got != filepath.Join(want, "result.json") {
+		t.Fatalf("ResolveWorkdirPath = %q, want %q", got, filepath.Join(want, "result.json"))
+	}
+}
+
+func TestCreateRejectsUnsafeContainerName(t *testing.T) {
+	b, err := native.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, name := range []string{"", ".", "..", "../escape", "a/b", filepath.Join(string(filepath.Separator), "absolute")} {
+		t.Run(strings.ReplaceAll(name, string(filepath.Separator), "_"), func(t *testing.T) {
+			if _, err := b.Create(context.Background(), container.ContainerSpec{Name: name}); err == nil {
+				t.Fatalf("Create(Name: %q) error = nil, want unsafe-name error", name)
+			}
+		})
+	}
+}
+
 func TestCapabilitiesReturnsSnapshotNone(t *testing.T) {
 	t.Parallel()
 	b, err := native.New(t.TempDir())
@@ -137,7 +226,10 @@ func TestCreateIgnoresImageAndMakesWorkdir(t *testing.T) {
 	if h.Name != "lab" {
 		t.Errorf("Handle.Name = %q, want \"lab\"", h.Name)
 	}
-	want := filepath.Join(root, "lab")
+	want, err := filepath.EvalSymlinks(filepath.Join(root, "lab"))
+	if err != nil {
+		t.Fatalf("resolve expected workdir: %v", err)
+	}
 	if h.ID != want {
 		t.Errorf("Handle.ID = %q, want %q (workdir path)", h.ID, want)
 	}

@@ -91,8 +91,11 @@ Mint a run id, validate _path_, bring each declared container to readiness from
 its image or Compose recipe, and execute the graph. Code-step output streams to
 standard output as a live tap, while agent-step progress — assistant text,
 reasoning, tool calls and results — streams to standard error (plain when piped
-or under `NO_COLOR`). The final line on standard output reports the run id and
-terminal outcome (for example `run 1a2b3c4d: ok`). That line is porcelain —
+or under `NO_COLOR`). Retry notices on that stream identify the node path,
+failed, next, and maximum attempt, cause, and wait duration; they are human-facing
+progress, not a stable machine stream. The wait is cancellable, so cancellation
+may leave a retry notice without a subsequent dispatch. The final line on standard
+output reports the run id and terminal outcome (for example `run 1a2b3c4d: ok`). That line is porcelain —
 machine callers read the exit code (see **COMPATIBILITY**). Run state is written under
 _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 **FILES**).
@@ -136,14 +139,22 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 
 **--state-dir** _dir_
 :   Base directory for the `runs/` journals and the shared `blobs/` store
-    (default `./.awf`).
+    (default `./.awf`). Read-only commands do not create this directory or any
+    path below it. A state-mutating command creates missing state as the invoking
+    user and requires an existing state root to be owned by that user. A
+    foreign-owned state root is refused with its path, owner information, and
+    guidance to use the owning account. **awf** never invokes a privilege
+    elevation tool and refuses state-mutating commands launched through
+    **sudo**, **doas**, or **pkexec**. This checks elevation provenance, not UID
+    0 itself: genuine root and container sessions remain allowed when the state
+    root is owned by the invoking user.
 
 **--backend** _auto_|_fake_|_docker_|_native_
 :   Where steps execute (default _auto_). _docker_ runs them in real containers
     and Compose projects with full isolation; _native_ runs them as host
-    processes with no container boundary, write-confined by an OS sandbox (see
-    **CONTAINERS** in **awf-workflow**(5)); _fake_ is an in-memory backend for
-    tests.
+    processes with no container boundary. It selects the first functionally
+    usable OS sandbox launcher and warns loudly if none is usable (see
+    **CONTAINERS** in **awf-workflow**(5)); _fake_ is an in-memory backend for tests.
     _auto_ selects _native_ unless the workflow uses Docker-only features such as
     static image-backed containers, Compose-mode containers, or runtime map
     images, in which case it selects _docker_ for a pinned, reproducible
@@ -158,8 +169,9 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     An explicit **--backend native** runs static image-mode and
     `snapshot: workspace` workflows directly on the host, *ignoring* the declared
     container image — the image is not pulled and there is no container boundary,
-    though each step is still write-confined by an OS sandbox (see **CONTAINERS**
-    in **awf-workflow**(5)). When a workflow declares an image, native prints:
+    and relies on the selected OS sandbox for write confinement. If no launcher
+    is usable, it runs unconfined with a loud warning (see **CONTAINERS** in
+    **awf-workflow**(5)). When a workflow declares an image, native prints:
 
         awf run: --backend native ignores declared container image(s); steps run on the host.
 
@@ -408,7 +420,8 @@ reflects the *read*, not the run's outcome.
 **2**
 :   Bad invocation: both or neither of **--workflow**/**--step** given; a
     digest mismatch between the supplied file and the run's pinned
-    WorkflowDigest; run not found; or no `outputs:` block declared.
+    WorkflowDigest; run not found; an inaccessible state path; or no `outputs:`
+    block declared.
 
 Note: a workflow whose `outputs:` binds a step inside a transparent
 conditional scope (an `if` branch or `loop` body) produces an **awf
@@ -527,6 +540,10 @@ Print usage and exit. **-h** and **--help** are accepted as aliases.
     active in another process). The split is "whose artifact failed": code `2`
     means your input is wrong; code `3` means AWF's environment is broken, so CI
     can retry a transient infra failure without masking a real usage error.
+
+    Contract-v1 exception: **awf outputs** retains its read-scoped `0`/`1`/`2`
+    exit codes and never returns `3`; an inaccessible state path therefore exits
+    `2` from that command. It still prints the same path and ownership guidance.
 
 # COMPATIBILITY
 
@@ -818,7 +835,16 @@ launch as a permanent config error carrying droid's available-models list. Run
 
 The _state-dir_ is `./.awf` by default, overridable per-invocation with
 **--state-dir** or for a shell session with the **AWF_STATE_DIR** environment
-variable (an explicit flag wins; see **ENVIRONMENT**).
+variable (an explicit flag wins; see **ENVIRONMENT**). Read-only commands never
+write state or create the state root, blob store, or missing run paths. An absent
+blob store is valid for read-only operation; a read fails only when it actually
+needs unavailable committed blob data. State-mutating commands
+require the state root to be owned by the invoking user; AWF refuses an existing
+foreign-owned root and reports the path and owner. AWF does not elevate itself.
+It refuses **sudo**, **doas**, and **pkexec** provenance, but genuine root and
+container sessions remain allowed when they own the state root. If an older
+elevated invocation created `.awf`, use its owning account or move to a new
+user-owned **--state-dir**.
 
 _state-dir_/runs/_run-id_/log
 :   The run's append-only journal — the authoritative record folded on resume

@@ -32,6 +32,23 @@ type Broker struct {
 	controlDir   string
 	consumedDir  string
 	pollInterval time.Duration
+	ops          brokerOps
+}
+
+type brokerOps struct {
+	readDir  func(string) ([]os.DirEntry, error)
+	readFile func(string) ([]byte, error)
+	mkdirAll func(string, fs.FileMode) error
+	rename   func(string, string) error
+}
+
+func defaultBrokerOps() brokerOps {
+	return brokerOps{
+		readDir:  os.ReadDir,
+		readFile: os.ReadFile,
+		mkdirAll: os.MkdirAll,
+		rename:   os.Rename,
+	}
 }
 
 // BrokerOption configures a Broker. Currently only one option exists; future
@@ -61,6 +78,7 @@ func NewBroker(controlDir string, opts ...BrokerOption) *Broker {
 		controlDir:   controlDir,
 		consumedDir:  ConsumedDir(controlDir),
 		pollInterval: 100 * time.Millisecond,
+		ops:          defaultBrokerOps(),
 	}
 	for _, o := range opts {
 		o(b)
@@ -180,6 +198,8 @@ type Delivery struct {
 // timeout:    returns (Delivery{}, context.DeadlineExceeded) — caller maps to
 //
 //	retryable_failure per spec §4.3.
+//
+// control-directory I/O failures return immediately.
 func (b *Broker) Receive(ctx context.Context, name string, timeout time.Duration) (Delivery, error) {
 	if err := validateSignalName(name); err != nil {
 		return Delivery{}, err
@@ -193,7 +213,9 @@ func (b *Broker) Receive(ctx context.Context, name string, timeout time.Duration
 	defer ticker.Stop()
 
 	// Drain first (in case a signal was written before Receive was called).
-	if d, ok := b.tryConsume(name); ok {
+	if d, ok, err := b.tryConsume(name); err != nil {
+		return Delivery{}, err
+	} else if ok {
 		return d, nil
 	}
 	for {
@@ -201,7 +223,9 @@ func (b *Broker) Receive(ctx context.Context, name string, timeout time.Duration
 		case <-ctx.Done():
 			return Delivery{}, ctx.Err()
 		case <-ticker.C:
-			if d, ok := b.tryConsume(name); ok {
+			if d, ok, err := b.tryConsume(name); err != nil {
+				return Delivery{}, err
+			} else if ok {
 				return d, nil
 			}
 		}
@@ -216,14 +240,17 @@ type candidate struct {
 }
 
 // sortedCandidates returns every buffered signal file in controlDir matching
-// name, ascending by seq (nil if none, or the dir is unreadable). It is the
+// name, ascending by seq (nil if none). It is the
 // shared read-only scan behind tryConsume (which takes the earliest) and
 // tryConsumeMatching (which takes the first whose payload matches) — only the
 // SELECTION rule and the rename tail differ, so only this scan is shared.
-func (b *Broker) sortedCandidates(name string) []candidate {
-	entries, err := os.ReadDir(b.controlDir)
+func (b *Broker) sortedCandidates(name string) ([]candidate, error) {
+	entries, err := b.ops.readDir(b.controlDir)
 	if err != nil {
-		return nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("signal: read %q: %w", b.controlDir, err)
 	}
 	var cands []candidate
 	for _, e := range entries {
@@ -237,34 +264,48 @@ func (b *Broker) sortedCandidates(name string) []candidate {
 		cands = append(cands, candidate{seq, e.Name()})
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].seq < cands[j].seq })
-	return cands
+	return cands, nil
 }
 
 // tryConsume scans controlDir for the EARLIEST-seq signal file matching name,
 // reads its bytes, atomic-renames it into consumed/, and returns the Delivery.
-// ok=false if no matching file is present.
-func (b *Broker) tryConsume(name string) (Delivery, bool) {
-	cands := b.sortedCandidates(name)
+// ok=false if no matching file is present or a concurrent consumer claimed it.
+func (b *Broker) tryConsume(name string) (Delivery, bool, error) {
+	cands, err := b.sortedCandidates(name)
+	if err != nil {
+		return Delivery{}, false, err
+	}
 	if len(cands) == 0 {
-		return Delivery{}, false
+		return Delivery{}, false, nil
 	}
 	earliest := cands[0]
 	srcPath := filepath.Join(b.controlDir, earliest.fileName)
 
-	payload, err := os.ReadFile(srcPath)
+	payload, err := b.ops.readFile(srcPath)
 	if err != nil {
-		return Delivery{}, false
+		if errors.Is(err, fs.ErrNotExist) {
+			return Delivery{}, false, nil
+		}
+		return Delivery{}, false, fmt.Errorf("signal: read %q: %w", srcPath, err)
 	}
-	if err := os.MkdirAll(b.consumedDir, 0o755); err != nil {
-		return Delivery{}, false
+	if err := b.ops.mkdirAll(b.consumedDir, 0o755); err != nil {
+		return Delivery{}, false, fmt.Errorf("signal: mkdir %q: %w", b.consumedDir, err)
 	}
 	dstPath := filepath.Join(b.consumedDir, earliest.fileName)
-	if err := os.Rename(srcPath, dstPath); err != nil {
-		// Concurrent consumer claimed it; the next Receive iteration will
-		// find a different match or block.
-		return Delivery{}, false
+	if err := b.ops.rename(srcPath, dstPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			_, sourceErr := b.ops.readFile(srcPath)
+			if errors.Is(sourceErr, fs.ErrNotExist) {
+				// Concurrent consumer claimed it after this scan.
+				return Delivery{}, false, nil
+			}
+			if sourceErr != nil {
+				return Delivery{}, false, fmt.Errorf("signal: verify rename source %q: %w", srcPath, sourceErr)
+			}
+		}
+		return Delivery{}, false, fmt.Errorf("signal: rename %q to %q: %w", srcPath, dstPath, err)
 	}
-	return Delivery{Name: name, Seq: earliest.seq, Payload: payload}, true
+	return Delivery{Name: name, Seq: earliest.seq, Payload: payload}, true, nil
 }
 
 // MatchFunc decides whether a buffered signal's payload satisfies a keyed-await
@@ -284,6 +325,7 @@ type MatchFunc func(payload []byte) (bool, error)
 //
 // ctx-cancel: (Delivery{}, ctx.Err()). timeout: (Delivery{}, DeadlineExceeded) —
 // the engine maps to retryable_failure (spec §4.3), identical to "no signal".
+// Control-directory I/O failures return immediately.
 func (b *Broker) ReceiveMatching(ctx context.Context, name string, timeout time.Duration, match MatchFunc) (Delivery, error) {
 	if err := validateSignalName(name); err != nil {
 		return Delivery{}, err
@@ -300,7 +342,9 @@ func (b *Broker) ReceiveMatching(ctx context.Context, name string, timeout time.
 	ticker := time.NewTicker(b.pollInterval)
 	defer ticker.Stop()
 
-	if d, ok := b.tryConsumeMatching(name, match); ok {
+	if d, ok, err := b.tryConsumeMatching(name, match); err != nil {
+		return Delivery{}, err
+	} else if ok {
 		return d, nil
 	}
 	for {
@@ -308,7 +352,9 @@ func (b *Broker) ReceiveMatching(ctx context.Context, name string, timeout time.
 		case <-ctx.Done():
 			return Delivery{}, ctx.Err()
 		case <-ticker.C:
-			if d, ok := b.tryConsumeMatching(name, match); ok {
+			if d, ok, err := b.tryConsumeMatching(name, match); err != nil {
+				return Delivery{}, err
+			} else if ok {
 				return d, nil
 			}
 		}
@@ -319,29 +365,46 @@ func (b *Broker) ReceiveMatching(ctx context.Context, name string, timeout time.
 // and consumes (atomic-renames into consumed/) the FIRST whose payload satisfies
 // match. A candidate whose predicate returns (false, _) — including a predicate
 // ERROR (unpredicatable payload, e.g. non-JSON) — is skipped and left buffered.
-// ok=false if no candidate matches this scan. Mirrors tryConsume's read/rename
-// mechanics exactly; only the selection rule differs.
-func (b *Broker) tryConsumeMatching(name string, match MatchFunc) (Delivery, bool) {
-	for _, c := range b.sortedCandidates(name) {
+// ok=false if no candidate matches this scan or a concurrent consumer claimed
+// it. Mirrors tryConsume's read/rename mechanics exactly; only the selection
+// rule differs.
+func (b *Broker) tryConsumeMatching(name string, match MatchFunc) (Delivery, bool, error) {
+	candidates, err := b.sortedCandidates(name)
+	if err != nil {
+		return Delivery{}, false, err
+	}
+	for _, c := range candidates {
 		srcPath := filepath.Join(b.controlDir, c.fileName)
-		payload, rerr := os.ReadFile(srcPath)
+		payload, rerr := b.ops.readFile(srcPath)
 		if rerr != nil {
-			continue // disappeared / unreadable; another consumer or a transient fault
+			if errors.Is(rerr, fs.ErrNotExist) {
+				continue // concurrent consumer removed the candidate after the scan
+			}
+			return Delivery{}, false, fmt.Errorf("signal: read %q: %w", srcPath, rerr)
 		}
 		matched, merr := match(payload)
 		if merr != nil || !matched {
 			continue // unpredicatable or non-matching → leave buffered
 		}
-		if err := os.MkdirAll(b.consumedDir, 0o755); err != nil {
-			return Delivery{}, false
+		if err := b.ops.mkdirAll(b.consumedDir, 0o755); err != nil {
+			return Delivery{}, false, fmt.Errorf("signal: mkdir %q: %w", b.consumedDir, err)
 		}
 		dstPath := filepath.Join(b.consumedDir, c.fileName)
-		if err := os.Rename(srcPath, dstPath); err != nil {
-			continue // concurrent consumer claimed it; try the next candidate
+		if err := b.ops.rename(srcPath, dstPath); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				_, sourceErr := b.ops.readFile(srcPath)
+				if errors.Is(sourceErr, fs.ErrNotExist) {
+					continue // concurrent consumer claimed it; try the next candidate
+				}
+				if sourceErr != nil {
+					return Delivery{}, false, fmt.Errorf("signal: verify rename source %q: %w", srcPath, sourceErr)
+				}
+			}
+			return Delivery{}, false, fmt.Errorf("signal: rename %q to %q: %w", srcPath, dstPath, err)
 		}
-		return Delivery{Name: name, Seq: c.seq, Payload: payload}, true
+		return Delivery{Name: name, Seq: c.seq, Payload: payload}, true, nil
 	}
-	return Delivery{}, false
+	return Delivery{}, false, nil
 }
 
 // Drain returns all pending signals (any name) without blocking. Existed
@@ -367,7 +430,7 @@ func (b *Broker) Drain() []Delivery {
 		if !ok {
 			continue
 		}
-		if d, ok := b.tryConsume(name); ok {
+		if d, ok, err := b.tryConsume(name); err == nil && ok {
 			deliveries = append(deliveries, d)
 		}
 	}

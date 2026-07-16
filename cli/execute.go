@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/agent/live"
@@ -29,6 +33,19 @@ func (r *Runner) agentEventTap(stderr io.Writer) io.Writer {
 	return stderr
 }
 
+// newRetryProgressRenderer returns the single retry-progress sink shared by
+// every branch in one run. Parallel and map branches may schedule retries at
+// the same time, so the closure serializes complete lines at the writer seam.
+func newRetryProgressRenderer(stderr io.Writer) func(engine.RetryNotice) {
+	var mu sync.Mutex
+	return func(n engine.RetryNotice) {
+		mu.Lock()
+		defer mu.Unlock()
+		fprintf(stderr, "[%s] attempt %d/%d failed: %v; retrying as %d/%d in %s\n",
+			n.Path, n.FailedAttempt, n.Attempts, n.Cause, n.NextAttempt, n.Attempts, n.Delay)
+	}
+}
+
 // runAndFinish is the shared tail of `awf run` and `awf resume`. Both
 // subcommands diverge in their setup — run.started vs run.resumed framing,
 // log-create vs log-open, fresh RunState vs folded RunState, Create-handles
@@ -43,7 +60,7 @@ func (r *Runner) agentEventTap(stderr io.Writer) io.Writer {
 //     OutcomeOK              → ExitOK,        success line on stdout.
 //     Retryable/Permanent    → ExitRunFailed, cause on stderr.
 //     Rejected               → ExitRunFailed, gate-rejection cause on stderr.
-//     "" (interpreter bug)   → ExitUsage,     "internal error" on stderr.
+//     "" (engine/infra fault) → ExitInfra,     "internal error" on stderr.
 //
 // opName is the verb-prefix for error messages ("awf run" or "awf resume").
 // successSuffix is appended to the success line — "" for `awf run`,
@@ -69,6 +86,7 @@ func (r *Runner) runAndFinish(
 	blobs state.Blobs,
 	stdout, stderr io.Writer,
 	runID, opName, successSuffix string,
+	stateRoot string,
 	resume bool,
 	assets map[string]engine.RunStartedAsset,
 	inputFiles map[string]string,
@@ -100,22 +118,59 @@ func (r *Runner) runAndFinish(
 		InputFiles:    inputFiles,
 		RunEnv:        resolveWorkflowRunEnv(ld),
 		LiveFinalizer: liveDispatchFinalizer(liveRoot),
+		OnRetry:       newRetryProgressRenderer(stderr),
 		Resume:        resume,
 		RerunFrom:     rerunFrom,
 	})
+	return r.finishRunResultWithState(log, stdout, stderr, runID, opName, successSuffix, stateRoot, outcome, runErr, skipTeardown)
+}
+
+func (r *Runner) finishRunResult(
+	log state.Log,
+	stdout, stderr io.Writer,
+	runID, opName, successSuffix string,
+	outcome engine.Outcome,
+	runErr error,
+	skipTeardown *bool,
+) int {
+	return r.finishRunResultWithState(log, stdout, stderr, runID, opName, successSuffix, "", outcome, runErr, skipTeardown)
+}
+
+func (r *Runner) finishRunResultWithState(
+	log state.Log,
+	stdout, stderr io.Writer,
+	runID, opName, successSuffix, stateRoot string,
+	outcome engine.Outcome,
+	runErr error,
+	skipTeardown *bool,
+) int {
 
 	// Phase 3 slice 3.5: ErrPaused is a non-terminal halt. No run.finished
 	// event is written; containers stay up; resume continues in a new epoch.
-	if errors.Is(runErr, signal.ErrPaused) {
+	if outcome == "" && runErr == signal.ErrPaused {
 		*skipTeardown = true
 		fprintf(stdout, "run %s: paused — use `awf resume %s <workflow>` to continue\n", runID, runID)
 		return ExitOK
 	}
 	// ErrCancelled: the engine has ALREADY appended terminal run.cancelled.
 	// Containers DO tear down (the deferred Destroy fires normally).
-	if errors.Is(runErr, signal.ErrCancelled) {
+	if outcome == "" && runErr == signal.ErrCancelled {
 		fprintf(stdout, "run %s: cancelled\n", runID)
 		return ExitOK
+	}
+	if outcome == "" && runErr != nil && stateRoot != "" {
+		statePath, stateFailure := statePersistenceErrorPath(stateRoot, runErr)
+		if stateFailure {
+			return reportStateFailure(stderr, opName, "persist run state", stateRoot, statePath, runErr, r.stateIdentity(), stateFailureInfra)
+		}
+	}
+
+	validPair := (outcome == engine.OutcomeOK && runErr == nil) ||
+		((outcome == engine.OutcomeRetryableFailure || outcome == engine.OutcomePermanentFailure || outcome == engine.OutcomeRejected) && runErr != nil) ||
+		(outcome == "" && runErr != nil)
+	if !validPair {
+		fprintf(stderr, "run %s: internal error: invalid engine result pair outcome=%q error=%v\n", runID, outcome, runErr)
+		return ExitInfra
 	}
 
 	if outcome != "" {
@@ -125,12 +180,10 @@ func (r *Runner) runAndFinish(
 			return ExitUsage
 		}
 		if err := log.Append(state.Event{Type: engine.EventRunFinished, Data: finishedData}); err != nil {
-			fprintf(stderr, "%s: append run.finished: %v\n", opName, err)
-			return ExitUsage
+			return reportStateFailure(stderr, opName, "append run.finished", stateRoot, filepath.Join(stateRoot, "runs", runID, "log"), err, r.stateIdentity(), stateFailureInfra)
 		}
 		if err := log.Sync(); err != nil {
-			fprintf(stderr, "%s: sync log after run.finished: %v\n", opName, err)
-			return ExitUsage
+			return reportStateFailure(stderr, opName, "sync run log after run.finished", stateRoot, filepath.Join(stateRoot, "runs", runID, "log"), err, r.stateIdentity(), stateFailureInfra)
 		}
 		printRunCostSummary(stdout, log)
 	}
@@ -152,8 +205,25 @@ func (r *Runner) runAndFinish(
 		return ExitRunFailed
 	default:
 		fprintf(stderr, "run %s: internal error: %v\n", runID, runErr)
-		return ExitUsage
+		return ExitInfra
 	}
+}
+
+func statePersistenceErrorPath(stateRoot string, err error) (string, bool) {
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr.Path == "" {
+		return "", false
+	}
+	absRoot, rootErr := filepath.Abs(stateRoot)
+	absPath, pathErrAbs := filepath.Abs(pathErr.Path)
+	if rootErr != nil || pathErrAbs != nil {
+		return "", false
+	}
+	rel, relErr := filepath.Rel(filepath.Clean(absRoot), filepath.Clean(absPath))
+	if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return pathErr.Path, true
 }
 
 // runMetrics is a per-run cost/token rollup folded from node.completed events.

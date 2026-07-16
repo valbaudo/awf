@@ -32,6 +32,23 @@ import (
 	"github.com/valbaudo/awf/container/native"
 )
 
+func TestSandboxInteg_BrokenBwrapNotSelected(t *testing.T) {
+	fakeBin := t.TempDir()
+	fakeBwrap := filepath.Join(fakeBin, "bwrap")
+	if err := os.WriteFile(fakeBwrap, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin)
+
+	b, err := native.New(t.TempDir(), native.WithSandbox(true))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := b.SandboxMode(); got == "bwrap" {
+		t.Fatal("SandboxMode = bwrap for a launcher that fails the functional probe")
+	}
+}
+
 // TestSandboxInteg_BwrapWriteHostDenied asserts that a bwrap-sandboxed step
 // cannot write to host HOME. Requires bwrap(1) in PATH.
 //

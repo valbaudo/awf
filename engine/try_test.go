@@ -16,8 +16,8 @@ import (
 // and Parallel (slice 3.2) handler tests. For each Run call it consults the
 // script keyed by step id and returns the scripted outcome / error.
 //
-// If a result's ctxAware flag is set, Run pre-checks ctx.Err() and returns
-// (RetryableFailure, ctx.Err()) without consulting the script — mirrors what
+// If a result's ctxAware flag is set, Run pre-checks ctx.Err() and returns a
+// retryable failure carrying ctx.Err() as DispatchResult.Err — mirrors what
 // container.Fake does. The ctx-unaware path is the default (Phase 2 / slice
 // 3.1 patterns); ctx-aware is required to exercise sibling-cancellation
 // semantics (slice 3.2 parallel + the slice 3.1 try-finally-on-ctx-cancel
@@ -29,10 +29,11 @@ type scriptedDispatcher struct {
 }
 
 type scriptedResult struct {
-	outcome  Outcome
-	err      error          // if non-nil, the dispatcher returns this error directly
-	ctxAware bool           // if true, return (RetryableFailure, ctx.Err()) when ctx is cancelled
-	outputs  map[string]any // if non-nil, propagated to DispatchResult.Outputs (gate tests need this)
+	outcome   Outcome
+	err       error          // mechanical failure cause, returned in DispatchResult.Err
+	directErr error          // internal dispatcher error, returned outside DispatchResult
+	ctxAware  bool           // if true, return (RetryableFailure, ctx.Err()) when ctx is cancelled
+	outputs   map[string]any // if non-nil, propagated to DispatchResult.Outputs (gate tests need this)
 }
 
 func (d *scriptedDispatcher) Run(ctx context.Context, intent NodeIntent) (DispatchResult, <-chan container.IOChunk, error) {
@@ -51,15 +52,70 @@ func (d *scriptedDispatcher) Run(ctx context.Context, intent NodeIntent) (Dispat
 		if err := ctx.Err(); err != nil {
 			closed := make(chan container.IOChunk)
 			close(closed)
-			return DispatchResult{Outcome: OutcomeRetryableFailure}, closed, err
+			return DispatchResult{Outcome: OutcomeRetryableFailure, Err: err}, closed, nil
 		}
 	}
 	closedCh := make(chan container.IOChunk)
 	close(closedCh)
+	if res.directErr != nil {
+		return DispatchResult{}, closedCh, res.directErr
+	}
 	if res.err != nil {
-		return DispatchResult{Outcome: res.outcome}, closedCh, res.err
+		return DispatchResult{Outcome: res.outcome, Err: res.err}, closedCh, nil
 	}
 	return DispatchResult{Outcome: res.outcome, ExitCode: intPtr(0), Outputs: res.outputs}, closedCh, nil
+}
+
+func TestRunTryCatchesOnlyTypedFailuresAndStillRunsFinally(t *testing.T) {
+	tests := []struct {
+		name        string
+		do          scriptedResult
+		wantOutcome Outcome
+		wantErr     error
+		wantCatch   bool
+	}{
+		{name: "retryable", do: scriptedResult{outcome: OutcomeRetryableFailure, err: errors.New("retryable")}, wantOutcome: OutcomeOK, wantCatch: true},
+		{name: "permanent", do: scriptedResult{outcome: OutcomePermanentFailure, err: errors.New("permanent")}, wantOutcome: OutcomeOK, wantCatch: true},
+		{name: "internal", do: scriptedResult{directErr: errors.New("internal")}, wantErr: errors.New("internal")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := &ir.Try{
+				Do:      ir.NodeList{&ir.CodeStep{ID: "do", Run: "do"}},
+				Catch:   ir.NodeList{&ir.CodeStep{ID: "catch", Run: "catch"}},
+				Finally: ir.NodeList{&ir.CodeStep{ID: "finally", Run: "finally"}},
+			}
+			script := map[string]scriptedResult{
+				"do":      tt.do,
+				"finally": {outcome: OutcomeOK},
+			}
+			if tt.wantCatch {
+				script["catch"] = scriptedResult{outcome: OutcomeOK}
+			}
+			disp, logger, blobs := tryTestRig(t, script)
+			wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{tr}}
+			rs := NewRunState("run-x", "digest", nil)
+
+			oc, err := runTry(context.Background(), tr, "try[0]", wf, rs, disp, logger, blobs, &clock.Fake{}, nil, nil)
+			if oc != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", oc, tt.wantOutcome)
+			}
+			if tt.wantErr == nil && err != nil {
+				t.Errorf("err = %v, want nil", err)
+			}
+			if tt.wantErr != nil && (err == nil || !strings.Contains(err.Error(), tt.wantErr.Error())) {
+				t.Errorf("err = %v, want contains %q", err, tt.wantErr)
+			}
+			if _, ok := rs.LookupCompleted("try[0].finally.finally"); !ok {
+				t.Fatal("finally did not run")
+			}
+			_, caught := rs.LookupCompleted("try[0].catch.catch")
+			if caught != tt.wantCatch {
+				t.Errorf("catch completed = %v, want %v", caught, tt.wantCatch)
+			}
+		})
+	}
 }
 
 func intPtr(i int) *int { return &i }

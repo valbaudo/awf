@@ -405,13 +405,9 @@ func dispatchOneTool(ctx context.Context, tool ir.Tool, toolPath string, tc agen
 		return "", fmt.Errorf("engine.runReact: template tool impl at %q: %w", toolPath, err)
 	}
 
-	policy := retry.Policy{Attempts: 1}
-	if tool.Impl.Retry != nil {
-		merged, merr := retry.Merge(retry.Default, tool.Impl.Retry)
-		if merr != nil {
-			return "", fmt.Errorf("engine.runReact: build tool retry policy at %q: %w", toolPath, merr)
-		}
-		policy = merged
+	policy, merr := retry.Merge(retry.CodeDefault, tool.Impl.Retry)
+	if merr != nil {
+		return "", fmt.Errorf("engine.runReact: build tool retry policy at %q: %w", toolPath, merr)
 	}
 
 	outputFiles, ferr := toolOutputFilePaths(tool.Impl.OutputFiles, scope)
@@ -459,7 +455,7 @@ func dispatchOneTool(ctx context.Context, tool ir.Tool, toolPath string, tc agen
 	}
 	intent := NodeIntent{Path: toolPath, Node: synth, ResolvedInputs: resolved}
 
-	dr, chunks, runErr := RunWithRetry(ctx, ictx.dispatcher, intent, policy, ictx.clk, ictx.log)
+	dr, chunks, runErr := RunWithRetry(ctx, ictx.dispatcher, intent, policy, ictx.clk, ictx.log, WithRetryNotice(ictx.onRetry))
 	drainTap(chunks, "react.tool", ictx.tap)
 
 	if dr.ExitCode == nil {

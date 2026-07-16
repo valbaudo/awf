@@ -1077,6 +1077,29 @@ func TestRunSkipsAlreadyCompletedNodes(t *testing.T) {
 // agent was the last remaining case; it now routes to runAgentStep (no longer notImpl).
 // Signal/parallel/gate/map were each removed from this table in their respective slices.
 
+func TestRunCodeStepDefaultAttemptsOnce(t *testing.T) {
+	t.Parallel()
+	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
+	fake.ProgramExec("./fails.sh", container.ExecResult{ExitCode: 1}, nil)
+	wf := &ir.Workflow{Graph: ir.NodeList{
+		&ir.CodeStep{ID: "fails", Container: "lab", Run: "./fails.sh"},
+	}}
+
+	oc, err := engine.Run(context.Background(), &ir.LoadedDefinition{Workflow: wf}, rs, disp, log, blobs, clk, engine.RunOptions{})
+	if oc != engine.OutcomeRetryableFailure || err == nil {
+		t.Fatalf("Run = (%q, %v), want retryable failure", oc, err)
+	}
+	if got := len(fake.Calls); got != 1 {
+		t.Errorf("dispatches = %d, want 1 without an explicit retry block", got)
+	}
+	events, _ := log.Fold()
+	for _, ev := range events {
+		if ev.Type == engine.EventRetryAttempt {
+			t.Errorf("unexpected retry.attempt event: %+v", ev)
+		}
+	}
+}
+
 func TestRunCodeStepRetryableExhaustionAppendsNodeFailed(t *testing.T) {
 	// After retry exhaustion, the interpreter's runCodeStep MUST route through
 	// failStep with outcome=retryable_failure — the node.failed event records
@@ -1086,8 +1109,8 @@ func TestRunCodeStepRetryableExhaustionAppendsNodeFailed(t *testing.T) {
 	// TestRunCodeStepFailureAppendsNodeFailed.
 	t.Parallel()
 	fake, _, disp, log, blobs, clk, rs := newRunHarness(t)
-	// Exit 1 is a generic nonzero (retryable). With retry.Default (3 attempts),
-	// all 3 attempts fail; RunWithRetry returns the last attempt's error.
+	// Exit 1 is a generic nonzero (retryable). The explicit two-attempt policy
+	// exhausts and RunWithRetry returns the last attempt's error.
 	fake.ProgramExec("./flaky.sh", container.ExecResult{
 		ExitCode: 1,
 		Stdout:   []byte("transient failure\n"),

@@ -105,6 +105,20 @@ func TestSandboxExecLauncher_ArgvStructure(t *testing.T) {
 	}
 }
 
+func TestSandboxExecLauncher_RelativeScratchBecomesAbsolute(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll("relative-scratch", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argv := (sandboxExecLauncher{run: "true"}).prepend("relative-scratch", nil)
+	if len(argv) < 3 || !strings.HasPrefix(argv[2], "SCRATCH=") {
+		t.Fatalf("argv = %v, want SCRATCH definition", argv)
+	}
+	if scratch := strings.TrimPrefix(argv[2], "SCRATCH="); !filepath.IsAbs(scratch) {
+		t.Fatalf("SCRATCH = %q, want absolute", scratch)
+	}
+}
+
 // TestSandboxExecLauncher_ProfileContent asserts the SBPL profile contains
 // all required clauses from the brief.
 func TestSandboxExecLauncher_ProfileContent(t *testing.T) {
@@ -175,6 +189,21 @@ func TestDetectPlatformSandbox_SandboxExecFound(t *testing.T) {
 	argv := perRun.prepend(t.TempDir(), nil)
 	if argv == nil {
 		t.Error("sandbox-exec launcher.prepend returned nil")
+	}
+}
+
+func TestNativeSandboxModeExposedSandboxExecFound(t *testing.T) {
+	b, err := New(t.TempDir(), withSandboxLookPath(true, func(name string) (string, error) {
+		if name == "sandbox-exec" {
+			return "/usr/bin/sandbox-exec", nil
+		}
+		return "", os.ErrNotExist
+	}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := b.SandboxMode(); got != "sandbox-exec" {
+		t.Fatalf("SandboxMode = %q, want sandbox-exec", got)
 	}
 }
 

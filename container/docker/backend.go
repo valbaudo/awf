@@ -271,21 +271,27 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 		}
 	}
 
+	// Provision AWF's staging and output roots while the container is still
+	// stopped. CopyUIDGID normalizes the directory ownership to the image's
+	// configured execution user, so non-root images can write immediately.
+	if err := b.prepareRuntimeDirs(ctx, resp.ID); err != nil {
+		primary := fmt.Errorf("container/docker: Create: prepareRuntimeDirs: %w", err)
+		return container.Handle{}, b.cleanupPartialContainer(resp.ID, primary)
+	}
+
 	if err := b.cli.ContainerStart(ctx, resp.ID, dockerContainer.StartOptions{}); err != nil {
-		// Cleanup the created-but-not-started container.
-		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
 		// A valid image that won't start is "cannot be booted" — tolerated per
 		// element inside a map (man awf-workflow(5), map).
-		return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: fmt.Errorf("ContainerStart: %w", err)}
+		primary := fmt.Errorf("ContainerStart: %w", err)
+		return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: b.cleanupPartialContainer(resp.ID, primary)}
 	}
 
 	// If the image declares a healthcheck, wait until healthy. Otherwise the
 	// entrypoint exit-from-init IS the readiness (spec §3 / Phase 4 design §A).
 	if err := b.waitReady(ctx, resp.ID); err != nil {
-		_ = b.cli.ContainerRemove(ctx, resp.ID, dockerContainer.RemoveOptions{Force: true})
 		// Booted but never became ready/healthy — also "cannot be booted",
 		// tolerated per element.
-		return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: err}
+		return container.Handle{}, &container.ImageUnavailableError{Image: spec.Image, Err: b.cleanupPartialContainer(resp.ID, err)}
 	}
 
 	b.mu.Lock()
@@ -299,6 +305,20 @@ func (b *Backend) Create(ctx context.Context, spec container.ContainerSpec) (con
 		h.ResolvedImageDigest = spec.Image
 	}
 	return h, nil
+}
+
+// cleanupPartialContainer force-removes an image container created by a
+// failed Create or Restore. Cleanup is detached from the operation context:
+// cancellation is a common reason startup/extraction fails and must not turn
+// cleanup into an automatic no-op. A removal failure is joined to the primary
+// error so neither cause is hidden.
+func (b *Backend) cleanupPartialContainer(containerID string, primary error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), container.TeardownGrace)
+	defer cancel()
+	if err := b.cli.ContainerRemove(cleanupCtx, containerID, dockerContainer.RemoveOptions{Force: true}); err != nil {
+		return errors.Join(primary, fmt.Errorf("container/docker: force-remove partial container %q: %w", containerID, err))
+	}
+	return primary
 }
 
 // pullByDigest pulls a digest-pinned image ref into the local cache, draining
@@ -462,8 +482,9 @@ func (b *Backend) Close() error {
 }
 
 // waitReady polls ContainerInspect until State.Health.Status == "healthy" IF
-// the container has a healthcheck. Containers without a healthcheck return
-// ready immediately (the entrypoint is responsible for readiness — spec §3).
+// the container has a healthcheck. Containers without a healthcheck are ready
+// only while their workload is still running; a completed restore handshake
+// must never turn an already-exited workload into a live Handle.
 //
 // The deadline is derived from the image's HEALTHCHECK declaration:
 //
@@ -487,7 +508,13 @@ func (b *Backend) waitReady(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("container/docker: waitReady: ContainerInspect: %w", err)
 	}
-	if info.State == nil || info.State.Health == nil {
+	if info.State == nil {
+		return fmt.Errorf("container/docker: waitReady: ContainerInspect returned nil State")
+	}
+	if !info.State.Running {
+		return fmt.Errorf("container/docker: waitReady: workload exited before readiness")
+	}
+	if info.State.Health == nil {
 		// No healthcheck declared → ready immediately.
 		return nil
 	}
@@ -506,6 +533,9 @@ func (b *Backend) waitReady(ctx context.Context, id string) error {
 		info, err := b.cli.ContainerInspect(ctx, id)
 		if err != nil {
 			return fmt.Errorf("container/docker: waitReady: ContainerInspect: %w", err)
+		}
+		if info.State != nil && !info.State.Running {
+			return fmt.Errorf("container/docker: waitReady: workload exited before readiness")
 		}
 		if info.State == nil || info.State.Health == nil {
 			// Daemon returned partial data — treat as still-starting and

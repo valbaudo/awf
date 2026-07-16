@@ -115,12 +115,12 @@ func (l sandboxExecLauncher) prepend(scratchDir string, _ []string) []string {
 	// (subpath ...) checks must use the real (symlink-resolved) path; using the
 	// symlinked path causes false denials. filepath.EvalSymlinks resolves the
 	// full chain; we fall back to filepath.Abs if the path does not yet exist.
-	scratchAbs, err := filepath.EvalSymlinks(scratchDir)
+	scratchAbs, err := filepath.Abs(scratchDir)
 	if err != nil {
-		scratchAbs, err = filepath.Abs(scratchDir)
-		if err != nil {
-			scratchAbs = scratchDir
-		}
+		scratchAbs = scratchDir
+	}
+	if realScratch, evalErr := filepath.EvalSymlinks(scratchAbs); evalErr == nil {
+		scratchAbs = realScratch
 	}
 	rawTmpdir := os.TempDir()
 	if l.tmpDirOverride != "" {

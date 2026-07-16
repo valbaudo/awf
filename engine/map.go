@@ -521,15 +521,20 @@ func dispatchItem(
 		if appErr := appendNodeSkipped(ictx.log, itemPath, su.Reason); appErr != nil {
 			return "", "", fmt.Errorf("append node.skipped for item-%d: %w", itemN, appErr)
 		}
-	} else if bodyErr != nil || bodyOC != OutcomeOK {
-		// Body failed mechanically (any non-skip error) → item_failed. For a prune
+	} else if bodyErr != nil && !isTypedFailureOutcome(bodyOC) {
+		// Empty/unknown outcomes are interpreter or infrastructure errors, not a
+		// mechanically failed item. Propagate them to fail the whole map even when
+		// min_success would otherwise tolerate this branch.
+		return "", "", bodyErr
+	} else if bodyErr != nil && isTypedFailureOutcome(bodyOC) {
+		// Body failed mechanically with a typed outcome → item_failed. For a prune
 		// map this includes a frontier cancel (ctx unwind of an in-flight loser);
 		// runMap's final pass overrides it with item_pruned for any pruned[i].
 		status = ItemFailed
-		if bodyOC != OutcomeOK {
-			itemOutcome = string(bodyOC) // retryable_failure | permanent_failure | rejected
-		}
+		itemOutcome = string(bodyOC) // retryable_failure | permanent_failure | rejected
 		cause = boundCause(bodyErr)
+	} else if bodyOC != OutcomeOK {
+		return "", "", fmt.Errorf("engine.runMap: item-%d returned outcome %q without an error", itemN, bodyOC)
 	}
 
 	// SP5: defer the map.item commit to runMap's final pass for a prune map.

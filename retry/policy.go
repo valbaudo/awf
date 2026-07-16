@@ -67,19 +67,39 @@ type Policy struct {
 	Recovery string
 }
 
-// Default is the spec §6 default policy. The 78 sentinel is EX_CONFIG from
-// sysexits.h — the conventional "configuration error, retry won't help" code.
-// Treat as read-only — Merge deep-copies the NonRetryableExitCodes slice so
-// callers can't accidentally mutate the shared default via index assignment
-// (Revision #6 narrowed the var-vs-func footgun to the seam where it matters).
-//
-// Attempts is 8 (not 3) so transient provider faults — Anthropic 429
+// AgentDefault is the default policy for provider-backed agent steps. The 78
+// sentinel is EX_CONFIG from sysexits.h — the conventional "configuration
+// error, retry won't help" code. Attempts is 8 so transient provider faults — Anthropic 429
 // rate_limit_error, 529 overloaded_error, 5xx, connection drops — ride out a
 // normal rate-limit window or overload without failing the pipeline. With the
 // exp curve capped at Max (1,2,4,8,16,32,60 → ~123s of backoff across 7 sleeps)
 // plus any honored Retry-After hint, 8 attempts covers the common outage; a
 // genuinely permanent fault (bad key, invalid_request, quota exhausted) is
-// classified permanent_failure upstream and never consumes the budget.
+// classified permanent_failure upstream and never consumes the budget. Treat
+// exported defaults as read-only; Merge returns a deep copy of slice fields.
+var AgentDefault = Policy{
+	Attempts:              8,
+	Backoff:               BackoffExp,
+	Initial:               time.Second,
+	Max:                   60 * time.Second,
+	NonRetryableExitCodes: []int{78},
+}
+
+// CodeDefault is the default policy for deterministic code/shell work,
+// including react tool implementations and reducers. Authors may opt into
+// retries explicitly; absent a retry block, a failed command runs once.
+var CodeDefault = Policy{
+	Attempts:              1,
+	Backoff:               BackoffExp,
+	Initial:               time.Second,
+	Max:                   60 * time.Second,
+	NonRetryableExitCodes: []int{78},
+}
+
+// Default is retained for source compatibility with callers that used the
+// original provider-oriented default.
+// Deprecated: use AgentDefault or CodeDefault according to the work class.
+// Its slice is intentionally independent from AgentDefault's slice.
 var Default = Policy{
 	Attempts:              8,
 	Backoff:               BackoffExp,

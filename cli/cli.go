@@ -56,6 +56,10 @@ const (
 // zero value is unusable — callers (production: cli.Run; tests: direct
 // construction) populate every field.
 type Runner struct {
+	// identityLookup is the narrow test seam for state-directory ownership and
+	// elevation-provenance checks. Production leaves it nil and uses the process
+	// effective identity plus SUDO_/DOAS_/PKEXEC_ provenance variables.
+	identityLookup stateIdentityLookup
 	// Backend is the container.Backend the run subcommand passes to
 	// engine.LocalDispatcher. Production: left nil — the run/resume
 	// subcommands construct on-demand via newBackend (cli/backend.go),
@@ -114,6 +118,13 @@ type Runner struct {
 	Stdin io.Reader
 }
 
+func (r *Runner) stateIdentity() stateIdentityLookup {
+	if r != nil && r.identityLookup != nil {
+		return r.identityLookup
+	}
+	return defaultStateIdentity
+}
+
 // Run is the top-level CLI entry point — constructs the production Runner
 // and delegates. cmd/awf wraps the returned int with os.Exit.
 //
@@ -144,11 +155,11 @@ func (r *Runner) Run(args []string, stdout, stderr io.Writer) int {
 	case "resume":
 		return r.cliResume(args[1:], stdout, stderr)
 	case "signal":
-		return cliSignal(args[1:], stdout, stderr)
+		return cliSignalWithIdentity(args[1:], stdout, stderr, r.stateIdentity())
 	case "pause":
-		return cliPause(args[1:], stdout, stderr)
+		return cliPauseWithIdentity(args[1:], stdout, stderr, r.stateIdentity())
 	case "cancel":
-		return cliCancel(args[1:], stdout, stderr)
+		return cliCancelWithIdentity(args[1:], stdout, stderr, r.stateIdentity())
 	case "ls":
 		return cliLS(args[1:], stdout, stderr)
 	case "inspect":

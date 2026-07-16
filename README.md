@@ -98,8 +98,8 @@ run 1a2b3c4d: ok
 
 The step declares no `container:`, so `auto` backend selection finds no
 Docker-only feature to route to and picks `native`: the command runs directly
-on the host, write-confined to its own per-step host workspace by an OS
-sandbox (bubblewrap or Landlock on Linux, `sandbox-exec` on macOS), and its
+on the host, write-confined to its own per-step host workspace when an OS
+sandbox is usable (bubblewrap or Landlock on Linux, `sandbox-exec` on macOS), and its
 output is committed to the run's journal — the same checkpoint path a
 Docker-backed step uses, just with no container boundary. `--backend docker`
 refuses a bare `run:` step outright (AWF1065): there is no image to run it in,
@@ -193,6 +193,15 @@ tar -xzf "awf_${VERSION}_${OS}_${ARCH}.tar.gz"
 sudo install "awf_${VERSION}_${OS}_${ARCH}/awf" /usr/local/bin/awf
 awf version
 ```
+
+The `sudo` above applies only to installing the binary into `/usr/local/bin`.
+Do not prefix `awf run`, `resume`, `signal`, `pause`, or `cancel` with `sudo`,
+`doas`, or `pkexec`. AWF writes `.awf` as the invoking user and refuses a
+foreign-owned state root with path and owner guidance. Read-only commands never
+write state and accept an absent blob store. AWF rejects elevation provenance,
+not UID 0 itself: genuine root and container sessions remain allowed when they
+own the state root. If elevated execution previously created `.awf`, use its
+owning account or select a new user-owned directory with `--state-dir`.
 
 Release archives are built by GitHub Actions and carry a [build-provenance
 attestation](https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds).
@@ -337,7 +346,7 @@ spike.
 
 Execution backends:
 
-- `native`: host processes, fastest path; no container boundary, but each step is write-confined by an OS sandbox (bubblewrap or Landlock on Linux, `sandbox-exec` on macOS) so it can write only to its per-run workspace and `TMPDIR` — fail-closed, with a loud stderr warning if no sandbox tool is present; resumable (`snapshot: workspace` workdirs are restored on resume). Explicit `--backend native` runs image-mode workflows on the host, ignoring the declared image; the host base environment is not pinned — use `--backend docker` for a fully reproducible baseline
+- `native`: host processes, fastest path; no container boundary. AWF selects the first functionally usable write-confinement launcher (bubblewrap then Landlock on Linux, `sandbox-exec` on macOS). If none is usable, native runs without confinement and prints a loud stderr warning; use `--backend docker` when confinement is required. Native is resumable (`snapshot: workspace` workdirs are restored on resume). Explicit `--backend native` runs image-mode workflows on the host, ignoring the declared image; the host base environment is not pinned — use `--backend docker` for a fully reproducible baseline
 - `docker`: digest-pinned images and Compose projects, resumable
 - `fake`: in-memory backend for conformance tests
 

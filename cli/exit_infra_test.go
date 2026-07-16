@@ -155,15 +155,15 @@ func TestResumeOpenBlobsFailureExitsInfra(t *testing.T) {
 	}
 }
 
-func TestTraceOpenBlobsFailureExitsInfra(t *testing.T) {
+func TestTraceReadOnlyBlobHandleDoesNotProbeStore(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	writeMinimalRunLog(t, stateDir, "trace-blob")
 	plantFile(t, filepath.Join(stateDir, "blobs"))
 	var stdout, stderr bytes.Buffer
 	rc := cli.Run([]string{"trace", "--state-dir", stateDir, "--capture-content", "trace-blob"}, &stdout, &stderr)
-	if rc != cli.ExitInfra {
-		t.Fatalf("trace --capture-content with unopenable blobs: rc = %d, want ExitInfra (3); stderr: %s", rc, stderr.String())
+	if rc != cli.ExitOK {
+		t.Fatalf("trace with no referenced blobs should not probe the store: rc = %d, want ExitOK; stderr: %s", rc, stderr.String())
 	}
 }
 

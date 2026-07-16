@@ -62,13 +62,22 @@ func cliGraph(args []string, stdout, stderr io.Writer) int {
 	proj := graph.BuildStaticLoaded(ld)
 
 	if *runID != "" {
+		canonicalStateDir, accessErr := accessStateDir(*stateDir, stateReadOnly, defaultStateIdentity)
+		if accessErr != nil {
+			if errors.Is(accessErr, fs.ErrNotExist) {
+				fprintf(stderr, "awf graph: no run with id %q under state directory %q\n", *runID, *stateDir)
+				return ExitUsage
+			}
+			return reportStateFailure(stderr, "awf graph", "access state directory", *stateDir, *stateDir, accessErr, defaultStateIdentity, stateFailureInfra)
+		}
+		*stateDir = canonicalStateDir
 		logPath := filepath.Join(*stateDir, "runs", *runID, "log")
 		events, foldErr := state.FoldFile(logPath)
 		if foldErr != nil {
 			if errors.Is(foldErr, fs.ErrNotExist) {
 				fprintf(stderr, "awf graph: no run with id %q at %q\n", *runID, logPath)
 			} else {
-				fprintf(stderr, "awf graph: fold log %q: %v\n", logPath, foldErr)
+				return reportStateFailure(stderr, "awf graph", "fold run log", *stateDir, logPath, foldErr, defaultStateIdentity, stateFailureInfra)
 			}
 			return ExitUsage
 		}

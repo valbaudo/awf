@@ -31,8 +31,9 @@ a deprecation window (see below):
   precondition error, `3` an AWF-owned infrastructure failure. `awf outputs`
   deliberately uses its own *read-scoped* codes instead: `0` emitted, `1` not
   producible (the step committed no typed output, or validation failed), `2` bad
-  invocation (bad selector, digest mismatch, run not found, or no `outputs:`
-  block) — it never returns `3`. See **EXIT STATUS** in [awf(1)](man/awf.1.md).
+  invocation or state access/precondition failure (bad selector, digest mismatch,
+  run not found, inaccessible state path, or no `outputs:` block) — it never
+  returns `3`. See **EXIT STATUS** in [awf(1)](man/awf.1.md).
 - **`awf outputs` JSON** — the typed-outputs object it prints, and its
   omit-on-absent rule: a field a run never produced (because its `if` branch or
   `loop` body was not taken) is omitted from the object and the command exits `0`,
@@ -52,13 +53,27 @@ Any machine-facing surface not listed as `stable` above — including the
 `--output json` of `awf ls`, `awf inspect`, and `awf graph` — is `experimental`
 until this document classifies it.
 
+## Contract-v1 safety correction
+
+Code execution now defaults to one attempt: `run:` steps,
+`react.tools[].impl.run`, and synthesized `reduce` executions are not repeated
+unless the format exposes and the author sets a `retry:` policy with more
+attempts. Agent `uses:` steps retain their eight-attempt transient-failure
+default. This is an intentional Contract-v1 safety correction: silently
+repeating an arbitrary shell command can duplicate external effects. Authored
+`retry:` behavior is preserved, and every explicit field still overlays the
+default for that step kind.
+
 ## Machine vs. human output
 
 Only machine surfaces are the contract. A program driving `awf` reads the **exit
 code** and the JSON from `awf outputs`. The human-facing output is *not*
-versioned: the `stderr` progress stream, and the `run <id>: <outcome>` line on
-`awf run`'s standard output. Do not parse that line — read the exit code, and
-pass `--run-id` when you need to know the run id up front.
+versioned: the `stderr` progress stream, including retry notices, and the
+`run <id>: <outcome>` line on `awf run`'s standard output. Retry notices include
+the node path, failed/next/max attempt, cause, and wait duration for an operator;
+the wait is cancellable, so a notice may not be followed by another dispatch. Do
+not parse these notices. Read the exit code, and pass `--run-id` when you need to
+know the run id up front.
 
 ## Versioning
 

@@ -90,6 +90,13 @@ func runComposeWithContext(
 	cancel()
 	if destroyErr != nil {
 		destroyErr = fmt.Errorf("runtime compose destroy: %w", destroyErr)
+		var su *SkipUnwind
+		if errors.As(bodyErr, &su) {
+			// Skip is a clean control unwind only while cleanup succeeds. A failed
+			// destroy is a real typed failure and must not be joined to the sentinel,
+			// because callers could otherwise absorb the joined error as a clean skip.
+			return failStep(ictx.log, path, OutcomeRetryableFailure, destroyErr)
+		}
 		if bodyErr != nil || bodyOC != OutcomeOK {
 			return bodyOC, errors.Join(bodyErr, destroyErr)
 		}

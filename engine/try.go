@@ -12,9 +12,10 @@ import (
 )
 
 // runTry is the Try handler (Phase 3 spec §5.3 + design §B). Implements the
-// do → catch → finally state machine with the rules pinned in design decision
-// 7 (unconditional catch) and this slice's design question 3 (ctx-cancel
-// re-check after Finally).
+// do → catch → finally state machine. Catch recovers only typed workflow
+// failures selected by isTypedFailureOutcome; SkipUnwind remains a control
+// sentinel that propagates through try after Finally. The final ctx-cancel
+// re-check follows this slice's design question 3.
 //
 // State machine:
 //
@@ -24,8 +25,9 @@ import (
 //     NOT a target scope for skip. Skip Catch. Append node.skipped{path=tryPath}
 //     for trace (§5.3). Run Finally. Then RE-RAISE the SkipUnwind to the
 //     caller so it propagates to the next enclosing loop/gate/parallel/run.
-//     b. err != nil (any other) → run Catch if present; Catch's err, if
-//     any, becomes the propagating error; if no Catch, Do's err propagates.
+//     b. err != nil with a typed failure outcome → run Catch if present;
+//     Catch's err, if any, becomes the propagating error; if no Catch, Do's
+//     err propagates. Empty-outcome internal errors bypass Catch.
 //     c. err == nil, oc == ok → skip Catch.
 //  3. ALWAYS run Finally (even on ctx-cancel, even if Catch errored).
 //  4. If Finally errored, Finally's error supersedes.
@@ -34,8 +36,8 @@ import (
 //     returned ok — the cancellation signal must reach the parent (matters
 //     for slice 3.2's parallel handler).
 //
-// Phase 3 design decision 7: unconditional catch. Catch absorbs ANY non-skip
-// non-nil error from Do. Typed-kind matching is a spec §5.3 follow-up.
+// Catch absorbs typed workflow failures only. Internal errors are outside the
+// workflow recovery model and propagate after Finally runs.
 func runTry(
 	ctx context.Context,
 	n *ir.Try,
@@ -67,11 +69,12 @@ func runTryWithContext(
 	var su *SkipUnwind
 	skipped := errors.As(doErr, &su)
 
-	// 2b. Other error from Do → run Catch.
+	// 2b. Typed workflow failure from Do → run Catch. An empty-outcome error is
+	// internal and must not be laundered into success by workflow recovery.
 	propagatedErr := doErr
 	propagatedOC := doOC
-	if doErr != nil && !skipped && len(n.Catch) > 0 {
-		// Catch absorbs the error (unconditional catch). Catch may itself fail,
+	if doErr != nil && isTypedFailureOutcome(doOC) && !skipped && len(n.Catch) > 0 {
+		// Catch absorbs the typed failure. Catch may itself fail,
 		// in which case Catch's error becomes the propagated error.
 		catchOC, catchErr := interpNodes(ctx, n.Catch, path+".catch", ictx)
 		propagatedOC = catchOC

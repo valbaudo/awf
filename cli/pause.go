@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"io"
+	"io/fs"
 
 	"github.com/spf13/pflag"
 
@@ -24,7 +25,7 @@ func printPauseUsage(w io.Writer) {
 	fprintln(w, "  halts at the next commit boundary only.")
 }
 
-func cliPause(args []string, stdout, stderr io.Writer) int {
+func cliPauseWithIdentity(args []string, stdout, stderr io.Writer, lookup stateIdentityLookup) int {
 	fs0 := pflag.NewFlagSet("pause", pflag.ContinueOnError)
 	fs0.SetOutput(io.Discard)
 	fs0.Usage = func() {}
@@ -56,13 +57,20 @@ func cliPause(args []string, stdout, stderr io.Writer) int {
 		fprintf(stderr, "awf pause: --before <node-path> is not yet supported in Phase 3 (lands with Phase 6 obs). Drop the flag to pause at the next commit boundary.\n")
 		return ExitUsage
 	}
-	if rc := requireRunDir(*stateDir, runID, stderr); rc != ExitOK {
+	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateWriteExisting, lookup)
+	if accessErr != nil {
+		if errors.Is(accessErr, fs.ErrNotExist) {
+			return requireRunDir(*stateDir, runID, stderr)
+		}
+		return reportStateFailure(stderr, "awf pause", "access state directory", *stateDir, *stateDir, accessErr, lookup, stateFailureInfra)
+	}
+	*stateDir = canonicalStateDir
+	if rc := requireRunDirForCommand(*stateDir, runID, stderr, "awf pause", lookup); rc != ExitOK {
 		return rc
 	}
 	broker := signal.NewBroker(signal.ControlDir(*stateDir, runID))
 	if err := broker.WritePause(signal.PauseRequest{Reason: *reason}); err != nil {
-		fprintf(stderr, "awf pause: %v\n", err)
-		return ExitUsage
+		return reportStateFailure(stderr, "awf pause", "write pause control file", *stateDir, signal.ControlDir(*stateDir, runID), err, lookup, stateFailureInfra)
 	}
 	fprintf(stdout, "pause requested for run %s\n", runID)
 	return ExitOK

@@ -30,11 +30,21 @@ report within a few days.
 `awf` orchestrates **untrusted agent and command output**. A few properties are
 intentional and worth understanding before reporting:
 
-- Steps run in a sandbox appropriate to the backend: digest-pinned containers
-  (`docker`), or host processes write-confined by an OS sandbox (`native` —
-  bubblewrap or Landlock on Linux, `sandbox-exec` on macOS). The `native`
-  sandbox is **fail-closed**: a step refuses to run if no sandbox mechanism is
-  available.
+- Docker steps run in digest-pinned containers. The `native` backend attempts
+  to write-confine host processes with bubblewrap or Landlock on Linux and
+  `sandbox-exec` on macOS. It selects the first functionally usable launcher:
+  on Linux, bubblewrap
+  must successfully probe its namespace and mount policy before selection;
+  otherwise AWF tries Landlock. If no launcher is usable, native retains a
+  compatibility fallback that runs without confinement and prints a loud stderr
+  warning. This fallback is **not fail-closed**. Use `--backend docker` when
+  confinement is required.
+- AWF never invokes `sudo`, `doas`, `pkexec`, or another privilege-elevation
+  tool. State-mutating commands refuse those elevation provenances and require
+  an existing state root to be owned by the invoking user. The check rejects
+  provenance, not UID 0: genuine root and container sessions remain allowed
+  when they own the state root. An elevated run can leave state that the normal
+  user cannot safely update.
 - `run:` step bodies and adapter prompts are shell/agent input **by design**.
   AWF does not sanitize workflow-authored commands — treat a workflow file as
   code you are choosing to run.

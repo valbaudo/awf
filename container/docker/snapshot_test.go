@@ -6,9 +6,13 @@ import (
 	"compress/gzip"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	cont "github.com/valbaudo/awf/container"
 )
@@ -257,23 +261,169 @@ func readDiffTar(r io.Reader) (adds map[string][]byte, syms map[string]string, d
 	return
 }
 
-func TestShellQuotePath(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"/work/a.txt", "'/work/a.txt'"},
-		{"-rf", "'-rf'"},
-		{"/tmp/with space.txt", "'/tmp/with space.txt'"},
-		{"with'quote", `'with'\''quote'`},
-		{"two''quotes", `'two'\'''\''quotes'`},
-		{"", "''"},
+func TestRestoreContainerConfigWithoutDeletesPreservesOriginalArgv(t *testing.T) {
+	original := snapshotCmdSpec{
+		Entrypoint: []string{"/usr/bin/original", "--entry-flag"},
+		Cmd:        []string{"arg one", "arg'two", "arg\nthree"},
 	}
-	for _, c := range cases {
-		got := shellQuotePath(c.in)
-		if got != c.want {
-			t.Errorf("shellQuotePath(%q) = %q, want %q", c.in, got, c.want)
+
+	cfg := restoreContainerConfig("example.invalid/image@sha256:abc", original, nil, restoreHandshake{})
+	if !reflect.DeepEqual([]string(cfg.Entrypoint), original.Entrypoint) {
+		t.Errorf("Entrypoint = %#v, want %#v", cfg.Entrypoint, original.Entrypoint)
+	}
+	if !reflect.DeepEqual([]string(cfg.Cmd), original.Cmd) {
+		t.Errorf("Cmd = %#v, want %#v", cfg.Cmd, original.Cmd)
+	}
+}
+
+func TestRestoreContainerConfigWithDeletesArgumentizesPathsAndPreservesOriginalArgv(t *testing.T) {
+	deletes := []string{"/work/space name", "/work/quote'and\nnewline"}
+	original := snapshotCmdSpec{
+		Entrypoint: []string{"/usr/bin/original", "--entry-flag"},
+		Cmd:        []string{"arg one", "arg'two", "arg\nthree"},
+	}
+
+	hs := restoreHandshakeForRef(cont.SnapshotRef("test-ref"))
+	cfg := restoreContainerConfig("example.invalid/image@sha256:abc", original, deletes, hs)
+	wantEntrypoint := []string{"sh", "-c", restoreDeleteWrapperScript, "awf-restore"}
+	if !reflect.DeepEqual([]string(cfg.Entrypoint), wantEntrypoint) {
+		t.Errorf("Entrypoint = %#v, want %#v", cfg.Entrypoint, wantEntrypoint)
+	}
+	wantCmd := restoreWrapperArgs(deletes, hs, "/work/.awf", "/tmp/awf", append(append([]string(nil), original.Entrypoint...), original.Cmd...))
+	if !reflect.DeepEqual([]string(cfg.Cmd), wantCmd) {
+		t.Errorf("Cmd = %#v, want %#v", cfg.Cmd, wantCmd)
+	}
+	for _, path := range deletes {
+		if strings.Contains(restoreDeleteWrapperScript, path) {
+			t.Errorf("wrapper script interpolates delete path %q; paths must remain argv", path)
 		}
 	}
+
+	deleteAt := strings.Index(restoreDeleteWrapperScript, `rm -rf -- "$1"`)
+	prepareAt := strings.Index(restoreDeleteWrapperScript, `mkdir -p "$work_runtime" "$tmp_runtime"`)
+	preparedAt := strings.Index(restoreDeleteWrapperScript, `printf '%s\n' "$prepared_token"`)
+	releaseAt := strings.Index(restoreDeleteWrapperScript, `"$release" = "$release_token"`)
+	handoffAt := strings.Index(restoreDeleteWrapperScript, `printf '%s\n' "$handoff_token"`)
+	execAt := strings.Index(restoreDeleteWrapperScript, `exec "$@"`)
+	if deleteAt < 0 || prepareAt <= deleteAt || preparedAt <= prepareAt || releaseAt <= preparedAt || handoffAt <= releaseAt || execAt <= handoffAt {
+		t.Fatalf("wrapper order must be delete -> runtime prep -> host handshake -> workload exec; script = %q", restoreDeleteWrapperScript)
+	}
+}
+
+func TestRestoreDeleteWrapperRequiresExactHandshakeTokens(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX sh unavailable")
+	}
+	dir := t.TempDir()
+	hs := restoreHandshake{
+		Token:         "0123456789abcdef",
+		PreparedPath:  filepath.Join(dir, "prepared"),
+		ReleasePath:   filepath.Join(dir, "release"),
+		HandoffPath:   filepath.Join(dir, "handoff"),
+		AckPath:       filepath.Join(dir, "ack"),
+		PreparedToken: "prepared:0123456789abcdef\n",
+		ReleaseToken:  "release:0123456789abcdef\n",
+		HandoffToken:  "handoff:0123456789abcdef\n",
+		AckToken:      "ack:0123456789abcdef\n",
+		ResetToken:    "reset:0123456789abcdef\n",
+	}
+	for _, path := range []string{hs.PreparedPath, hs.ReleasePath, hs.HandoffPath, hs.AckPath} {
+		if err := os.WriteFile(path, []byte("stale-but-present\n"), 0o600); err != nil {
+			t.Fatalf("seed stale marker %s: %v", path, err)
+		}
+	}
+	deletedPath := filepath.Join(dir, "delete me")
+	if err := os.WriteFile(deletedPath, []byte("old"), 0o600); err != nil {
+		t.Fatalf("write delete target: %v", err)
+	}
+	workRuntime := filepath.Join(dir, "work-runtime")
+	tmpRuntime := filepath.Join(dir, "tmp-runtime")
+	workloadMarker := filepath.Join(dir, "workload-started")
+	args := restoreWrapperArgs(
+		[]string{deletedPath},
+		hs,
+		workRuntime,
+		tmpRuntime,
+		[]string{"sh", "-c", `printf started > "$1"`, "workload", workloadMarker},
+	)
+	cmd := exec.Command(shell, append([]string{"-c", restoreDeleteWrapperScript, "awf-restore"}, args...)...)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wrapper: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+
+	waitForFileContent(t, hs.PreparedPath, hs.PreparedToken)
+	if _, err := os.Stat(deletedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("delete target stat error = %v, want not-exist", err)
+	}
+	if _, err := os.Stat(workloadMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workload started before exact release token: stat error = %v", err)
+	}
+
+	if err := os.WriteFile(hs.ReleasePath, []byte(hs.ReleaseToken), 0o600); err != nil {
+		t.Fatalf("write release token: %v", err)
+	}
+	waitForFileContent(t, hs.HandoffPath, hs.HandoffToken)
+	if _, err := os.Stat(workloadMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workload started before exact ack token: stat error = %v", err)
+	}
+
+	if err := os.WriteFile(hs.AckPath, []byte(hs.AckToken), 0o600); err != nil {
+		t.Fatalf("write ack token: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("wrapper wait: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("wrapper did not hand off after exact ack token")
+	}
+	waitForFileContent(t, workloadMarker, "started")
+	for _, path := range []string{hs.PreparedPath, hs.ReleasePath, hs.HandoffPath, hs.AckPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("handshake marker %s remains after handoff: %v", path, err)
+		}
+	}
+}
+
+func TestRestoreHandshakeDerivesStableSnapshotSpecificPaths(t *testing.T) {
+	ref := cont.SnapshotRef("awf-d1:sha256:abc@example.invalid/image@sha256:def@e30=")
+	got1 := restoreHandshakeForRef(ref)
+	got2 := restoreHandshakeForRef(ref)
+	if !reflect.DeepEqual(got1, got2) {
+		t.Fatalf("same snapshot handshake differs: %#v vs %#v", got1, got2)
+	}
+	other := restoreHandshakeForRef(cont.SnapshotRef(string(ref) + "x"))
+	if got1.Token == other.Token || got1.PreparedPath == other.PreparedPath {
+		t.Fatalf("different snapshots share handshake identity: %#v vs %#v", got1, other)
+	}
+	for _, path := range []string{got1.PreparedPath, got1.ReleasePath, got1.HandoffPath, got1.AckPath} {
+		if !strings.Contains(path, got1.Token) {
+			t.Errorf("path %q does not contain stable token %q", path, got1.Token)
+		}
+	}
+}
+
+func waitForFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := os.ReadFile(path)
+		if err == nil && string(got) == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got, err := os.ReadFile(path)
+	t.Fatalf("file %s = %q, %v; want %q", path, got, err, want)
 }
 
 func TestStreamPlainTarFromDiff_RoundTrip(t *testing.T) {

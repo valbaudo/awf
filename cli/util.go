@@ -107,12 +107,19 @@ func parseSinglePositional(fs *pflag.FlagSet, args []string, cmd string, usage f
 // present; ExitUsage with a helpful stderr message otherwise. Shared by the
 // signal, pause, and cancel subcommands (rule-of-three: 3 identical call sites).
 func requireRunDir(stateDir, runID string, stderr io.Writer) int {
+	return requireRunDirForCommand(stateDir, runID, stderr, "", defaultStateIdentity)
+}
+
+func requireRunDirForCommand(stateDir, runID string, stderr io.Writer, command string, lookup stateIdentityLookup) int {
 	runDir := filepath.Join(stateDir, "runs", runID)
 	if _, err := os.Stat(runDir); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			fprintf(stderr, "no run with id %q at %q. Did you mean a different --state-dir?\n", runID, runDir)
 		} else {
-			fprintf(stderr, "stat run dir %q: %v\n", runDir, err)
+			if command == "" {
+				command = "awf"
+			}
+			return reportStateFailure(stderr, command, "stat run directory", stateDir, runDir, err, lookup, stateFailureInfra)
 		}
 		return ExitUsage
 	}

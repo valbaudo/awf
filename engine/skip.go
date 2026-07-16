@@ -24,8 +24,9 @@ import (
 // from `skip: <reason>` (spec §5.6).
 //
 // Phase 3 design decision 5 (revised): plain error returns + SkipUnwind
-// sentinel only — no typed OutcomeError wrapper, since unconditional catch
-// (decision 7) only needs `err != nil` and `var su *SkipUnwind; errors.As(err, &su)`.
+// sentinel only — no typed OutcomeError wrapper. Recovery scopes use the
+// separate Outcome value and isTypedFailureOutcome to select workflow
+// failures; errors.As identifies SkipUnwind solely for control propagation.
 type SkipUnwind struct {
 	TargetPath string
 	Reason     string

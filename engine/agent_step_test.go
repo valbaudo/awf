@@ -114,6 +114,61 @@ graph:
 	}
 }
 
+func TestRunAgentStep_DefaultRetriesProviderFailuresEightAttempts(t *testing.T) {
+	const yaml = `workflow: agent-default-retry
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: triage
+    container: lab
+    uses: anthropic/claude-code
+    with: {prompt: retry me}
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [verdict]
+      properties:
+        verdict: {type: string}
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	fk := fake.New("anthropic/claude-code")
+	for i := 0; i < 7; i++ {
+		fk.Script(i, fake.Result{Err: &agent.ErrAgentLaunch{Cause: errors.New("provider busy")}})
+	}
+	fk.Script(7, fake.Result{Output: map[string]any{"verdict": "ok"}})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  container.NewFake(),
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{}
+	log := state.NewInMemoryLog(clk)
+	rs := engine.NewRunState("r1", "d", nil)
+	var notices []engine.RetryNotice
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{
+		Tap: io.Discard,
+		OnRetry: func(n engine.RetryNotice) {
+			notices = append(notices, n)
+		},
+	})
+	if err != nil || oc != engine.OutcomeOK {
+		t.Fatalf("Run = (%q, %v), want ok", oc, err)
+	}
+	if got := len(fk.Calls()); got != 8 {
+		t.Errorf("agent calls = %d, want 8", got)
+	}
+	if got := len(notices); got != 7 {
+		t.Errorf("retry notices = %d, want 7", got)
+	}
+}
+
 func TestAgentInvocationReceivesRunContextCurrentAndNextEpoch(t *testing.T) {
 	const yaml = `workflow: agent-run-context
 version: 1
@@ -696,6 +751,99 @@ graph:
 	assertNoEventTypeAtPath(t, log, engine.EventNodeFailed, "live")
 	if got := countEvents(t, log, engine.EventAgentEvent, "live"); got != 1 {
 		t.Fatalf("agent.event count = %d, want 1 prior event before halt", got)
+	}
+}
+
+func TestLocalDispatcher_LiveReplayRequiredUsesDirectErrorTuple(t *testing.T) {
+	t.Parallel()
+	ad := &replayRequiredAdapter{
+		ref:        "live/agent",
+		outcomeErr: fmt.Errorf("wrapped: %w", agent.ErrLiveReplayRequired),
+		events: []agent.AgentEvent{
+			{Kind: "assistant", Stream: "stdout", Payload: []byte(`{"delta":"working"}`)},
+		},
+	}
+	var reg agent.Registry
+	if err := reg.Register(ad); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{Resolver: &reg}
+	intent := engine.NodeIntent{
+		Path:           "live",
+		Node:           &ir.AgentStep{ID: "live", Uses: "live/agent"},
+		ResolvedInputs: engine.ResolvedInputs{Uses: "live/agent"},
+	}
+
+	dr, chunks, err := dispatcher.Run(context.Background(), intent)
+	if !errors.Is(err, agent.ErrLiveReplayRequired) {
+		t.Fatalf("err = %v, want direct ErrLiveReplayRequired", err)
+	}
+	if dr.Outcome != "" || dr.Err != nil {
+		t.Fatalf("DispatchResult = {Outcome:%q Err:%v}, want empty direct-error tuple", dr.Outcome, dr.Err)
+	}
+	if len(dr.AgentEvents) != 1 {
+		t.Fatalf("AgentEvents len = %d, want 1 buffered event", len(dr.AgentEvents))
+	}
+	if chunks != nil {
+		t.Fatal("chunks is non-nil on direct error")
+	}
+}
+
+func TestLocalDispatcherLiveSchemaMismatchUsesPayloadFreeDirectErrorTuple(t *testing.T) {
+	t.Parallel()
+	liveMeta := &agent.LiveDispatch{
+		AdapterRef:     "live/agent",
+		SessionKey:     "builder",
+		SessionKeyHash: "sha256:session",
+		LeaseID:        "lease-1",
+		ActiveTurnID:   "turn-1",
+		ProviderTurnID: "provider-turn-1",
+		RunID:          "r1",
+		NodePath:       "live",
+		Epoch:          1,
+		CommittedUnix:  1,
+	}
+	fk := fake.New("live/agent").
+		WithCaps(agent.Caps{NativeSchema: true, Containerless: true, PersistentSession: true}).
+		Script(0, fake.Result{
+			Output: map[string]any{"ok": "not-bool"},
+			Events: []agent.AgentEvent{{Kind: "assistant", Stream: "stdout", Payload: []byte("working")}},
+			Live:   liveMeta,
+		})
+	var reg agent.Registry
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	schema := ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"ok"},
+		"properties": map[string]any{
+			"ok": map[string]any{"type": "boolean"},
+		},
+	}
+	dispatcher := &engine.LocalDispatcher{Resolver: &reg}
+	intent := engine.NodeIntent{
+		Path: "live",
+		Node: &ir.AgentStep{ID: "live", Uses: "live/agent"},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:         "live/agent",
+			OutputSchema: &schema,
+		},
+	}
+
+	dr, chunks, err := dispatcher.Run(context.Background(), intent)
+	if !errors.Is(err, agent.ErrLiveReplayRequired) {
+		t.Fatalf("err = %v, want direct ErrLiveReplayRequired", err)
+	}
+	if dr.Outcome != "" || dr.Err != nil || dr.Outputs != nil {
+		t.Fatalf("DispatchResult = {Outcome:%q Err:%v Outputs:%v}, want payload-free direct-error tuple", dr.Outcome, dr.Err, dr.Outputs)
+	}
+	if len(dr.AgentEvents) != 1 {
+		t.Fatalf("AgentEvents len = %d, want 1 buffered event", len(dr.AgentEvents))
+	}
+	if chunks != nil {
+		t.Fatal("chunks is non-nil on direct error")
 	}
 }
 
