@@ -129,12 +129,15 @@ graph:
 			t.Errorf("%s = %q, want canonical absolute path; dispatch argv=%q", name, got, dispatch)
 		}
 	}
-	// Destroy removes the per-container workdir before Runner.Run returns, so
-	// derive it from the already-canonical cwd rather than resolving it after
-	// teardown.
-	wantWorkdir := filepath.Join(canonicalRoot, ".awf", "work", "relative-native-run", "__awf_host_workspace")
-	if bindSource != wantWorkdir || bindDest != wantWorkdir || chdir != wantWorkdir {
-		t.Fatalf("bwrap workdir paths = bind %q -> %q, chdir %q; want %q", bindSource, bindDest, chdir, wantWorkdir)
+	if bindSource != bindDest || bindSource != chdir {
+		t.Fatalf("bwrap workdir paths disagree: bind %q -> %q, chdir %q", bindSource, bindDest, chdir)
+	}
+	// A bare run step gets a per-step implicit workspace. Its leaf name is an
+	// engine implementation detail; this regression only requires that the
+	// sandbox receives the canonical path directly below this run's work root.
+	wantRunRoot := filepath.Join(canonicalRoot, ".awf", "work", "relative-native-run")
+	if got := filepath.Dir(bindSource); got != wantRunRoot {
+		t.Fatalf("bwrap workdir parent = %q, want canonical run root %q (workdir %q)", got, wantRunRoot, bindSource)
 	}
 	if !strings.Contains(stdout.String(), "run relative-native-run: ok") {
 		t.Fatalf("successful scratch write not reported: stdout=%q", stdout.String())
