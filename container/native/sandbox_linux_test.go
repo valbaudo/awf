@@ -36,7 +36,7 @@ func TestBwrapLauncher_ArgvStructure(t *testing.T) {
 
 	l := bwrapLauncher{bwrapPath: bwrapPath, home: home, run: run}
 	creds := []string{home + "/.claude", home + "/.factory"}
-	argv := l.prepend(scratch, creds)
+	argv := l.prepend(scratch, nil, creds)
 
 	if len(argv) == 0 {
 		t.Fatal("bwrapLauncher.prepend: empty argv")
@@ -114,7 +114,7 @@ func TestBwrapLauncher_ArgvStructure(t *testing.T) {
 // are present: /usr /bin /lib /etc; /lib64 as --ro-bind-try.
 func TestBwrapLauncher_SystemDirs(t *testing.T) {
 	l := bwrapLauncher{bwrapPath: "/usr/bin/bwrap", home: "/home/u", run: "true"}
-	argv := l.prepend("/tmp/s", nil)
+	argv := l.prepend("/tmp/s", nil, nil)
 
 	required := []struct{ flag, path string }{
 		{"--ro-bind", "/usr"},
@@ -178,7 +178,7 @@ func TestBwrapLauncher_SystemDirs(t *testing.T) {
 // --new-session are present.
 func TestBwrapLauncher_IsolationFlags(t *testing.T) {
 	l := bwrapLauncher{bwrapPath: "/usr/bin/bwrap", home: "/home/u", run: "true"}
-	argv := l.prepend("/tmp/s", nil)
+	argv := l.prepend("/tmp/s", nil, nil)
 	argSet := make(map[string]bool, len(argv))
 	for _, a := range argv {
 		argSet[a] = true
@@ -199,7 +199,7 @@ func TestTrampolineLauncher_ArgvStructure(t *testing.T) {
 
 	l := trampolineLauncher{self: self, run: run}
 	creds := []string{"/home/u/.claude", "/home/u/.factory"}
-	argv := l.prepend(scratch, creds)
+	argv := l.prepend(scratch, nil, creds)
 
 	if len(argv) < 7 {
 		t.Fatalf("trampoline argv too short: %v", argv)
@@ -273,7 +273,7 @@ func TestTrampolineLauncher_PolicyJSONRoundtrip(t *testing.T) {
 
 	l := trampolineLauncher{self: self, run: run}
 	creds := []string{"/home/u/.claude", "/home/u/.codex"}
-	argv := l.prepend(scratch, creds)
+	argv := l.prepend(scratch, nil, creds)
 	if len(argv) < 3 {
 		t.Fatalf("argv too short: %v", argv)
 	}
@@ -364,19 +364,82 @@ func TestLinuxSandboxPoliciesUseAbsoluteWorkdir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bwrapArgv := (bwrapLauncher{bwrapPath: "/bwrap", run: "true"}).prepend(h.ID, nil)
+	bwrapArgv := (bwrapLauncher{bwrapPath: "/bwrap", run: "true"}).prepend(h.ID, nil, nil)
 	for i, arg := range bwrapArgv {
 		if (arg == "--bind" || arg == "--chdir") && !filepath.IsAbs(bwrapArgv[i+1]) {
 			t.Errorf("bwrap %s path = %q, want absolute", arg, bwrapArgv[i+1])
 		}
 	}
 
-	landlockArgv := (trampolineLauncher{self: "/awf", run: "true"}).prepend(h.ID, nil)
+	landlockArgv := (trampolineLauncher{self: "/awf", run: "true"}).prepend(h.ID, nil, nil)
 	var policy SandboxPolicy
 	if err := json.Unmarshal([]byte(landlockArgv[2]), &policy); err != nil {
 		t.Fatal(err)
 	}
 	if len(policy.RWDirs) == 0 || !filepath.IsAbs(policy.RWDirs[0]) {
 		t.Fatalf("Landlock scratch RW path = %q, want absolute", policy.RWDirs[0])
+	}
+}
+
+// TestBwrapLauncher_WritableCredDirs asserts a writable agent config dir gets a
+// --bind-try (read-write) AFTER its --ro-bind-try baseline (so it overrides),
+// while the ~/.config catch-all (RO only) gets --ro-bind-try and never --bind-try.
+// This is the T2 token-refresh-persistence grant with the XDG-catch-all guard.
+func TestBwrapLauncher_WritableCredDirs(t *testing.T) {
+	const home = "/home/runner"
+	l := bwrapLauncher{bwrapPath: "/usr/bin/bwrap", home: home, run: "true"}
+	argv := l.prepend("/tmp/s", []string{home + "/.factory"}, []string{home + "/.factory", home + "/.config"})
+
+	triple := func(flag, d string) int {
+		for i := 0; i+2 < len(argv); i++ {
+			if argv[i] == flag && argv[i+1] == d && argv[i+2] == d {
+				return i
+			}
+		}
+		return -1
+	}
+	roIdx := triple("--ro-bind-try", home+"/.factory")
+	rwIdx := triple("--bind-try", home+"/.factory")
+	if roIdx < 0 {
+		t.Errorf("~/.factory missing --ro-bind-try baseline; argv=%v", argv)
+	}
+	if rwIdx < 0 {
+		t.Errorf("~/.factory missing --bind-try (writable override); argv=%v", argv)
+	}
+	if roIdx >= 0 && rwIdx >= 0 && rwIdx < roIdx {
+		t.Errorf("--bind-try ~/.factory (%d) must come after --ro-bind-try (%d) to override; argv=%v", rwIdx, roIdx, argv)
+	}
+	if triple("--bind-try", home+"/.config") >= 0 {
+		t.Errorf("~/.config catch-all must NOT be writable (--bind-try present); argv=%v", argv)
+	}
+	if triple("--ro-bind-try", home+"/.config") < 0 {
+		t.Errorf("~/.config missing --ro-bind-try; argv=%v", argv)
+	}
+}
+
+// TestTrampolineLauncher_WritableCredDirsInPolicy asserts writable cred dirs land
+// in SandboxPolicy.RWDirs (Landlock read+write) beside the fixed set, while the
+// ~/.config catch-all is only in RODirs.
+func TestTrampolineLauncher_WritableCredDirsInPolicy(t *testing.T) {
+	l := trampolineLauncher{self: "/awf", run: "true"}
+	argv := l.prepend("/tmp/s", []string{"/home/u/.factory"}, []string{"/home/u/.factory", "/home/u/.config"})
+
+	var p SandboxPolicy
+	if err := json.Unmarshal([]byte(argv[2]), &p); err != nil {
+		t.Fatalf("policy JSON: %v; argv=%v", err, argv)
+	}
+	if !hasDir(p.RWDirs, "/home/u/.factory") {
+		t.Errorf("RWDirs missing writable cred dir; RWDirs=%v", p.RWDirs)
+	}
+	if hasDir(p.RWDirs, "/home/u/.config") {
+		t.Errorf("RWDirs must NOT contain the ~/.config catch-all; RWDirs=%v", p.RWDirs)
+	}
+	for _, fixed := range []string{"/tmp/s", "/tmp", "/dev"} {
+		if !hasDir(p.RWDirs, fixed) {
+			t.Errorf("RWDirs missing fixed writable %q; RWDirs=%v", fixed, p.RWDirs)
+		}
+	}
+	if !hasDir(p.RODirs, "/home/u/.config") {
+		t.Errorf("RODirs missing ~/.config catch-all; RODirs=%v", p.RODirs)
 	}
 }

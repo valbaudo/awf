@@ -32,7 +32,7 @@ import (
 // T3/T4 contract: prepend must be a pure function of its arguments (no global
 // state mutations); it must not exec anything itself.
 type sandboxLauncher interface {
-	prepend(scratchDir string, roDirs []string) []string
+	prepend(scratchDir string, rwDirs, roDirs []string) []string
 }
 
 // detectSandbox returns the best available sandboxLauncher for the current
@@ -78,7 +78,7 @@ type sandboxLauncherFactory interface {
 // prefix — run sh directly."
 type noOpLauncher struct{}
 
-func (noOpLauncher) prepend(_ string, _ []string) []string { return nil }
+func (noOpLauncher) prepend(_ string, _, _ []string) []string { return nil }
 
 // credDirs returns the deduplicated list of agent credential / config
 // directories that OS-specific launchers should mount read-only (or add to
@@ -95,27 +95,49 @@ func (noOpLauncher) prepend(_ string, _ []string) []string { return nil }
 // Entries that cannot be resolved are silently skipped; callers receive only
 // paths that could in principle exist.
 func credDirs(runHome string) []string {
-	// codexHome: $CODEX_HOME if set, otherwise ~/.codex.
+	return dedupeAbsDirs(append(agentConfigDirs(runHome), filepath.Join(runHome, ".config")))
+}
+
+// credDirsWritable returns the subset of credential dirs that must be mounted
+// READ-WRITE so an agent's token refresh persists across runs instead of
+// vanishing when the sandbox tears down its mount namespace. Verified on Linux
+// (no keyring, files are the store): droid refreshes to ~/.factory/auth.v2.file,
+// codex to ~/.codex/auth.json — each INSIDE its own enumerated dir. It
+// deliberately EXCLUDES the bare ~/.config catch-all (returned RO by credDirs)
+// so a step never gains write to the whole XDG tree (git, gh, shell config).
+//
+// ponytail: a fixed dir set, not a per-adapter Caps channel — every
+// file-refreshing agent writes inside its own config dir, so the running
+// adapter's identity is not needed to decide this. macOS stores these creds in
+// the keychain (survives the HOME tmpfs), so the darwin launcher ignores this
+// list; the write-loss bug is Linux-only.
+func credDirsWritable(runHome string) []string {
+	return dedupeAbsDirs(agentConfigDirs(runHome))
+}
+
+// agentConfigDirs are the per-agent config/credential dirs (Claude, Codex,
+// Factory/droid, Goose). $CODEX_HOME overrides ~/.codex.
+func agentConfigDirs(runHome string) []string {
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		codexHome = filepath.Join(runHome, ".codex")
 	}
-
-	candidates := []string{
+	return []string{
 		filepath.Join(runHome, ".claude"),
 		codexHome,
 		filepath.Join(runHome, ".factory"),
 		filepath.Join(runHome, ".config", "goose"),
-		filepath.Join(runHome, ".config"),
 	}
+}
 
-	// Deduplicate while preserving order.
+// dedupeAbsDirs drops empty, relative, and duplicate paths (order preserved).
+// Relative paths are dropped because filepath.Join("", ".claude") yields the
+// relative ".claude", which could resolve to an unintended host path when used
+// as a bind mount or Landlock rule.
+func dedupeAbsDirs(candidates []string) []string {
 	seen := make(map[string]bool, len(candidates))
 	out := make([]string, 0, len(candidates))
 	for _, d := range candidates {
-		// Skip empty or non-absolute paths (e.g. filepath.Join("", ".claude")
-		// produces ".claude" which is relative and could resolve to an
-		// unintended host path when used as a bind mount or Landlock path).
 		if d == "" || !filepath.IsAbs(d) || seen[d] {
 			continue
 		}

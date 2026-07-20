@@ -76,7 +76,7 @@ type bwrapLauncherFactory struct {
 }
 
 // prepend is a sentinel no-op. exec.go always calls buildForRun first.
-func (f *bwrapLauncherFactory) prepend(_ string, _ []string) []string { return nil }
+func (f *bwrapLauncherFactory) prepend(_ string, _, _ []string) []string { return nil }
 
 func (f *bwrapLauncherFactory) buildForRun(run string) sandboxLauncher {
 	return bwrapLauncher{bwrapPath: f.bwrapPath, home: f.home, run: run}
@@ -106,7 +106,7 @@ type bwrapLauncher struct {
 //	  --chdir <scratch>
 //	  --unshare-pid  --die-with-parent  --new-session
 //	  -- sh -c <run>
-func (l bwrapLauncher) prepend(scratchDir string, roDirs []string) []string {
+func (l bwrapLauncher) prepend(scratchDir string, rwDirs, roDirs []string) []string {
 	argv := []string{l.bwrapPath}
 
 	// Isolate HOME: overlay with tmpfs so the step cannot read real credentials.
@@ -118,6 +118,14 @@ func (l bwrapLauncher) prepend(scratchDir string, roDirs []string) []string {
 	// --ro-bind-try silently skips dirs that don't exist (new hosts, optional tools).
 	for _, d := range roDirs {
 		argv = append(argv, "--ro-bind-try", d, d)
+	}
+
+	// Re-bind the agent config dirs that must persist a token refresh READ-WRITE,
+	// overriding their read-only bind above (a later bwrap bind on the same path
+	// shadows the earlier one). --bind-try skips absent dirs. Bare ~/.config is in
+	// roDirs only (see credDirsWritable), so it is never writable.
+	for _, d := range rwDirs {
+		argv = append(argv, "--bind-try", d, d)
 	}
 
 	// Bind the per-run scratch dir read-write so the step can write output files.
@@ -156,7 +164,7 @@ type trampolineLauncherFactory struct {
 	self string // path to the awf binary (os.Executable())
 }
 
-func (f *trampolineLauncherFactory) prepend(_ string, _ []string) []string { return nil }
+func (f *trampolineLauncherFactory) prepend(_ string, _, _ []string) []string { return nil }
 
 func (f *trampolineLauncherFactory) buildForRun(run string) sandboxLauncher {
 	return trampolineLauncher{self: f.self, run: run}
@@ -195,19 +203,27 @@ var systemRODirs = []string{"/usr", "/bin", "/lib", "/lib64", "/etc", "/proc", "
 // This re-execs the awf binary. cmd/awf/main.go detects "__sandbox" in
 // maybeSandboxTrampoline() and applies the Landlock policy before
 // syscall.Exec("/bin/sh",...).
-func (l trampolineLauncher) prepend(scratchDir string, roDirs []string) []string {
+func (l trampolineLauncher) prepend(scratchDir string, rwDirs, roDirs []string) []string {
 	// RODirs = caller-supplied cred dirs + fixed system dirs.
 	allRO := make([]string, 0, len(roDirs)+len(systemRODirs))
 	allRO = append(allRO, roDirs...)
 	allRO = append(allRO, systemRODirs...)
 
+	// RWDirs = the fixed writable set + the agent config dirs that must persist a
+	// token refresh (credDirsWritable). RestrictPaths uses IgnoreIfMissing()
+	// (sandbox_landlock_linux.go), so absent dirs are skipped; a path present in
+	// both RODirs and RWDirs gets the union — read+write.
+	allRW := make([]string, 0, 3+len(rwDirs))
+	// /dev is read-write: Bun (claude-code) opens /dev/urandom for entropy and
+	// writes to /dev/null on startup, and aborts if it cannot. The bwrap path
+	// provides this via `--dev /dev`; the landlock path must grant it explicitly
+	// or the confined process never starts.
+	allRW = append(allRW, scratchDir, "/tmp", "/dev")
+	allRW = append(allRW, rwDirs...)
+
 	p := SandboxPolicy{
 		RODirs: allRO,
-		// /dev is read-write: Bun (claude-code) opens /dev/urandom for entropy
-		// and writes to /dev/null on startup, and aborts if it cannot. The bwrap
-		// path provides this via `--dev /dev`; the landlock path must grant it
-		// explicitly or the confined process never starts.
-		RWDirs: []string{scratchDir, "/tmp", "/dev"},
+		RWDirs: allRW,
 		Run:    l.run,
 	}
 	pJSON, err := json.Marshal(p)

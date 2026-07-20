@@ -35,7 +35,7 @@ func TestDetectSandbox_NoOpFallback(t *testing.T) {
 		t.Fatal("detectSandbox: launcher = nil, want non-nil no-op launcher")
 	}
 	// The no-op launcher must return nil argv (no prefix prepended).
-	argv := launcher.prepend("/tmp/scratch", nil)
+	argv := launcher.prepend("/tmp/scratch", nil, nil)
 	if argv != nil {
 		t.Errorf("no-op launcher.prepend() = %v, want nil", argv)
 	}
@@ -59,7 +59,7 @@ func TestDetectSandbox_NoOpPrepend(t *testing.T) {
 		{"", nil},
 	}
 	for _, c := range cases {
-		got := launcher.prepend(c.scratch, c.roDirs)
+		got := launcher.prepend(c.scratch, nil, c.roDirs)
 		if got != nil {
 			t.Errorf("noOp.prepend(%q, %v) = %v, want nil", c.scratch, c.roDirs, got)
 		}
@@ -242,5 +242,64 @@ func TestSandboxLauncherLabel_WarnSubstring(t *testing.T) {
 	lower := strings.ToLower(noSandboxWarnLabel)
 	if !strings.Contains(lower, "no") && !strings.Contains(lower, "warn") {
 		t.Errorf("noSandboxWarnLabel %q: expected \"no\" or \"warn\" substring", noSandboxWarnLabel)
+	}
+}
+
+// hasDir reports whether want appears in dirs.
+func hasDir(dirs []string, want string) bool {
+	for _, d := range dirs {
+		if d == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCredDirsWritable_ExcludesConfigCatchAll is the load-bearing security
+// assertion for T2: the per-agent config dirs are writable (so a token refresh
+// persists across runs — verified on Linux: droid -> ~/.factory/auth.v2.file,
+// codex -> ~/.codex/auth.json) but the bare ~/.config catch-all is NOT, so a
+// step never gains write to the whole XDG tree (git, gh, shell). ~/.config
+// stays READABLE via credDirs.
+func TestCredDirsWritable_ExcludesConfigCatchAll(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	rw := credDirsWritable(home)
+	for _, w := range []string{
+		home + "/.claude",
+		home + "/.codex",
+		home + "/.factory",
+		home + "/.config/goose",
+	} {
+		if !hasDir(rw, w) {
+			t.Errorf("credDirsWritable missing agent dir %q; got %v", w, rw)
+		}
+	}
+
+	bare := home + "/.config"
+	if hasDir(rw, bare) {
+		t.Errorf("credDirsWritable includes the bare XDG catch-all %q (would grant write to git/gh/shell config); got %v", bare, rw)
+	}
+	if !hasDir(credDirs(home), bare) {
+		t.Errorf("credDirs (read-only baseline) dropped %q; the catch-all must stay readable; got %v", bare, credDirs(home))
+	}
+}
+
+// TestCredDirsWritable_CodexHomeEnv asserts $CODEX_HOME overrides ~/.codex in
+// the writable set too (parity with credDirs).
+func TestCredDirsWritable_CodexHomeEnv(t *testing.T) {
+	home := t.TempDir()
+	customCodex := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", customCodex)
+
+	rw := credDirsWritable(home)
+	if !hasDir(rw, customCodex) {
+		t.Errorf("credDirsWritable with CODEX_HOME=%q: not in %v", customCodex, rw)
+	}
+	if hasDir(rw, home+"/.codex") {
+		t.Errorf("credDirsWritable: default ~/.codex present despite CODEX_HOME set; got %v", rw)
 	}
 }

@@ -40,7 +40,7 @@ func TestSandboxExecLauncher_ArgvStructure(t *testing.T) {
 
 	f := &sandboxExecFactory{}
 	l := f.buildForRun(run).(sandboxExecLauncher)
-	argv := l.prepend(scratch, nil)
+	argv := l.prepend(scratch, nil, nil)
 
 	if len(argv) < 13 {
 		t.Fatalf("argv too short (%d elements): %v", len(argv), argv)
@@ -110,7 +110,7 @@ func TestSandboxExecLauncher_RelativeScratchBecomesAbsolute(t *testing.T) {
 	if err := os.MkdirAll("relative-scratch", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	argv := (sandboxExecLauncher{run: "true"}).prepend("relative-scratch", nil)
+	argv := (sandboxExecLauncher{run: "true"}).prepend("relative-scratch", nil, nil)
 	if len(argv) < 3 || !strings.HasPrefix(argv[2], "SCRATCH=") {
 		t.Fatalf("argv = %v, want SCRATCH definition", argv)
 	}
@@ -127,7 +127,7 @@ func TestSandboxExecLauncher_ProfileContent(t *testing.T) {
 
 	f := &sandboxExecFactory{}
 	l := f.buildForRun(run).(sandboxExecLauncher)
-	argv := l.prepend(scratch, nil)
+	argv := l.prepend(scratch, nil, nil)
 
 	// Find -f <path> in argv.
 	profilePath := ""
@@ -186,7 +186,7 @@ func TestDetectPlatformSandbox_SandboxExecFound(t *testing.T) {
 		t.Fatalf("launcher does not implement sandboxLauncherFactory: %T", l)
 	}
 	perRun := factory.buildForRun("true")
-	argv := perRun.prepend(t.TempDir(), nil)
+	argv := perRun.prepend(t.TempDir(), nil, nil)
 	if argv == nil {
 		t.Error("sandbox-exec launcher.prepend returned nil")
 	}
@@ -237,7 +237,7 @@ func TestSandboxExecLauncher_FailClosed_ProfileWriteFailure(t *testing.T) {
 	unwritable := t.TempDir() + "/does-not-exist"
 
 	l := sandboxExecLauncher{run: "echo should-not-run", tmpDirOverride: unwritable}
-	argv := l.prepend(t.TempDir(), nil)
+	argv := l.prepend(t.TempDir(), nil, nil)
 
 	// MUST be non-nil — nil means exec.go falls through to bare sh (fail-open).
 	if argv == nil {
@@ -266,7 +266,7 @@ func TestSandboxExecLauncher_FailClosed_ProfileWriteFailure(t *testing.T) {
 // tmpDir, prepend returns the normal sandbox-exec argv (not the sentinel).
 func TestSandboxExecLauncher_NormalPath_NotFailClosed(t *testing.T) {
 	l := sandboxExecLauncher{run: "echo hello"}
-	argv := l.prepend(t.TempDir(), nil)
+	argv := l.prepend(t.TempDir(), nil, nil)
 
 	if argv == nil {
 		t.Fatal("prepend with writable tmpDir returned nil")

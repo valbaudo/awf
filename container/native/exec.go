@@ -76,10 +76,10 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 			// runHome is the process's HOME so credDirs resolves user config dirs.
 			runHome := os.Getenv("HOME")
 			perRunLauncher := factory.buildForRun(cmd.Run)
-			argv = perRunLauncher.prepend(r.workdir, credDirs(runHome))
+			argv = perRunLauncher.prepend(r.workdir, credDirsWritable(runHome), credDirs(runHome))
 		} else {
 			// Non-factory launcher (e.g. noOpLauncher) returns nil from prepend.
-			argv = launcher.prepend(r.workdir, nil)
+			argv = launcher.prepend(r.workdir, nil, nil)
 		}
 		if argv != nil {
 			c = exec.CommandContext(ctx, argv[0], argv[1:]...)

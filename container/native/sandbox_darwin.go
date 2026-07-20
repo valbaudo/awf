@@ -32,7 +32,7 @@ type sandboxExecFactory struct{}
 // prepend is a factory-guard sentinel. exec.go type-asserts to
 // sandboxLauncherFactory and always calls buildForRun first; this path is
 // never reached in normal dispatch, so returning nil is safe here.
-func (f *sandboxExecFactory) prepend(_ string, _ []string) []string { return nil }
+func (f *sandboxExecFactory) prepend(_ string, _, _ []string) []string { return nil }
 
 func (f *sandboxExecFactory) buildForRun(run string) sandboxLauncher {
 	return sandboxExecLauncher{run: run}
@@ -109,7 +109,12 @@ const sbplProfile = `(version 1)
 //	  "-D", "AWFOUT=<realAwfOutputDir>",
 //	  "-f", "<profile.sb>",
 //	  "--", "sh", "-c", <run>]
-func (l sandboxExecLauncher) prepend(scratchDir string, _ []string) []string {
+//
+// rwDirs (credDirsWritable) is ignored on macOS: agents store credentials in
+// the keychain (accessed via securityd, not a file write under $HOME), which
+// survives the sandbox, so the Linux token-write-loss bug does not apply here.
+// Granting the cred dirs write in the SBPL profile is a separate follow-up.
+func (l sandboxExecLauncher) prepend(scratchDir string, _, _ []string) []string {
 	// On macOS /var and /tmp are symlinks to /private/var and /private/tmp.
 	// sandbox-exec evaluates paths through the VFS kernel layer, so the SBPL
 	// (subpath ...) checks must use the real (symlink-resolved) path; using the
