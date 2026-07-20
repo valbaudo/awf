@@ -5,7 +5,10 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/spf13/pflag"
 
@@ -16,7 +19,7 @@ import (
 )
 
 func printOutputsUsage(w io.Writer) {
-	fprintln(w, "usage: awf outputs <run-id> [--workflow <path>] [--step <node-id>] [--state-dir <dir>]")
+	fprintln(w, "usage: awf outputs <run-id> [--workflow <path>] [--step <node-id>] [--dest <dir>] [--state-dir <dir>]")
 	fprintln(w, "")
 	fprintln(w, "  read a completed run's typed outputs as JSON. Pass exactly one of:")
 	fprintln(w, "  --workflow <path>  evaluate that workflow's outputs: contract (digest-checked")
@@ -27,6 +30,9 @@ func printOutputsUsage(w io.Writer) {
 	fprintln(w, "                    gate[0].attempt-2.generate.<id> / map[0].item-3.<id> /")
 	fprintln(w, "                    loop[0].body.iter-3.<id>. Map aggregates and sub-workflow")
 	fprintln(w, "                    results are read via --workflow, not --step.")
+	fprintln(w, "  --dest <dir>       with --step: materialize that step's output_files into <dir>")
+	fprintln(w, "                     on the host (owned by you), mirroring each declared path;")
+	fprintln(w, "                     paths that would escape <dir> are refused. Prints each path.")
 	fprintln(w, "  --state-dir <dir>  base directory for runs/ and blobs/ (default: ./.awf)")
 	fprintln(w, "")
 	fprintln(w, "  Exit reflects the READ, not the run: 0 ok, 2 bad invocation, 1 read failed.")
@@ -40,6 +46,7 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	stateDir := fs0.String("state-dir", defaultStateDir(), "base directory for runs/ and blobs/")
 	step := fs0.String("step", "", "emit one committed step's typed output by runtime address")
 	workflow := fs0.String("workflow", "", "workflow file: evaluate its outputs: contract")
+	dest := fs0.String("dest", "", "materialize the step's output_files into this host directory (requires --step)")
 	runID, code, ok := parseSinglePositional(fs0, args, "awf outputs", printOutputsUsage, stdout, stderr)
 	if !ok {
 		return code
@@ -51,6 +58,10 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	}
 	if *step == "" && *workflow == "" {
 		fprintf(stderr, "awf outputs: provide --workflow <path> (to read the outputs: contract) or --step <node-id>\n")
+		return ExitUsage
+	}
+	if *dest != "" && *step == "" {
+		fprintf(stderr, "awf outputs: --dest requires --step <node-id> (it materializes that step's output_files)\n")
 		return ExitUsage
 	}
 	canonicalStateDir, accessErr := accessStateDir(*stateDir, stateReadOnly, defaultStateIdentity)
@@ -77,9 +88,88 @@ func cliOutputs(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *step != "" {
+		if *dest != "" {
+			return outputsStepFiles(events, blobs, *stateDir, *step, *dest, stdout, stderr)
+		}
 		return outputsStep(events, blobs, *stateDir, *step, stdout, stderr)
 	}
 	return outputsContract(events, blobs, *stateDir, runID, *workflow, stdout, stderr)
+}
+
+// outputsStepFiles materializes a committed step's output_files onto the host,
+// under dest, mirroring each declared container path (NodeCompletedData.Files is
+// "declared path -> CAS ref"). The awf host process is the writer, so every file
+// lands owned by the invoking user — no root-owned bind-mount writeback, no chown.
+//
+// Confinement is os.Root: an absolute container path (/out/x) is contained by
+// stripping the leading separator (-> dest/out/x); any `..` component or symlink
+// that would escape dest is refused by os.Root and reported, never followed.
+// ponytail: os.Root IS the safe-join — no hand-rolled path sanitization.
+func outputsStepFiles(events []state.Event, blobs state.Blobs, stateDir, nodeID, dest string, stdout, stderr io.Writer) int {
+	var files map[string]string
+	found := false
+	// Last node.completed for this id wins (a resumed run may re-commit it),
+	// mirroring outputsStep's targeted read (no full engine.Fold).
+	for _, e := range events {
+		if e.Type == engine.EventNodeCompleted && e.Path == nodeID {
+			var d engine.NodeCompletedData
+			if err := json.Unmarshal(e.Data, &d); err != nil {
+				fprintf(stderr, "awf outputs: decode node.completed at %q: %v\n", nodeID, err)
+				return ExitRunFailed
+			}
+			files = d.Files
+			found = true
+		}
+	}
+	if !found {
+		fprintf(stderr, "awf outputs: no committed step at %q (use the full runtime address, e.g. gate[0].attempt-2.generate.<id>)\n", nodeID)
+		return ExitRunFailed
+	}
+	if len(files) == 0 {
+		// Not an error: the step legitimately produced no output_files.
+		fprintf(stderr, "awf outputs: step %q produced no output_files; nothing to materialize\n", nodeID)
+		return ExitOK
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		fprintf(stderr, "awf outputs: create dest %q: %v\n", dest, err)
+		return ExitRunFailed
+	}
+	root, err := os.OpenRoot(dest)
+	if err != nil {
+		fprintf(stderr, "awf outputs: open dest %q: %v\n", dest, err)
+		return ExitRunFailed
+	}
+	defer func() { _ = root.Close() }()
+
+	// Deterministic order (map iteration is randomized).
+	paths := make([]string, 0, len(files))
+	for p := range files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, containerPath := range paths {
+		rel := strings.TrimLeft(filepath.ToSlash(containerPath), "/")
+		if rel == "" || rel == "." {
+			fprintf(stderr, "awf outputs: step %q has an unusable output_files path %q\n", nodeID, containerPath)
+			return ExitRunFailed
+		}
+		raw, err := blobs.Get(files[containerPath])
+		if err != nil {
+			return reportStateFailure(stderr, "awf outputs", "read output_files blob for "+containerPath, stateDir, filepath.Join(stateDir, "blobs"), err, defaultStateIdentity, stateFailureOutputs)
+		}
+		if dir := filepath.Dir(rel); dir != "." {
+			if err := root.MkdirAll(dir, 0o755); err != nil {
+				fprintf(stderr, "awf outputs: refuse to materialize %q outside %q: %v\n", containerPath, dest, err)
+				return ExitRunFailed
+			}
+		}
+		if err := root.WriteFile(rel, raw, 0o644); err != nil {
+			fprintf(stderr, "awf outputs: refuse to materialize %q outside %q: %v\n", containerPath, dest, err)
+			return ExitRunFailed
+		}
+		fprintln(stdout, filepath.Join(dest, rel))
+	}
+	return ExitOK
 }
 
 // outputsStep emits one top-level CODE/AGENT/SIGNAL step's typed output via a
