@@ -102,6 +102,19 @@ export function toElkGraph(p: Projection): ElkGraph {
     if (c && byId.has(c)) byId.get(c)!.children.push(node);
     else roots.push(node);
   }
+  // A gate attempt's generate and evaluate scopes have no control edge between them,
+  // so ELK is free to order them arbitrarily and falls back to input order — which is
+  // sorted by path, putting "evaluate" before "generate" and rendering the judge ahead
+  // of the generator that feeds it. Order the two scopes explicitly. Everything else
+  // keeps projection order (Array.sort is stable), and containers without these scopes
+  // are untouched.
+  const scopeRank = (n: ElkNode) =>
+    n.awf?.kind === "generate" ? 0 : n.awf?.kind === "evaluate" ? 1 : 2;
+  for (const n of byId.values()) {
+    if (n.children.some((c) => c.awf?.kind === "generate" || c.awf?.kind === "evaluate")) {
+      n.children.sort((a, b) => scopeRank(a) - scopeRank(b));
+    }
+  }
   // Only CONTROL edges drive layout; data edges (cross-cutting {{ }} references) are
   // rendered but excluded here so they cannot distort the layered/nested layout.
   const edges: ElkEdge[] = p.edges

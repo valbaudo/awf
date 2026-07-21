@@ -153,3 +153,83 @@ func TestBuildWithRunLoadedMapsCallChildOverlay(t *testing.T) {
 		t.Errorf("call overlay = %+v, want failed/permanent_failure", st)
 	}
 }
+
+// TestBuildWithRunKeepsGateContainer is a regression test for the run-view graph
+// collapsing into disconnected nodes.
+//
+// templateOf() maps a map's "item-N" onto a "body" segment, so a map container is
+// never marked as instanced. A gate's "attempt-N" (and a loop's "iter-N") is dropped
+// outright, so templateOf("gate[1].attempt-1") == "gate[1]" — the CONTAINER itself.
+// The declutter pass then deleted the gate node, which orphaned attempt-1 (its Parent
+// dangled) and deleted both control edges into and out of the scope, leaving the run
+// view with no edges at all. Only redundant leaf templates may be decluttered.
+func TestBuildWithRunKeepsGateContainer(t *testing.T) {
+	wf := &ir.Workflow{
+		ID: "g",
+		Graph: ir.NodeList{
+			&ir.CodeStep{ID: "collect", Run: "a"},
+			&ir.Gate{
+				Generate: ir.NodeList{&ir.CodeStep{ID: "draft", Run: "b"}},
+				Evaluate: ir.NodeList{&ir.CodeStep{ID: "judge", Run: "c"}},
+				Until:    "true",
+			},
+			&ir.CodeStep{ID: "publish", Run: "d"},
+		},
+	}
+	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	ev := func(typ, path string, data any) state.Event {
+		return state.Event{Type: typ, Path: path, Data: d(data)}
+	}
+	events := []state.Event{ev(engine.EventRunStarted, "", engine.RunStartedData{RunID: "r1"})}
+	for _, p := range []string{
+		"collect",
+		"gate[1].attempt-1.generate.draft",
+		"gate[1].attempt-1.evaluate.judge",
+		"publish",
+	} {
+		events = append(events,
+			ev(engine.EventNodeStarted, p, engine.NodeStartedData{Kind: "code"}),
+			ev(engine.EventNodeCompleted, p, engine.NodeCompletedData{Outcome: "ok"}))
+	}
+
+	p, err := BuildWithRun(wf, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]Node{}
+	for _, n := range p.Nodes {
+		byPath[n.Path] = n
+	}
+
+	// The gate container must survive: the attempt nests INSIDE it.
+	if _, ok := byPath["gate[1]"]; !ok {
+		paths := make([]string, 0, len(p.Nodes))
+		for _, n := range p.Nodes {
+			paths = append(paths, n.Path)
+		}
+		t.Fatalf("gate[1] container was dropped from the run view; nodes=%v", paths)
+	}
+	// No node may reference a parent that is not itself a node, or the renderer
+	// promotes it to a disconnected root.
+	for _, n := range p.Nodes {
+		if n.Parent == "" {
+			continue
+		}
+		if _, ok := byPath[n.Parent]; !ok {
+			t.Errorf("node %q has dangling parent %q", n.Path, n.Parent)
+		}
+	}
+	// The control edges into and out of the scope must survive, or the graph has
+	// nothing to rank and every node lays out as an isolated root.
+	hasEdge := func(from, to string) bool {
+		for _, e := range p.Edges {
+			if e.From == from && e.To == to && e.Kind == "control" {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasEdge("collect", "gate[1]") || !hasEdge("gate[1]", "publish") {
+		t.Errorf("gate scope lost its control edges; edges=%+v", p.Edges)
+	}
+}

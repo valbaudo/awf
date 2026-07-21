@@ -75,10 +75,24 @@ func buildWithRunProjection(p Projection, events []state.Event) (Projection, err
 	for _, i := range inst {
 		instanced[templateOf(i.Path)] = true
 	}
+	// A template node that other nodes nest INSIDE is a scope container, never a
+	// redundant stub — its instances live within it. Dropping one orphans those
+	// instances (their Parent dangles, so a renderer promotes them to disconnected
+	// roots) and deletes the control edges entering and leaving the scope. This is not
+	// hypothetical for gates and loops: templateOf() maps a map's "item-N" onto a
+	// "body" segment, so a map container is never marked instanced, but "attempt-N" /
+	// "iter-N" are dropped outright — making templateOf("gate[1].attempt-1") ==
+	// "gate[1]", the container itself.
+	contains := map[string]bool{}
+	for _, n := range allNodes {
+		if n.Parent != "" {
+			contains[n.Parent] = true
+		}
+	}
 	keep := map[string]bool{}
 	nodes := make([]Node, 0, len(allNodes))
 	for _, n := range allNodes {
-		if n.NodeClass != "instance" && instanced[n.Path] {
+		if n.NodeClass != "instance" && instanced[n.Path] && !contains[n.Path] {
 			continue
 		}
 		nodes = append(nodes, n)

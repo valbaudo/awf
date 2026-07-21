@@ -99,3 +99,22 @@ describe("applyState", () => {
     });
   });
 });
+
+it("gate attempt orders generate before evaluate", () => {
+  // The projection sorts nodes by path, so "evaluate" arrives before "generate" and
+  // ELK (which has no control edge between the two scopes to rank them) would render
+  // the judge ahead of the generator that feeds it.
+  const p = {
+    nodes: [
+      { path: "g[1]", kind: "gate", id: "g", parent: "" },
+      { path: "g[1].attempt-1", kind: "gate_attempt", id: "attempt-1", parent: "g[1]" },
+      { path: "g[1].attempt-1.evaluate", kind: "evaluate", id: "evaluate", parent: "g[1].attempt-1" },
+      { path: "g[1].attempt-1.generate", kind: "generate", id: "generate", parent: "g[1].attempt-1" },
+    ],
+    edges: [],
+  } as unknown as Projection;
+
+  const g = toElkGraph(p);
+  const attempt = g.children[0].children[0];
+  expect(attempt.children.map((c) => c.awf!.kind)).toEqual(["generate", "evaluate"]);
+});
