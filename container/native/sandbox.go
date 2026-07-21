@@ -115,6 +115,25 @@ func credDirsWritable(runHome string) []string {
 	return dedupeAbsDirs(agentConfigDirs(runHome))
 }
 
+// toolDirs returns HOME-relative directories that must be re-bound READ-ONLY
+// (read + execute) so an agent CLI installed under the user's home prefix stays
+// runnable inside the sandbox. Without them the step dies with an opaque shell
+// exit 126/127 ("cannot execute" / "not found") because the launchers overlay
+// $HOME with a tmpfs and grant no rule for these paths.
+//
+// ~/.local covers BOTH halves of a user-prefix install, which is why the whole
+// subtree is granted rather than just ~/.local/bin: verified on a Linux host,
+// droid is an ELF at ~/.local/bin/droid, while ~/.local/bin/claude is a symlink
+// into ~/.local/lib/node_modules/.../claude.exe — granting only bin would still
+// fail to exec claude. Read-only: nothing here needs write (credential writes
+// go through credDirsWritable).
+//
+// System prefixes are handled separately by each launcher's fixed list (/usr,
+// /opt, ...), since they are not HOME-relative.
+func toolDirs(runHome string) []string {
+	return dedupeAbsDirs([]string{filepath.Join(runHome, ".local")})
+}
+
 // agentConfigDirs are the per-agent config/credential dirs (Claude, Codex,
 // Factory/droid, Goose). $CODEX_HOME overrides ~/.codex.
 func agentConfigDirs(runHome string) []string {

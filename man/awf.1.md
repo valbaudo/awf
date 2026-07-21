@@ -173,12 +173,22 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     is usable, it runs unconfined with a loud warning (see **CONTAINERS** in
     **awf-workflow**(5)). When a workflow declares an image, native prints:
 
-        awf run: --backend native ignores declared container image(s); steps run on the host.
+        awf run: --backend native ignores declared container image(s); steps run on the host with no container boundary. Re-run without --backend (or --backend auto, the default) to route this workflow to docker.
 
     Explicit native still **rejects** Compose-mode containers, runtime Compose,
     and runtime map images — those have no host equivalent — with guidance to use
     **--backend docker**. _auto_ never selects native for any of those; it routes
     them (and image-mode and `snapshot: workspace`) to _docker_ instead.
+
+    **Agent CLI install prefix.** Under native, the agent CLI runs on the host,
+    so it must live on a path the sandbox grants read+execute. Both Linux
+    launchers grant `/usr` (so `/usr/local/bin` works), `/bin`, `/lib`,
+    `/lib64`, `/etc`, `/opt` (node/npm global prefixes), and `~/.local` (the
+    XDG user-install prefix — `~/.local/bin` plus the `~/.local/lib` or
+    `~/.local/share` targets its entries symlink to). A CLI installed outside
+    those prefixes is denied: bubblewrap overlays `$HOME` with a tmpfs, and
+    Landlock refuses the `execve`, so the step dies with an opaque exit `126`
+    (or `127`) rather than a named error.
 
 **--agent-env** _csv_
 :   Comma-separated allowlist of environment-variable *names* forwarded into

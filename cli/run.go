@@ -464,6 +464,12 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 	// docker-preferred features route to docker above), so native never
 	// silently drops a declared key (F5, U4: enumerates every ignored key
 	// detected, not just the image).
+	//
+	// The message also names the remediation. Only an EXPLICIT --backend native
+	// reaches here with a declared image; the default (--backend auto) detects
+	// the same image and routes the run to docker. Stating the fact without the
+	// fix is what let an author conclude native was the intended path and
+	// hand-rebuild the container environment on the host.
 	if concreteBackendKind == engine.BackendNative {
 		var ignored []string
 		if workflowHasStaticImage(ld) {
@@ -473,7 +479,7 @@ func (r *Runner) cliRun(args []string, stdout, stderr io.Writer) int {
 			ignored = append(ignored, "resources")
 		}
 		if len(ignored) > 0 {
-			fprintf(stderr, "awf run: --backend native ignores declared %s; steps run on the host.\n", strings.Join(ignored, " and "))
+			fprintf(stderr, "awf run: --backend native ignores declared %s; steps run on the host with no container boundary. Re-run without --backend (or --backend auto, the default) to route this workflow to docker.\n", strings.Join(ignored, " and "))
 		}
 	}
 	// WS-6a: compute the root workflow's structural digest (topology-only,

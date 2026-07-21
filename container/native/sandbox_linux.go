@@ -138,6 +138,12 @@ func (l bwrapLauncher) prepend(scratchDir string, rwDirs, roDirs []string) []str
 	// /lib64 may not exist on all distros — use try variant.
 	argv = append(argv, "--ro-bind-try", "/lib64", "/lib64")
 	argv = append(argv, "--ro-bind", "/etc", "/etc")
+	// /opt is where node/npm global prefixes commonly live, and an agent CLI
+	// shim in /usr/local/bin routinely resolves into it (verified: codex ->
+	// /opt/node-*/lib/node_modules/@openai/codex, interpreter /opt/node-*/bin/node).
+	// Without it the shim execs but its real script/interpreter is unreachable.
+	// -try: /opt is absent on many hosts.
+	argv = append(argv, "--ro-bind-try", "/opt", "/opt")
 
 	// /tmp as tmpfs (clean per-run), proc + dev pseudo-filesystems.
 	argv = append(argv, "--tmpfs", "/tmp")
@@ -193,7 +199,12 @@ type SandboxPolicy struct {
 // bwrap path supplies /proc via `--proc /proc`, so granting it here keeps the
 // two sandbox backends at parity. (/dev is granted read-WRITE — see the
 // trampoline's RWDirs below — because Bun must open /dev/urandom and /dev/null.)
-var systemRODirs = []string{"/usr", "/bin", "/lib", "/lib64", "/etc", "/proc", "/sys"}
+// /opt is included because node/npm global prefixes commonly live there, and an
+// agent CLI shim in /usr/local/bin routinely resolves into it (verified: codex ->
+// /opt/node-*/lib/node_modules/@openai/codex, run by /opt/node-*/bin/node).
+// Without it the confined step dies with an opaque exit 126. RestrictPaths uses
+// IgnoreIfMissing(), so hosts without /opt are unaffected.
+var systemRODirs = []string{"/usr", "/bin", "/lib", "/lib64", "/etc", "/proc", "/sys", "/opt"}
 
 // prepend returns the argv:
 //

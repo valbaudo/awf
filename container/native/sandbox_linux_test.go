@@ -443,3 +443,27 @@ func TestTrampolineLauncher_WritableCredDirsInPolicy(t *testing.T) {
 		t.Errorf("RODirs missing ~/.config catch-all; RODirs=%v", p.RODirs)
 	}
 }
+
+// TestSystemRODirs_IncludesOpt asserts /opt is granted read+execute. node/npm
+// global prefixes live there and an agent CLI shim in /usr/local/bin routinely
+// resolves into it (verified: codex -> /opt/node-*/lib/node_modules/@openai/codex,
+// run by /opt/node-*/bin/node), so omitting it yields the opaque exit 126.
+func TestSystemRODirs_IncludesOpt(t *testing.T) {
+	if !hasDir(systemRODirs, "/opt") {
+		t.Errorf("systemRODirs missing /opt; got %v", systemRODirs)
+	}
+}
+
+// TestBwrapLauncher_OptBound asserts the bwrap argv binds /opt read-only, with
+// the -try variant so hosts without /opt are unaffected.
+func TestBwrapLauncher_OptBound(t *testing.T) {
+	l := bwrapLauncher{bwrapPath: "/usr/bin/bwrap", home: "/home/r", run: "true"}
+	argv := l.prepend("/tmp/s", nil, nil)
+
+	for i := 0; i+2 < len(argv); i++ {
+		if argv[i] == "--ro-bind-try" && argv[i+1] == "/opt" && argv[i+2] == "/opt" {
+			return
+		}
+	}
+	t.Errorf("bwrap argv missing --ro-bind-try /opt /opt; argv=%v", argv)
+}

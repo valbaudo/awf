@@ -303,3 +303,23 @@ func TestCredDirsWritable_CodexHomeEnv(t *testing.T) {
 		t.Errorf("credDirsWritable: default ~/.codex present despite CODEX_HOME set; got %v", rw)
 	}
 }
+
+// TestToolDirs_UserPrefix asserts ~/.local is granted read-only (read+execute)
+// so an agent CLI installed under the user prefix stays runnable inside the
+// sandbox instead of dying with an opaque shell exit 126. The whole ~/.local
+// subtree is granted, not just ~/.local/bin, because a bin entry can symlink
+// into ~/.local/lib (verified on Linux: ~/.local/bin/claude ->
+// ~/.local/lib/node_modules/.../claude.exe).
+func TestToolDirs_UserPrefix(t *testing.T) {
+	home := t.TempDir()
+
+	got := toolDirs(home)
+	want := home + "/.local"
+	if !hasDir(got, want) {
+		t.Errorf("toolDirs missing %q; got %v", want, got)
+	}
+	// Exec needs read+execute only — never write.
+	if hasDir(credDirsWritable(home), want) {
+		t.Errorf("toolDirs entry %q must not be writable; credDirsWritable=%v", want, credDirsWritable(home))
+	}
+}

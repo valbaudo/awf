@@ -76,7 +76,11 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 			// runHome is the process's HOME so credDirs resolves user config dirs.
 			runHome := os.Getenv("HOME")
 			perRunLauncher := factory.buildForRun(cmd.Run)
-			argv = perRunLauncher.prepend(r.workdir, credDirsWritable(runHome), credDirs(runHome))
+			// Read-only set = credential dirs + the user-prefix tool dirs an agent
+			// CLI is installed under (~/.local), so it stays executable under the
+			// tmpfs'd HOME instead of failing with an opaque exit 126.
+			roDirs := append(credDirs(runHome), toolDirs(runHome)...)
+			argv = perRunLauncher.prepend(r.workdir, credDirsWritable(runHome), roDirs)
 		} else {
 			// Non-factory launcher (e.g. noOpLauncher) returns nil from prepend.
 			argv = launcher.prepend(r.workdir, nil, nil)
