@@ -17,8 +17,8 @@ import (
 
 // rolesWorkflow — C3 (Task 6). A top-level agents: role `auditor` binds the
 // fake base adapter (uses: anthropic/claude-code) plus opaque defaults: a model,
-// a system_prompt, and a with: carrying the fleet memory MCP handle
-// (mcp_servers). One container `lab`. One agent step `triage` resolves
+// a system_prompt, and a with: carrying a fleet-wide opaque handle
+// (fleet_handle). One container `lab`. One agent step `triage` resolves
 // uses: auditor and overrides model via its own step-local with:; the engine's
 // key-blind overlay places the step with: ON TOP of the role with:.
 var rolesWorkflow = fmt.Sprintf(`workflow: conformance-roles
@@ -32,7 +32,7 @@ agents:
     model: opus
     system_prompt: "audit"
     with:
-      mcp_servers: [memclaw]
+      fleet_handle: [memclaw]
 graph:
   - id: triage
     container: lab
@@ -48,16 +48,16 @@ graph:
 `, fakeImageDigest)
 
 // testRoles is the C3 conformance bucket (Task 6): a role-wired agent step plus
-// the memory-MCP-handle pass-through. It proves three things end-to-end on the
+// the opaque-handle pass-through. It proves three things end-to-end on the
 // fake backend:
 //
 //  1. Role resolves + step runs — uses: auditor resolves to the DerivedAdapter
 //     registered under the role name; triage commits ok with its typed verdict
 //     round-tripped through node.completed (Bucket 12's verdict assertion).
-//  2. Merge correctness (the memory-handle proof) — the fake BASE adapter saw
+//  2. Merge correctness (the opaque-handle proof) — the fake BASE adapter saw
 //     inv.With == {model:"sonnet" (step override won), system_prompt:"audit"
-//     (role), mcp_servers:["memclaw"] (role — the fleet memory handle)}. This is
-//     the literal "AWF passes the memory MCP handle to the fleet" assertion.
+//     (role), fleet_handle:["memclaw"] (role — the fleet-wide opaque handle)}. This is
+//     the literal "a role-level opaque handle reaches every step using the role" assertion.
 //  3. Run-start pinning — run.started.Runtimes includes (ref="auditor",
 //     container="lab"): the role is a first-class pinned runtime, drift-checked
 //     on resume exactly like a base adapter ref.
@@ -71,7 +71,7 @@ func testRoles(t *testing.T, factory BackendFactory) {
 	t.Helper()
 
 	// fk is captured so the bucket can read back the inv.With the BASE adapter
-	// received after the DerivedAdapter's overlay (the memory-handle proof).
+	// received after the DerivedAdapter's overlay (the opaque-handle proof).
 	var fk *fake.Fake
 	register := func(reg *agent.Registry) {
 		fk = fake.New("anthropic/claude-code").Script(0, fake.Result{
@@ -84,7 +84,7 @@ func testRoles(t *testing.T, factory BackendFactory) {
 		// the role name with the role's model/system_prompt folded into the
 		// role with: as opaque keys (mirrors cli/agent_registry.go roleWithFor).
 		roleWith := ir.RawConfig{
-			"mcp_servers":   []any{"memclaw"},
+			"fleet_handle":  []any{"memclaw"},
 			"model":         "opus",  // role default; the step overrides it below
 			"system_prompt": "audit", // role default; no step override
 		}
@@ -135,7 +135,7 @@ func testRoles(t *testing.T, factory BackendFactory) {
 		t.Errorf("Outputs[verdict] = %v, want %q", nr.Outputs["verdict"], "clean")
 	}
 
-	// (2) Merge correctness — the memory-handle proof. The fake BASE adapter
+	// (2) Merge correctness — the opaque-handle proof. The fake BASE adapter
 	// must have seen the role with: overlaid by the step with: (step wins).
 	calls := fk.Calls()
 	if len(calls) != 1 {
@@ -145,7 +145,7 @@ func testRoles(t *testing.T, factory BackendFactory) {
 	wantWith := map[string]any{
 		"model":         "sonnet",         // step override won
 		"system_prompt": "audit",          // role default
-		"mcp_servers":   []any{"memclaw"}, // role — the fleet memory handle
+		"fleet_handle":  []any{"memclaw"}, // role — the fleet-wide opaque handle
 	}
 	if !reflect.DeepEqual(gotWith, wantWith) {
 		t.Errorf("base adapter inv.With = %#v, want %#v", gotWith, wantWith)

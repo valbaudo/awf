@@ -494,7 +494,7 @@ model, system prompt, and tools) without repeating it.
         uses: anthropic/claude-code   # an EXISTING adapter (anthropic/claude-code, openai/codex, ...)
         model: <model>                # optional; an opaque with: key the base adapter reads
         system_prompt: <text>         # optional; opaque with: key
-        with: { mcp_servers: [ ... ] }   # optional; opaque base-adapter config
+        with: { allowed_tools: [ ... ] } # optional; opaque base-adapter config
 
 A role resolves at run start to its base adapter (the `uses:` ref). Its
 `model`, `system_prompt`, and `with:` are **defaults** a step may override. (A
@@ -517,9 +517,35 @@ own, not the role's.)
 
 **with**
 :   Optional. Opaque base-adapter config, validated by the named adapter, never
-    read by the core. This is where the shared **memory MCP handle** rides: carry
-    `mcp_servers` (or the adapter's equivalent) on the role and every step using
-    that role gets the same fleet-memory tool.
+    read by the core. Carry any key the base adapter accepts on the role, and
+    every step using that role inherits it. Each adapter validates its own keys
+    against a strict allowlist and **rejects an unknown key at run start**, before
+    any spend — so a key a given adapter does not accept is a usage error, not a
+    silent no-op.
+
+    **MCP servers are not an AWF-declared resource.** AWF does not define,
+    validate, start, or stop them, and no adapter accepts an MCP key today. Run
+    a network-transport (HTTP/SSE) MCP server the same way you run any other
+    service — as a digest-pinned Compose service — and pass the agent its URL:
+
+        containers:
+          lab:
+            compose: ./compose.yaml   # declares an `mcp` service, digest-pinned,
+            service: app              # with a healthcheck
+
+        graph:
+          - agent: triage
+            container: lab            # `mcp` is reachable at http://mcp:8080
+            uses: anthropic/claude-code
+            prompt: "Use the MCP tools at http://mcp:8080 to ..."
+
+    The Compose service gets everything a first-class resource would: digest
+    pinning, `healthcheck`/`depends_on` readiness before any step dispatches into
+    the project, reconstruction from the recipe on resume, and teardown with the
+    run. A stdio-transport server has no equivalent — it is a child process of
+    the agent CLI, so it must already be installed in the step's image, and its
+    lifetime and effects are the harness's, outside AWF's guarantees (see
+    **DURABILITY**).
 
 A step's own `with:` shallow-merges **on top** of the role's (a step key wins).
 The merge is **key-blind** — AWF never interprets a `with:` key; it stays opaque

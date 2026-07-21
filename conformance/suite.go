@@ -93,8 +93,8 @@
 //     agent step `uses: auditor` with a step-local with: resolves the role,
 //     commits its typed verdict (roles), and the fake BASE adapter sees the role
 //     with: overlaid by the step with: (step wins) — model:sonnet (step),
-//     system_prompt:audit (role), mcp_servers:[memclaw] (role — the fleet memory
-//     MCP handle). run.started.Runtimes records (ref=auditor, container=lab), so
+//     system_prompt:audit (role), fleet_handle:[memclaw] (role — a fleet-wide
+//     opaque handle). run.started.Runtimes records (ref=auditor, container=lab), so
 //     the role is a first-class pinned runtime drift-checked on resume.
 //   - Roles input-parameterization (Task 6/7): a role's model/system_prompt/
 //     top-level with: may template {{ input.* }} only (AWF1067), resolved at

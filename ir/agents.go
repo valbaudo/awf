@@ -5,9 +5,9 @@ package ir
 // base adapter consumes: Model and SystemPrompt are convenience fields that the
 // run-start resolver folds into the role's With map as opaque keys (the base
 // adapter — e.g. claude — already reads with["model"]/with["system_prompt"]).
-// With carries arbitrary opaque base-adapter config (e.g. mcp_servers — the
-// memory MCP handle). AWF never interprets a With key; the named adapter
-// validates it.
+// With carries arbitrary opaque base-adapter config (e.g. allowed_tools, effort
+// — whatever the named adapter's allowlist accepts). AWF never interprets a With
+// key; the named adapter validates it, and rejects an unknown key at run start.
 //
 // A role does NOT carry a typed-output schema: the typed-output contract is the
 // STEP's own output_schema (engine/agent_step.go sources inv.OutputSchema from
