@@ -190,6 +190,26 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
     Landlock refuses the `execve`, so the step dies with an opaque exit `126`
     (or `127`) rather than a named error.
 
+    **Compose bind-mount ownership.** AWF never bind-mounts a host directory.
+    The containers it creates declare no mounts, and step artifacts return to
+    the host through the content-addressed store — materialized by
+    **awf outputs --dest**, written by the **awf** process itself and therefore
+    owned by you. A host bind mount can therefore only come from *your* Compose
+    file, and a service running as root will write root-owned files onto those
+    paths. AWF does not rewrite your Compose model, so fix it at the source:
+
+    - Set `user: "${UID}:${GID}"` on the service (export `UID` and `GID` first —
+      Compose does not define them for you). Simplest, and scoped to the one
+      service that needs it.
+    - Or run a rootless engine (rootless Podman, rootless Docker), where the
+      container's root already maps to your host user.
+    - Or use an idmapped bind mount (Podman's `:idmap`, Linux 5.12+), which
+      remaps ownership at the mount without rewriting the host tree.
+
+    Prefer those over `:U` or dockerd `--userns-remap`: both work, but they
+    recursively chown or pre-chown your host tree into a subuid range, which is
+    exactly the manual bookkeeping this is meant to remove.
+
 **--agent-env** _csv_
 :   Comma-separated allowlist of environment-variable *names* forwarded into
     agent runtime CLIs (default
