@@ -40,6 +40,7 @@ export interface ElkNode {
   height?: number;
   labels?: { text: string }[];
   children: ElkNode[];
+  layoutOptions?: Record<string, string>;
   // awf metadata carried through layout so the React Flow mapping can read it back.
   awf?: { kind: string; container?: string };
 }
@@ -57,6 +58,16 @@ export interface ElkGraph {
 
 export const NODE_W = 156;
 export const NODE_H = 64;
+
+// Padding inside a container node. The top reserves the group title bar (28px, see
+// .awf-group-head) so a child never covers the group's own title; the rest gives
+// nested panels breathing room.
+//
+// elk.padding is a PER-NODE property, NOT inherited from the root graph's
+// layoutOptions. A container left without it silently gets ELK's 12px default —
+// less than the title bar — and its first child overlaps the title. So every node
+// that has children carries this explicitly.
+export const GROUP_PADDING = "[top=40,left=18,bottom=18,right=18]";
 
 // containerOf returns the React-Flow / ELK parent of a node: the nearest ancestor that
 // is itself a node. The projection's `parent` is the enclosing ADDRESSING SCOPE, which
@@ -114,6 +125,7 @@ export function toElkGraph(p: Projection): ElkGraph {
     if (n.children.some((c) => c.awf?.kind === "generate" || c.awf?.kind === "evaluate")) {
       n.children.sort((a, b) => scopeRank(a) - scopeRank(b));
     }
+    if (n.children.length > 0) n.layoutOptions = { "elk.padding": GROUP_PADDING };
   }
   // Only CONTROL edges drive layout; data edges (cross-cutting {{ }} references) are
   // rendered but excluded here so they cannot distort the layered/nested layout.
@@ -129,9 +141,7 @@ export function toElkGraph(p: Projection): ElkGraph {
       "elk.layered.spacing.nodeNodeBetweenLayers": "48",
       "elk.spacing.nodeNode": "26",
       "elk.spacing.edgeNode": "20",
-      // top padding reserves the group title bar (see .awf-group-head) so children never
-      // overlap it; the rest gives nested panels visual breathing room.
-      "elk.padding": "[top=40,left=18,bottom=18,right=18]",
+      "elk.padding": GROUP_PADDING,
     },
     children: roots,
     edges,

@@ -190,6 +190,18 @@ graph:
       max_attempts: 3
 ```
 
+In `awf ui`, a run of that gate looks like this — `generate` and `evaluate` as
+sibling scopes inside one attempt, each holding an agent step:
+
+![awf ui showing a finished run of the gate: attempt-1 containing a generate
+scope with the draft agent and an evaluate scope with the judge
+agent](docs/assets/awf-ui-gate-agents.png)
+
+That run used the `anthropic/claude-code` adapter on both sides rather than
+`awf/llm`, and the judge approved the first draft — so it shows a single
+attempt. When a judge rejects, the gate adds `attempt-2` beside it, as in the
+screenshot at the top of this page.
+
 That same shape works for higher-stakes tasks: generate a patch and run tests,
 draft a customer reply and judge it against account data, triage a CVE and check
 the exploitability claim, or migrate data and verify the target state.

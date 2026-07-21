@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { applyState } from "./layout";
-import { containerOf, countGroups, stateOf, toElkGraph, type Projection } from "./projection";
+import {
+  containerOf,
+  countGroups,
+  GROUP_PADDING,
+  stateOf,
+  toElkGraph,
+  type Projection,
+} from "./projection";
 
 const demo: Projection = {
   schema_version: 1,
@@ -54,6 +61,19 @@ describe("toElkGraph", () => {
   });
   it("counts groups (gate + map are containers)", () => {
     expect(countGroups(g)).toBe(2);
+  });
+  // elk.padding is a PER-NODE property: setting it on the root graph leaves every
+  // nested container on ELK's 12px default, which is smaller than the 28px title
+  // bar, so the first child covers the group's own title. Containers must carry it.
+  it("gives every container the title-bar top padding", () => {
+    const gate = g.children.find((c) => c.id === "gate[1]")!;
+    const map = g.children.find((c) => c.id === "map[2]")!;
+    for (const container of [gate, map]) {
+      expect(container.layoutOptions?.["elk.padding"]).toBe(GROUP_PADDING);
+    }
+    // leaves carry no padding: nothing nests inside them
+    const build = g.children.find((c) => c.id === "build")!;
+    expect(build.layoutOptions).toBeUndefined();
   });
 });
 
