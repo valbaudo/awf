@@ -63,20 +63,28 @@ awf run hello.yaml
 ```
 
 ```
+awf run: native sandbox: sandbox-exec
 awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline.
-hello from awf
-run 1a2b3c4d: ok
+[hello] hello from awf
+run 0563d69ca5da5fdbb44c43a3d6fbd809: ok
 ```
 
-(The run id on the last line is minted per run, so yours will differ.)
+Two lines will differ for you: the sandbox is whichever one your OS provides
+(`bwrap` or `landlock` on Linux, `sandbox-exec` on macOS), and the run id is
+minted per run. Step output is prefixed with the step id — `[hello]` — so a
+workflow with several steps stays readable.
 
-**4. Look at what ran.** `awf ui` serves the graph with run state overlaid — the
-same view as the screenshot above, for your own runs. It binds `127.0.0.1` only
-and never writes state:
+**4. Look at what ran.** `awf ui` serves the graph with run state overlaid. Pick
+a run from the dropdown and the nodes light up with its state — green for `ok`,
+red for a failure, and for a gate, one node per attempt. It binds `127.0.0.1`
+only and never writes state:
 
 ```sh
 awf ui hello.yaml
 ```
+
+![awf ui showing the finished hello run: one green `hello` step, run
+`0563d69ca5da` marked finished](docs/assets/awf-ui-hello-run.png)
 
 Prefer the terminal? `awf ls` lists runs, `awf inspect <run-id>` prints the node
 tree with status and timings, and `awf outputs <run-id> --step hello` reads a
