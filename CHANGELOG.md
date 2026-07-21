@@ -13,6 +13,77 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-21
+
+Ownership of the host↔container boundary. Artifacts a step produces can now be
+materialized onto the host by name, agent CLIs stay runnable and stay logged in
+under the native sandbox, and the documentation stops describing an MCP input
+channel that never existed.
+
+### Added
+
+- **`awf outputs --dest <dir>`.** Materializes a committed step's `output_files`
+  onto the host, written by the `awf` process itself and therefore owned by the
+  invoking user — no root-owned writeback, no `chown` pass. Each declared
+  container path is mirrored under `<dir>` with its leading separator stripped,
+  confined by `os.Root`: a `..` component or a symlink that would escape the
+  destination is refused, while an absolute container path is contained rather
+  than rejected. Every destination is resolved before the first byte is written,
+  so a colliding or unusable path fails the command without leaving a partial
+  tree.
+
+### Fixed
+
+- **Agent token refresh survives the native sandbox.** Credential directories
+  were re-bound read-only, so an OAuth refresh written during a run was
+  discarded when the sandbox tore down its mount namespace — a silent logout
+  days later. The per-agent directories (`~/.claude`, `$CODEX_HOME` or
+  `~/.codex`, `~/.factory`, `~/.config/goose`) are now writable for agent
+  invocations; the bare `~/.config` catch-all stays read-only, so a step never
+  gains write access to the wider XDG tree.
+- **Agent CLIs are executable under the native sandbox.** Read+execute is now
+  granted for `~/.local` (where `~/.local/bin` entries and the `~/.local/lib`
+  or `~/.local/share` targets they symlink to live) and `/opt` (where node and
+  npm global prefixes land, including the real binary behind a
+  `/usr/local/bin` shim). Without them a step died with an opaque exit `126`
+  or `127` instead of a named error.
+- **The ignored-image warning names the remedy.** `--backend native` on a
+  workflow that declares a container image now points at `--backend auto`, the
+  default that routes such a workflow to Docker, instead of only stating that
+  the image was ignored.
+
+### Security
+
+- The writable credential grant refuses any candidate that is the home
+  directory or an ancestor of it. `$CODEX_HOME` is environment-derived, and a
+  broad value would otherwise have been re-bound read-write over the sandbox's
+  `$HOME` tmpfs, restoring the real home — `~/.ssh` included — inside the
+  sandbox.
+- The writable credential and tool-prefix grants apply only to an agent adapter
+  invoking its own CLI. A workflow `run:` step receives neither, and keeps
+  exactly the read-only credential baseline it had before.
+
+### Changed
+
+- **MCP is documented as what it is.** The format reference advertised
+  `with: { mcp_servers: ... }` as an input channel, and the runtime design
+  claimed the Claude adapter mapped `mcp://` refs to a harness config. No
+  adapter ever accepted such a key — each validates `with:` against a strict
+  allowlist and rejects an unknown key at run start — and no `--mcp-config` was
+  ever emitted. The claims are removed rather than the rejection. In their place
+  the reference documents the arrangement that already works: run an
+  HTTP-transport MCP server as a digest-pinned Compose service and pass the
+  agent its URL, inheriting pinning, health-gated readiness, reconstruction from
+  the recipe on resume, and teardown with the run. `with:` remains opaque and
+  adapter-validated; no format field was added or removed.
+- **Compose bind-mount ownership is documented.** `awf` never bind-mounts a host
+  directory, so root-owned files on the host can only originate in an author's
+  own Compose file. The manual now records the fixes at that source — `user:` on
+  the service, a rootless engine, or an idmapped mount — and why those are
+  preferable to `:U` or `--userns-remap`.
+- **The sanctioned agent-CLI install prefixes are documented** under
+  `--backend native`, with the exit-`126` failure they explain.
+
 ## [0.5.2] - 2026-07-15
 
 A documentation-only patch release adding a clean-room Claude Code subscription
