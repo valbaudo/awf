@@ -164,7 +164,7 @@ _state-dir_ — a per-run journal and a shared content-addressed blob store (see
 
     When _auto_ selects _native_, **awf run** prints:
 
-        awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs but does not pin the host base environment; use --backend docker for a pinned baseline.
+        awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline.
 
     An explicit **--backend native** runs static image-mode and
     `snapshot: workspace` workflows directly on the host, *ignoring* the declared
