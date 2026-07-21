@@ -23,24 +23,78 @@ meeting the requirement.
 
 AWF makes the acceptance check part of the runtime.
 
-```mermaid
-flowchart LR
-    generate["generate<br/>agent or command"]
-    evaluate["evaluate<br/>fresh judge or deterministic check"]
-    pass{"passes?"}
-    next["next stage"]
-    repair["repair with critique"]
+![A finished AWF run in awf ui: a collect step, then a gate whose first attempt was rejected and whose second attempt passed, then a publish step](docs/assets/awf-ui-gate-run.png)
 
-    generate --> evaluate --> pass
-    pass -->|"yes"| next
-    pass -->|"no"| repair --> generate
-```
+That is a real finished run, shown by `awf ui`. Read it top to bottom: `collect`
+runs, then the **gate**. Look inside the gate — there are *two* attempts. The
+first draft was rejected by the judge, the critique was fed back, the second
+draft passed, and only then did `publish` run.
 
-The central primitive is the **gate**: a generate block, an independent evaluate
+The central primitive is that **gate**: a generate block, an independent evaluate
 block, an `until` condition over the evaluator's typed output, and a bounded
 repair loop. The evaluator runs in a fresh context, so the generator never marks
 its own homework. A crash is not a verdict; only a real evaluation with a false
 `until` consumes a repair attempt.
+
+## Get Started
+
+**1. Install** — a prebuilt binary is the recommended path ([details and
+checksum verification](#install)), or with a Go 1.26+ toolchain:
+
+```sh
+go install github.com/valbaudo/awf/cmd/awf@latest
+```
+
+**2. Write a workflow.** The smallest one needs four things: a format version, a
+graph, a step id, and a command. No container image, no agent credentials, no
+model server. Save it as `hello.yaml`:
+
+```yaml
+version: 1
+graph:
+  - id: hello
+    run: echo "hello from awf"
+```
+
+**3. Run it:**
+
+```sh
+awf run hello.yaml
+```
+
+```
+awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline.
+hello from awf
+run 1a2b3c4d: ok
+```
+
+(The run id on the last line is minted per run, so yours will differ.)
+
+**4. Look at what ran.** `awf ui` serves the graph with run state overlaid — the
+same view as the screenshot above, for your own runs. It binds `127.0.0.1` only
+and never writes state:
+
+```sh
+awf ui hello.yaml
+```
+
+Prefer the terminal? `awf ls` lists runs, `awf inspect <run-id>` prints the node
+tree with status and timings, and `awf outputs <run-id> --step hello` reads a
+step's typed output back out.
+
+The step declares no `container:`, so `auto` backend selection finds no
+Docker-only feature to route to and picks `native`: the command runs directly
+on the host, write-confined to its own per-step host workspace when an OS
+sandbox is usable (bubblewrap or Landlock on Linux, `sandbox-exec` on macOS), and its
+output is committed to the run's journal — the same checkpoint path a
+Docker-backed step uses, just with no container boundary. `--backend docker`
+refuses a bare `run:` step outright (AWF1065): there is no image to run it in,
+so let `auto` decide, or pass `--backend native` yourself.
+
+Real workflows are rarely one step, and running a command is not what makes
+AWF different from a shell script. The primitive that does is the **gate**: an
+independent check that decides whether to advance. See [A Gated
+Workflow](#a-gated-workflow) for one you can copy.
 
 ## What You Get
 
@@ -70,52 +124,13 @@ its own homework. A crash is not a verdict; only a real evaluation with a false
 - **Traceable runs**: inspect runs, fold status from the log, and export traces
   without putting observability in the execution path.
 
-## A First Workflow
-
-The smallest AWF workflow needs four things: a format version, a graph, a step
-id, and a command. No container image, no agent credentials, no Ollama server:
-
-```yaml
-version: 1
-graph:
-  - id: hello
-    run: echo "hello from awf"
-```
-
-Save it as `hello.yaml` and run it:
-
-```sh
-awf run hello.yaml
-```
-
-```
-awf run: auto-selected native backend (no Docker-only features). Resume restores snapshot: workspace workdirs from a full workdir archive but does not pin the host base environment; use --backend docker for a pinned baseline.
-hello from awf
-run 1a2b3c4d: ok
-```
-
-(The run id on the last line is minted per run, so yours will differ.)
-
-The step declares no `container:`, so `auto` backend selection finds no
-Docker-only feature to route to and picks `native`: the command runs directly
-on the host, write-confined to its own per-step host workspace when an OS
-sandbox is usable (bubblewrap or Landlock on Linux, `sandbox-exec` on macOS), and its
-output is committed to the run's journal — the same checkpoint path a
-Docker-backed step uses, just with no container boundary. `--backend docker`
-refuses a bare `run:` step outright (AWF1065): there is no image to run it in,
-so let `auto` decide, or pass `--backend native` yourself.
-
-Real workflows are rarely one step, and running a command is not what makes
-AWF different from a shell script. The primitive that does is the **gate**: an
-independent check that decides whether to advance. The next section shows one.
-
 ## A Gated Workflow
 
 This workflow asks a model to write a release note, then has an independent
 judge approve it or send feedback into the next repair attempt. Unlike the
 hello-world above, it needs a running OpenAI-compatible endpoint (Ollama here)
-and an `OPENAI_API_KEY` env var — see Quickstart below for the exact commands
-to run it.
+and an `OPENAI_API_KEY` env var — see [Running the
+Examples](#running-the-examples) below for the exact commands to run it.
 
 ```yaml
 workflow: gated-release-note
@@ -219,9 +234,9 @@ With a Go 1.26+ toolchain:
 go install github.com/valbaudo/awf/cmd/awf@latest
 ```
 
-## Quickstart
+## Running the Examples
 
-To build from source instead — the path for contributors:
+Build from source — the path for contributors:
 
 ```sh
 git clone https://github.com/valbaudo/awf.git
@@ -247,7 +262,7 @@ bin/awf run examples/awf-llm-ollama/workflow.yaml
 
 To exercise a Claude Code subscription through a typed, deterministic gate
 without Docker or Ollama, follow the [Claude Code gated readiness
-example](examples/claude-code-gated/README.md). It uses the published v0.5.1
+example](examples/claude-code-gated/README.md). It uses a published release
 binary, a `claude setup-token` credential handoff, and the explicit native
 backend.
 
@@ -267,7 +282,7 @@ make build            # build ./bin/awf
 make integ            # Docker/native integration suite; no live API spend
 ```
 
-### Cutting a release (maintainers)
+## Cutting a Release (maintainers)
 
 Releases are tag-triggered. Push an annotated, signed `vMAJOR.MINOR.PATCH` tag;
 GitHub Actions then re-runs the full gate, builds the four platform archives,

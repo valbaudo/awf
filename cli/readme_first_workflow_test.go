@@ -32,7 +32,7 @@ const (
 // TestReadmeHelloWorld_DocSyncValidatesAndRoutesNative is the F9
 // regression guard.
 //
-// The README's "A First Workflow" section (F9) was rewritten from a
+// The README's "Get Started" section (F9) was rewritten from a
 // gated release-note example that silently required an unstated Ollama
 // server + OPENAI_API_KEY (the F9 gap) into a genuine zero-setup, 4-key
 // bare-`run:` hello-world that F4 (container: optional on run: code steps)
@@ -50,7 +50,7 @@ const (
 // hand-copied approximation of it:
 //
 //  1. Doc-sync: the first ```yaml fenced block following the
-//     "## A First Workflow" heading is extracted and asserted
+//     "## Get Started" heading is extracted and asserted
 //     byte-identical to the checked-in fixture
 //     testdata/readme/hello-world.yaml. The README can never again drift
 //     from a workflow nobody actually validates.
@@ -76,7 +76,7 @@ func TestReadmeHelloWorld_DocSyncValidatesAndRoutesNative(t *testing.T) {
 		t.Fatalf("read %s: %v", readmeFirstWorkflowFixturePath, err)
 	}
 	if string(block) != string(fixtureBytes) {
-		t.Fatalf("README.md \"A First Workflow\" block has drifted from %s (doc-sync failure)\n--- README ---\n%s\n--- fixture ---\n%s",
+		t.Fatalf("README.md \"Get Started\" block has drifted from %s (doc-sync failure)\n--- README ---\n%s\n--- fixture ---\n%s",
 			readmeFirstWorkflowFixturePath, block, fixtureBytes)
 	}
 
@@ -115,7 +115,7 @@ func TestReadmeHelloWorld_DocSyncValidatesAndRoutesNative(t *testing.T) {
 	}
 }
 
-// extractReadmeFirstWorkflowBlock finds the "## A First Workflow" heading in
+// extractReadmeFirstWorkflowBlock finds the "## Get Started" heading in
 // README.md and returns the bytes of the FIRST fenced ```yaml code block that
 // follows it, verbatim (README's top-level fenced blocks carry no markdown
 // margin to strip, unlike the man page's indented-code-block EXAMPLE section —
@@ -123,7 +123,7 @@ func TestReadmeHelloWorld_DocSyncValidatesAndRoutesNative(t *testing.T) {
 // different case). The returned bytes end in a single trailing "\n", matching
 // a normally-saved fixture file.
 func extractReadmeFirstWorkflowBlock(readme []byte) ([]byte, error) {
-	const heading = "## A First Workflow"
+	const heading = "## Get Started"
 	const fenceYAML = "```yaml"
 	const fenceEnd = "```"
 
