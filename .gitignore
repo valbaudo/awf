@@ -47,3 +47,6 @@ ui/node_modules/
 
 _bmad-output/
 _bmad/
+
+# Local agent-tooling state (gstack browse audit log, capability probe cache).
+.gstack/
