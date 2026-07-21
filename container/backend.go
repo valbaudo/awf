@@ -358,6 +358,14 @@ type Handle struct {
 type Cmd struct {
 	Run string
 	Env map[string]string
+	// AgentRuntime marks this exec as an agent adapter invoking its own CLI
+	// (a launch or a version probe) rather than a workflow `run:` step. The
+	// native backend widens the OS sandbox for it — read+execute on the user
+	// tool prefixes an agent CLI installs into, and read-write on the agent
+	// credential dirs so an OAuth refresh persists across runs. A code step
+	// leaves this false and receives neither grant. Backends without an OS
+	// sandbox ignore it.
+	AgentRuntime bool
 }
 
 // ExecResult is the streamed result of an Exec call (slice 5.3: delivered

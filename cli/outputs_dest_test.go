@@ -154,3 +154,39 @@ func TestOutputsDestRequiresStep(t *testing.T) {
 		t.Fatalf("rc=%d want ExitUsage", rc)
 	}
 }
+
+// REGRESSION (adversarial review F5): two DISTINCT container paths that differ
+// only by a leading separator both strip to the same relative destination, so
+// one silently overwrote the other. A relative output_files path resolves
+// against the container workdir, so "/out/x" and "out/x" are genuinely
+// different files — materializing them to one host path is data loss.
+// Materialization must refuse the ambiguity loudly instead.
+func TestOutputsDestRejectsDuplicateDestinations(t *testing.T) {
+	stateDir := t.TempDir()
+	seedFilesAt(t, stateDir, "r1", "report", map[string]string{
+		"/out/x": "ABSOLUTE",
+		"out/x":  "RELATIVE",
+	})
+	dest := t.TempDir()
+	var out, errb bytes.Buffer
+	rc := cliOutputs([]string{"r1", "--step", "report", "--dest", dest, "--state-dir", stateDir}, &out, &errb)
+	if rc == ExitOK {
+		t.Fatalf("rc=ExitOK: two paths collapsing to one destination must fail loudly; stderr=%s", errb.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "out", "x")); err == nil {
+		t.Fatalf("wrote a colliding destination anyway (content=%q); nothing should be materialized", got)
+	}
+}
+
+// An unusable declared path must be refused, not turned into a bogus write.
+func TestOutputsDestRejectsUnusablePaths(t *testing.T) {
+	for _, bad := range []string{"/", "", ".", "/out/x/"} {
+		stateDir := t.TempDir()
+		seedFilesAt(t, stateDir, "r1", "report", map[string]string{bad: "X"})
+		dest := t.TempDir()
+		var out, errb bytes.Buffer
+		if rc := cliOutputs([]string{"r1", "--step", "report", "--dest", dest, "--state-dir", stateDir}, &out, &errb); rc == ExitOK {
+			t.Errorf("path %q: rc=ExitOK, want failure", bad)
+		}
+	}
+}

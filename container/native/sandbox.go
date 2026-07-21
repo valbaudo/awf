@@ -23,6 +23,9 @@ package native
 import (
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/valbaudo/awf/container"
 )
 
 // sandboxLauncher is implemented by each platform's sandbox strategy.
@@ -106,13 +109,50 @@ func credDirs(runHome string) []string {
 // deliberately EXCLUDES the bare ~/.config catch-all (returned RO by credDirs)
 // so a step never gains write to the whole XDG tree (git, gh, shell config).
 //
-// ponytail: a fixed dir set, not a per-adapter Caps channel — every
-// file-refreshing agent writes inside its own config dir, so the running
-// adapter's identity is not needed to decide this. macOS stores these creds in
-// the keychain (survives the HOME tmpfs), so the darwin launcher ignores this
-// list; the write-loss bug is Linux-only.
+// Scope: granted only to an agent-runtime exec (see sandboxDirsFor) — a code
+// step never receives it. It is still one set shared by all adapters rather than
+// a per-adapter Caps channel, so a claude step can in principle write ~/.codex;
+// narrowing that further needs the running adapter's identity on the exec.
+// macOS stores these creds in the keychain (survives the HOME tmpfs), so the
+// darwin launcher ignores this list; the write-loss bug is Linux-only.
 func credDirsWritable(runHome string) []string {
-	return dedupeAbsDirs(agentConfigDirs(runHome))
+	out := make([]string, 0, 4)
+	for _, d := range dedupeAbsDirs(agentConfigDirs(runHome)) {
+		// $CODEX_HOME is env-derived and therefore attacker/misconfiguration
+		// reachable. A candidate that IS the home dir (or an ancestor of it)
+		// would be re-bound read-WRITE on top of the launcher's `--tmpfs $HOME`,
+		// handing the step write access to the entire home — ~/.ssh included —
+		// and undoing the isolation the sandbox exists to provide. Refuse it.
+		// (Read-only exposure is a different matter: this sandbox is documented
+		// as write-confinement and never restricted reads.)
+		if isAncestorOrSelf(d, runHome) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// isAncestorOrSelf reports whether dir is target itself or a parent of it.
+func isAncestorOrSelf(dir, target string) bool {
+	if dir == target {
+		return true
+	}
+	return strings.HasPrefix(target, strings.TrimSuffix(dir, string(filepath.Separator))+string(filepath.Separator))
+}
+
+// sandboxDirsFor decides which sandbox grants an exec receives. Agent-runtime
+// execs (an adapter launching or version-probing its CLI) get the tool prefixes
+// they install into, read+execute, plus read-WRITE credential dirs so a token
+// refresh survives the run. A code (`run:`) step gets neither: it has no
+// credential to refresh and no CLI to locate, so widening its write access to
+// another agent's credentials — or its reads to ~/.local — buys nothing.
+func sandboxDirsFor(cmd container.Cmd, runHome string) (rwDirs, roDirs []string) {
+	roDirs = credDirs(runHome)
+	if !cmd.AgentRuntime {
+		return nil, roDirs
+	}
+	return credDirsWritable(runHome), append(roDirs, toolDirs(runHome)...)
 }
 
 // toolDirs returns HOME-relative directories that must be re-bound READ-ONLY

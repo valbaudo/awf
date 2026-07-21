@@ -147,12 +147,34 @@ func outputsStepFiles(events []state.Event, blobs state.Blobs, stateDir, nodeID,
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
-	for _, containerPath := range paths {
+
+	// PLAN then WRITE. Every destination is resolved and checked before the first
+	// byte lands, so a bad path fails the command without leaving a half-written
+	// tree. Stripping the leading separator makes distinct container paths
+	// collapse — "/out/x" and "out/x" are DIFFERENT files (a relative
+	// output_files path resolves against the container workdir), so silently
+	// letting one overwrite the other would be data loss. Refuse the ambiguity.
+	rels := make([]string, len(paths))
+	claimed := make(map[string]string, len(paths))
+	for i, containerPath := range paths {
 		rel := strings.TrimLeft(filepath.ToSlash(containerPath), "/")
-		if rel == "" || rel == "." {
+		if rel == "" || rel == "." || strings.HasSuffix(rel, "/") {
 			fprintf(stderr, "awf outputs: step %q has an unusable output_files path %q\n", nodeID, containerPath)
 			return ExitRunFailed
 		}
+		if prev, dup := claimed[rel]; dup {
+			fprintf(stderr, "awf outputs: step %q output_files %q and %q both materialize to %q under %q; refusing to overwrite\n", nodeID, prev, containerPath, rel, dest)
+			return ExitRunFailed
+		}
+		claimed[rel] = containerPath
+		rels[i] = rel
+	}
+
+	for i, containerPath := range paths {
+		rel := rels[i]
+		// blobs.Get buffers the whole artifact; output_files are conventionally
+		// modest. A streaming read would need a new state.Blobs method (a core
+		// seam), so it is deliberately out of scope here.
 		raw, err := blobs.Get(files[containerPath])
 		if err != nil {
 			return reportStateFailure(stderr, "awf outputs", "read output_files blob for "+containerPath, stateDir, filepath.Join(stateDir, "blobs"), err, defaultStateIdentity, stateFailureOutputs)

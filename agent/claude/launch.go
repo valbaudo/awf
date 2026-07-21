@@ -49,8 +49,9 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		env["AWF_IDEMPOTENCY_KEY"] = inv.IdempotencyKey
 	}
 	execCmd := container.Cmd{
-		Run: cmdString,
-		Env: env,
+		Run:          cmdString,
+		Env:          env,
+		AgentRuntime: true,
 	}
 
 	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, execCmd)

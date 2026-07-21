@@ -251,8 +251,9 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 	// headless hygiene. Shared with the base claude adapter (KEEP IN SYNC).
 	claude.ApplyPerRunConfigEnv(env, inv)
 	execCmd := container.Cmd{
-		Run: cmdString,
-		Env: env,
+		Run:          cmdString,
+		Env:          env,
+		AgentRuntime: true,
 	}
 
 	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, execCmd)

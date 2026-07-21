@@ -28,7 +28,7 @@ func (a *Adapter) Version(ctx context.Context, handle container.Handle) (string,
 	if a.backend == nil {
 		return "", fmt.Errorf("agent/claude: Version: no Backend wired (use WithBackend in New)")
 	}
-	chunks, result, err := a.backend.Exec(ctx, handle, container.Cmd{Run: versionCommand})
+	chunks, result, err := a.backend.Exec(ctx, handle, container.Cmd{Run: versionCommand, AgentRuntime: true})
 	if err != nil {
 		return "", &ErrAgentRuntimeNotFound{
 			Ref:       AdapterRef,

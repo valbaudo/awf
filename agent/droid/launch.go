@@ -51,7 +51,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
 	}
 
-	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, container.Cmd{Run: cmdString, Env: env})
+	chunks, resultCh, execErr := a.backend.Exec(ctx, handle, container.Cmd{Run: cmdString, Env: env, AgentRuntime: true})
 	if execErr != nil {
 		return nil, nil, &agent.ErrAgentLaunch{Cause: execErr}
 	}

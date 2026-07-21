@@ -8,6 +8,7 @@ package native
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -321,5 +322,60 @@ func TestToolDirs_UserPrefix(t *testing.T) {
 	// Exec needs read+execute only — never write.
 	if hasDir(credDirsWritable(home), want) {
 		t.Errorf("toolDirs entry %q must not be writable; credDirsWritable=%v", want, credDirsWritable(home))
+	}
+}
+
+// REGRESSION (adversarial review F1): $CODEX_HOME is env-derived, so a value of
+// $HOME (or any ancestor) would put the whole home dir in the WRITABLE set. The
+// launcher re-binds writable dirs on top of its `--tmpfs $HOME`, so that would
+// restore the entire real home read-write inside the sandbox — ~/.ssh included.
+func TestCredDirsWritable_RefusesHomeAndAncestors(t *testing.T) {
+	home := t.TempDir()
+	for _, broad := range []string{home, filepath.Dir(home), "/"} {
+		t.Setenv("HOME", home)
+		t.Setenv("CODEX_HOME", broad)
+
+		rw := credDirsWritable(home)
+		if hasDir(rw, broad) {
+			t.Errorf("CODEX_HOME=%q: writable set contains it (%v) — would undo the HOME tmpfs", broad, rw)
+		}
+		// The narrow, legitimate dirs must still be granted.
+		if !hasDir(rw, home+"/.factory") {
+			t.Errorf("CODEX_HOME=%q: legitimate ~/.factory dropped; got %v", broad, rw)
+		}
+	}
+}
+
+// REGRESSION (adversarial review F2/F4): the writable credential dirs and the
+// ~/.local tool prefix are agent-runtime grants. A code (`run:`) step must get
+// neither — it has no token to refresh and no agent CLI to locate, so granting
+// them would let a shell step overwrite another agent's credentials and read
+// ~/.local/share.
+func TestSandboxDirsFor_ScopedToAgentRuntime(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	codeRW, codeRO := sandboxDirsFor(container.Cmd{Run: "echo hi"}, home)
+	if len(codeRW) != 0 {
+		t.Errorf("code step got writable dirs %v, want none", codeRW)
+	}
+	if hasDir(codeRO, home+"/.local") {
+		t.Errorf("code step got the ~/.local tool prefix; roDirs=%v", codeRO)
+	}
+	// The pre-existing read-only credential baseline is unchanged for code steps.
+	if !hasDir(codeRO, home+"/.claude") {
+		t.Errorf("code step lost the read-only credential baseline; roDirs=%v", codeRO)
+	}
+
+	agentRW, agentRO := sandboxDirsFor(container.Cmd{Run: "claude -p x", AgentRuntime: true}, home)
+	if !hasDir(agentRW, home+"/.factory") {
+		t.Errorf("agent exec missing writable ~/.factory; rwDirs=%v", agentRW)
+	}
+	if !hasDir(agentRO, home+"/.local") {
+		t.Errorf("agent exec missing the ~/.local tool prefix; roDirs=%v", agentRO)
+	}
+	if hasDir(agentRW, home+"/.config") {
+		t.Errorf("agent exec must not get the bare ~/.config catch-all writable; rwDirs=%v", agentRW)
 	}
 }
