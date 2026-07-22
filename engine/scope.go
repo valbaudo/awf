@@ -652,16 +652,29 @@ func (s *Scope) stepRuntimePath(staticPath string) (string, error) {
 		default:
 			cur = appendSeg(cur, seg)
 			if strings.HasPrefix(seg, "gate[") {
-				// gate[N] → gate[N].attempt-M (inserted before the following
-				// generate/evaluate/until segment).
+				// gate[N] → gate[N].attempt-M.
 				m, matched, err := s.instanceFromCtx(cur, attemptSep)
 				if err != nil {
 					return "", err
 				}
-				if !matched {
-					return "", fmt.Errorf("step inside gate %q is only referenceable from within the same attempt; read the gate's product via evaluate.<field>", cur)
+				if matched {
+					// Reference site is INSIDE this gate: same-attempt resolution.
+					cur = AttemptPath(cur, m)
+				} else {
+					// Reference site is OUTSIDE this gate. A passed gate is
+					// transparent to its generate: subtree — resolve to the
+					// ACCEPTED attempt. Safe by construction: engine/gate.go
+					// returns OutcomeOK the instant an attempt passes, so a
+					// passed attempt exists iff the gate already completed OK;
+					// this can never observe an in-flight gate. attemptPath is
+					// the same newest-first scan the artifact channel uses —
+					// shared so the scalar and file rules cannot drift.
+					accepted := attemptPath(cur, cur, s.rs.LookupGateAttempts(cur))
+					if accepted == "" {
+						return "", fmt.Errorf("step inside gate %q is not referenceable from outside: the gate has no accepted attempt (it did not run, or every attempt was rejected)", cur)
+					}
+					cur = accepted
 				}
-				cur = AttemptPath(cur, m)
 			}
 		}
 	}

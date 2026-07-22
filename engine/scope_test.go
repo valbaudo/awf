@@ -1595,3 +1595,122 @@ func TestAbsentDueToUntakenIf(t *testing.T) {
 		})
 	}
 }
+
+// gateWorkflow is a workflow whose only node is a gate with one generate step
+// (gen1) and one evaluate step (eval1). StepPathIndex maps "gen1" to the static
+// path "gate[0].generate.gen1", which is what the scope resolves against.
+func gateWorkflow() *ir.Workflow {
+	return &ir.Workflow{
+		ID:      "gatewf",
+		Version: 1,
+		Graph: ir.NodeList{
+			&ir.Gate{
+				Generate: ir.NodeList{
+					&ir.CodeStep{ID: "gen1", Run: "gen", Container: "c0"},
+				},
+				Evaluate: ir.NodeList{
+					&ir.CodeStep{ID: "eval1", Run: "eval", Container: "c0"},
+				},
+				Until:       ir.Expr("{{ evaluate.verified }}"),
+				MaxAttempts: 3,
+			},
+		},
+	}
+}
+
+func TestScopeResolveStepFromOutsidePassedGate(t *testing.T) {
+	// Attempt 1 was rejected, attempt 2 passed. A reference from OUTSIDE the
+	// gate must resolve to attempt 2's committed generate output — the ACCEPTED
+	// attempt, not the first and not merely the latest-by-position.
+	rs := &RunState{
+		RunID: testRunID,
+		GateAttempts: map[string][]AttemptResult{
+			"gate[0]": {
+				{N: 1, AttemptOutcome: AttemptRejected},
+				{N: 2, AttemptOutcome: AttemptPassed},
+			},
+		},
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-1.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "first"}},
+			"gate[0].attempt-2.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "accepted"}},
+		},
+	}
+	sc := NewScope(rs, gateWorkflow(), "after_gate")
+
+	ref := mustParseRef(t, "step.gen1.punti")
+	v, err := sc.Resolve(ref)
+	if err != nil {
+		t.Fatalf("step.gen1.punti from outside a passed gate: %v", err)
+	}
+	if v != "accepted" {
+		t.Errorf("step.gen1.punti = %v, want \"accepted\" (attempt-2, the accepted attempt)", v)
+	}
+}
+
+func TestScopeResolveStepFromInsideGateStillUsesOwnAttempt(t *testing.T) {
+	// Regression guard: from INSIDE attempt 1, the sibling reference must still
+	// resolve to attempt 1's own output, NOT the accepted attempt. The fallback
+	// must only fire when the reference site is outside the gate.
+	rs := &RunState{
+		RunID: testRunID,
+		GateAttempts: map[string][]AttemptResult{
+			"gate[0]": {
+				{N: 1, AttemptOutcome: AttemptRejected},
+				{N: 2, AttemptOutcome: AttemptPassed},
+			},
+		},
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-1.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "first"}},
+			"gate[0].attempt-2.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "accepted"}},
+		},
+	}
+	sc := NewScope(rs, gateWorkflow(), "gate[0].attempt-1.evaluate.eval1")
+
+	ref := mustParseRef(t, "step.gen1.punti")
+	v, err := sc.Resolve(ref)
+	if err != nil {
+		t.Fatalf("step.gen1.punti from inside attempt-1: %v", err)
+	}
+	if v != "first" {
+		t.Errorf("step.gen1.punti = %v, want \"first\" (attempt-1's own output)", v)
+	}
+}
+
+func TestScopeResolveStepFromOutsideGateThatNeverRan(t *testing.T) {
+	// No attempts recorded — the gate did not run (e.g. a non-taken if branch,
+	// or a reference evaluated before the gate). Must be a clear error naming
+	// the gate, never a silent zero value.
+	rs := &RunState{
+		RunID:        testRunID,
+		GateAttempts: map[string][]AttemptResult{},
+		Completed:    map[string]NodeResult{},
+	}
+	sc := NewScope(rs, gateWorkflow(), "after_gate")
+
+	ref := mustParseRef(t, "step.gen1.punti")
+	if _, err := sc.Resolve(ref); err == nil {
+		t.Fatal("step.gen1.punti with no accepted attempt: err = nil, want error")
+	} else if !strings.Contains(err.Error(), "gate[0]") {
+		t.Errorf("error %q does not name the gate path %q", err.Error(), "gate[0]")
+	}
+}
+
+func TestScopeResolveStepFromOutsideRejectedGate(t *testing.T) {
+	// All attempts rejected: no AttemptPassed exists, so there is nothing to
+	// forward. Must error rather than fall back to the last rejected attempt.
+	rs := &RunState{
+		RunID: testRunID,
+		GateAttempts: map[string][]AttemptResult{
+			"gate[0]": {{N: 1, AttemptOutcome: AttemptRejected}},
+		},
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-1.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "rejected"}},
+		},
+	}
+	sc := NewScope(rs, gateWorkflow(), "after_gate")
+
+	ref := mustParseRef(t, "step.gen1.punti")
+	if _, err := sc.Resolve(ref); err == nil {
+		t.Fatal("step.gen1.punti with only rejected attempts: err = nil, want error")
+	}
+}
