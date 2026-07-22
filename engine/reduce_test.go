@@ -622,3 +622,70 @@ func TestRunReduceCommandEngineEnvWinsCollision(t *testing.T) {
 		t.Errorf("AWF_STAGING_ROOT = %q, want %q (engine key must win a name collision with env:)", got, "/work/.awf")
 	}
 }
+
+// TestCollectReduceBranchesForwardsGateTypedOutputs pins that a map body whose
+// producer lives inside a gate contributes its ACCEPTED attempt's typed outputs
+// to the reduce fan-in, not just its files. Before this change gateForwarded
+// suppressed them and each branch's Outputs came back empty.
+func TestCollectReduceBranchesForwardsGateTypedOutputs(t *testing.T) {
+	mapPath := "map[0]"
+	rs := &RunState{
+		RunID: testRunID,
+		MapItems: map[string][]MapItemRecord{
+			mapPath: {
+				{N: 0, Status: ItemPassed},
+				{N: 1, Status: ItemPassed},
+			},
+		},
+		GateAttempts: map[string][]AttemptResult{
+			"map[0].item-0.gate[0]": {
+				{N: 1, AttemptOutcome: AttemptRejected},
+				{N: 2, AttemptOutcome: AttemptPassed},
+			},
+			"map[0].item-1.gate[0]": {
+				{N: 1, AttemptOutcome: AttemptPassed},
+			},
+		},
+		Completed: map[string]NodeResult{
+			"map[0].item-0.gate[0].attempt-1.generate.draft": {Outcome: OutcomeOK, Outputs: map[string]any{"score": 1.0}},
+			"map[0].item-0.gate[0].attempt-2.generate.draft": {Outcome: OutcomeOK, Outputs: map[string]any{"score": 2.0}},
+			"map[0].item-1.gate[0].attempt-1.generate.draft": {Outcome: OutcomeOK, Outputs: map[string]any{"score": 7.0}},
+		},
+	}
+	mapNode := &ir.Map{
+		Over: ir.Expr("{{ input.items }}"),
+		As:   "item",
+		Body: ir.NodeList{
+			&ir.Gate{
+				Generate: ir.NodeList{
+					&ir.CodeStep{ID: "draft", Run: "gen", Container: "c0"},
+				},
+				Evaluate: ir.NodeList{
+					&ir.CodeStep{ID: "judge", Run: "eval", Container: "c0"},
+				},
+				Until:       ir.Expr("{{ evaluate.ok }}"),
+				MaxAttempts: 3,
+			},
+		},
+	}
+	wf := &ir.Workflow{ID: "mapgate", Version: 1, Graph: ir.NodeList{mapNode}}
+
+	// collectReduceBranches derives its own producer list by walking mapNode.Body
+	// with ir.WalkNodes(n.Body, "body", ...) and stripping the "body." prefix, so
+	// the gate's generate step yields suffix "gate[0].generate.draft" — which is
+	// what itemBodyStepPath splices the accepted attempt into.
+	branches, err := collectReduceBranches(rs, mapNode, mapPath, wf)
+	if err != nil {
+		t.Fatalf("collectReduceBranches: %v", err)
+	}
+	if len(branches) != 2 {
+		t.Fatalf("branches = %d, want 2", len(branches))
+	}
+	// item-0 must carry ATTEMPT 2's score (the accepted attempt), not attempt 1's.
+	if got := branches[0].Outputs["score"]; got != 2.0 {
+		t.Errorf("branch 0 score = %v, want 2.0 (accepted attempt-2, not rejected attempt-1)", got)
+	}
+	if got := branches[1].Outputs["score"]; got != 7.0 {
+		t.Errorf("branch 1 score = %v, want 7.0", got)
+	}
+}

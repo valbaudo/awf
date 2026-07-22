@@ -137,25 +137,24 @@ func (s *Scope) passedGateArtifactRuntimePath(staticPath string) (string, bool, 
 }
 
 // itemBodyStepPath returns the committed runtime path of a map body producer for
-// item n, plus whether it was forwarded through an enclosing gate. A plain
-// producer resolves to ItemStepPath(mapPath, n, suffix). A producer nested in a
-// single gate ran across attempts and committed at an attempt-suffixed path;
-// this splices in the ACCEPTED attempt via the shared attemptPath helper.
-// gateForwarded lets the caller keep the gate's SCALAR outputs gate-scoped and
-// forward only durable files. ok is false when the producer is gate-nested but
-// the gate did not run / has no passed attempt for this item (e.g. a gate in a
-// not-taken if-branch) → the caller compacts. Producers under a loop or >1 gate
-// are rejected at validation (Task 2), so this handles at most one gate.
-func itemBodyStepPath(rs *RunState, mapPath string, n int, suffix string) (string, bool, bool) {
+// item n, and whether it resolved. A plain producer resolves to
+// ItemStepPath(mapPath, n, suffix). A producer nested in a single gate ran across
+// attempts and committed at an attempt-suffixed path; this splices in the
+// ACCEPTED attempt via the shared attemptPath helper. ok is false when the
+// producer is gate-nested but the gate did not run / has no passed attempt for
+// this item (e.g. a gate in a not-taken if-branch) → the caller compacts.
+// Producers under a loop or >1 gate are rejected at validation (AWF5007), so this
+// handles at most one gate.
+func itemBodyStepPath(rs *RunState, mapPath string, n int, suffix string) (string, bool) {
 	gateRel, isGate := gateScopePrefix(suffix)
 	if !isGate {
-		return ItemStepPath(mapPath, n, suffix), false, true
+		return ItemStepPath(mapPath, n, suffix), true
 	}
 	itemGatePath := ItemStepPath(mapPath, n, gateRel)
 	if p := attemptPath(ItemStepPath(mapPath, n, suffix), itemGatePath, rs.LookupGateAttempts(itemGatePath)); p != "" {
-		return p, true, true
+		return p, true
 	}
-	return "", true, false
+	return "", false
 }
 
 func gateScopePrefix(staticPath string) (string, bool) {
