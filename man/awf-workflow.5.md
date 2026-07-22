@@ -1080,14 +1080,13 @@ step `input_files` because those bindings provide a destination tree.
     that declared a *named* `output_files` artifact of that name, exactly as a
     `step.<id>.<field>` reference must name a declared output field. Scope
     reachability is mostly the
-    same, with one file-specific exception: after a `gate` passes, a later
-    `input_files` reference may point at a producer inside that gate, and the
-    runtime resolves it to the accepted attempt's committed artifact. Scalar
-    `step.<id>.<field>` references remain gate-scoped; this exception exists only
-    for durable files. The same files-only rule governs a `gate` inside a `map`
-    body whose accepted attempt feeds `reduce:` (see *map*): only the gate's
-    named `output_files` forward into the fan-in; its scalar verdict and any
-    `generate` `output_schema` field stay gate-scoped. A producer inside a `map`
+    same. After a `gate` passes, a later reference may point at a producer inside
+    that gate's `generate:` block, and the runtime resolves it to the **accepted
+    attempt** — this carries both named `output_files` artifacts and typed
+    `output_schema` fields. The same rule governs a `gate` inside a `map` body
+    whose accepted attempt feeds `reduce:` (see *map*): each item's accepted
+    attempt contributes its files and its typed outputs to the fan-in. The
+    evaluator's verdict stays gate-scoped in every case. A producer inside a `map`
     body is still not referenceable from outside unless the map has a `reduce:`
     product. An `asset.<id>` reference
     must name a declared top-level asset. An `input.files.<name>` reference must
@@ -1283,6 +1282,45 @@ Human escalation is a pattern, not a primitive: wrap the gate in `try`/`catch`
 with an `await` in the `catch` to put a human in the loop after the repair budget
 is spent.
 
+A gated extraction whose accepted result becomes a workflow output:
+
+```yaml
+graph:
+  - gate:
+      max_attempts: 3
+      generate:
+        - id: extract
+          uses: awf/llm
+          with: { prompt: "Extract the account holder and IBAN." }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [holder, iban]
+            properties:
+              holder: { type: string }
+              iban:   { type: string }
+      evaluate:
+        - id: judge
+          uses: awf/llm
+          with: { prompt: "Is the IBAN well-formed and the holder non-empty?" }
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties: { ok: { type: boolean } }
+      until: "{{ evaluate.ok }}"
+
+output_schema:
+  type: object
+  required: [iban]
+  properties: { iban: { type: string } }
+outputs:
+  iban: "{{ step.extract.iban }}"   # the ACCEPTED attempt's value
+```
+
+`{{ step.extract.iban }}` resolves to whichever attempt the gate accepted. The
+judge's `ok` verdict is not readable here — it is gate-internal by design.
+
 ## skip
 
     - skip: <reason>          # optional reason, recorded in the trace
@@ -1432,10 +1470,11 @@ delivery the artifact channel uses (see *Artifact channel*).
 A `gate` inside the `body` may produce the reduce-collected artifact: each
 surviving branch then contributes its gate's **accepted attempt's** named
 `output_files`, staged at `$AWF_STAGING_ROOT/branch-<N>/<name>` like any other
-branch artifact. This follows the same files-only forwarding as the sequential
-`input_files`-after-`gate` exception (see *Artifact channel*): **only durable files
-forward**; the gate's scalar outputs — the verdict, and any `generate`
-`output_schema` field — stay gate-scoped and do **not** appear in
+branch artifact, *and* its `generate` step's typed `output_schema` fields, folded
+into that branch's entry in `aggregate.json` like any other branch's typed
+output. This follows the same accepted-attempt rule as the sequential
+`input_files`-after-`gate` case (see *Artifact channel*): both channels forward;
+only the evaluator's verdict stays gate-scoped and does **not** appear in
 `aggregate.json`. Declare the artifact with `output_files` on the gate's
 `generate` step. A reduce-collected producer (one that declares `output_schema`
 or `output_files`) may be nested under **at most one `gate` and no loop**; a
@@ -1830,10 +1869,16 @@ A `step.<id>.<field>` reference resolves the named step's typed output wherever
 the step sits, subject to scope. `try` and `parallel` introduce no multiplicity,
 so a step inside them is referenceable from anywhere, exactly like a top-level
 step. A step inside a `loop` resolves to its most recent iteration (above). A
-step inside a `gate` or a `map` is referenceable *only from within the same scope
-instance* — the same gate attempt, or the same map item — because from outside
-there is no single attempt or item to resolve to; a cross-scope reference is
-rejected at validation. Read a gate's product through `{{ evaluate.<field> }}`.
+step inside a `map` is referenceable *only from within the same item* — from
+outside there are N items and no single instance to resolve to, so a cross-scope
+reference is rejected at validation.
+
+A `gate` is different. A gate that passes has exactly **one accepted attempt**,
+so a producer inside its `generate:` block is referenceable from outside the gate
+and resolves to that accepted attempt — the same rule the artifact channel
+already applies to files. The gate's `evaluate:` block stays scope-internal: its
+verdict is read through `{{ evaluate.<field> }}` from inside the gate only. If
+the gate never ran, or every attempt was rejected, the reference is an error.
 
 An `if` branch introduces *optionality* rather than multiplicity: a step inside
 an `if` body has exactly one runtime instance or none. A reference to such a
@@ -1884,8 +1929,11 @@ chaining primitive (see EXAMPLE).
 
 Aggregation in v1 is defined only for the single-map case: the producing step is
 enclosed by exactly one `map`, with no `gate` between them and no `loop`
-multiplying the path. A producer nested in two or more maps, or wrapped in a
-gate, is still rejected as not-yet-defined (**AWF5002**).
+multiplying the path. A producer nested in two or more maps, or in a map that an
+enclosing `loop` multiplies, is still rejected as not-yet-defined (**AWF5002**).
+A producer wrapped in a `gate` inside the map is not an aggregation gap — it is
+the gate-inside-map shape (see above): referencing it directly, instead of
+through `reduce:`, is **AWF5003**.
 
 Substitution into a shell host (`run:`, `idempotency_key:`) is verbatim and
 pre-shell: AWF inserts the resolved value as-is and does **not** quote or escape
@@ -2022,11 +2070,13 @@ reducer product (above), never an ordinary step. Referencing a field the
 producer's `output_schema` does not declare, or `exit_code`/`stdout` on a
 non-code step, is the same code.
 
-**A gate- or map-internal step cannot be referenced from another scope.** A step
-inside a `gate` or a `map` body resolves only within the same attempt or item; from
-outside there is no single instance to bind to. Referencing a gate-internal step
-from outside is **AWF5003** — read the gate's product through `{{ evaluate.<field> }}`
-instead. A `map`-internal producer binds only as an *aggregate* (see **map**), and
+**A map-internal step cannot be referenced from another scope.** A step inside a
+`map` body resolves only within the same item; from outside there is no single
+instance to bind to. A **gate**-internal `generate:` producer *is* referenceable
+from outside a passed gate (it resolves to the accepted attempt) — but a
+gate nested inside a `map` body is not, because each item ran its own gate:
+that is **AWF5003**, and the accepted attempts fan in through `reduce:`.
+A `map`-internal producer binds only as an *aggregate* (see **map**), and
 only for the single-map shape: aggregating a producer nested in two or more maps, or
 in a map that an enclosing `loop` multiplies, is not yet defined and is rejected as
 **AWF5002**; and because a map aggregate is per-item, not per-run, `exit_code`/`stdout`
