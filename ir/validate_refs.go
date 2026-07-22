@@ -643,13 +643,13 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 		// inside one resolves only from within the same item, because from outside
 		// there are N items and no single instance to bind to. A GATE is not: a
 		// passed gate has exactly one accepted attempt, so it is transparent to its
-		// generate: subtree and unmatchedMapScope peels it. loop / try / parallel are
+		// generate: subtree and blockingScope peels it. loop / try / parallel are
 		// transparent too (loops via the "most recent iteration" rule). The
 		// single-map aggregate shape was handled above; a still-unmatched map scope
 		// here means nested/loop-multiplied maps (AWF5002) or a gate-nested producer
 		// inside a map (AWF5003). This is the static counterpart of
 		// engine.Scope.stepRuntimePath's map arm.
-		if _, blocked := blockingScope(p.path, path); blocked {
+		if scope, blocked := blockingScope(p.path, path); blocked {
 			// A scope between the producer and the reference site blocks it.
 			// Gate scopes entered via generate: were peeled — a passed gate is
 			// transparent there. The v1 single-map aggregate shape returned
@@ -657,8 +657,12 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			// (aggregation deferred → AWF5002), a gate-nested producer inside a
 			// map (per-item accepted attempts fan in via reduce: → AWF5003), or
 			// a gate EVALUATOR read from outside (verdict is gate-internal →
-			// AWF5003).
-			if !strings.Contains(p.path, "gate[") {
+			// AWF5003). Key the choice off the BLOCKING scope itself, not off
+			// whether the producer's full path merely contains "gate[" — for a
+			// producer like "gate[0].generate.map[0].body.x", blockingScope
+			// blocks on the inner map body even though the path also has a gate
+			// segment, and that must read as the map case.
+			if !isGateScope(scope) {
 				c.errf(path, "AWF5002", fmt.Sprintf("%s: %s", catalog["AWF5002"], renderRef(ref)))
 				return
 			}
@@ -803,7 +807,7 @@ func blockingScope(producerPath, refSite string) (string, bool) {
 		if !opaque || pathWithinScope(refSite, scope) {
 			return "", false
 		}
-		if strings.HasSuffix(scope, ".body") {
+		if !isGateScope(scope) {
 			return scope, true // a map body the reference site is outside of
 		}
 		// A gate[N] scope. Transparent to generate: only; scope is always a

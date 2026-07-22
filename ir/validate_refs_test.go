@@ -339,7 +339,7 @@ func TestRefsCrossScopeIntoGateGenerateAllowed(t *testing.T) {
 			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.gen.exit_code }}"},
 		},
 	})
-	assertNoErrorCode(t, Validate(ld), "AWF5003")
+	assertNoError(t, Validate(ld))
 }
 
 func TestRefsSameItemMapSiblingAllowed(t *testing.T) {
@@ -487,8 +487,11 @@ func TestRefsBrokenRefInWithPromptReportsAWF3001(t *testing.T) {
 func TestRefsCrossScopeNestedMapInGateRejected(t *testing.T) {
 	// A step inside a gate's generate but OUTSIDE the map nested within it
 	// references a step inside that map's body: the innermost opaque scope (the
-	// map) doesn't enclose the reference site → AWF5003, even though both sit in
-	// the same gate.
+	// map) doesn't enclose the reference site, and blockingScope blocks there
+	// directly — it's a plain cross-item map access, not a gate-nested producer
+	// (that's a GATE nested inside a MAP, the reverse of this shape), so the
+	// diagnostic is keyed off the map scope → AWF5002, even though both
+	// producer and reference site sit in the same gate.
 	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -509,7 +512,7 @@ func TestRefsCrossScopeNestedMapInGateRejected(t *testing.T) {
 			},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF5003", "gate[0].generate.sibling.run")
+	assertErrorAt(t, Validate(ld), "AWF5002", "gate[0].generate.sibling.run")
 }
 
 // --- Task 1.2: AWF3006 — code step with output_schema but no $AWF_OUTPUT write ---
@@ -1097,11 +1100,7 @@ func TestGateInternalRefFromOutsideIsAllowed(t *testing.T) {
 			},
 		},
 	}
-	for _, d := range Validate(makeLD(wf)) {
-		if d.Severity == Error {
-			t.Errorf("unexpected error binding a gate generate producer to outputs: %+v", d)
-		}
-	}
+	assertNoError(t, Validate(makeLD(wf)))
 }
 
 // TestGateInsideMapRefFromOutsideMapStillRejected is the peeling guard. The
@@ -1112,6 +1111,10 @@ func TestGateInsideMapRefFromOutsideMapStillRejected(t *testing.T) {
 	wf := &Workflow{
 		ID:      "gateinmap",
 		Version: 1,
+		// ponytail: Containers must resolve "c0" or AWF1009 fires unconditionally
+		// (unrelated to the rule under test) and masks a genuine pass.
+		Containers:  map[string]Container{"c0": {Image: "oci://x@sha256:abc"}},
+		InputSchema: &JSONSchema{"type": "object", "required": []any{"items"}, "properties": map[string]any{"items": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
 		OutputSchema: &JSONSchema{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1123,8 +1126,9 @@ func TestGateInsideMapRefFromOutsideMapStillRejected(t *testing.T) {
 		},
 		Graph: NodeList{
 			&Map{
-				Over: Expr("{{ input.items }}"),
-				As:   "item",
+				Over:      Expr("{{ input.items }}"),
+				As:        "item",
+				Container: "c0",
 				Body: NodeList{
 					&Gate{
 						Generate: NodeList{
@@ -1148,16 +1152,14 @@ func TestGateInsideMapRefFromOutsideMapStillRejected(t *testing.T) {
 			},
 		},
 	}
-	diags := Validate(makeLD(wf))
-	var got bool
-	for _, d := range diags {
-		if d.Severity == Error && d.Path == "outputs.punti" {
-			got = true
-		}
-	}
-	if !got {
-		t.Errorf("gate-inside-map producer referenced from outside the map must error at outputs.punti; got %+v", diags)
-	}
+	// Outputs bindings wrap every ref error as AWF1048 (reemitDiagnosticsAs),
+	// so the raw AWF5002/AWF5003 code doesn't survive to this path — check the
+	// wrapped code AND the embedded AWF5002 catalog text, so a coincidental
+	// unrelated AWF1048 at "outputs.punti" (e.g. a schema-shape error) can't
+	// mask a genuine pass. The blocking scope is the map body (blockingScope
+	// peels the gate first, since the producer sits in its generate: subtree,
+	// then blocks on the enclosing map) — AWF5002, not AWF5003.
+	assertMessageContainsAt(t, Validate(makeLD(wf)), "AWF1048", "outputs.punti", catalog["AWF5002"])
 }
 
 // TestGateEvaluatorRefFromOutsideRejected pins that transparency is
@@ -1167,6 +1169,9 @@ func TestGateEvaluatorRefFromOutsideRejected(t *testing.T) {
 	wf := &Workflow{
 		ID:      "gatewf",
 		Version: 1,
+		// ponytail: Containers must resolve "c0" or AWF1009 fires unconditionally
+		// (unrelated to the rule under test) and masks a genuine pass.
+		Containers: map[string]Container{"c0": {Image: "oci://x@sha256:abc"}},
 		OutputSchema: &JSONSchema{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1197,15 +1202,9 @@ func TestGateEvaluatorRefFromOutsideRejected(t *testing.T) {
 			},
 		},
 	}
-	var got bool
-	for _, d := range Validate(makeLD(wf)) {
-		if d.Severity == Error && d.Path == "outputs.ok" {
-			got = true
-		}
-	}
-	if !got {
-		t.Error("referencing a gate EVALUATOR step from outside the gate must error at outputs.ok; the verdict stays gate-internal")
-	}
+	// See TestGateInsideMapRefFromOutsideMapStillRejected for why the check is
+	// the wrapped AWF1048 code plus the embedded AWF5003 catalog text.
+	assertMessageContainsAt(t, Validate(makeLD(wf)), "AWF1048", "outputs.ok", catalog["AWF5003"])
 }
 
 // TestBlockingScopePeeling unit-tests the walk directly, independent of the

@@ -600,10 +600,13 @@ func runtimeMapPathToStatic(runtimePath string) string {
 //     transparent from outside.
 //   - gate[N] → gate[N].attempt-M — from inside the gate, M is the attempt
 //     ctxPath sits in (generate sibling, evaluate, or until). From outside a
-//     passed gate, M is the ACCEPTED attempt: a passed gate has exactly one,
-//     because engine/gate.go returns OutcomeOK the instant an attempt passes.
-//     If no attempt passed (the gate did not run, or every attempt was
-//     rejected), this errors (AWF4002).
+//     passed gate, M is the ACCEPTED attempt — but ONLY when the reference
+//     resolves through the gate's generate: subtree; a passed gate has exactly
+//     one accepted attempt, because engine/gate.go returns OutcomeOK the
+//     instant an attempt passes. A reference into the gate's evaluate: subtree
+//     from outside errors: the evaluator's verdict stays gate-internal by
+//     design. If no attempt passed (the gate did not run, or every attempt was
+//     rejected), this errors too (AWF4002).
 //   - map[N].body → map[N].item-K — K is the item ctxPath sits in. Map body
 //     steps are referenceable ONLY from within the same item; items run
 //     concurrently so there is no "most recent" — a cross-item / external ref
