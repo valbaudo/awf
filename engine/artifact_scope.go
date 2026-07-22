@@ -118,6 +118,14 @@ func attemptPath(fullPath, gatePrefix string, attempts []AttemptResult) string {
 	return ""
 }
 
+// passedGateArtifactRuntimePath keys off only the INNERMOST gate
+// (gateScopePrefix) and does not itself check for an enclosing scope (an
+// outer evaluate:, or an enclosing map body) between staticPath and the
+// reference site — unlike stepRuntimePath (engine/scope.go), which folds
+// outward segment by segment. That's fine: validation (ir.blockingScope)
+// already rejects those shapes (AWF5003) before the engine ever resolves
+// them, the same validation backstop itemBodyStepPath's doc comment notes
+// for the loop / >1-gate case.
 func (s *Scope) passedGateArtifactRuntimePath(staticPath string) (string, bool, error) {
 	gateStatic, ok := gateScopePrefix(staticPath)
 	if !ok || runtimePathWithinGate(s.ctxPath, gateStatic) {

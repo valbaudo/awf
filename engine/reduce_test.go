@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -687,5 +688,115 @@ func TestCollectReduceBranchesForwardsGateTypedOutputs(t *testing.T) {
 	}
 	if got := branches[1].Outputs["score"]; got != 7.0 {
 		t.Errorf("branch 1 score = %v, want 7.0", got)
+	}
+}
+
+// TestCollectReduceBranchesForwardsGateTypedOutputsAcrossFold closes the gap
+// TestCollectReduceBranchesForwardsGateTypedOutputs left open: that test hand-builds
+// a RunState resembling folded state but never calls engine.Fold, so conformance row
+// (e) — "resume across a committed gate resolves the identical value" — was proven
+// for the sequential scalar path (TestGateForwardingIsFoldStableAcrossResume in
+// gate_test.go) but not the reduce fan-in.
+//
+// This drives a REAL map -> gate through runMap: two items ("a", "b") over a body
+// whose sole node is a Gate. Item "a" is rejected on attempt 1 and passes on attempt
+// 2 with a DIFFERENT typed score, so a fold that (incorrectly) picked the first
+// attempt instead of the accepted one would be caught. Item "b" passes on attempt 1.
+// The generate step's Run threads {{ evaluate.feedback }} and the evaluate step's Run
+// threads {{ step.draft.score }} so each attempt dispatches a distinct command
+// against the fake backend (Fake.Exec is keyed on Cmd.Run) — real gate.attempt /
+// map.item / node.completed events land in the journal exactly as a live run
+// produces them, not a hand-built approximation.
+//
+// It then rebuilds RunState purely by folding that journal (lg.Fold() ->
+// engine.Fold(events, blobs), the resume path) and asserts collectReduceBranches
+// against the FOLDED RunState returns branches deeply equal to the ones collected
+// against the LIVE RunState — and that both carry the accepted attempt's score, not
+// the first attempt's.
+func TestCollectReduceBranchesForwardsGateTypedOutputsAcrossFold(t *testing.T) {
+	verdict := func(verified bool, feedback string) []byte {
+		raw, err := json.Marshal(map[string]any{"verified": verified, "feedback": feedback})
+		if err != nil {
+			t.Fatalf("marshal verdict: %v", err)
+		}
+		return raw
+	}
+	gateBody := ir.NodeList{
+		&ir.Gate{
+			Generate: ir.NodeList{
+				&ir.CodeStep{ID: "draft", Run: "./draft {{ x }} {{ evaluate.feedback }}", Container: testMapContainer,
+					OutputSchema: scoreSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
+			},
+			Evaluate: ir.NodeList{
+				&ir.CodeStep{ID: "judge", Run: "./judge {{ x }} {{ step.draft.score }}", Container: testMapContainer,
+					OutputSchema: schemaForVerdict(), Retry: &ir.RetryPolicy{Attempts: 1}},
+			},
+			Until:       ir.Expr("{{ evaluate.verified }}"),
+			MaxAttempts: 3,
+		},
+	}
+	wf := staticOverWorkflow("x", gateBody, 1, nil)
+	mapNode := wf.Graph[0].(*ir.Map)
+
+	rig := newMapRig(t,
+		// item "a": attempt 1 rejected (score 1, feedback "more"), attempt 2
+		// accepted (score 2) — the accepted attempt's score must be the one
+		// that survives into the branch, both live and folded.
+		execProgram{cmd: "./draft a ", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"score":1}`)}},
+		execProgram{cmd: "./judge a 1", res: container.ExecResult{ExitCode: 0, AWFOutput: verdict(false, "more")}},
+		execProgram{cmd: "./draft a more", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"score":2}`)}},
+		execProgram{cmd: "./judge a 2", res: container.ExecResult{ExitCode: 0, AWFOutput: verdict(true, "good")}},
+		// item "b": passes on attempt 1 (score 7).
+		execProgram{cmd: "./draft b ", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"score":7}`)}},
+		execProgram{cmd: "./judge b 7", res: container.ExecResult{ExitCode: 0, AWFOutput: verdict(true, "fine")}},
+	)
+	input := runOverItems("a", "b")
+	// Seed run.started FIRST so the journal's first event is run.started (Fold
+	// requires it) — runMap below appends map.item / gate.attempt / node.completed
+	// events onto the SAME log, so the eventual Fold sees the whole genuine run.
+	seedRunStartedWithInput(t, rig.lg, rig.blobs, input)
+
+	rs := NewRunState(testRunID, testDigest, input)
+	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("runMap: got (%q, %v), want (ok, nil)", oc, err)
+	}
+
+	liveBranches, err := collectReduceBranches(rs, mapNode, testMapPath, wf)
+	if err != nil {
+		t.Fatalf("collectReduceBranches (live): %v", err)
+	}
+	if len(liveBranches) != 2 {
+		t.Fatalf("live branches = %d, want 2", len(liveBranches))
+	}
+	if got := liveBranches[0].Outputs["score"]; got != 2.0 {
+		t.Errorf("live branch 0 score = %v, want 2.0 (accepted attempt-2, not rejected attempt-1)", got)
+	}
+	if got := liveBranches[1].Outputs["score"]; got != 7.0 {
+		t.Errorf("live branch 1 score = %v, want 7.0", got)
+	}
+
+	// Rebuild RunState purely by folding the journal — the resume path.
+	events, ferr := rig.lg.Fold()
+	if ferr != nil {
+		t.Fatalf("lg.Fold: %v", ferr)
+	}
+	rs2, foldErr := Fold(events, rig.blobs)
+	if foldErr != nil {
+		t.Fatalf("engine.Fold: %v", foldErr)
+	}
+	foldedBranches, err := collectReduceBranches(rs2, mapNode, testMapPath, wf)
+	if err != nil {
+		t.Fatalf("collectReduceBranches (folded): %v", err)
+	}
+
+	if !reflect.DeepEqual(liveBranches, foldedBranches) {
+		t.Errorf("folded branches = %+v, want identical to live branches %+v — reduce fan-in forwarding must be fold-stable", foldedBranches, liveBranches)
+	}
+	if got := foldedBranches[0].Outputs["score"]; got != 2.0 {
+		t.Errorf("folded branch 0 score = %v, want 2.0 (accepted attempt-2, not rejected attempt-1)", got)
+	}
+	if got := foldedBranches[1].Outputs["score"]; got != 7.0 {
+		t.Errorf("folded branch 1 score = %v, want 7.0", got)
 	}
 }
