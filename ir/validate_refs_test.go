@@ -488,10 +488,14 @@ func TestRefsCrossScopeNestedMapInGateRejected(t *testing.T) {
 	// A step inside a gate's generate but OUTSIDE the map nested within it
 	// references a step inside that map's body: the innermost opaque scope (the
 	// map) doesn't enclose the reference site, and blockingScope blocks there
-	// directly — it's a plain cross-item map access, not a gate-nested producer
-	// (that's a GATE nested inside a MAP, the reverse of this shape), so the
-	// diagnostic is keyed off the map scope → AWF5002, even though both
-	// producer and reference site sit in the same gate.
+	// directly WITHOUT ever peeling a gate — the producer's opaque scope is a
+	// MAP nested inside a gate, not a GATE nested inside a map (the reverse
+	// shape, covered by TestGateInsideMapRefFromOutsideMapStillRejected), so
+	// blockingScope reports peeledGate=false and the selector fires AWF5002.
+	// Neither AWF5002 nor AWF5003's catalog text is a precise fit for this
+	// shape (both producer and reference site sit in the same gate attempt);
+	// AWF5002 is what the peeledGate-keyed selector produces here, not a claim
+	// that its wording describes this case exactly.
 	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -1154,12 +1158,14 @@ func TestGateInsideMapRefFromOutsideMapStillRejected(t *testing.T) {
 	}
 	// Outputs bindings wrap every ref error as AWF1048 (reemitDiagnosticsAs),
 	// so the raw AWF5002/AWF5003 code doesn't survive to this path — check the
-	// wrapped code AND the embedded AWF5002 catalog text, so a coincidental
+	// wrapped code AND the embedded AWF5003 catalog text, so a coincidental
 	// unrelated AWF1048 at "outputs.punti" (e.g. a schema-shape error) can't
-	// mask a genuine pass. The blocking scope is the map body (blockingScope
-	// peels the gate first, since the producer sits in its generate: subtree,
-	// then blocks on the enclosing map) — AWF5002, not AWF5003.
-	assertMessageContainsAt(t, Validate(makeLD(wf)), "AWF1048", "outputs.punti", catalog["AWF5002"])
+	// mask a genuine pass. The blocking scope is the map body, but blockingScope
+	// peeled a gate first (the producer sits in the gate's generate: subtree) —
+	// a gate nested inside a map binds only through reduce:, so the selector
+	// reports AWF5003, not AWF5002 (AWF5002 is reserved for a map that blocks
+	// with no gate peeled: genuinely nested / loop-multiplied maps).
+	assertMessageContainsAt(t, Validate(makeLD(wf)), "AWF1048", "outputs.punti", catalog["AWF5003"])
 }
 
 // TestGateEvaluatorRefFromOutsideRejected pins that transparency is
@@ -1209,13 +1215,19 @@ func TestGateEvaluatorRefFromOutsideRejected(t *testing.T) {
 
 // TestBlockingScopePeeling unit-tests the walk directly, independent of the
 // surrounding validator, because the innermost-only behavior of
-// opaqueScopePrefix is the trap this helper exists to avoid.
+// opaqueScopePrefix is the trap this helper exists to avoid. It also pins
+// peeledGate — the signal the checkRef call site uses to route between AWF5002
+// and AWF5003 when the blocking scope is a map (see
+// TestGateInsideMapRefFromOutsideMapStillRejected vs
+// TestRefsCrossScopeNestedMapInGateRejected for the two shapes this
+// distinguishes).
 func TestBlockingScopePeeling(t *testing.T) {
 	cases := []struct {
 		name         string
 		producerPath string
 		refSite      string
 		wantScope    string
+		wantPeeled   bool
 		wantBlocked  bool
 	}{
 		{
@@ -1235,13 +1247,20 @@ func TestBlockingScopePeeling(t *testing.T) {
 			producerPath: "gate[0].evaluate.judge",
 			refSite:      "outputs.ok",
 			wantScope:    "gate[0]",
+			wantPeeled:   false,
 			wantBlocked:  true,
 		},
 		{
-			name:         "gate inside map, ref outside the map → map scope blocks",
+			// The canonical gate-in-map shape: a gate is nested inside a map body,
+			// referenced from outside the map. blockingScope peels the gate first
+			// (the producer sits in its generate: subtree) and THEN blocks on the
+			// enclosing map — peeledGate must be true so the call site routes this
+			// to AWF5003 ("binds only through reduce:"), not AWF5002.
+			name:         "gate inside map, ref outside the map → map scope blocks, gate was peeled first",
 			producerPath: "map[0].body.gate[0].generate.draft",
 			refSite:      "outputs.punti",
 			wantScope:    "map[0].body",
+			wantPeeled:   true,
 			wantBlocked:  true,
 		},
 		{
@@ -1257,17 +1276,28 @@ func TestBlockingScopePeeling(t *testing.T) {
 			wantBlocked:  false,
 		},
 		{
+			// The inner gate[1] IS peeled (the producer sits in gate[1]'s
+			// generate: subtree) before the walk reaches the outer gate[0],
+			// which blocks because IT was entered via evaluate:. peeledGate is
+			// true here, but the selector doesn't consult it for this case —
+			// isGateScope(scope) alone already routes a gate-blocking scope to
+			// AWF5003, regardless of peeledGate.
 			name:         "nested gates, OUTER entered via evaluate → blocked",
 			producerPath: "gate[0].evaluate.gate[1].generate.draft",
 			refSite:      "outputs.punti",
 			wantScope:    "gate[0]",
+			wantPeeled:   true,
 			wantBlocked:  true,
 		},
 		{
-			name:         "plain map producer, ref outside → map scope blocks",
+			// The plain nested-map counterpart: no gate anywhere in the producer
+			// path, so no gate is ever peeled before the map blocks — peeledGate
+			// must be false so the call site keeps this as AWF5002.
+			name:         "plain map producer, ref outside → map scope blocks, no gate peeled",
 			producerPath: "map[0].body.score",
 			refSite:      "outputs.punti",
 			wantScope:    "map[0].body",
+			wantPeeled:   false,
 			wantBlocked:  true,
 		},
 		{
@@ -1279,12 +1309,15 @@ func TestBlockingScopePeeling(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			scope, blocked := blockingScope(tc.producerPath, tc.refSite)
+			scope, peeledGate, blocked := blockingScope(tc.producerPath, tc.refSite)
 			if blocked != tc.wantBlocked {
 				t.Fatalf("blocked = %v, want %v (scope %q)", blocked, tc.wantBlocked, scope)
 			}
 			if blocked && scope != tc.wantScope {
 				t.Errorf("scope = %q, want %q", scope, tc.wantScope)
+			}
+			if peeledGate != tc.wantPeeled {
+				t.Errorf("peeledGate = %v, want %v", peeledGate, tc.wantPeeled)
 			}
 		})
 	}

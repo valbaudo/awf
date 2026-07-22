@@ -214,8 +214,14 @@ func TestInputFilesProducerInsidePassedGateAllowed(t *testing.T) {
 // out of the gate — the verdict stays gate-internal by design, same as the
 // scalar channel (TestGateEvaluatorRefFromOutsideRejected). Before this fix,
 // validateParsedNamedArtifactRef peeled ANY gate scope via isGateScope, so
-// this validated clean while engine/scope.go stepRuntimePath rejects it at
-// run time (:670) — the exact drift the design forbids.
+// this validated clean. The runtime counterpart is
+// engine/artifact_scope.go's passedGateArtifactRuntimePath — NOT
+// engine/scope.go's stepRuntimePath, which the artifact channel never reaches
+// at all (ResolveArtifactPath calls passedGateArtifactRuntimePath directly and
+// only falls through to stepRuntimePath when it declines). Until
+// passedGateArtifactRuntimePath got its own generate:-only check, it had no
+// backstop for this case either — this validation fix and that runtime fix now
+// enforce the same rule independently.
 func TestInputFilesRefIntoGateEvaluateFromOutsideRejected(t *testing.T) {
 	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
 	ld := makeLD(&Workflow{
@@ -242,8 +248,14 @@ func TestInputFilesRefIntoGateEvaluateFromOutsideRejected(t *testing.T) {
 // map opacity reopened through a gate: SingleMapBodyShape returns false for
 // any path containing "gate[", so the old one-shot opaqueScopePrefix +
 // isGateScope check found only the innermost (gate) scope and peeled it,
-// validating clean. engine/scope.go's map arm (:650) rejects this at run
-// time. blockingScope walks outward and still blocks on the enclosing map.
+// validating clean. blockingScope walks outward and still blocks on the
+// enclosing map. This is a validation-only guarantee for the artifact
+// channel: engine/artifact_scope.go's passedGateArtifactRuntimePath keys off
+// the innermost gate (gateScopePrefix) the same way the old validator did — it
+// has no enclosing-map-boundary check of its own (out of scope for this fix;
+// see engine.Scope.stepRuntimePath's map arm for the scalar channel's
+// principled version) — so this workflow shape must never reach the runtime
+// unrejected, which is exactly what this test pins.
 func TestInputFilesRefIntoGateInsideMapFromOutsideMapRejected(t *testing.T) {
 	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
 	ld := makeLD(&Workflow{

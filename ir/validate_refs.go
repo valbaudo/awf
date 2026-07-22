@@ -645,28 +645,30 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 		// passed gate has exactly one accepted attempt, so it is transparent to its
 		// generate: subtree and blockingScope peels it. loop / try / parallel are
 		// transparent too (loops via the "most recent iteration" rule). The
-		// single-map aggregate shape was handled above; a still-unmatched map scope
-		// here means nested/loop-multiplied maps (AWF5002) or a gate-nested producer
-		// inside a map (AWF5003). This is the static counterpart of
-		// engine.Scope.stepRuntimePath's map arm.
-		if scope, blocked := blockingScope(p.path, path); blocked {
+		// single-map aggregate shape was handled above; a still-unmatched scope
+		// here means a gate EVALUATOR read from outside (verdict is gate-internal),
+		// a gate nested inside a map body (per-item accepted attempts fan in only
+		// via reduce:), or a genuinely nested/loop-multiplied map (aggregation
+		// deferred). This is the static counterpart of
+		// engine.Scope.stepRuntimePath's map/gate arms.
+		if scope, peeledGate, blocked := blockingScope(p.path, path); blocked {
 			// A scope between the producer and the reference site blocks it.
-			// Gate scopes entered via generate: were peeled — a passed gate is
-			// transparent there. The v1 single-map aggregate shape returned
-			// above, so reaching here means nested/loop-multiplied maps
-			// (aggregation deferred → AWF5002), a gate-nested producer inside a
-			// map (per-item accepted attempts fan in via reduce: → AWF5003), or
-			// a gate EVALUATOR read from outside (verdict is gate-internal →
-			// AWF5003). Key the choice off the BLOCKING scope itself, not off
-			// whether the producer's full path merely contains "gate[" — for a
-			// producer like "gate[0].generate.map[0].body.x", blockingScope
-			// blocks on the inner map body even though the path also has a gate
-			// segment, and that must read as the map case.
-			if !isGateScope(scope) {
-				c.errf(path, "AWF5002", fmt.Sprintf("%s: %s", catalog["AWF5002"], renderRef(ref)))
+			// Key the choice off the BLOCKING scope AND whether a gate was
+			// peeled en route to it — not off whether the producer's full path
+			// merely contains "gate[":
+			//   - blocking scope is a gate → the reference reached a gate via
+			//     evaluate: (AWF5003 — the evaluator's verdict stays internal).
+			//   - blocking scope is a map and a gate was peeled first → the
+			//     producer is a gate nested inside that map body (AWF5003 — it
+			//     binds only through reduce:).
+			//   - blocking scope is a map and no gate was peeled → the map
+			//     itself is genuinely nested or loop-multiplied (AWF5002 —
+			//     aggregation across those is not yet defined).
+			if isGateScope(scope) || peeledGate {
+				c.errf(path, "AWF5003", fmt.Sprintf("%s: %s", catalog["AWF5003"], renderRef(ref)))
 				return
 			}
-			c.errf(path, "AWF5003", fmt.Sprintf("%s: %s", catalog["AWF5003"], renderRef(ref)))
+			c.errf(path, "AWF5002", fmt.Sprintf("%s: %s", catalog["AWF5002"], renderRef(ref)))
 			return
 		}
 		// exit_code and stdout are implicit on every code step (AWF §4.1).
@@ -785,8 +787,8 @@ func opaqueScopePrefix(staticPath string) (string, bool) {
 }
 
 // blockingScope walks producerPath's opaque scopes from innermost outward and
-// returns the first scope that BLOCKS a reference sited at refSite. ok=false
-// means no scope blocks, i.e. the reference resolves.
+// returns the first scope that BLOCKS a reference sited at refSite. blocked ==
+// false means no scope blocks, i.e. the reference resolves.
 //
 // A gate scope is PEELED when the producer sits in that gate's generate:
 // subtree — a passed gate has exactly one accepted attempt, so it is transparent
@@ -796,30 +798,42 @@ func opaqueScopePrefix(staticPath string) (string, bool) {
 // branch on a condition that is true by construction. A map body always blocks:
 // N items, no single instance to bind to.
 //
+// peeledGate reports whether a gate scope was peeled (and the walk continued
+// outward) before landing on the returned blocking scope. The call site needs
+// this: when the blocking scope is a MAP, "a gate was peeled first" means the
+// producer is a gate nested inside that map body (per-item accepted attempts
+// fan in only via reduce: → AWF5003), while "no gate was peeled" means the map
+// itself is the reason the walk never resolved — genuinely nested or
+// loop-multiplied maps (aggregation deferred → AWF5002). blockingScope is the
+// only thing that knows which case it is; opaqueScopePrefix alone can't tell,
+// since it returns only the innermost opaque scope.
+//
 // Walking OUTWARD is load-bearing. opaqueScopePrefix returns only the INNERMOST
 // opaque scope, so for a producer at "map[0].body.gate[0].generate.x" it returns
 // the gate. Stopping there would let a reference from outside the MAP validate
 // clean and silently reopen map opacity through a gate.
-func blockingScope(producerPath, refSite string) (string, bool) {
+func blockingScope(producerPath, refSite string) (scope string, peeledGate bool, blocked bool) {
 	rest := producerPath
+	peeled := false
 	for {
-		scope, opaque := opaqueScopePrefix(rest)
-		if !opaque || pathWithinScope(refSite, scope) {
-			return "", false
+		sc, opaque := opaqueScopePrefix(rest)
+		if !opaque || pathWithinScope(refSite, sc) {
+			return "", false, false
 		}
-		if !isGateScope(scope) {
-			return scope, true // a map body the reference site is outside of
+		if !isGateScope(sc) {
+			return sc, peeled, true // a map body the reference site is outside of
 		}
 		// A gate[N] scope. Transparent to generate: only; scope is always a
 		// prefix of producerPath, so the segment after it names the branch.
-		if !strings.HasPrefix(strings.TrimPrefix(producerPath, scope+"."), "generate.") {
-			return scope, true
+		if !strings.HasPrefix(strings.TrimPrefix(producerPath, sc+"."), "generate.") {
+			return sc, peeled, true
 		}
-		i := strings.LastIndexByte(scope, '.')
+		peeled = true
+		i := strings.LastIndexByte(sc, '.')
 		if i < 0 {
-			return "", false // top-level gate; nothing further out
+			return "", false, false // top-level gate; nothing further out
 		}
-		rest = scope[:i]
+		rest = sc[:i]
 	}
 }
 

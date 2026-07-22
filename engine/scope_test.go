@@ -935,6 +935,68 @@ func TestScopeResolveArtifactPathFromPassedGateAttempt(t *testing.T) {
 	}
 }
 
+// TestScopeResolveArtifactPathGateEvaluatorRejectedFromOutside is the artifact
+// channel's counterpart to TestScopeResolveArtifactPathFromPassedGateAttempt:
+// a passed gate is transparent to its generate: subtree ONLY
+// (engine.Scope.stepRuntimePath's gate arm, mirrored here by
+// passedGateArtifactRuntimePath). An artifact ref from outside the gate into
+// the EVALUATOR's own output_files must still error — the judge's artifact
+// stays gate-internal by the same rule that keeps its scalar verdict internal
+// — while a ref into the generate: producer's artifact from that same outside
+// scope keeps resolving to the accepted attempt.
+func TestScopeResolveArtifactPathGateEvaluatorRejectedFromOutside(t *testing.T) {
+	schema := &ir.JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	wf := &ir.Workflow{
+		ID: "test", Version: 1,
+		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
+		Graph: ir.NodeList{
+			&ir.Gate{
+				Generate: ir.NodeList{
+					&ir.CodeStep{ID: "recon", Container: "lab", Run: "true", OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.md"}}},
+				},
+				Evaluate: ir.NodeList{
+					&ir.CodeStep{ID: "judge", Container: "lab", Run: "true", OutputSchema: schema, OutputFiles: ir.OutputFiles{{Name: "verdict", Path: "/out/verdict.json"}}},
+				},
+				Until:       ir.Expr("{{ evaluate.ok }}"),
+				MaxAttempts: 2,
+			},
+			&ir.CodeStep{ID: "hunt", Container: "lab", Run: "true"},
+		},
+	}
+	rs := NewRunState(testRunID, "digest", nil)
+	rs.RecordCompleted("gate[0].attempt-1.generate.recon", NodeResult{
+		Outcome: OutcomeOK,
+		Files:   map[string]string{"/out/report.md": "gen-blob"},
+	})
+	rs.RecordCompleted("gate[0].attempt-1.evaluate.judge", NodeResult{
+		Outcome: OutcomeOK,
+		Files:   map[string]string{"/out/verdict.json": "verdict-blob"},
+	})
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 1, AttemptOutcome: AttemptPassed, Verdict: map[string]any{"ok": true}})
+
+	sc := NewScope(rs, wf, "hunt")
+
+	// The generate: producer's artifact still forwards through the accepted attempt.
+	cas, err := sc.ResolveArtifactPath("recon", "/out/report.md")
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(recon): %v", err)
+	}
+	if cas != "gen-blob" {
+		t.Errorf("cas = %q, want gen-blob", cas)
+	}
+
+	// The evaluator's artifact must NOT resolve from outside the gate — the
+	// judge's verdict (and its artifacts) stay gate-internal by design.
+	_, err = sc.ResolveArtifactPath("judge", "/out/verdict.json")
+	if err == nil {
+		t.Fatalf("ResolveArtifactPath(judge) from outside the gate: want error, got nil (evaluator artifact leaked through the gate boundary)")
+	}
+	var ee *template.EvalError
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("ResolveArtifactPath(judge): err=%v, want AWF4002 (EvalCodeRefUnresolved)", err)
+	}
+}
+
 // reducedMapWorkflow is a workflow whose only map (map[0]) declares a reduce:
 // over a body step `scan`. Used by the Task-11 scope-preference tests.
 func reducedMapWorkflow() *ir.Workflow {

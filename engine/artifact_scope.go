@@ -123,6 +123,13 @@ func (s *Scope) passedGateArtifactRuntimePath(staticPath string) (string, bool, 
 	if !ok || runtimePathWithinGate(s.ctxPath, gateStatic) {
 		return "", false, nil
 	}
+	// A passed gate is transparent to its generate: subtree ONLY — the
+	// evaluator's artifacts stay gate-internal, same as its scalar verdict.
+	// Mirrors stepRuntimePath's gate arm (engine/scope.go); validation
+	// enforces this too (ir.blockingScope).
+	if !strings.HasPrefix(strings.TrimPrefix(staticPath, gateStatic+"."), "generate.") {
+		return "", true, template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step inside gate %q is not referenceable from outside: only the gate's generate: producers forward; the evaluator's artifacts stay gate-internal", gateStatic)
+	}
 	if p := attemptPath(staticPath, gateStatic, s.rs.LookupGateAttempts(gateStatic)); p != "" {
 		return p, true, nil
 	}
