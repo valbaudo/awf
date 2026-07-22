@@ -1714,3 +1714,23 @@ func TestScopeResolveStepFromOutsideRejectedGate(t *testing.T) {
 		t.Fatal("step.gen1.punti with only rejected attempts: err = nil, want error")
 	}
 }
+
+func TestScopeResolveEvaluatorFromOutsideGateRejected(t *testing.T) {
+	// Validation is the primary gate, but gate integrity is engine-enforced:
+	// the runtime must refuse an evaluator reference from outside even if a
+	// malformed definition reaches it.
+	rs := &RunState{
+		RunID: testRunID,
+		GateAttempts: map[string][]AttemptResult{
+			"gate[0]": {{N: 1, AttemptOutcome: AttemptPassed}},
+		},
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-1.evaluate.eval1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"verified": true}},
+		},
+	}
+	sc := NewScope(rs, gateWorkflow(), "after_gate")
+
+	if _, err := sc.Resolve(mustParseRef(t, "step.eval1.verified")); err == nil {
+		t.Fatal("resolving a gate EVALUATOR step from outside the gate: err = nil, want error")
+	}
+}

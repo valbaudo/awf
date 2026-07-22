@@ -639,19 +639,25 @@ func checkRef(ref template.Ref, path string, c *collector, producers map[string]
 			return
 		}
 		field := ref.Segments[2].Ident
-		// AWF5003 / AWF5002: gate and map bodies are opaque multiplicity scopes. A step inside
-		// one resolves only from within the same attempt/item (structurally: the reference site
-		// must be inside the producer's enclosing gate/map subtree). A reference from outside has
-		// no defined attempt/item — the static counterpart of engine.Scope.stepRuntimePath's
-		// same-attempt/same-item check. loop / try / parallel are transparent (loops via the
-		// "most recent iteration" rule) and don't trigger this. The single-map aggregate shape
-		// was handled above; a still-opaque map scope here means nested/loop-multiplied maps
-		// (aggregation not yet defined → AWF5002), a gate scope means AWF5003.
-		if scope, opaque := opaqueScopePrefix(p.path); opaque && !pathWithinScope(path, scope) {
-			// Reaching here means the ref is out-of-scope and NOT the v1 single-map
-			// aggregate (that branch returned above). So the producer is either inside a
-			// gate (read its product via evaluate.<field> → AWF5003) or inside a map with
-			// NO gate, i.e. nested/loop-multiplied maps (aggregation deferred → AWF5002).
+		// AWF5003 / AWF5002: a MAP body is an opaque multiplicity scope — a producer
+		// inside one resolves only from within the same item, because from outside
+		// there are N items and no single instance to bind to. A GATE is not: a
+		// passed gate has exactly one accepted attempt, so it is transparent to its
+		// generate: subtree and unmatchedMapScope peels it. loop / try / parallel are
+		// transparent too (loops via the "most recent iteration" rule). The
+		// single-map aggregate shape was handled above; a still-unmatched map scope
+		// here means nested/loop-multiplied maps (AWF5002) or a gate-nested producer
+		// inside a map (AWF5003). This is the static counterpart of
+		// engine.Scope.stepRuntimePath's map arm.
+		if _, blocked := blockingScope(p.path, path); blocked {
+			// A scope between the producer and the reference site blocks it.
+			// Gate scopes entered via generate: were peeled — a passed gate is
+			// transparent there. The v1 single-map aggregate shape returned
+			// above, so reaching here means nested/loop-multiplied maps
+			// (aggregation deferred → AWF5002), a gate-nested producer inside a
+			// map (per-item accepted attempts fan in via reduce: → AWF5003), or
+			// a gate EVALUATOR read from outside (verdict is gate-internal →
+			// AWF5003).
 			if !strings.Contains(p.path, "gate[") {
 				c.errf(path, "AWF5002", fmt.Sprintf("%s: %s", catalog["AWF5002"], renderRef(ref)))
 				return
@@ -772,6 +778,45 @@ func opaqueScopePrefix(staticPath string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// blockingScope walks producerPath's opaque scopes from innermost outward and
+// returns the first scope that BLOCKS a reference sited at refSite. ok=false
+// means no scope blocks, i.e. the reference resolves.
+//
+// A gate scope is PEELED when the producer sits in that gate's generate:
+// subtree — a passed gate has exactly one accepted attempt, so it is transparent
+// there (the runtime counterpart is engine.Scope.stepRuntimePath's
+// accepted-attempt fallback). A gate reached via evaluate: BLOCKS: the judge's
+// verdict is gate-internal by design, and exposing it would let a workflow
+// branch on a condition that is true by construction. A map body always blocks:
+// N items, no single instance to bind to.
+//
+// Walking OUTWARD is load-bearing. opaqueScopePrefix returns only the INNERMOST
+// opaque scope, so for a producer at "map[0].body.gate[0].generate.x" it returns
+// the gate. Stopping there would let a reference from outside the MAP validate
+// clean and silently reopen map opacity through a gate.
+func blockingScope(producerPath, refSite string) (string, bool) {
+	rest := producerPath
+	for {
+		scope, opaque := opaqueScopePrefix(rest)
+		if !opaque || pathWithinScope(refSite, scope) {
+			return "", false
+		}
+		if strings.HasSuffix(scope, ".body") {
+			return scope, true // a map body the reference site is outside of
+		}
+		// A gate[N] scope. Transparent to generate: only; scope is always a
+		// prefix of producerPath, so the segment after it names the branch.
+		if !strings.HasPrefix(strings.TrimPrefix(producerPath, scope+"."), "generate.") {
+			return scope, true
+		}
+		i := strings.LastIndexByte(scope, '.')
+		if i < 0 {
+			return "", false // top-level gate; nothing further out
+		}
+		rest = scope[:i]
+	}
 }
 
 // pathWithinScope reports whether refSite lies within the scope subtree rooted

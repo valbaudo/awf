@@ -319,7 +319,12 @@ func TestRefsCrossScopeIntoMapBodyRejected(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF5004", "after.run")
 }
 
-func TestRefsCrossScopeIntoGateRejected(t *testing.T) {
+func TestRefsCrossScopeIntoGateGenerateAllowed(t *testing.T) {
+	// A passed gate is transparent to its generate: subtree — a top-level step
+	// reaching into it resolves to the gate's accepted attempt (see
+	// blockingScope / engine.Scope.stepRuntimePath's accepted-attempt
+	// fallback). This was AWF5003 before generate-only transparency; now only
+	// the gate's evaluate: subtree and any gate nested in a map body still block.
 	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
 	ld := makeLD(&Workflow{
 		ID: "x", Version: 1,
@@ -331,12 +336,10 @@ func TestRefsCrossScopeIntoGateRejected(t *testing.T) {
 				Until:       Expr("{{ step.judge.exit_code == 0 }}"),
 				MaxAttempts: 2,
 			},
-			// A top-level step reaching into the gate's generate: from outside the
-			// gate there's no defined attempt → AWF5003.
 			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.gen.exit_code }}"},
 		},
 	})
-	assertErrorAt(t, Validate(ld), "AWF5003", "after.run")
+	assertNoErrorCode(t, Validate(ld), "AWF5003")
 }
 
 func TestRefsSameItemMapSiblingAllowed(t *testing.T) {
@@ -1052,4 +1055,238 @@ func TestShellHostInjectionAgentIdempotencyKeyWarns(t *testing.T) {
 		},
 	})
 	assertWarningAt(t, Validate(ld), "AWF3013", "b.idempotency_key")
+}
+
+// TestGateInternalRefFromOutsideIsAllowed pins the core rule: a passed gate is
+// transparent to its generate: subtree, so binding a generate producer's typed
+// field to a workflow output must validate clean.
+func TestGateInternalRefFromOutsideIsAllowed(t *testing.T) {
+	wf := &Workflow{
+		ID:      "gatewf",
+		Version: 1,
+		// ponytail: Containers must resolve "c0" or AWF1009 fires unconditionally
+		// (unrelated to the rule under test) and masks a genuine pass.
+		Containers: map[string]Container{"c0": {Image: "oci://x@sha256:abc"}},
+		OutputSchema: &JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"punti"},
+			"properties":           map[string]any{"punti": map[string]any{"type": "string"}},
+		},
+		Outputs: map[string]TemplateValue{
+			"punti": TemplateValue(`"{{ step.draft.punti }}"`),
+		},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{
+					&CodeStep{ID: "draft", Run: "gen", Container: "c0", OutputSchema: &JSONSchema{
+						"type":       "object",
+						"required":   []any{"punti"},
+						"properties": map[string]any{"punti": map[string]any{"type": "string"}},
+					}},
+				},
+				Evaluate: NodeList{
+					&CodeStep{ID: "judge", Run: "eval", Container: "c0", OutputSchema: &JSONSchema{
+						"type":       "object",
+						"required":   []any{"ok"},
+						"properties": map[string]any{"ok": map[string]any{"type": "boolean"}},
+					}},
+				},
+				Until:       Expr("{{ evaluate.ok }}"),
+				MaxAttempts: 3,
+			},
+		},
+	}
+	for _, d := range Validate(makeLD(wf)) {
+		if d.Severity == Error {
+			t.Errorf("unexpected error binding a gate generate producer to outputs: %+v", d)
+		}
+	}
+}
+
+// TestGateInsideMapRefFromOutsideMapStillRejected is the peeling guard. The
+// producer's INNERMOST opaque scope is the gate; opaqueScopePrefix returns only
+// that. If the check stops at the gate, this reference validates clean and map
+// opacity is silently reopened through a gate. It must stay an error.
+func TestGateInsideMapRefFromOutsideMapStillRejected(t *testing.T) {
+	wf := &Workflow{
+		ID:      "gateinmap",
+		Version: 1,
+		OutputSchema: &JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"punti"},
+			"properties":           map[string]any{"punti": map[string]any{"type": "string"}},
+		},
+		Outputs: map[string]TemplateValue{
+			"punti": TemplateValue(`"{{ step.draft.punti }}"`),
+		},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"),
+				As:   "item",
+				Body: NodeList{
+					&Gate{
+						Generate: NodeList{
+							&CodeStep{ID: "draft", Run: "gen", Container: "c0", OutputSchema: &JSONSchema{
+								"type":       "object",
+								"required":   []any{"punti"},
+								"properties": map[string]any{"punti": map[string]any{"type": "string"}},
+							}},
+						},
+						Evaluate: NodeList{
+							&CodeStep{ID: "judge", Run: "eval", Container: "c0", OutputSchema: &JSONSchema{
+								"type":       "object",
+								"required":   []any{"ok"},
+								"properties": map[string]any{"ok": map[string]any{"type": "boolean"}},
+							}},
+						},
+						Until:       Expr("{{ evaluate.ok }}"),
+						MaxAttempts: 3,
+					},
+				},
+			},
+		},
+	}
+	diags := Validate(makeLD(wf))
+	var got bool
+	for _, d := range diags {
+		if d.Severity == Error && d.Path == "outputs.punti" {
+			got = true
+		}
+	}
+	if !got {
+		t.Errorf("gate-inside-map producer referenced from outside the map must error at outputs.punti; got %+v", diags)
+	}
+}
+
+// TestGateEvaluatorRefFromOutsideRejected pins that transparency is
+// generate:-ONLY. The evaluator's verdict is gate-internal by design: exposing
+// it lets a workflow branch on a condition that is true by construction.
+func TestGateEvaluatorRefFromOutsideRejected(t *testing.T) {
+	wf := &Workflow{
+		ID:      "gatewf",
+		Version: 1,
+		OutputSchema: &JSONSchema{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []any{"ok"},
+			"properties":           map[string]any{"ok": map[string]any{"type": "boolean"}},
+		},
+		Outputs: map[string]TemplateValue{
+			"ok": TemplateValue(`"{{ step.judge.ok }}"`),
+		},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{
+					&CodeStep{ID: "draft", Run: "gen", Container: "c0", OutputSchema: &JSONSchema{
+						"type":       "object",
+						"required":   []any{"punti"},
+						"properties": map[string]any{"punti": map[string]any{"type": "string"}},
+					}},
+				},
+				Evaluate: NodeList{
+					&CodeStep{ID: "judge", Run: "eval", Container: "c0", OutputSchema: &JSONSchema{
+						"type":       "object",
+						"required":   []any{"ok"},
+						"properties": map[string]any{"ok": map[string]any{"type": "boolean"}},
+					}},
+				},
+				Until:       Expr("{{ evaluate.ok }}"),
+				MaxAttempts: 3,
+			},
+		},
+	}
+	var got bool
+	for _, d := range Validate(makeLD(wf)) {
+		if d.Severity == Error && d.Path == "outputs.ok" {
+			got = true
+		}
+	}
+	if !got {
+		t.Error("referencing a gate EVALUATOR step from outside the gate must error at outputs.ok; the verdict stays gate-internal")
+	}
+}
+
+// TestBlockingScopePeeling unit-tests the walk directly, independent of the
+// surrounding validator, because the innermost-only behavior of
+// opaqueScopePrefix is the trap this helper exists to avoid.
+func TestBlockingScopePeeling(t *testing.T) {
+	cases := []struct {
+		name         string
+		producerPath string
+		refSite      string
+		wantScope    string
+		wantBlocked  bool
+	}{
+		{
+			name:         "top-level gate generate, ref outside → peeled, resolves",
+			producerPath: "gate[0].generate.draft",
+			refSite:      "outputs.punti",
+			wantBlocked:  false,
+		},
+		{
+			name:         "ref inside the same gate → resolves",
+			producerPath: "gate[0].generate.draft",
+			refSite:      "gate[0].evaluate.judge.run",
+			wantBlocked:  false,
+		},
+		{
+			name:         "gate EVALUATOR, ref outside → blocked (verdict stays internal)",
+			producerPath: "gate[0].evaluate.judge",
+			refSite:      "outputs.ok",
+			wantScope:    "gate[0]",
+			wantBlocked:  true,
+		},
+		{
+			name:         "gate inside map, ref outside the map → map scope blocks",
+			producerPath: "map[0].body.gate[0].generate.draft",
+			refSite:      "outputs.punti",
+			wantScope:    "map[0].body",
+			wantBlocked:  true,
+		},
+		{
+			name:         "gate inside map, ref inside the same map body → resolves",
+			producerPath: "map[0].body.gate[0].generate.draft",
+			refSite:      "map[0].body.after.run",
+			wantBlocked:  false,
+		},
+		{
+			name:         "nested gates, both entered via generate → peeled, resolves",
+			producerPath: "gate[0].generate.gate[1].generate.draft",
+			refSite:      "outputs.punti",
+			wantBlocked:  false,
+		},
+		{
+			name:         "nested gates, OUTER entered via evaluate → blocked",
+			producerPath: "gate[0].evaluate.gate[1].generate.draft",
+			refSite:      "outputs.punti",
+			wantScope:    "gate[0]",
+			wantBlocked:  true,
+		},
+		{
+			name:         "plain map producer, ref outside → map scope blocks",
+			producerPath: "map[0].body.score",
+			refSite:      "outputs.punti",
+			wantScope:    "map[0].body",
+			wantBlocked:  true,
+		},
+		{
+			name:         "no opaque scope at all → resolves",
+			producerPath: "triage",
+			refSite:      "outputs.punti",
+			wantBlocked:  false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scope, blocked := blockingScope(tc.producerPath, tc.refSite)
+			if blocked != tc.wantBlocked {
+				t.Fatalf("blocked = %v, want %v (scope %q)", blocked, tc.wantBlocked, scope)
+			}
+			if blocked && scope != tc.wantScope {
+				t.Errorf("scope = %q, want %q", scope, tc.wantScope)
+			}
+		})
+	}
 }

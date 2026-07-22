@@ -192,7 +192,7 @@ var catalog = map[string]string{
 	"AWF3015": "run:/reduce.run hardcodes the docker-only staging path /work/.awf; use $AWF_STAGING_ROOT (native's staging root is workdir-relative)",
 	"AWF5001": "reference to `evaluate.<field>` outside a gate's generate or until",
 	"AWF5002": "map output aggregation across nested or loop-multiplied maps is not yet defined",
-	"AWF5003": "reference to a step inside a gate or map body from outside that scope — gate/map-internal steps resolve only within the same attempt/item (read a gate's product via evaluate.<field>)",
+	"AWF5003": "gate-internal step is not referenceable from this scope — only a passed gate's generate: producers forward (to the accepted attempt); the evaluator's verdict stays gate-internal, and a gate inside a map body binds only through reduce:",
 	"AWF5004": "map output aggregation reference is only usable as another map's `over:` (an aggregate is an array; templating renders scalars only)",
 	"AWF5005": "exit_code/stdout are not defined on map aggregates (a map-internal step aggregates to []outputs or []field only)",
 	"AWF1035": "reduce: must declare exactly one of run: or quorum: (quorum requires field:; a run: reducer requires container:)",
