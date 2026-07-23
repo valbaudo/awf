@@ -1,0 +1,47 @@
+workflow: awf-llm-gate-extract-typed
+version: 1
+input_schema:
+  type: object
+  additionalProperties: false
+  properties: {}
+output_schema:
+  type: object
+  additionalProperties: false
+  required: [iban]
+  properties:
+    iban: { type: string }
+outputs:
+  iban: "{{ step.extract.iban }}"
+graph:
+  - gate:
+      max_attempts: 3
+      generate:
+        - id: extract
+          uses: awf/llm
+          with:
+            provider: anthropic
+            model: claude-sonnet-4-6
+            max_tokens: 1024
+            prompt: "Extract the account holder and IBAN from the provided text."
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [holder, iban]
+            properties:
+              holder: { type: string }
+              iban: { type: string }
+      evaluate:
+        - id: judge
+          uses: awf/llm
+          with:
+            provider: anthropic
+            model: claude-sonnet-4-6
+            max_tokens: 256
+            prompt: "Is the IBAN well-formed and the holder non-empty?"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [ok]
+            properties:
+              ok: { type: boolean }
+      until: "{{ evaluate.ok }}"

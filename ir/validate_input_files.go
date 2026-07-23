@@ -286,10 +286,17 @@ func validateParsedNamedArtifactRef(
 		c.errf(diagnosticPath, "AWF3007", label+": step "+id+" has no named output_files artifact "+name)
 		return
 	}
-	if scope, opaque := opaqueScopePrefix(p.path); opaque && !pathWithinScope(consumerPath, scope) {
-		if isGateScope(scope) {
-			return
-		}
+	// Same rule as the scalar channel (ir.blockingScope) and the artifact
+	// channel's runtime backstop (engine.Scope.passedGateArtifactRuntimePath,
+	// which mirrors engine.Scope.stepRuntimePath's gate arm): a passed gate is
+	// transparent to its generate: subtree ONLY. A one-shot opaqueScopePrefix +
+	// isGateScope check here (peeling any gate scope unconditionally) diverges
+	// from that rule — it would validate clean for a gate reached via evaluate:,
+	// and for a map body reached only through an intervening gate, both of which
+	// the runtime rejects. The AWF5002-vs-AWF5003 split lives on the scalar path
+	// only (checkRef); this artifact-path check just needs blocked, so the
+	// peeledGate return is discarded.
+	if _, _, blocked := blockingScope(p.path, consumerPath); blocked {
 		c.errf(diagnosticPath, "AWF3007", label+": producer "+id+" is inside a gate/map scope not reachable from here")
 	}
 }

@@ -378,7 +378,7 @@ func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string, wf *ir.Workf
 		b := reduceBranch{N: mr.N, Outputs: map[string]any{}, Files: map[string]string{}}
 		committed := false
 		for _, producer := range producers {
-			itemStepPath, gateForwarded, resolved := itemBodyStepPath(rs, mapPath, mr.N, producer.suffix)
+			itemStepPath, resolved := itemBodyStepPath(rs, mapPath, mr.N, producer.suffix)
 			if !resolved {
 				continue // gate-nested producer with no passed attempt for this item
 			}
@@ -387,11 +387,11 @@ func collectReduceBranches(rs *RunState, n *ir.Map, mapPath string, wf *ir.Workf
 				continue
 			}
 			committed = true
-			if !gateForwarded {
-				// Gate SCALARS stay gate-scoped (man:744-747); only files forward.
-				for k, v := range nr.Outputs {
-					b.Outputs[k] = v
-				}
+			// A passed gate is transparent to its generate: subtree, so a
+			// gate-nested producer contributes its ACCEPTED attempt's typed
+			// outputs exactly like a plain body producer.
+			for k, v := range nr.Outputs {
+				b.Outputs[k] = v
 			}
 			stepScope := NewScope(rs, wf, itemStepPath)
 			for _, of := range producer.outputFiles {

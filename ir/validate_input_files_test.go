@@ -210,6 +210,74 @@ func TestInputFilesProducerInsidePassedGateAllowed(t *testing.T) {
 	assertNoErrorCode(t, Validate(ld), "AWF3007")
 }
 
+// A named artifact produced by a gate's EVALUATOR (evaluate:) is NOT promoted
+// out of the gate — the verdict stays gate-internal by design, same as the
+// scalar channel (TestGateEvaluatorRefFromOutsideRejected). Before this fix,
+// validateParsedNamedArtifactRef peeled ANY gate scope via isGateScope, so
+// this validated clean. The runtime counterpart is
+// engine/artifact_scope.go's passedGateArtifactRuntimePath — NOT
+// engine/scope.go's stepRuntimePath, which the artifact channel never reaches
+// at all (ResolveArtifactPath calls passedGateArtifactRuntimePath directly and
+// only falls through to stepRuntimePath when it declines). Until
+// passedGateArtifactRuntimePath got its own generate:-only check, it had no
+// backstop for this case either — this validation fix and that runtime fix now
+// enforce the same rule independently.
+func TestInputFilesRefIntoGateEvaluateFromOutsideRejected(t *testing.T) {
+	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers: awf5003Container(),
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{reconProducer()},
+				Evaluate: NodeList{&CodeStep{
+					ID: "judge", Container: "c", Run: "true", OutputSchema: schema,
+					OutputFiles: OutputFiles{{Name: "verdict", Path: "/out/verdict.json"}},
+				}},
+				Until:       Expr("{{ step.judge.exit_code == 0 }}"),
+				MaxAttempts: 2,
+			},
+			&CodeStep{ID: "hunt", Container: "c", Run: "true",
+				InputFiles: map[string]string{"/work/verdict.json": "step.judge.files.verdict"}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
+}
+
+// A producer at map[0].body.gate[0].generate.x, read from OUTSIDE the map, is
+// map opacity reopened through a gate: SingleMapBodyShape returns false for
+// any path containing "gate[", so the old one-shot opaqueScopePrefix +
+// isGateScope check found only the innermost (gate) scope and peeled it,
+// validating clean. blockingScope walks outward and still blocks on the
+// enclosing map. This is a validation-only guarantee for the artifact
+// channel: engine/artifact_scope.go's passedGateArtifactRuntimePath keys off
+// the innermost gate (gateScopePrefix) the same way the old validator did — it
+// has no enclosing-map-boundary check of its own (out of scope for this fix;
+// see engine.Scope.stepRuntimePath's map arm for the scalar channel's
+// principled version) — so this workflow shape must never reach the runtime
+// unrejected, which is exactly what this test pins.
+func TestInputFilesRefIntoGateInsideMapFromOutsideMapRejected(t *testing.T) {
+	schema := &JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	ld := makeLD(&Workflow{
+		ID: "x", Version: 1,
+		Containers:  awf5003Container(),
+		InputSchema: &JSONSchema{"type": "object", "required": []any{"xs"}, "properties": map[string]any{"xs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}, "additionalProperties": false},
+		Graph: NodeList{
+			&Map{Over: Expr("{{ input.xs }}"), As: "x", Container: "c", Concurrency: intPtr(1), Body: NodeList{
+				&Gate{
+					Generate:    NodeList{reconProducer()},
+					Evaluate:    NodeList{&CodeStep{ID: "judge", Container: "c", Run: "true", OutputSchema: schema}},
+					Until:       Expr("{{ step.judge.exit_code == 0 }}"),
+					MaxAttempts: 2,
+				},
+			}},
+			&CodeStep{ID: "hunt", Container: "c", Run: "true",
+				InputFiles: map[string]string{"/work/report.md": "step.recon.files.report"}},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF3007", "hunt")
+}
+
 // Agent-step consumer also validates input_files.
 func TestInputFilesAgentConsumerUndeclaredReportsAWF3007(t *testing.T) {
 	ld := makeLD(&Workflow{

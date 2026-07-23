@@ -118,10 +118,25 @@ func attemptPath(fullPath, gatePrefix string, attempts []AttemptResult) string {
 	return ""
 }
 
+// passedGateArtifactRuntimePath keys off only the INNERMOST gate
+// (gateScopePrefix) and does not itself check for an enclosing scope (an
+// outer evaluate:, or an enclosing map body) between staticPath and the
+// reference site — unlike stepRuntimePath (engine/scope.go), which folds
+// outward segment by segment. That's fine: validation (ir.blockingScope)
+// already rejects those shapes (AWF5003) before the engine ever resolves
+// them, the same validation backstop itemBodyStepPath's doc comment notes
+// for the loop / >1-gate case.
 func (s *Scope) passedGateArtifactRuntimePath(staticPath string) (string, bool, error) {
 	gateStatic, ok := gateScopePrefix(staticPath)
 	if !ok || runtimePathWithinGate(s.ctxPath, gateStatic) {
 		return "", false, nil
+	}
+	// A passed gate is transparent to its generate: subtree ONLY — the
+	// evaluator's artifacts stay gate-internal, same as its scalar verdict.
+	// Mirrors stepRuntimePath's gate arm (engine/scope.go); validation
+	// enforces this too (ir.blockingScope).
+	if !strings.HasPrefix(strings.TrimPrefix(staticPath, gateStatic+"."), "generate.") {
+		return "", true, template.EvalErrf(template.EvalCodeRefUnresolved, "artifact ref: step inside gate %q is not referenceable from outside: only the gate's generate: producers forward; the evaluator's artifacts stay gate-internal", gateStatic)
 	}
 	if p := attemptPath(staticPath, gateStatic, s.rs.LookupGateAttempts(gateStatic)); p != "" {
 		return p, true, nil
@@ -130,25 +145,24 @@ func (s *Scope) passedGateArtifactRuntimePath(staticPath string) (string, bool, 
 }
 
 // itemBodyStepPath returns the committed runtime path of a map body producer for
-// item n, plus whether it was forwarded through an enclosing gate. A plain
-// producer resolves to ItemStepPath(mapPath, n, suffix). A producer nested in a
-// single gate ran across attempts and committed at an attempt-suffixed path;
-// this splices in the ACCEPTED attempt via the shared attemptPath helper.
-// gateForwarded lets the caller keep the gate's SCALAR outputs gate-scoped and
-// forward only durable files. ok is false when the producer is gate-nested but
-// the gate did not run / has no passed attempt for this item (e.g. a gate in a
-// not-taken if-branch) → the caller compacts. Producers under a loop or >1 gate
-// are rejected at validation (Task 2), so this handles at most one gate.
-func itemBodyStepPath(rs *RunState, mapPath string, n int, suffix string) (string, bool, bool) {
+// item n, and whether it resolved. A plain producer resolves to
+// ItemStepPath(mapPath, n, suffix). A producer nested in a single gate ran across
+// attempts and committed at an attempt-suffixed path; this splices in the
+// ACCEPTED attempt via the shared attemptPath helper. ok is false when the
+// producer is gate-nested but the gate did not run / has no passed attempt for
+// this item (e.g. a gate in a not-taken if-branch) → the caller compacts.
+// Producers under a loop or >1 gate are rejected at validation (AWF5007), so this
+// handles at most one gate.
+func itemBodyStepPath(rs *RunState, mapPath string, n int, suffix string) (string, bool) {
 	gateRel, isGate := gateScopePrefix(suffix)
 	if !isGate {
-		return ItemStepPath(mapPath, n, suffix), false, true
+		return ItemStepPath(mapPath, n, suffix), true
 	}
 	itemGatePath := ItemStepPath(mapPath, n, gateRel)
 	if p := attemptPath(ItemStepPath(mapPath, n, suffix), itemGatePath, rs.LookupGateAttempts(itemGatePath)); p != "" {
-		return p, true, true
+		return p, true
 	}
-	return "", true, false
+	return "", false
 }
 
 func gateScopePrefix(staticPath string) (string, bool) {

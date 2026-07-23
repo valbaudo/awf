@@ -935,6 +935,68 @@ func TestScopeResolveArtifactPathFromPassedGateAttempt(t *testing.T) {
 	}
 }
 
+// TestScopeResolveArtifactPathGateEvaluatorRejectedFromOutside is the artifact
+// channel's counterpart to TestScopeResolveArtifactPathFromPassedGateAttempt:
+// a passed gate is transparent to its generate: subtree ONLY
+// (engine.Scope.stepRuntimePath's gate arm, mirrored here by
+// passedGateArtifactRuntimePath). An artifact ref from outside the gate into
+// the EVALUATOR's own output_files must still error — the judge's artifact
+// stays gate-internal by the same rule that keeps its scalar verdict internal
+// — while a ref into the generate: producer's artifact from that same outside
+// scope keeps resolving to the accepted attempt.
+func TestScopeResolveArtifactPathGateEvaluatorRejectedFromOutside(t *testing.T) {
+	schema := &ir.JSONSchema{"type": "object", "required": []any{"ok"}, "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "additionalProperties": false}
+	wf := &ir.Workflow{
+		ID: "test", Version: 1,
+		Containers: map[string]ir.Container{"lab": {Image: fakeShaImage}},
+		Graph: ir.NodeList{
+			&ir.Gate{
+				Generate: ir.NodeList{
+					&ir.CodeStep{ID: "recon", Container: "lab", Run: "true", OutputFiles: ir.OutputFiles{{Name: "report", Path: "/out/report.md"}}},
+				},
+				Evaluate: ir.NodeList{
+					&ir.CodeStep{ID: "judge", Container: "lab", Run: "true", OutputSchema: schema, OutputFiles: ir.OutputFiles{{Name: "verdict", Path: "/out/verdict.json"}}},
+				},
+				Until:       ir.Expr("{{ evaluate.ok }}"),
+				MaxAttempts: 2,
+			},
+			&ir.CodeStep{ID: "hunt", Container: "lab", Run: "true"},
+		},
+	}
+	rs := NewRunState(testRunID, "digest", nil)
+	rs.RecordCompleted("gate[0].attempt-1.generate.recon", NodeResult{
+		Outcome: OutcomeOK,
+		Files:   map[string]string{"/out/report.md": "gen-blob"},
+	})
+	rs.RecordCompleted("gate[0].attempt-1.evaluate.judge", NodeResult{
+		Outcome: OutcomeOK,
+		Files:   map[string]string{"/out/verdict.json": "verdict-blob"},
+	})
+	rs.RecordGateAttempt("gate[0]", AttemptResult{N: 1, AttemptOutcome: AttemptPassed, Verdict: map[string]any{"ok": true}})
+
+	sc := NewScope(rs, wf, "hunt")
+
+	// The generate: producer's artifact still forwards through the accepted attempt.
+	cas, err := sc.ResolveArtifactPath("recon", "/out/report.md")
+	if err != nil {
+		t.Fatalf("ResolveArtifactPath(recon): %v", err)
+	}
+	if cas != "gen-blob" {
+		t.Errorf("cas = %q, want gen-blob", cas)
+	}
+
+	// The evaluator's artifact must NOT resolve from outside the gate — the
+	// judge's verdict (and its artifacts) stay gate-internal by design.
+	_, err = sc.ResolveArtifactPath("judge", "/out/verdict.json")
+	if err == nil {
+		t.Fatalf("ResolveArtifactPath(judge) from outside the gate: want error, got nil (evaluator artifact leaked through the gate boundary)")
+	}
+	var ee *template.EvalError
+	if !errors.As(err, &ee) || ee.Code != template.EvalCodeRefUnresolved {
+		t.Errorf("ResolveArtifactPath(judge): err=%v, want AWF4002 (EvalCodeRefUnresolved)", err)
+	}
+}
+
 // reducedMapWorkflow is a workflow whose only map (map[0]) declares a reduce:
 // over a body step `scan`. Used by the Task-11 scope-preference tests.
 func reducedMapWorkflow() *ir.Workflow {
@@ -1593,5 +1655,144 @@ func TestAbsentDueToUntakenIf(t *testing.T) {
 				t.Fatalf("absentDueToUntakenIf(%q)=%v, want %v", tc.runtimePath, got, tc.want)
 			}
 		})
+	}
+}
+
+// gateWorkflow is a workflow whose only node is a gate with one generate step
+// (gen1) and one evaluate step (eval1). StepPathIndex maps "gen1" to the static
+// path "gate[0].generate.gen1", which is what the scope resolves against.
+func gateWorkflow() *ir.Workflow {
+	return &ir.Workflow{
+		ID:      "gatewf",
+		Version: 1,
+		Graph: ir.NodeList{
+			&ir.Gate{
+				Generate: ir.NodeList{
+					&ir.CodeStep{ID: "gen1", Run: "gen", Container: "c0"},
+				},
+				Evaluate: ir.NodeList{
+					&ir.CodeStep{ID: "eval1", Run: "eval", Container: "c0"},
+				},
+				Until:       ir.Expr("{{ evaluate.verified }}"),
+				MaxAttempts: 3,
+			},
+		},
+	}
+}
+
+func TestScopeResolveStepFromOutsidePassedGate(t *testing.T) {
+	// Attempt 1 was rejected, attempt 2 passed. A reference from OUTSIDE the
+	// gate must resolve to attempt 2's committed generate output — the ACCEPTED
+	// attempt, not the first and not merely the latest-by-position.
+	rs := &RunState{
+		RunID: testRunID,
+		GateAttempts: map[string][]AttemptResult{
+			"gate[0]": {
+				{N: 1, AttemptOutcome: AttemptRejected},
+				{N: 2, AttemptOutcome: AttemptPassed},
+			},
+		},
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-1.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "first"}},
+			"gate[0].attempt-2.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "accepted"}},
+		},
+	}
+	sc := NewScope(rs, gateWorkflow(), "after_gate")
+
+	ref := mustParseRef(t, "step.gen1.punti")
+	v, err := sc.Resolve(ref)
+	if err != nil {
+		t.Fatalf("step.gen1.punti from outside a passed gate: %v", err)
+	}
+	if v != "accepted" {
+		t.Errorf("step.gen1.punti = %v, want \"accepted\" (attempt-2, the accepted attempt)", v)
+	}
+}
+
+func TestScopeResolveStepFromInsideGateStillUsesOwnAttempt(t *testing.T) {
+	// Regression guard: from INSIDE attempt 1, the sibling reference must still
+	// resolve to attempt 1's own output, NOT the accepted attempt. The fallback
+	// must only fire when the reference site is outside the gate.
+	rs := &RunState{
+		RunID: testRunID,
+		GateAttempts: map[string][]AttemptResult{
+			"gate[0]": {
+				{N: 1, AttemptOutcome: AttemptRejected},
+				{N: 2, AttemptOutcome: AttemptPassed},
+			},
+		},
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-1.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "first"}},
+			"gate[0].attempt-2.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "accepted"}},
+		},
+	}
+	sc := NewScope(rs, gateWorkflow(), "gate[0].attempt-1.evaluate.eval1")
+
+	ref := mustParseRef(t, "step.gen1.punti")
+	v, err := sc.Resolve(ref)
+	if err != nil {
+		t.Fatalf("step.gen1.punti from inside attempt-1: %v", err)
+	}
+	if v != "first" {
+		t.Errorf("step.gen1.punti = %v, want \"first\" (attempt-1's own output)", v)
+	}
+}
+
+func TestScopeResolveStepFromOutsideGateThatNeverRan(t *testing.T) {
+	// No attempts recorded — the gate did not run (e.g. a non-taken if branch,
+	// or a reference evaluated before the gate). Must be a clear error naming
+	// the gate, never a silent zero value.
+	rs := &RunState{
+		RunID:        testRunID,
+		GateAttempts: map[string][]AttemptResult{},
+		Completed:    map[string]NodeResult{},
+	}
+	sc := NewScope(rs, gateWorkflow(), "after_gate")
+
+	ref := mustParseRef(t, "step.gen1.punti")
+	if _, err := sc.Resolve(ref); err == nil {
+		t.Fatal("step.gen1.punti with no accepted attempt: err = nil, want error")
+	} else if !strings.Contains(err.Error(), "gate[0]") {
+		t.Errorf("error %q does not name the gate path %q", err.Error(), "gate[0]")
+	}
+}
+
+func TestScopeResolveStepFromOutsideRejectedGate(t *testing.T) {
+	// All attempts rejected: no AttemptPassed exists, so there is nothing to
+	// forward. Must error rather than fall back to the last rejected attempt.
+	rs := &RunState{
+		RunID: testRunID,
+		GateAttempts: map[string][]AttemptResult{
+			"gate[0]": {{N: 1, AttemptOutcome: AttemptRejected}},
+		},
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-1.generate.gen1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"punti": "rejected"}},
+		},
+	}
+	sc := NewScope(rs, gateWorkflow(), "after_gate")
+
+	ref := mustParseRef(t, "step.gen1.punti")
+	if _, err := sc.Resolve(ref); err == nil {
+		t.Fatal("step.gen1.punti with only rejected attempts: err = nil, want error")
+	}
+}
+
+func TestScopeResolveEvaluatorFromOutsideGateRejected(t *testing.T) {
+	// Validation is the primary gate, but gate integrity is engine-enforced:
+	// the runtime must refuse an evaluator reference from outside even if a
+	// malformed definition reaches it.
+	rs := &RunState{
+		RunID: testRunID,
+		GateAttempts: map[string][]AttemptResult{
+			"gate[0]": {{N: 1, AttemptOutcome: AttemptPassed}},
+		},
+		Completed: map[string]NodeResult{
+			"gate[0].attempt-1.evaluate.eval1": {Outcome: OutcomeOK, ExitCode: intp(0), Outputs: map[string]any{"verified": true}},
+		},
+	}
+	sc := NewScope(rs, gateWorkflow(), "after_gate")
+
+	if _, err := sc.Resolve(mustParseRef(t, "step.eval1.verified")); err == nil {
+		t.Fatal("resolving a gate EVALUATOR step from outside the gate: err = nil, want error")
 	}
 }

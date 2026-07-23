@@ -598,11 +598,15 @@ func runtimeMapPathToStatic(runtimePath string) string {
 //     the loop) or the latest completed iter (ctxPath outside): a loop ref
 //     resolves to "the most recent iteration" (spec §5.2), so loops are
 //     transparent from outside.
-//   - gate[N] → gate[N].attempt-M — M is the attempt ctxPath sits in. A gate's
-//     internal steps are referenceable ONLY from within the same attempt
-//     (generate sibling, evaluate, or until); from outside there is no defined
-//     "which attempt", so this errors (AWF4002). The gate's product is read via
-//     evaluate.<field>, not by addressing its internal steps.
+//   - gate[N] → gate[N].attempt-M — from inside the gate, M is the attempt
+//     ctxPath sits in (generate sibling, evaluate, or until). From outside a
+//     passed gate, M is the ACCEPTED attempt — but ONLY when the reference
+//     resolves through the gate's generate: subtree; a passed gate has exactly
+//     one accepted attempt, because engine/gate.go returns OutcomeOK the
+//     instant an attempt passes. A reference into the gate's evaluate: subtree
+//     from outside errors: the evaluator's verdict stays gate-internal by
+//     design. If no attempt passed (the gate did not run, or every attempt was
+//     rejected), this errors too (AWF4002).
 //   - map[N].body → map[N].item-K — K is the item ctxPath sits in. Map body
 //     steps are referenceable ONLY from within the same item; items run
 //     concurrently so there is no "most recent" — a cross-item / external ref
@@ -652,16 +656,35 @@ func (s *Scope) stepRuntimePath(staticPath string) (string, error) {
 		default:
 			cur = appendSeg(cur, seg)
 			if strings.HasPrefix(seg, "gate[") {
-				// gate[N] → gate[N].attempt-M (inserted before the following
-				// generate/evaluate/until segment).
+				// gate[N] → gate[N].attempt-M.
 				m, matched, err := s.instanceFromCtx(cur, attemptSep)
 				if err != nil {
 					return "", err
 				}
-				if !matched {
-					return "", fmt.Errorf("step inside gate %q is only referenceable from within the same attempt; read the gate's product via evaluate.<field>", cur)
+				if matched {
+					// Reference site is INSIDE this gate: same-attempt resolution.
+					cur = AttemptPath(cur, m)
+				} else {
+					// Reference site is OUTSIDE this gate. A passed gate is
+					// transparent to its generate: subtree ONLY — the
+					// evaluator's verdict stays gate-internal. Validation
+					// enforces this too (ir.blockingScope); this is the
+					// engine-side backstop.
+					if i+1 >= len(segments) || segments[i+1] != "generate" {
+						return "", fmt.Errorf("step inside gate %q is not referenceable from outside: only the gate's generate: producers forward; the evaluator's verdict stays gate-internal", cur)
+					}
+					// A passed gate has exactly one accepted attempt, because
+					// engine/gate.go returns OutcomeOK the instant an attempt
+					// passes — this can never observe an in-flight gate.
+					// attemptPath is the same newest-first scan the artifact
+					// channel uses, shared so the scalar and file rules cannot
+					// drift.
+					accepted := attemptPath(cur, cur, s.rs.LookupGateAttempts(cur))
+					if accepted == "" {
+						return "", fmt.Errorf("step inside gate %q is not referenceable from outside: the gate has no accepted attempt (it did not run, or every attempt was rejected)", cur)
+					}
+					cur = accepted
 				}
-				cur = AttemptPath(cur, m)
 			}
 		}
 	}
