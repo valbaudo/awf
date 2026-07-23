@@ -446,6 +446,30 @@ func TestRefsAgentSchemaReferencedInCallInputNoAWF3002(t *testing.T) {
 	assertNoCode(t, Validate(ld), "AWF3002")
 }
 
+// TestRefsQuorumAgentBodyNoAWF3002 covers the quorum-reduce fan-in: an agent
+// body step whose output_schema declares the quorum field: is consumed by the
+// quorum tally (it counts that field across branches), so it must NOT trip
+// AWF3002 even though nothing writes a step.<id>.<field> ref into it.
+func TestRefsQuorumAgentBodyNoAWF3002(t *testing.T) {
+	quorum := Ratio("2")
+	ld := makeLD(&Workflow{
+		ID: "jury", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				ID: "m", Over: `["a","b","c"]`, As: "it", Container: "c",
+				Body: NodeList{
+					&AgentStep{ID: "vote", Container: "c", Uses: "example/judge",
+						With:         RawConfig{"prompt": "{{ it }}"},
+						OutputSchema: objectSchema("ok")},
+				},
+				Reduce: &Reduce{Quorum: &quorum, Field: "ok"},
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF3002")
+}
+
 // TestRefsAgentGateEvaluatorNoAWF3002 covers P12: an agent-step gate evaluator
 // whose typed output is consumed only via {{ evaluate.verified }} must NOT trip
 // AWF3002. Code-step evaluators never fire it (kind != "agent"), which is why

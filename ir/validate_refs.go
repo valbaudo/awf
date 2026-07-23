@@ -377,12 +377,51 @@ func walkRefs(nodes NodeList, parent string, c *collector, producers map[string]
 			// (AWF1009/AWF1019). Not a Template — no Slots/ParseRef walk here.
 			walkRefs(v.Body, ChildPath(parent, "map", i, "body"), c, producers, maps, referenced, evaluateAllowed, "")
 			checkReduceRefs(v.Reduce, path, c, producers, maps, referenced, evaluateAllowed)
+			markQuorumFieldReferenced(v, referenced)
 		case *Compose:
 			path := PathFor(parent, "compose", "", i)
 			checkTemplateRefs(string(v.Service), path+".service", c, producers, maps, referenced, evaluateAllowed, "")
 			walkRefs(v.Body, ChildPath(parent, "compose", i, "body"), c, producers, maps, referenced, evaluateAllowed, "")
 		}
 	}
+}
+
+// markQuorumFieldReferenced marks every body step that declares the quorum
+// reduce's field: as referenced. A quorum reducer's tally counts that field
+// across all branches — a genuine read into the producer's output — so AWF3002
+// must not flag it as an unreferenced agent schema. Mirrors bodyDeclaresField
+// (validate_reduce.go) but marks the located producer instead of returning a bool.
+func markQuorumFieldReferenced(m *Map, referenced map[string]bool) {
+	if m.Reduce == nil || m.Reduce.Quorum == nil {
+		return
+	}
+	field := strings.TrimSpace(m.Reduce.Field)
+	if field == "" {
+		return
+	}
+	WalkNodes(m.Body, "", func(n Node, _ string) {
+		var id string
+		var schema *JSONSchema
+		switch s := n.(type) {
+		case *CodeStep:
+			id, schema = s.ID, s.OutputSchema
+		case *AgentStep:
+			id, schema = s.ID, s.OutputSchema
+		default:
+			return
+		}
+		if schema == nil {
+			return
+		}
+		props, ok := (*schema)["properties"].(map[string]any)
+		if !ok {
+			referenced[id] = true // no explicit properties → cannot disprove; treat as declaring
+			return
+		}
+		if _, ok := props[field]; ok {
+			referenced[id] = true
+		}
+	})
 }
 
 func checkReduceRefs(r *Reduce, mapPath string, c *collector, producers map[string]producer, maps map[string]*Map, referenced map[string]bool, evaluateAllowed bool) {
