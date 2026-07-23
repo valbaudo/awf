@@ -1505,10 +1505,20 @@ func TestScopeResolveAsBindingNestedMaps(t *testing.T) {
 }
 
 func TestRuntimeMapPathToStatic(t *testing.T) {
-	// CR-A fix: pins the conversion rule (.item-K preceded by map[X] →
-	// .body) for the walker's static-idx lookup. Covers nested maps, leaves
-	// loop iter-K untouched, and doesn't false-positive on step IDs that
-	// happen to match "item-\d+".
+	// Pins the conversion rule for the walker's static-idx lookup: a static
+	// path (ir.PathFor / ir.ChildPath) carries NO instance segments, so every
+	// multiplicity boundary the runtime path threads through must be
+	// normalized away, not just map[X]'s item-K:
+	//   - .item-K preceded by map[X]          → .body
+	//   - .attempt-M preceded by gate[X]       → dropped
+	//   - .iter-K preceded by loop[X].body     → dropped
+	// (the loop-untouched / gate-untouched behavior this replaces was the
+	// latent bug jury-panel Task 5 surfaced: a map nested inside a gate's
+	// evaluate:, or inside a loop's body, could never resolve its OWN <as>
+	// binding because the static lookup key never matched the attempt-/iter-
+	// bearing runtime path). Also covers nested maps and confirms no
+	// false-positive on step IDs that happen to match "item-\d+"/"attempt-\d+"/
+	// "iter-\d+" without the right preceding static ancestor.
 	cases := []struct {
 		name string
 		in   string
@@ -1535,9 +1545,12 @@ func TestRuntimeMapPathToStatic(t *testing.T) {
 			"map[0].body.map[0].body",
 		},
 		{
-			"loop iter inside map.body: iter-K untouched, item-K converts",
+			"loop iter inside map.body: iter-K DROPPED, item-K converts to body",
+			// Corrected rule: iter-3 is a loop instance segment (preceded by
+			// loop[0].body) and has no static-path equivalent, so it must be
+			// dropped — the old "untouched" expectation here was the latent bug.
 			"map[0].item-0.loop[0].body.iter-3",
-			"map[0].body.loop[0].body.iter-3",
+			"map[0].body.loop[0].body",
 		},
 		{
 			"step id literally 'item-3' inside map.body NOT preceded by map[X]",
@@ -1549,9 +1562,29 @@ func TestRuntimeMapPathToStatic(t *testing.T) {
 			"map[0].body.process.item-3",
 		},
 		{
-			"map nested inside loop body: no item-K-after-map[X] pattern",
+			"map nested inside loop body: iter-K DROPPED (a map resolving its own <as> from inside a loop)",
 			"loop[0].body.iter-1.map[0]",
-			"loop[0].body.iter-1.map[0]",
+			"loop[0].body.map[0]",
+		},
+		{
+			"gate attempt dropped, item-K converts to body: a jury-panel gate.evaluate map resolving its own <as>",
+			"gate[0].attempt-1.evaluate.map[0].item-2.vote",
+			"gate[0].evaluate.map[0].body.vote",
+		},
+		{
+			"nested gate-in-map: attempt dropped at the OUTER map's item boundary too",
+			"map[0].item-0.gate[0].attempt-2.evaluate.map[0].item-1.vote",
+			"map[0].body.gate[0].evaluate.map[0].body.vote",
+		},
+		{
+			"step id literally 'attempt-3' NOT preceded by gate[X]",
+			"map[0].item-0.process.attempt-3",
+			"map[0].body.process.attempt-3",
+		},
+		{
+			"step id literally 'iter-3' NOT preceded by loop[X].body",
+			"map[0].item-0.process.iter-3",
+			"map[0].body.process.iter-3",
 		},
 		{"empty string", "", ""},
 	}
