@@ -1023,17 +1023,17 @@ func TestScopeAggregatePrefersReducedOutput(t *testing.T) {
 	// MAP path must win.
 	rs.RecordMapItem("map[0]", MapItemRecord{N: 0, ItemValue: "x", Status: ItemPassed})
 	rs.RecordCompleted("map[0].item-0.scan", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"ok": true}})
-	rs.RecordCompleted("map[0]", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"passed": true, "votes": 1, "agree": 1}})
+	rs.RecordCompleted("map[0]", NodeResult{Outcome: OutcomeOK, Outputs: map[string]any{"ok": true, "votes": 1, "agree": 1}})
 
 	sc := NewScope(rs, wf, "after_map")
 
 	// 3-seg field ref → the reduced field, NOT a single-element array.
-	got, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "scan"}, {Ident: "passed"}}})
+	got, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "scan"}, {Ident: "ok"}}})
 	if err != nil {
-		t.Fatalf("step.scan.passed: %v", err)
+		t.Fatalf("step.scan.ok: %v", err)
 	}
 	if got != true {
-		t.Errorf("step.scan.passed = %#v, want true (the reduced output, not an array)", got)
+		t.Errorf("step.scan.ok = %#v, want true (the reduced output, not an array)", got)
 	}
 
 	// 2-seg whole-output ref → the reduced object itself, NOT [{...}].
@@ -1045,8 +1045,8 @@ func TestScopeAggregatePrefersReducedOutput(t *testing.T) {
 	if !ok {
 		t.Fatalf("step.scan = %#v, want map[string]any (the reduced object)", whole)
 	}
-	if m["passed"] != true || m["agree"] != 1 {
-		t.Errorf("step.scan = %#v, want the reduced {passed,votes,agree}", m)
+	if m["ok"] != true || m["agree"] != 1 {
+		t.Errorf("step.scan = %#v, want the reduced {ok,votes,agree}", m)
 	}
 }
 

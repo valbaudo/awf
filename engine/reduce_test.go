@@ -80,8 +80,8 @@ func TestRunReduceQuorumMet(t *testing.T) {
 	if !ok {
 		t.Fatalf("no NodeResult committed at %q", testMapPath)
 	}
-	if nr.Outputs["passed"] != true {
-		t.Errorf("passed = %v, want true", nr.Outputs["passed"])
+	if nr.Outputs["vulnerable"] != true {
+		t.Errorf("vulnerable = %v, want true", nr.Outputs["vulnerable"])
 	}
 	if nr.Outputs["votes"] != 3 {
 		t.Errorf("votes = %v, want 3", nr.Outputs["votes"])
@@ -93,9 +93,10 @@ func TestRunReduceQuorumMet(t *testing.T) {
 
 // TestQuorumReduceOutputMatchesVerdictFields pins the cross-package contract
 // (SRP-4): runQuorumReduce must commit EXACTLY the keys ir.QuorumVerdictFields
-// declares — the set the validator binds downstream refs against. If the engine
-// adds/renames a verdict key without updating ir.QuorumVerdictFields (or vice
-// versa), this fails, closing the producer/validator drift gap.
+// declares PLUS one field-named key (r.Field) — the set the validator binds
+// downstream refs against. If the engine adds/renames a verdict key without
+// updating ir.QuorumVerdictFields (or vice versa), this fails, closing the
+// producer/validator drift gap.
 func TestQuorumReduceOutputMatchesVerdictFields(t *testing.T) {
 	rig := newReduceRig(t)
 	branches := []reduceBranch{{N: 0, Outputs: map[string]any{"vulnerable": true}}}
@@ -109,19 +110,25 @@ func TestQuorumReduceOutputMatchesVerdictFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("no NodeResult committed at %q", testMapPath)
 	}
-	if len(nr.Outputs) != len(ir.QuorumVerdictFields) {
-		t.Fatalf("quorum verdict %v has %d keys, want %d (ir.QuorumVerdictFields=%v)",
-			nr.Outputs, len(nr.Outputs), len(ir.QuorumVerdictFields), ir.QuorumVerdictFields)
+	if len(nr.Outputs) != len(ir.QuorumVerdictFields)+1 {
+		t.Fatalf("quorum verdict %v has %d keys, want %d (ir.QuorumVerdictFields=%v + field %q)",
+			nr.Outputs, len(nr.Outputs), len(ir.QuorumVerdictFields)+1, ir.QuorumVerdictFields, r.Field)
 	}
 	for k := range nr.Outputs {
-		if !ir.QuorumVerdictFields[k] {
-			t.Errorf("quorum verdict key %q absent from ir.QuorumVerdictFields %v — producer/validator drift",
-				k, ir.QuorumVerdictFields)
+		if k != r.Field && !ir.QuorumVerdictFields[k] {
+			t.Errorf("quorum verdict key %q is neither field %q nor in ir.QuorumVerdictFields %v — producer/validator drift",
+				k, r.Field, ir.QuorumVerdictFields)
 		}
+	}
+	if _, ok := nr.Outputs["votes_detail"]; !ok {
+		t.Errorf("quorum verdict %v missing votes_detail", nr.Outputs)
 	}
 }
 
 func TestRunReduceQuorumNotMet(t *testing.T) {
+	// jury-panel Task 1: a not-met quorum is no longer a mechanical failure — it
+	// ALWAYS commits {field:false,...} and returns ok (a vote tally is a
+	// quality/business outcome, not a transient fault).
 	rig := newReduceRig(t)
 	branches := []reduceBranch{
 		{N: 0, Outputs: map[string]any{"vulnerable": true}},
@@ -132,24 +139,32 @@ func TestRunReduceQuorumNotMet(t *testing.T) {
 	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	oc, err := runReduce(context.Background(), r, testMapPath, branches, len(branches), minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
-	if oc != OutcomeRetryableFailure {
-		t.Fatalf("Outcome = %q (err=%v), want retryable_failure", oc, err)
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
 	}
-	if err == nil {
-		t.Fatalf("want a non-nil error explaining the missed quorum")
+	if oc != OutcomeOK {
+		t.Fatalf("Outcome = %q, want ok (a missed quorum commits, does not fail)", oc)
 	}
-	if _, ok := rig.rs.LookupCompleted(testMapPath); ok {
-		t.Errorf("a not-met quorum must NOT commit a NodeResult at %q (mirrors min_success)", testMapPath)
+	nr, ok := rig.rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("a not-met quorum must still commit a NodeResult at %q", testMapPath)
+	}
+	if nr.Outputs["vulnerable"] != false {
+		t.Errorf("vulnerable = %v, want false", nr.Outputs["vulnerable"])
+	}
+	if nr.Outputs["agree"] != 2 {
+		t.Errorf("agree = %v, want 2", nr.Outputs["agree"])
 	}
 }
 
 func TestRunReduceQuorumThresholdIsCohortNotSurvivors(t *testing.T) {
 	// Regression: the quorum threshold k must be measured against the fan-out
 	// COHORT, not the survivor count. With 3 items where 2 crashed mechanically
-	// (absent from branches) and the 1 survivor agrees, a quorum: 2 must FAIL —
+	// (absent from branches) and the 1 survivor agrees, a quorum: 2 must MISS —
 	// the author asked for 2 agreeing branches over a cohort of 3, and only 1
 	// agrees. (The old code measured k against len(branches)=1 and the int-cap
-	// `if i > total` silently lowered need to 1, vacuously passing.)
+	// `if i > total` silently lowered need to 1, vacuously passing.) The miss
+	// still commits {field:false,...} and returns ok (jury-panel Task 1).
 	rig := newReduceRig(t)
 	branches := []reduceBranch{
 		{N: 0, Outputs: map[string]any{"vulnerable": true}}, // the only survivor; agrees
@@ -159,35 +174,46 @@ func TestRunReduceQuorumThresholdIsCohortNotSurvivors(t *testing.T) {
 	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	oc, err := runReduce(context.Background(), r, testMapPath, branches, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
-	if oc != OutcomeRetryableFailure {
-		t.Fatalf("quorum 2 over cohort 3 with 1 agreeing survivor: outcome = %q (err=%v), want retryable_failure", oc, err)
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
 	}
-	if err == nil {
-		t.Fatal("want a non-nil error explaining the missed quorum")
+	if oc != OutcomeOK {
+		t.Fatalf("quorum 2 over cohort 3 with 1 agreeing survivor: outcome = %q, want ok (a missed quorum commits)", oc)
 	}
-	if _, ok := rig.rs.LookupCompleted(testMapPath); ok {
-		t.Errorf("a not-met quorum must NOT commit a NodeResult at %q", testMapPath)
+	nr, ok := rig.rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("a not-met quorum must still commit a NodeResult at %q", testMapPath)
+	}
+	if nr.Outputs["vulnerable"] != false {
+		t.Errorf("vulnerable = %v, want false (1 agreeing survivor over cohort 3 does not meet quorum 2)", nr.Outputs["vulnerable"])
 	}
 }
 
 func TestRunReduceQuorumAllBranchesCrashedIsNotVacuousPass(t *testing.T) {
 	// Regression: when EVERY branch crashes mechanically (branches empty) a
 	// quorum must NOT vacuously pass with zero votes. quorum: 2 over a cohort of
-	// 3 with 0 survivors → need=2, agree=0 → retryable_failure (the old code:
-	// need=min(2,0)=0, agree=0 → passed with votes=0).
+	// 3 with 0 survivors → need=2, agree=0 → misses, commits {field:false,...},
+	// ok (the old code: need=min(2,0)=0, agree=0 → vacuously passed with votes=0).
 	rig := newReduceRig(t)
 	q := ir.Ratio("2")
 	r := &ir.Reduce{Quorum: &q, Field: "vulnerable"}
 
 	oc, err := runReduce(context.Background(), r, testMapPath, nil /* all crashed */, 3 /* cohort */, minimalReduceWorkflow(), RootModuleID, rig.rs, nil, rig.ld, rig.lg, rig.blobs, rig.clk, nil, reduceCallContext{})
-	if oc != OutcomeRetryableFailure {
-		t.Fatalf("quorum 2 over cohort 3 with 0 survivors: outcome = %q (err=%v), want retryable_failure", oc, err)
+	if err != nil {
+		t.Fatalf("runReduce: %v", err)
 	}
-	if err == nil {
-		t.Fatal("want a non-nil error explaining the missed quorum")
+	if oc != OutcomeOK {
+		t.Fatalf("quorum 2 over cohort 3 with 0 survivors: outcome = %q, want ok (a missed quorum commits)", oc)
 	}
-	if _, ok := rig.rs.LookupCompleted(testMapPath); ok {
-		t.Errorf("an all-crashed cohort must NOT vacuously commit a passed quorum at %q", testMapPath)
+	nr, ok := rig.rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("an all-crashed cohort must still commit a NodeResult at %q", testMapPath)
+	}
+	if nr.Outputs["vulnerable"] != false {
+		t.Errorf("an all-crashed cohort vacuously passed: vulnerable = %v, want false", nr.Outputs["vulnerable"])
+	}
+	if nr.Outputs["agree"] != 0 {
+		t.Errorf("agree = %v, want 0", nr.Outputs["agree"])
 	}
 }
 

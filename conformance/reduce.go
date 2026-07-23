@@ -11,10 +11,12 @@ import (
 
 // reduceQuorumWorkflow — C2a (Task 12) quorum form. A map over 3 items, each
 // body emitting a typed {vulnerable: bool} verdict; reduce: {quorum: 2, field:
-// vulnerable} collapses the 3 branches into ONE — the node succeeds iff ≥ 2
-// branches voted vulnerable=true. A downstream code step `gate` reads
-// {{ step.scan.passed }} — proving the reduced output (NOT the per-item array)
-// is what step.<bodyId> resolves to once a reduce: is declared.
+// vulnerable} collapses the 3 branches into ONE — the reduce ALWAYS commits
+// {vulnerable:<bool>,...} regardless of whether ≥ 2 branches voted
+// vulnerable=true (jury-panel Task 1: a vote tally never mechanically fails). A
+// downstream code step `gate` reads {{ step.scan.vulnerable }} — proving the
+// reduced output (NOT the per-item array) is what step.<bodyId> resolves to once
+// a reduce: is declared, and that the verdict is named after field:.
 //
 // concurrency: 1 (the in-mem fake's shared Blobs race when multiple
 // output_schema bodies commit concurrently — the aggregation bucket's note).
@@ -53,7 +55,7 @@ graph:
         field: vulnerable
   - id: gate
     container: c0
-    run: "./gate.sh {{ step.scan.passed }}"
+    run: "./gate.sh {{ step.scan.vulnerable }}"
     retry: { attempts: 1 }
 `, fakeImageDigest)
 
@@ -164,10 +166,11 @@ graph:
 // Three sub-tests pin the end-to-end behaviour against the fake backend:
 //
 //   - quorum_pass: a quorum that is MET collapses the per-item array into a
-//     synthetic {passed,votes,agree} typed output committed at the map path; a
-//     downstream step.<bodyId>.passed resolves to the REDUCED output.
-//   - quorum_fail: a quorum that is NOT met returns retryable_failure (mirrors
-//     min_success) and never commits at the map path; the run halts mechanically.
+//     synthetic {<field>,votes,agree,votes_detail} typed output committed at the
+//     map path; a downstream step.<bodyId>.<field> resolves to the REDUCED output.
+//   - quorum_fail: a quorum that is NOT met still COMMITS {<field>:false,...} and
+//     returns ok (jury-panel Task 1: a vote tally is never a mechanical failure);
+//     the downstream step runs and sees the reduced verdict.
 //   - run_reduce: an author shell reducer stages every branch's named artifact +
 //     a manifest into its required container, commits its typed output + artifact
 //     at the map path; a downstream step resolves step.<bodyId>.files.<name> to
@@ -191,10 +194,11 @@ func testReduceQuorumPass(t *testing.T, factory BackendFactory) {
 	mkScan := func(v bool) container.ExecResult {
 		return container.ExecResult{ExitCode: 0, AWFOutput: []byte(fmt.Sprintf(`{"vulnerable":%t}`, v))}
 	}
-	// 2 of 3 items vote vulnerable=true → quorum: 2 MET → {passed:true}. The gate
-	// step's command renders {{ step.scan.passed }} → "true", so it is programmed
-	// as "./gate.sh true"; if the resolver lifted the per-item ARRAY (the bug),
-	// the rendered command would differ and the fake would error (unprogrammed).
+	// 2 of 3 items vote vulnerable=true → quorum: 2 MET → {vulnerable:true}. The
+	// gate step's command renders {{ step.scan.vulnerable }} → "true", so it is
+	// programmed as "./gate.sh true"; if the resolver lifted the per-item ARRAY
+	// (the bug), the rendered command would differ and the fake would error
+	// (unprogrammed).
 	var runFake *container.Fake
 	capturing := func() container.Backend {
 		b := factory()
@@ -230,8 +234,8 @@ func testReduceQuorumPass(t *testing.T, factory BackendFactory) {
 	if !ok {
 		t.Fatalf("quorum_pass: no node.completed at map[0] (the reduced output)")
 	}
-	if nr.Outputs["passed"] != true {
-		t.Errorf("quorum_pass: passed = %v, want true", nr.Outputs["passed"])
+	if nr.Outputs["vulnerable"] != true {
+		t.Errorf("quorum_pass: vulnerable = %v, want true", nr.Outputs["vulnerable"])
 	}
 	if nr.Outputs["votes"] != float64(3) {
 		t.Errorf("quorum_pass: votes = %v, want 3", nr.Outputs["votes"])
@@ -239,8 +243,12 @@ func testReduceQuorumPass(t *testing.T, factory BackendFactory) {
 	if nr.Outputs["agree"] != float64(2) {
 		t.Errorf("quorum_pass: agree = %v, want 2", nr.Outputs["agree"])
 	}
+	vd, ok := nr.Outputs["votes_detail"].([]any)
+	if !ok || len(vd) != 3 {
+		t.Errorf("quorum_pass: votes_detail = %v, want 3 ballots", nr.Outputs["votes_detail"])
+	}
 
-	// The downstream gate step saw {{ step.scan.passed }} → "true" (the reduced
+	// The downstream gate step saw {{ step.scan.vulnerable }} → "true" (the reduced
 	// output, NOT the per-item array). It committed ok above; here we assert the
 	// exact rendered command reached the fake.
 	if runFake == nil {
@@ -253,7 +261,7 @@ func testReduceQuorumPass(t *testing.T, factory BackendFactory) {
 		}
 	}
 	if !sawGate {
-		t.Errorf("quorum_pass: downstream gate did not see {{ step.scan.passed }} → \"true\"; calls = %+v", runFake.Calls)
+		t.Errorf("quorum_pass: downstream gate did not see {{ step.scan.vulnerable }} → \"true\"; calls = %+v", runFake.Calls)
 	}
 }
 
@@ -262,40 +270,39 @@ func testReduceQuorumFail(t *testing.T, factory BackendFactory) {
 	mkScan := func(v bool) container.ExecResult {
 		return container.ExecResult{ExitCode: 0, AWFOutput: []byte(fmt.Sprintf(`{"vulnerable":%t}`, v))}
 	}
-	// Only 1 of 3 votes vulnerable=true → quorum: 2 NOT met → the map node
-	// returns retryable_failure (no node.completed at map[0]) and the run halts.
-	// gate.sh is deliberately NOT programmed: if the run reached it the
-	// fake's ProgramExec-miss would fire — proving the run halted at the reduce.
+	// Only 1 of 3 votes vulnerable=true → quorum: 2 NOT met → the reduce now
+	// COMMITS {vulnerable:false} and returns ok (A1: a vote tally never
+	// mechanically fails). The downstream gate.sh renders {{ step.scan.vulnerable }}
+	// → "false" and runs.
 	programmed := preProgramFake(t, factory, []execProgram{
 		{cmd: "./scan.sh a", res: mkScan(true)},
 		{cmd: "./scan.sh b", res: mkScan(false)},
 		{cmd: "./scan.sh c", res: mkScan(false)},
+		{cmd: "./gate.sh false", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
 	})
-	// Reuse reduceQuorumWorkflow (quorum: 2): with only 1 of 3 voting true, the
-	// same quorum: 2 that PASSED above now FAILS — same fixture, different data.
 	h := newHarnessWithInput(t, programmed, reduceQuorumWorkflow,
 		map[string]any{"items": []any{"a", "b", "c"}})
 
 	oc, err := h.runWorkflow(t)
-	if oc != engine.OutcomeRetryableFailure {
-		t.Fatalf("quorum_fail: outcome = %q (err=%v), want retryable_failure", oc, err)
+	if err != nil {
+		t.Fatalf("quorum_fail: runWorkflow: %v", err)
 	}
-	if err == nil {
-		t.Fatalf("quorum_fail: err = nil, want a non-nil missed-quorum propagation")
+	if oc != engine.OutcomeOK {
+		t.Fatalf("quorum_fail: outcome = %q, want ok (a missed quorum commits, does not fail)", oc)
 	}
-
-	// No node.completed at the map path — a not-met quorum must not commit
-	// (mirrors min_success).
 	rs, ferr := engine.Fold(mustFoldEvents(t, h), h.blobs)
 	if ferr != nil {
 		t.Fatalf("quorum_fail: Fold: %v", ferr)
 	}
-	if _, ok := rs.LookupCompleted("map[0]"); ok {
-		t.Errorf("quorum_fail: a not-met quorum committed at map[0]; must not (mirrors min_success)")
+	nr, ok := rs.LookupCompleted("map[0]")
+	if !ok {
+		t.Fatalf("quorum_fail: no node.completed at map path (a missed quorum must still commit)")
 	}
-	// gate (the downstream step) must NOT have committed — the run halted.
-	if _, ok := rs.LookupCompleted("gate"); ok {
-		t.Errorf("quorum_fail: downstream gate committed; the run should have halted at the reduce")
+	if nr.Outputs["vulnerable"] != false {
+		t.Errorf("quorum_fail: vulnerable = %v, want false", nr.Outputs["vulnerable"])
+	}
+	if nr.Outputs["agree"] != float64(1) {
+		t.Errorf("quorum_fail: agree = %v, want 1", nr.Outputs["agree"])
 	}
 }
 

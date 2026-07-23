@@ -87,7 +87,8 @@ func TestReducedMapNonDeclaredRunReducerFieldErrors(t *testing.T) {
 }
 
 // TestReducedMapQuorumReducerFieldsAccepted: a ref to a quorum reducer's fixed
-// {passed, votes, agree} output fields VALIDATES (no AWF5004, no AWF3001).
+// {votes, agree, votes_detail} keys, or to the reduce's own field: name, VALIDATES
+// (no AWF5004, no AWF3001).
 func TestReducedMapQuorumReducerFieldsAccepted(t *testing.T) {
 	body := func() NodeList {
 		return NodeList{
@@ -98,7 +99,10 @@ func TestReducedMapQuorumReducerFieldsAccepted(t *testing.T) {
 					"properties": map[string]any{"agree": map[string]any{"type": "boolean"}}}},
 		}
 	}
-	for _, field := range []string{"passed", "votes", "agree"} {
+	// "agree" is both the reduce's own field: name AND a fixed QuorumVerdictFields
+	// key — either way it's accepted; "votes"/"votes_detail" are accepted purely
+	// via the fixed set.
+	for _, field := range []string{"agree", "votes", "votes_detail"} {
 		ld := makeLD(&Workflow{ID: "agg", Version: 1,
 			Containers: aggContainer(),
 			Graph: NodeList{
@@ -115,8 +119,9 @@ func TestReducedMapQuorumReducerFieldsAccepted(t *testing.T) {
 	}
 }
 
-// TestReducedMapQuorumNonDeclaredFieldErrors: a ref to a field NOT in the quorum
-// reducer's fixed {passed, votes, agree} shape still errors (AWF3001), not AWF5004.
+// TestReducedMapQuorumNonDeclaredFieldErrors: a ref to a field that is NEITHER
+// the reduce's own field: NOR in the quorum reducer's fixed {votes, agree,
+// votes_detail} shape still errors (AWF3001), not AWF5004.
 func TestReducedMapQuorumNonDeclaredFieldErrors(t *testing.T) {
 	ld := makeLD(&Workflow{ID: "agg", Version: 1,
 		Containers: aggContainer(),
@@ -132,7 +137,8 @@ func TestReducedMapQuorumNonDeclaredFieldErrors(t *testing.T) {
 				},
 				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
 			},
-			// `summary` is not in the quorum verdict's fixed shape → AWF3001.
+			// `summary` is neither field: agree nor in the quorum verdict's fixed
+			// shape → AWF3001.
 			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.scan.summary }}"},
 		}})
 	diags := Validate(ld)

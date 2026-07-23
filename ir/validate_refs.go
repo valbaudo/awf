@@ -495,14 +495,17 @@ func checkSchemaField(c *collector, path, id, field string, schema *JSONSchema) 
 	return true
 }
 
-// QuorumVerdictFields is the fixed typed-output shape a quorum reducer commits.
-// It is the SINGLE source of truth for the {passed, votes, agree} verdict
-// contract: this validator binds downstream refs against it, and engine's
-// runQuorumReduce must produce EXACTLY these keys — pinned by a cross-package
-// engine test (TestQuorumReduceOutputMatchesVerdictFields) so the producer
-// (engine/reduce.go) and the validator can never silently drift. Exported only
-// for that test.
-var QuorumVerdictFields = map[string]bool{"passed": true, "votes": true, "agree": true}
+// QuorumVerdictFields is the FIELD-INDEPENDENT part of the fixed typed-output
+// shape a quorum reducer commits: every quorum verdict carries these three keys
+// PLUS one field-named key (the reduce's own `field:`, e.g. `vulnerable`) holding
+// the pass/fail bool. It is the SINGLE source of truth for that fixed part of the
+// contract: this validator binds downstream refs against it (a ref accepted iff
+// it names one of these OR the reduce's own field:), and engine's
+// runQuorumReduce must produce EXACTLY these keys plus the field-named key —
+// pinned by a cross-package engine test (TestQuorumReduceOutputMatchesVerdictFields)
+// so the producer (engine/reduce.go) and the validator can never silently drift.
+// Exported only for that test.
+var QuorumVerdictFields = map[string]bool{"votes": true, "agree": true, "votes_detail": true}
 
 // checkReducedMapRef validates a `step.<bodyId>[.<field>]` reference into a map that
 // declares a reduce:. The ref resolves against the REDUCER's committed output (the
@@ -511,7 +514,8 @@ var QuorumVerdictFields = map[string]bool{"passed": true, "votes": true, "agree"
 //   - 2-seg `step.<bodyId>` → the reducer's whole output (a scalar object); accepted.
 //   - 3-seg `step.<bodyId>.<field>`:
 //   - run: reducer → <field> must be declared in Reduce.OutputSchema (AWF3001 else).
-//   - quorum reducer → <field> ∈ {passed, votes, agree} (AWF3001 else).
+//   - quorum reducer → <field> must be the reduce's own `field:` (the verdict
+//     bool) or one of {votes, agree, votes_detail} (AWF3001 else).
 //
 // exit_code/stdout are not a reducer's typed output (the reducer is not the body
 // code step), so they hit the schema/quorum field check and fail with AWF3001 —
@@ -530,8 +534,8 @@ func checkReducedMapRef(c *collector, path, id string, ref template.Ref, r *Redu
 	}
 	field := ref.Segments[2].Ident
 	if r.IsQuorum() {
-		if !QuorumVerdictFields[field] {
-			c.errf(path, "AWF3001", fmt.Sprintf("step %q is a quorum-reduced map; the reduced verdict declares only {passed, votes, agree}, not field %q", id, field))
+		if field != r.Field && !QuorumVerdictFields[field] {
+			c.errf(path, "AWF3001", fmt.Sprintf("step %q is a quorum-reduced map; the reduced verdict declares only {%s, votes, agree, votes_detail}, not field %q", id, r.Field, field))
 		}
 		return
 	}

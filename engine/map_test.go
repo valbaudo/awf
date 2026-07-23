@@ -1026,7 +1026,7 @@ var okSchema = &ir.JSONSchema{
 func TestRunMapQuorumReducePrefersReducedOutput(t *testing.T) {
 	// Task 11: a map declaring reduce: {quorum: 2, field: ok} over 3 items
 	// (2 true) commits a node.completed at the MAP path (map[0]) with the
-	// reduced {passed:true,...} output and runMap returns ok. A downstream
+	// reduced {ok:true,...} output and runMap returns ok. A downstream
 	// step.<bodyId> ref from OUTSIDE the map then resolves to the REDUCED
 	// output (not the per-item array).
 	body := ir.NodeList{
@@ -1055,28 +1055,30 @@ func TestRunMapQuorumReducePrefersReducedOutput(t *testing.T) {
 	if !ok {
 		t.Fatalf("no NodeResult committed at map path %q (reduce must commit there)", testMapPath)
 	}
-	if nr.Outputs["passed"] != true {
-		t.Errorf("reduced passed = %v, want true", nr.Outputs["passed"])
+	if nr.Outputs["ok"] != true {
+		t.Errorf("reduced ok = %v, want true", nr.Outputs["ok"])
 	}
 	if nr.Outputs["votes"] != 3 || nr.Outputs["agree"] != 2 {
 		t.Errorf("reduced {votes,agree} = {%v,%v}, want {3,2}", nr.Outputs["votes"], nr.Outputs["agree"])
 	}
 
-	// A downstream step.vote.passed ref (from outside the map) lifts the REDUCED
+	// A downstream step.vote.ok ref (from outside the map) lifts the REDUCED
 	// output, not the per-item array.
 	sc := NewScope(rs, wf, "after_map")
-	got, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "vote"}, {Ident: "passed"}}})
+	got, err := sc.Resolve(&template.Ref{Segments: []template.Segment{{Ident: "step"}, {Ident: "vote"}, {Ident: "ok"}}})
 	if err != nil {
-		t.Fatalf("resolve step.vote.passed: %v", err)
+		t.Fatalf("resolve step.vote.ok: %v", err)
 	}
 	if got != true {
-		t.Errorf("step.vote.passed = %v (%T), want true (the reduced output)", got, got)
+		t.Errorf("step.vote.ok = %v (%T), want true (the reduced output)", got, got)
 	}
 }
 
-func TestRunMapQuorumReduceNotMetIsRetryable(t *testing.T) {
-	// Task 11: a quorum that is not met returns retryable_failure and commits
-	// NO node.completed at the map path (mirrors min_success not met).
+func TestRunMapQuorumReduceNotMetStillCommits(t *testing.T) {
+	// jury-panel Task 1: a quorum that is not met is no longer a mechanical
+	// failure — it ALWAYS commits {field:false,...} at the map path and runMap
+	// returns ok (a vote tally is a quality/business outcome, not a transient
+	// fault; mirrors a gate's `until`, not min_success).
 	body := ir.NodeList{
 		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
 			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
@@ -1094,14 +1096,18 @@ func TestRunMapQuorumReduceNotMetIsRetryable(t *testing.T) {
 	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
 	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
-	if oc != OutcomeRetryableFailure {
-		t.Fatalf("quorum not met: outcome = %q (err=%v), want retryable_failure", oc, err)
+	if err != nil {
+		t.Fatalf("quorum not met: %v", err)
 	}
-	if err == nil {
-		t.Fatal("quorum not met: err = nil, want non-nil")
+	if oc != OutcomeOK {
+		t.Fatalf("quorum not met: outcome = %q, want ok (a missed quorum commits, does not fail)", oc)
 	}
-	if _, ok := rs.LookupCompleted(testMapPath); ok {
-		t.Errorf("a not-met quorum must NOT commit a NodeResult at the map path %q", testMapPath)
+	nr, ok := rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("a not-met quorum must still commit a NodeResult at the map path %q", testMapPath)
+	}
+	if nr.Outputs["ok"] != false {
+		t.Errorf("ok = %v, want false", nr.Outputs["ok"])
 	}
 }
 
@@ -1110,9 +1116,10 @@ func TestRunMapQuorumReduceThresholdIsCohortWhenBranchCrashes(t *testing.T) {
 	// fan-out COHORT, not the survivor count. Map over 3 items where 1 branch
 	// crashes mechanically (item "c" exits nonzero → ItemFailed → absent from
 	// collectReduceBranches) and the 2 survivors agree. quorum: 3 (unanimous over
-	// the cohort) must FAIL — only 2 of the 3-item cohort agree. The old code
+	// the cohort) must MISS — only 2 of the 3-item cohort agree. The old code
 	// measured k against len(branches)=2 and the int-cap silently lowered need to
-	// 2, passing on the survivors.
+	// 2, passing on the survivors. The miss still commits {field:false,...} and
+	// returns ok (jury-panel Task 1).
 	body := ir.NodeList{
 		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
 			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
@@ -1130,27 +1137,33 @@ func TestRunMapQuorumReduceThresholdIsCohortWhenBranchCrashes(t *testing.T) {
 	rs := NewRunState(testRunID, testDigest, runOverItems("a", "b", "c"))
 
 	oc, err := runMap(context.Background(), mapNode, testMapPath, wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
-	if oc != OutcomeRetryableFailure {
-		t.Fatalf("unanimous quorum over a cohort with one crashed branch: outcome = %q (err=%v), want retryable_failure", oc, err)
+	if err != nil {
+		t.Fatalf("unanimous quorum over a cohort with one crashed branch: %v", err)
 	}
-	if err == nil {
-		t.Fatal("a not-met quorum (cohort threshold) must return a non-nil error")
+	if oc != OutcomeOK {
+		t.Fatalf("unanimous quorum over a cohort with one crashed branch: outcome = %q, want ok (a missed quorum commits)", oc)
 	}
-	if _, ok := rs.LookupCompleted(testMapPath); ok {
-		t.Errorf("a not-met quorum must NOT commit a NodeResult at the map path %q", testMapPath)
+	nr, ok := rs.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("a not-met quorum must still commit a NodeResult at the map path %q", testMapPath)
+	}
+	if nr.Outputs["ok"] != false {
+		t.Errorf("ok = %v, want false (2 of 3-item cohort agree, unanimous quorum missed)", nr.Outputs["ok"])
 	}
 }
 
-func TestRunMapReduceResumeQuorumRecovers(t *testing.T) {
-	// §6.5 reduce safe-by-construction: a TRANSIENT item failure on round-1
-	// (item b exits 1 → ItemFailed retryable) means agree=2 < need=3 → the map
-	// returns retryable_failure and the reducer is NEVER committed (safe-by-
-	// construction: a committed reduce ⟺ map-ok ⟺ not this path). On resume
-	// all three items succeed → OutcomeOK; the reducer commits over the full
-	// recovered set (agree==3). This is NOT a false-vote test (item_failed is
-	// never re-run by shouldRerunItem on a {ok:false} vote); it is a transient
-	// body-crash (ExitCode 1) that shouldRerunItem selects because Status ==
-	// item_failed AND Outcome == retryable_failure.
+func TestRunMapReduceResumeQuorumVerdictIsFrozen(t *testing.T) {
+	// jury-panel Task 1 changes this scenario's premise: a TRANSIENT item
+	// failure on round-1 (item b exits 1 → ItemFailed retryable) means
+	// agree=2 < need=3 → the quorum MISSES, but a miss now ALWAYS commits
+	// {ok:false,...} and returns OutcomeOK (it is no longer retryable_failure,
+	// so round-1 no longer needs a resume to "recover"). This test proves the
+	// consequence: once the reduce commits, it is a committed node like any
+	// other — a later resume replays it unchanged (per the resume invariant,
+	// "committed steps are replayed, not recomputed"), even though item b's
+	// OWN retryable failure is independently re-run and now passes. The
+	// item-level retry and the reduce's verdict are cleanly separated: retrying
+	// the crashed item does NOT reopen the frozen tally.
 	body := ir.NodeList{
 		&ir.CodeStep{ID: "vote", Run: "./vote {{ x }}", Container: testMapContainer,
 			OutputSchema: okSchema, Retry: &ir.RetryPolicy{Attempts: 1}},
@@ -1160,8 +1173,9 @@ func TestRunMapReduceResumeQuorumRecovers(t *testing.T) {
 	mapNode := wf.Graph[0].(*ir.Map)
 	mapNode.Reduce = &ir.Reduce{Quorum: &q, Field: "ok"}
 
-	// Round 1: a,c emit {"ok":true} (ExitCode 0); b exits 1 (transient ItemFailed).
-	// agree=2 < need=3 → retryable_failure; reducer must NOT commit.
+	// Round 1: a,c emit {"ok":true} (ExitCode 0); b exits 1 (transient ItemFailed,
+	// absent from branches → counts as a non-agreeing vote). agree=2 < need=3 →
+	// the quorum misses but still commits {ok:false,...}; OutcomeOK.
 	rig1 := newMapRig(t,
 		execProgram{cmd: "./vote a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
 		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 1}},
@@ -1171,18 +1185,23 @@ func TestRunMapReduceResumeQuorumRecovers(t *testing.T) {
 	seedRunStartedWithInput(t, rig1.lg, rig1.blobs, input)
 	rs1 := NewRunState(testRunID, testDigest, input)
 
-	oc1, _ := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
-	if oc1 != OutcomeRetryableFailure {
-		t.Fatalf("round-1: outcome = %q, want OutcomeRetryableFailure (transient item b crash + quorum not met)", oc1)
+	oc1, err1 := runMap(context.Background(), mapNode, testMapPath, wf, rs1, rig1.ld, rig1.lg, rig1.blobs, rig1.clk, nil, nil)
+	if err1 != nil {
+		t.Fatalf("round-1: %v", err1)
 	}
-	// Safe-by-construction: the reducer must NOT have committed (no node.completed
-	// at the map path). A committed reduce ⟺ map-ok ⟺ not this path.
-	if _, ok := rs1.LookupCompleted(testMapPath); ok {
-		t.Errorf("round-1: reducer committed at %q despite retryable_failure; safe-by-construction violated", testMapPath)
+	if oc1 != OutcomeOK {
+		t.Fatalf("round-1: outcome = %q, want ok (a missed quorum commits, does not fail)", oc1)
+	}
+	nr1, ok := rs1.LookupCompleted(testMapPath)
+	if !ok {
+		t.Fatalf("round-1: reducer did not commit at %q", testMapPath)
+	}
+	if nr1.Outputs["ok"] != false || nr1.Outputs["agree"] != 2 {
+		t.Errorf("round-1: {ok,agree} = {%v,%v}, want {false,2}", nr1.Outputs["ok"], nr1.Outputs["agree"])
 	}
 
-	// Resume: all three items now emit {"ok":true}. The retryable item b is
-	// re-run; a and c replay from the log. agree=3 == need=3 → OutcomeOK.
+	// Resume: item b's own retryable failure is independently re-run (shouldRerunItem
+	// is item-record-driven, not gated on the reduce's outcome) and now passes.
 	rig2 := bareRig(t, rig1,
 		execProgram{cmd: "./vote b", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"ok":true}`)}},
 	)
@@ -1190,19 +1209,37 @@ func TestRunMapReduceResumeQuorumRecovers(t *testing.T) {
 
 	oc2, err2 := runMapResumeTrue(context.Background(), mapNode, testMapPath, wf, rs2, rig2)
 	if oc2 != OutcomeOK || err2 != nil {
-		t.Fatalf("resume: outcome = %q err = %v, want OutcomeOK/nil (recovered quorum)", oc2, err2)
+		t.Fatalf("resume: outcome = %q err = %v, want OutcomeOK/nil (replays the committed reduce)", oc2, err2)
 	}
 
-	// Reducer committed at the map path with agree==3 over the full recovered set.
-	nr, ok := rs2.LookupCompleted(testMapPath)
+	// The reduce's own verdict is FROZEN at round-1's {ok:false, agree:2} — resume
+	// replays the committed node, it does NOT recompute against item b's fresh pass.
+	nr2, ok := rs2.LookupCompleted(testMapPath)
 	if !ok {
-		t.Fatalf("resume: no NodeResult at map path %q (reducer should commit after quorum met)", testMapPath)
+		t.Fatalf("resume: no NodeResult at map path %q", testMapPath)
 	}
-	if nr.Outputs["agree"] != 3 {
-		t.Errorf("resume: agree = %v, want 3 (full recovered cohort)", nr.Outputs["agree"])
+	// rs2 came from foldFromRig (a real Fold of the journaled log), so numeric
+	// outputs decode as float64.
+	if nr2.Outputs["agree"] != float64(2) {
+		t.Errorf("resume: agree = %v, want 2 (frozen at round-1's commit, not recomputed)", nr2.Outputs["agree"])
 	}
-	if nr.Outputs["passed"] != true {
-		t.Errorf("resume: passed = %v, want true", nr.Outputs["passed"])
+	if nr2.Outputs["ok"] != false {
+		t.Errorf("resume: ok = %v, want false (the committed reduce replays, it does not reopen)", nr2.Outputs["ok"])
+	}
+	// Exactly ONE node.completed at the map path across both rounds (round-1's) —
+	// resume replayed it, it did not append a second one.
+	events, ferr := rig2.lg.Fold()
+	if ferr != nil {
+		t.Fatalf("Fold: %v", ferr)
+	}
+	nCompleted := 0
+	for _, e := range events {
+		if e.Type == EventNodeCompleted && e.Path == testMapPath {
+			nCompleted++
+		}
+	}
+	if nCompleted != 1 {
+		t.Errorf("resume: %d node.completed events at %q, want 1 (round-1's only; the committed reduce must replay, not recompute)", nCompleted, testMapPath)
 	}
 }
 
