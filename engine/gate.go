@@ -194,9 +194,10 @@ func runGateWithContext(
 
 // lastEvaluatorPath returns the runtime path of the last node in g.Evaluate
 // under the given evaluatePath prefix. The last node MUST be a step kind with
-// output_schema (Phase 1.4 AWF1014 guarantees this for valid workflows). For
-// resume-correctness, the path must be addressable via the same scheme the
-// step handlers use (ir.PathFor for steps, ir.ChildPath for control nodes).
+// output_schema, or (jury-panel Task 2) a map whose reduce: produces a typed
+// verdict (AWF1014 guarantees this for valid workflows). For resume-
+// correctness, the path must be addressable via the same scheme the step
+// handlers use (ir.PathFor for steps, ir.ChildPath for control nodes).
 func lastEvaluatorPath(g *ir.Gate, evaluatePath string) (string, error) {
 	if len(g.Evaluate) == 0 {
 		return "", fmt.Errorf("empty evaluate")
@@ -219,8 +220,8 @@ func lastEvaluatorPath(g *ir.Gate, evaluatePath string) (string, error) {
 		// the two must agree on exactly which maps are valid evaluate terminals.
 		return ir.PathFor(evaluatePath, "map", "", idx), nil
 	default:
-		// Validator AWF1014 ensures last node is a step. Defense-in-depth:
-		// surface the unexpected kind clearly.
-		return "", fmt.Errorf("last evaluator node is %T (must be a step kind per AWF1014)", last)
+		// Validator AWF1014 ensures the last node is a step, or a map with a
+		// typed reduce. Defense-in-depth: surface the unexpected kind clearly.
+		return "", fmt.Errorf("last evaluator node is %T (must be a step kind, or a map with a typed reduce, per AWF1014)", last)
 	}
 }

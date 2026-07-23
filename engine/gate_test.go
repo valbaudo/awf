@@ -64,6 +64,24 @@ func TestLastEvaluatorPathMapTerminal(t *testing.T) {
 	}
 }
 
+// TestLastEvaluatorPathMapTerminalRunReducer: the OTHER half of the *ir.Map
+// arm — a run: reducer with output_schema (not just quorum) also resolves to
+// the map's own path. Mirrors TestLastEvaluatorPathMapTerminal.
+func TestLastEvaluatorPathMapTerminalRunReducer(t *testing.T) {
+	g := &ir.Gate{Evaluate: ir.NodeList{
+		&ir.CodeStep{ID: "pre", Run: "x", Container: "c"},
+		&ir.Map{ID: "jury", Reduce: &ir.Reduce{Run: "./vote.sh", Container: "c", OutputSchema: schemaForVerdict()}},
+	}}
+	got, err := lastEvaluatorPath(g, "gate[0].evaluate")
+	if err != nil {
+		t.Fatalf("lastEvaluatorPath: %v", err)
+	}
+	want := ir.PathFor("gate[0].evaluate", "map", "", 1)
+	if got != want {
+		t.Errorf("lastEvaluatorPath = %q, want %q", got, want)
+	}
+}
+
 func TestRunGateSingleAttemptPasses(t *testing.T) {
 	until := ir.Expr("{{ evaluate.verified }}")
 	g := &ir.Gate{
