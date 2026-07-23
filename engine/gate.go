@@ -90,7 +90,19 @@ func runGateWithContext(
 		return "", fmt.Errorf("engine.runGate: gate %q has MaxAttempts=%d, want ≥ 1", gatePath, g.MaxAttempts)
 	}
 
-	startN := len(ictx.runstate.LookupGateAttempts(gatePath)) + 1
+	// Resume/fold short-circuit: if this gate already passed (its accepted
+	// attempt is the last committed one — passing terminates the loop at step 7,
+	// so a passed attempt is always last), replay OutcomeOK. Without this,
+	// startN = len(attempts)+1 skips the loop and falls through to
+	// OutcomeRejected — an already-passed gate mis-reports rejection on resume.
+	// The accepted verdict + artifacts are replayed from the folded GateAttempts
+	// by downstream scope resolution (artifact_scope.go), not recomputed here.
+	// Mirrors liveResumePreflightWalker.walkGate's already-passed check.
+	attempts := ictx.runstate.LookupGateAttempts(gatePath)
+	if len(attempts) > 0 && attempts[len(attempts)-1].AttemptOutcome == AttemptPassed {
+		return OutcomeOK, nil
+	}
+	startN := len(attempts) + 1
 
 	for n := startN; n <= g.MaxAttempts; n++ {
 		attemptPath := AttemptPath(gatePath, n) // "gate[0].attempt-1"

@@ -124,6 +124,7 @@ func testJuryGate(t *testing.T, factory BackendFactory) {
 	t.Run("repair_then_pass", func(t *testing.T) { testJuryGateRepairThenPass(t, factory) })
 	t.Run("votes_reach_feedback", func(t *testing.T) { testJuryGateVotesReachFeedback(t, factory) })
 	t.Run("fold_replay", func(t *testing.T) { testJuryGateFoldReplay(t, factory) })
+	t.Run("resume_passed_gate", func(t *testing.T) { testJuryGateResumePassedGate(t, factory) })
 }
 
 // testJuryGateRepairThenPass is the core proof: attempt 1's below-quorum vote
@@ -291,17 +292,10 @@ func testJuryGateVotesReachFeedback(t *testing.T, factory BackendFactory) {
 // never calls agent.Adapter.Launch; mirrors the obs bucket's
 // byte_identical_replay proof of Fold's determinism).
 //
-// NOTE on scope: this stops short of a REAL h.resumeWorkflow() re-entry
-// (engine.Run called a second time against the completed log) — see this
-// package's jury.go doc / the Task 5 report for why: runGate's startN
-// (len(GateAttempts)+1) exceeds MaxAttempts once a gate has already fully
-// passed, which the loop's "unreachable" fall-through was never written to
-// handle (a pre-existing gap in resuming an ALREADY-COMPLETED gate, not
-// specific to jury: — no conformance fixture exercised this shape before).
-// The brief authorizes this narrower proof ("at minimum prove the folded
-// RunState resolves the same verdict") when a full resume is heavier than
-// warranted; a real second-Run resume proof needs a separate engine fix
-// (runGate's post-pass short-circuit) out of this test-only task's scope.
+// This is the pure-Fold proof (verdict recoverable + stable across replays).
+// testJuryGateResumePassedGate is the companion REAL h.resumeWorkflow()
+// re-entry proof, now that runGate short-circuits an already-passed gate to
+// OutcomeOK (engine/gate.go) instead of falling through to OutcomeRejected.
 func testJuryGateFoldReplay(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	var genFake, judgeFake *fake.Fake
@@ -372,5 +366,78 @@ func testJuryGateFoldReplay(t *testing.T, factory BackendFactory) {
 	}
 	if got := len(judgeFake.Calls()); got != preJudgeCalls {
 		t.Errorf("judge call count changed across a second fold: %d -> %d; the committed panel verdict must never be re-polled by a fold", preJudgeCalls, got)
+	}
+}
+
+// testJuryGateResumePassedGate proves the runGate resume short-circuit
+// (engine/gate.go): resuming a run whose gate already fully passed (max_attempts:2,
+// passed on attempt 2) replays OutcomeOK and re-dispatches NOTHING — neither
+// generator nor jury panel. Before the fix, runGate computed
+// startN = len(GateAttempts)+1 = 3 > MaxAttempts, skipped the attempt loop, and
+// fell through to OutcomeRejected — an already-passed gate mis-reporting rejection
+// on the second Run against the completed log.
+func testJuryGateResumePassedGate(t *testing.T, factory BackendFactory) {
+	t.Helper()
+	var genFake, judgeFake *fake.Fake
+	register := func(reg *agent.Registry) {
+		genFake, judgeFake = registerJuryFakes(t)
+		if err := reg.Register(genFake); err != nil {
+			t.Fatalf("Register gen: %v", err)
+		}
+		if err := reg.Register(judgeFake); err != nil {
+			t.Fatalf("Register judge: %v", err)
+		}
+	}
+	h := newHarnessWithAgentRegistry(t, factory, juryGateWorkflow, register)
+	oc, err := h.runWorkflow(t)
+	if err != nil {
+		t.Fatalf("runWorkflow: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("outcome = %q, want %q", oc, engine.OutcomeOK)
+	}
+	preGenCalls := len(genFake.Calls())
+	preJudgeCalls := len(judgeFake.Calls())
+	if preGenCalls != 2 || preJudgeCalls != 6 {
+		t.Fatalf("pre-resume call counts = (gen=%d, judge=%d), want (2, 6)", preGenCalls, preJudgeCalls)
+	}
+
+	// Resume: engine.Run a second time against the completed log. The gate is
+	// already passed, so it must replay OutcomeOK without re-entering the attempt
+	// loop.
+	oc2, err := h.resumeWorkflow(t)
+	if err != nil {
+		t.Fatalf("resumeWorkflow: %v", err)
+	}
+	if oc2 != engine.OutcomeOK {
+		t.Fatalf("resumed outcome = %q, want %q (an already-passed gate must replay OK, not re-report rejection)", oc2, engine.OutcomeOK)
+	}
+
+	// No re-dispatch: committed generate/evaluate steps are replayed from the
+	// journal, never recomputed.
+	if got := len(genFake.Calls()); got != preGenCalls {
+		t.Errorf("generator call count changed across resume: %d -> %d; a passed gate's generate must not re-dispatch", preGenCalls, got)
+	}
+	if got := len(judgeFake.Calls()); got != preJudgeCalls {
+		t.Errorf("judge call count changed across resume: %d -> %d; a passed gate's panel must not be re-polled", preJudgeCalls, got)
+	}
+
+	// The accepted attempt (N=2, passed) and its verdict still resolve from the
+	// resumed log — the OutcomeOK replays the committed verdict, it does not
+	// discard it.
+	rs, ferr := engine.Fold(mustFoldEvents(t, h), h.blobs)
+	if ferr != nil {
+		t.Fatalf("Fold after resume: %v", ferr)
+	}
+	attempts := rs.LookupGateAttempts(juryGatePath)
+	if len(attempts) != 2 || attempts[1].AttemptOutcome != engine.AttemptPassed {
+		t.Fatalf("post-resume GateAttempts = %+v, want 2 with attempt[1] AttemptPassed", attempts)
+	}
+	nr, ok := rs.LookupCompleted(juryEvaluateMapPath(2))
+	if !ok {
+		t.Fatalf("no node.completed at %q after resume (accepted verdict must replay)", juryEvaluateMapPath(2))
+	}
+	if nr.Outputs["accept"] != true {
+		t.Errorf("resumed accepted verdict accept = %v, want true", nr.Outputs["accept"])
 	}
 }
