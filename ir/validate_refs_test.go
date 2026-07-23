@@ -471,6 +471,36 @@ func TestRefsAgentGateEvaluatorNoAWF3002(t *testing.T) {
 	assertNoCode(t, Validate(ld), "AWF3002")
 }
 
+// TestRefsGateEvaluateMapReduceTerminalCleanRefs covers jury-panel Task 2: a
+// quorum-reduced map terminating gate.evaluate, consumed only via
+// {{ evaluate.accept }} (the reduce's own field: name, dynamic per Task 1),
+// must validate with no AWF3001/AWF3002/AWF1014 — the panel's aggregate
+// verdict IS the gate verdict.
+func TestRefsGateEvaluateMapReduceTerminalCleanRefs(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "gate-jury-refs", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{&CodeStep{ID: "gen", Container: "c", Run: "true"}},
+				Evaluate: NodeList{&Map{
+					ID: "jury", OverItems: []any{map[string]any{"model": "a"}, map[string]any{"model": "b"}},
+					As: "j", Container: "c",
+					Body:   NodeList{&CodeStep{ID: "vote", Container: "c", Run: "true", OutputSchema: boolSchema("accept")}},
+					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "accept"},
+				}},
+				Until:       "{{ evaluate.accept }}",
+				MaxAttempts: 3,
+			},
+		},
+	})
+	diags := Validate(ld)
+	assertNoCode(t, diags, "AWF1014")
+	assertNoCode(t, diags, "AWF3001")
+	assertNoCode(t, diags, "AWF3002")
+	assertNoCode(t, diags, "AWF5001")
+}
+
 // TestRefsBrokenRefInWithPromptReportsAWF3001 asserts that a broken reference
 // inside a with: string value emits AWF3001 at the path "<step-id>.with.<key>".
 func TestRefsBrokenRefInWithPromptReportsAWF3001(t *testing.T) {

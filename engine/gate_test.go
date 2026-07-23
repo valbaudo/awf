@@ -43,6 +43,27 @@ func schemaForVerdict() *ir.JSONSchema {
 	}
 }
 
+// TestLastEvaluatorPathMapTerminal: a gate whose evaluate: ends in a *ir.Map
+// with a typed reduce (jury-panel Task 2, AWF1014 relaxed) resolves to the
+// map's OWN path — bare map[i], no id segment, per ir.PathFor's map addressing
+// (mirrors ir/validate_structural.go's nodeHasOutputSchema *Map arm; the two
+// predicates must agree on exactly which maps are valid evaluate terminals).
+func TestLastEvaluatorPathMapTerminal(t *testing.T) {
+	q := ir.Ratio("2")
+	g := &ir.Gate{Evaluate: ir.NodeList{
+		&ir.CodeStep{ID: "pre", Run: "x", Container: "c"},
+		&ir.Map{ID: "jury", Reduce: &ir.Reduce{Quorum: &q, Field: "accept"}},
+	}}
+	got, err := lastEvaluatorPath(g, "gate[0].evaluate")
+	if err != nil {
+		t.Fatalf("lastEvaluatorPath: %v", err)
+	}
+	want := ir.PathFor("gate[0].evaluate", "map", "", 1)
+	if got != want {
+		t.Errorf("lastEvaluatorPath = %q, want %q", got, want)
+	}
+}
+
 func TestRunGateSingleAttemptPasses(t *testing.T) {
 	until := ir.Expr("{{ evaluate.verified }}")
 	g := &ir.Gate{

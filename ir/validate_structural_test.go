@@ -505,6 +505,54 @@ func TestStructuralGateEvaluateFinalHasOutputSchema(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF1014", "gate[0]")
 }
 
+// TestStructuralGateEvaluateMapReduceTerminalIsValid: a map whose reduce:
+// produces a typed verdict (quorum here) is a legal evaluate: terminal —
+// AWF1014 relaxed (jury-panel Task 2) to accept a *Map alongside the step kinds.
+func TestStructuralGateEvaluateMapReduceTerminalIsValid(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "gate-jury", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{&CodeStep{ID: "gen", Container: "c", Run: "true"}},
+				Evaluate: NodeList{&Map{
+					ID: "jury", OverItems: []any{map[string]any{"model": "a"}, map[string]any{"model": "b"}},
+					As: "j", Container: "c",
+					Body:   NodeList{&CodeStep{ID: "vote", Container: "c", Run: "true", OutputSchema: boolSchema("accept")}},
+					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "accept"},
+				}},
+				Until:       "{{ evaluate.accept }}",
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertNoCode(t, Validate(ld), "AWF1014")
+}
+
+// TestStructuralGateEvaluateMapNoReduceTerminalInvalid: a map with NO reduce:
+// is not a verdict producer — AWF1014 still fires. Pins the negative side of
+// the relaxed nodeHasOutputSchema so a reducer-less map can never silently
+// pass as a gate's evaluate terminal.
+func TestStructuralGateEvaluateMapNoReduceTerminalInvalid(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "gate-jury-noreduce", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{&CodeStep{ID: "gen", Container: "c", Run: "true"}},
+				Evaluate: NodeList{&Map{
+					ID: "jury", OverItems: []any{map[string]any{"model": "a"}},
+					As: "j", Container: "c",
+					Body: NodeList{&CodeStep{ID: "vote", Container: "c", Run: "true", OutputSchema: boolSchema("accept")}},
+				}},
+				Until:       "{{ evaluate.accept }}",
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1014", "gate[0]")
+}
+
 func TestStructuralGateRequiresUntil(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "gate", Version: 1,

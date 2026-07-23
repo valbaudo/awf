@@ -511,6 +511,14 @@ func nodeHasOutputSchema(n Node) bool {
 		return v.OutputSchema != nil
 	case *SignalStep:
 		return v.OutputSchema != nil
+	case *Map:
+		// A map terminates evaluate: (jury-panel Task 2) iff its reduce produces a
+		// typed verdict: quorum (synthetic {<field>,votes,agree,votes_detail}) or a
+		// run reducer with an explicit output_schema. A reducer-less map, or a run
+		// reducer with no output_schema, is not a verdict producer. Mirrored in
+		// engine/gate.go's lastEvaluatorPath *ir.Map arm — the two must agree on
+		// exactly which maps are valid evaluate terminals.
+		return v.Reduce != nil && (v.Reduce.IsQuorum() || v.Reduce.OutputSchema != nil)
 	}
 	return false
 }

@@ -140,12 +140,13 @@ func mapsByPath(nodes NodeList) map[string]*Map {
 	return out
 }
 
-// lastEvaluatorProducerID returns the step id of the terminal producer of a
-// gate's evaluate list — the node {{ evaluate.<field> }} resolves to. AWF1014
+// lastEvaluatorProducerID returns the id of the terminal producer of a gate's
+// evaluate list — the node {{ evaluate.<field> }} resolves to. AWF1014
 // (validate_structural.go) guarantees that terminal is a Code/Agent/Signal step
-// with output_schema, so the default arm is unreachable for a valid gate (it
-// mirrors engine/gate.go lastEvaluatorPath). Do NOT add *React/*Call/*Map arms:
-// nodeHasOutputSchema rejects them as evaluate terminals.
+// with output_schema, or (jury-panel Task 2) a *Map whose reduce: produces a
+// typed verdict — so the default arm is unreachable for a valid gate (it
+// mirrors engine/gate.go lastEvaluatorPath and nodeHasOutputSchema). Do NOT add
+// *React/*Call arms: nodeHasOutputSchema rejects them as evaluate terminals.
 func lastEvaluatorProducerID(nodes NodeList) string {
 	if len(nodes) == 0 {
 		return ""
@@ -156,6 +157,15 @@ func lastEvaluatorProducerID(nodes NodeList) string {
 	case *AgentStep:
 		return v.ID
 	case *SignalStep:
+		return v.ID
+	case *Map:
+		// The aggregate id the verdict is addressed under — the map's reduce
+		// commits its typed output at the map's own path (see lastEvaluatorPath's
+		// *ir.Map arm). Marking it referenced mirrors the step arms; it has no
+		// AWF3002 effect today (that check only fires for kind=="agent", and a
+		// reduce-declaring map is indexed as kind=="map_reduce" — see
+		// indexModuleProducers), but keeps this function's contract — every
+		// evaluate terminal's id is marked referenced — true regardless.
 		return v.ID
 	default:
 		return "" // AWF1014-unreachable for a valid gate

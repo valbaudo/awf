@@ -210,6 +210,14 @@ func lastEvaluatorPath(g *ir.Gate, evaluatePath string) (string, error) {
 		return ir.PathFor(evaluatePath, "", v.ID, idx), nil
 	case *ir.SignalStep:
 		return ir.PathFor(evaluatePath, "", v.ID, idx), nil
+	case *ir.Map:
+		// A map terminates evaluate: (AWF1014 relaxed, jury-panel Task 2) — its
+		// reduce commits the verdict at the map's OWN path (bare map[i], no id
+		// segment — ir/walk.go's map addressing). The aggregate output_schema
+		// (quorum synthetic or run reducer's) is what `until` / evaluate.<field>
+		// reads. Mirrors ir/validate_structural.go's nodeHasOutputSchema *Map arm;
+		// the two must agree on exactly which maps are valid evaluate terminals.
+		return ir.PathFor(evaluatePath, "map", "", idx), nil
 	default:
 		// Validator AWF1014 ensures last node is a step. Defense-in-depth:
 		// surface the unexpected kind clearly.
