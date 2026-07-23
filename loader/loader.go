@@ -53,7 +53,12 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 	// imported workflow — since modules[""] is the root module (loadModuleFromRoot above
 	// keys it that way) and its Workflow is the SAME pointer aliased into the returned
 	// LoadedDefinition.Workflow below.
+	//
+	// desugarJury runs FIRST: a jury: block lowers to a map, and that map's
+	// omitted concurrency: must still default to 1 like any other map, so the
+	// desugared and hand-written map+quorum forms normalize to byte-identical IR.
 	for _, m := range modules {
+		desugarJury(m.Workflow)
 		applyMapConcurrencyDefault(m.Workflow)
 	}
 	return &ir.LoadedDefinition{

@@ -62,6 +62,24 @@ type AgentStep struct {
 	Timeout        *Timeout          `json:"timeout,omitempty"`
 	IdempotencyKey *Template         `json:"idempotency_key,omitempty"`
 	Retry          *RetryPolicy      `json:"retry,omitempty"`
+	// Jury, when set, is loader sugar: the loader lowers this step into a map
+	// over Jury.Over (each item a with: patch) with a quorum reduce, BEFORE any
+	// digest/validate pass (loader/jury.go). It never reaches the engine — a
+	// decoded-and-loaded IR has Jury == nil on every AgentStep. json tag present
+	// so a raw decode round-trips; the desugar strips it.
+	Jury *Jury `json:"jury,omitempty"`
+}
+
+// Jury declares a voting panel on an agent judge step (E1: jurors vary by with:
+// only). Desugared in the loader to map+quorum. Over is the per-juror with:
+// patches; Quorum reuses the Ratio type (int count or (0,1] fraction), exactly
+// like Map.MinSuccess; Field is the per-branch boolean output field quorum
+// counts (defaults to the sole boolean in the step's output_schema — resolved
+// and made explicit during desugaring so the emitted map is unambiguous).
+type Jury struct {
+	Over   []map[string]any `json:"over"`
+	Quorum *Ratio           `json:"quorum"`
+	Field  string           `json:"field,omitempty"`
 }
 
 type SignalStep struct {
