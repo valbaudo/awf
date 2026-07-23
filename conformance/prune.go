@@ -206,10 +206,12 @@ func scoreProgram(item string, v float64) execProgram {
 	}
 }
 
-// scoreAgreeProgram is scoreProgram plus a boolean `agree` the quorum reducer
-// counts — for the prune: + reduce:{quorum} composition test.
+// scoreAgreeProgram is scoreProgram plus a boolean `concur` the quorum reducer
+// counts — for the prune: + reduce:{quorum} composition test. Named `concur`,
+// not `agree`, because the quorum verdict's reserved tally key IS `agree`
+// (ir.QuorumVerdictFields) — a reduce field: named `agree` is rejected (AWF5006).
 func scoreAgreeProgram(item string, v float64, agree bool) execProgram {
-	raw, _ := json.Marshal(map[string]any{"score": v, "agree": agree})
+	raw, _ := json.Marshal(map[string]any{"score": v, "concur": agree})
 	return execProgram{
 		cmd: "./hyp.sh " + item,
 		res: container.ExecResult{ExitCode: 0, AWFOutput: raw},
@@ -217,12 +219,12 @@ func scoreAgreeProgram(item string, v float64, agree bool) execProgram {
 }
 
 // pruneQuorumWorkflow — the prune: + reduce:{quorum} composition. keep: 2
-// over 4 items, then a quorum: 1.0 (unanimous) reduce over the SURVIVORS' `agree`
-// field. The quorum cohort must be the NON-PRUNED count (2 survivors), not the
-// full fan-out (4): with cohort=2 the two unanimous survivors meet quorum (need
-// 2, agree 2 → passed, votes 2). The old behavior measured quorum against
-// len(over)=4, so unanimous survivors could never reach need=4 — a wrong
-// retryable_failure on a documented feature combination.
+// over 4 items, then a quorum: 1.0 (unanimous) reduce over the SURVIVORS'
+// `concur` field. The quorum cohort must be the NON-PRUNED count (2 survivors),
+// not the full fan-out (4): with cohort=2 the two unanimous survivors meet
+// quorum (need 2, agree-tally 2 → concur:true, votes 2). The old behavior
+// measured quorum against len(over)=4, so unanimous survivors could never reach
+// need=4 — a wrong retryable_failure on a documented feature combination.
 var pruneQuorumWorkflow = fmt.Sprintf(`workflow: conformance-prune-quorum
 version: 1
 input_schema:
@@ -250,16 +252,16 @@ graph:
           output_schema:
             type: object
             additionalProperties: false
-            required: [score, agree]
+            required: [score, concur]
             properties:
               score: { type: number }
-              agree: { type: boolean }
+              concur: { type: boolean }
       prune:
         score: score
         keep: 2
       reduce:
         quorum: 1.0
-        field: agree
+        field: concur
 `, fakeImageDigest)
 
 // testPrune is the SP5 conformance bucket — the prune: frontier on map against
@@ -666,14 +668,15 @@ func testPruneQuorumCohort(t *testing.T, factory BackendFactory) {
 	t.Helper()
 	// prune: + reduce:{quorum} composition (the cohort-denominator fix). keep:
 	// 2 over 4 items prunes the two lowest scorers; a quorum: 1.0 reduce then
-	// folds the SURVIVORS' `agree` votes. The quorum threshold must be measured
+	// folds the SURVIVORS' `concur` votes. The quorum threshold must be measured
 	// against the NON-PRUNED cohort (2 survivors), exactly as min_success excludes
-	// pruned items. The two survivors (b=0.9, d=0.7) both agree, so the unanimous
-	// quorum is met (need 2, agree 2) and the map ends ok with votes=2. Measuring
-	// quorum against the full fan-out (len(over)=4) — the old behavior — would
-	// require 4 agreeing votes that the pruned items can never supply, wrongly
-	// failing the map. The pruned items (a,c) agree=false, but they are absent from
-	// the reducer's branches entirely, so only the cohort denominator can be wrong.
+	// pruned items. The two survivors (b=0.9, d=0.7) both concur, so the unanimous
+	// quorum is met (need 2, agree-tally 2) and the map ends ok, committing
+	// {concur:true, votes:2, agree:2, votes_detail:[...]}. Measuring quorum
+	// against the full fan-out (len(over)=4) — the old behavior — would require 4
+	// agreeing votes that the pruned items can never supply, wrongly failing the
+	// map. The pruned items (a,c) concur=false, but they are absent from the
+	// reducer's branches entirely, so only the cohort denominator can be wrong.
 	programs := []execProgram{
 		scoreAgreeProgram("a", 0.1, false), // pruned (lowest)
 		scoreAgreeProgram("b", 0.9, true),  // survivor — agrees
@@ -708,8 +711,8 @@ func testPruneQuorumCohort(t *testing.T, factory BackendFactory) {
 	if got := nr.Outputs["agree"]; got != float64(2) {
 		t.Errorf("prune_quorum_cohort: agree = %v, want 2 (both survivors agree)", got)
 	}
-	if got := nr.Outputs["passed"]; got != true {
-		t.Errorf("prune_quorum_cohort: passed = %v, want true", got)
+	if got := nr.Outputs["concur"]; got != true {
+		t.Errorf("prune_quorum_cohort: concur = %v, want true", got)
 	}
 }
 

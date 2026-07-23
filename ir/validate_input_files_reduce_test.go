@@ -67,10 +67,10 @@ func TestInputFilesQuorumReducerHasNoArtifactsErrors(t *testing.T) {
 				Body: NodeList{
 					&CodeStep{ID: "scan", Container: "c", Run: "true",
 						OutputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
-							"required": []any{"agree"}, "properties": map[string]any{"agree": map[string]any{"type": "boolean"}}},
+							"required": []any{"concur"}, "properties": map[string]any{"concur": map[string]any{"type": "boolean"}}},
 						OutputFiles: OutputFiles{{Name: "leaf", Path: "/out/leaf.txt"}}},
 				},
-				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
+				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "concur"},
 			},
 			&CodeStep{ID: "hunt", Container: "c", Run: "true",
 				InputFiles: map[string]string{"/work/leaf.txt": "step.scan.files.leaf"}},

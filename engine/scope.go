@@ -559,35 +559,55 @@ func enclosingMapForBinding(ctxPath string, idx map[string]*ir.Map, asName strin
 }
 
 // runtimeMapPathToStatic converts a runtime path to its static-IR-path
-// equivalent by replacing ".item-K" segments with ".body" wherever the
-// preceding segment starts with "map[". Used by enclosingMapForBinding to
-// look up nested maps in the static-keyed mapPathIndex (CR-A fix).
+// equivalent. A static path (ir.PathFor / ir.ChildPath) carries NO instance
+// segments at all — every multiplicity boundary a runtime path threads
+// through must be normalized away for the static-keyed mapPathIndex lookup
+// (enclosingMapForBinding) to hit:
+//
+//   - ".item-K" preceded by "map[...]"            → replaced with ".body"
+//     (a map's static child list IS named "body" — ir.ChildPath(parent,"map",i,"body")).
+//   - ".attempt-M" preceded by "gate[...]"         → DROPPED entirely
+//     (static is "gate[N].evaluate"/".generate", never "gate[N].attempt-M...").
+//   - ".iter-K" preceded by "loop[...].body"       → DROPPED entirely
+//     (static is "loop[N].body", never "loop[N].body.iter-K").
+//
+// Each rule's discriminator mirrors the existing map[/item- guard: keyed off
+// the LITERAL preceding segment(s), never a bare "starts with attempt-/iter-"
+// check, so a step id that happens to be named "attempt-3" or "iter-3" (valid
+// per AWF1020, not preceded by the right static ancestor) passes through
+// unchanged instead of being misclassified as an instance segment.
 //
 // Examples (also pinned by TestRuntimeMapPathToStatic):
 //
-//	"map[0]"                              → "map[0]"               (identity)
-//	"map[0].item-0.map[0]"                → "map[0].body.map[0]"   (nested)
-//	"map[0].item-0.map[0].item-2"         → "map[0].body.map[0].body"
-//	"map[0].item-0.loop[0].body.iter-3"   → "map[0].body.loop[0].body.iter-3"
-//	    (loop's body+iter is untouched — only map.item-K gets converted)
-//	"map[0].item-0.item-3"                → "map[0].body.item-3"
+//	"map[0]"                                        → "map[0]"                    (identity)
+//	"map[0].item-0.map[0]"                          → "map[0].body.map[0]"        (nested)
+//	"map[0].item-0.map[0].item-2"                   → "map[0].body.map[0].body"
+//	"gate[0].attempt-1.evaluate.map[0].item-2.vote" → "gate[0].evaluate.map[0].body.vote"
+//	    (attempt-1 dropped; item-2 → body — a jury-panel gate.evaluate map)
+//	"map[0].item-0.loop[0].body.iter-3"             → "map[0].body.loop[0].body"
+//	    (iter-3 dropped — a map nested in a loop resolving its OWN <as>)
+//	"map[0].item-0.item-3"                          → "map[0].body.item-3"
 //	    (a step id literally "item-3" inside map body: not preceded by "map[",
 //	     stays as item-3)
-//
-// The replacement rule (item-K preceded by map[X] → body) is safe because:
-//   - Loop bodies use ".body.iter-K" both in static AND runtime forms (ir.ChildPath +
-//     runtime IterPath both produce the same ".body.iter-K" suffix).
-//   - Step ids matching `item-\d+` are valid per AWF1020 but, because they're
-//     leaves (no preceding "map[" in the segments array), the walker skips
-//     them via the same check.
 func runtimeMapPathToStatic(runtimePath string) string {
+	if runtimePath == "" {
+		return ""
+	}
 	segs := strings.Split(runtimePath, ".")
-	for i := 1; i < len(segs); i++ {
-		if strings.HasPrefix(segs[i], "item-") && strings.HasPrefix(segs[i-1], "map[") {
-			segs[i] = "body"
+	out := make([]string, 0, len(segs))
+	for i, seg := range segs {
+		switch {
+		case strings.HasPrefix(seg, "item-") && i > 0 && strings.HasPrefix(segs[i-1], "map["):
+			out = append(out, "body")
+		case strings.HasPrefix(seg, "attempt-") && i > 0 && strings.HasPrefix(segs[i-1], "gate["):
+			// Drop: static form has no attempt segment.
+		case strings.HasPrefix(seg, "iter-") && i > 1 && segs[i-1] == "body" && strings.HasPrefix(segs[i-2], "loop["):
+			// Drop: static form has no iter segment.
+		default:
+			out = append(out, seg)
 		}
 	}
-	return strings.Join(segs, ".")
+	return strings.Join(out, ".")
 }
 
 // stepRuntimePath converts a step's static IR path (from StepPathIndex) to the

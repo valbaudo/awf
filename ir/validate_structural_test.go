@@ -505,6 +505,109 @@ func TestStructuralGateEvaluateFinalHasOutputSchema(t *testing.T) {
 	assertErrorAt(t, Validate(ld), "AWF1014", "gate[0]")
 }
 
+// TestStructuralGateEvaluateMapReduceTerminalIsValid: a map whose reduce:
+// produces a typed verdict (quorum here) is a legal evaluate: terminal —
+// AWF1014 relaxed (jury-panel Task 2) to accept a *Map alongside the step
+// kinds. The map is left unnamed (no ID:) — an evaluate terminal is addressed
+// positionally (evaluate.<field>), never by id; a NAMED map nested in a gate
+// hits the pre-existing, unrelated AWF5011 ("map aggregate product id is
+// only supported for a single non-gate non-loop map") — orthogonal to this
+// task, so the fixture sidesteps it rather than papering over a real error
+// with an assertion that only checks for AWF1014's absence.
+func TestStructuralGateEvaluateMapReduceTerminalIsValid(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "gate-jury", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{&CodeStep{ID: "gen", Container: "c", Run: "true"}},
+				Evaluate: NodeList{&Map{
+					OverItems: []any{map[string]any{"model": "a"}, map[string]any{"model": "b"}},
+					As:        "j", Container: "c",
+					Body:   NodeList{&CodeStep{ID: "vote", Container: "c", Run: "true", OutputSchema: boolSchema("accept")}},
+					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "accept"},
+				}},
+				Until:       "{{ evaluate.accept }}",
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertNoError(t, Validate(ld))
+}
+
+// TestStructuralGateEvaluateMapNoReduceTerminalInvalid: a map with NO reduce:
+// is not a verdict producer — AWF1014 still fires. Pins the negative side of
+// the relaxed nodeHasOutputSchema so a reducer-less map can never silently
+// pass as a gate's evaluate terminal.
+func TestStructuralGateEvaluateMapNoReduceTerminalInvalid(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "gate-jury-noreduce", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{&CodeStep{ID: "gen", Container: "c", Run: "true"}},
+				Evaluate: NodeList{&Map{
+					OverItems: []any{map[string]any{"model": "a"}},
+					As:        "j", Container: "c",
+					Body: NodeList{&CodeStep{ID: "vote", Container: "c", Run: "true", OutputSchema: boolSchema("accept")}},
+				}},
+				Until:       "{{ evaluate.accept }}",
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1014", "gate[0]")
+}
+
+// TestStructuralGateEvaluateMapRunReducerWithSchemaTerminalIsValid: the OTHER
+// half of nodeHasOutputSchema's *Map disjunct — a run: reducer that declares
+// output_schema is also a legal evaluate: terminal, not just quorum.
+func TestStructuralGateEvaluateMapRunReducerWithSchemaTerminalIsValid(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "gate-jury-run", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{&CodeStep{ID: "gen", Container: "c", Run: "true"}},
+				Evaluate: NodeList{&Map{
+					OverItems: []any{map[string]any{"model": "a"}, map[string]any{"model": "b"}},
+					As:        "j", Container: "c",
+					Body:   NodeList{&CodeStep{ID: "vote", Container: "c", Run: "true", OutputSchema: boolSchema("accept")}},
+					Reduce: &Reduce{Run: "./vote.sh", Container: "c", OutputSchema: boolSchema("accept")},
+				}},
+				Until:       "{{ evaluate.accept }}",
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertNoError(t, Validate(ld))
+}
+
+// TestStructuralGateEvaluateMapRunReducerNoSchemaTerminalInvalid: a run:
+// reducer with NO output_schema is syntactically legal (validate_reduce.go
+// requires only container:) but is not a verdict producer — AWF1014 must
+// still fire. Pins the negative side of the run-reducer disjunct.
+func TestStructuralGateEvaluateMapRunReducerNoSchemaTerminalInvalid(t *testing.T) {
+	ld := makeLD(&Workflow{
+		ID: "gate-jury-run-noschema", Version: 1,
+		Containers: map[string]Container{"c": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Gate{
+				Generate: NodeList{&CodeStep{ID: "gen", Container: "c", Run: "true"}},
+				Evaluate: NodeList{&Map{
+					OverItems: []any{map[string]any{"model": "a"}},
+					As:        "j", Container: "c",
+					Body:   NodeList{&CodeStep{ID: "vote", Container: "c", Run: "true", OutputSchema: boolSchema("accept")}},
+					Reduce: &Reduce{Run: "./vote.sh", Container: "c"}, // no output_schema
+				}},
+				Until:       "{{ evaluate.accept }}",
+				MaxAttempts: 3,
+			},
+		},
+	})
+	assertErrorAt(t, Validate(ld), "AWF1014", "gate[0]")
+}
+
 func TestStructuralGateRequiresUntil(t *testing.T) {
 	ld := makeLD(&Workflow{
 		ID: "gate", Version: 1,

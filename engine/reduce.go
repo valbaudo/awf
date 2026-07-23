@@ -120,9 +120,12 @@ func runMapReduce(
 // in SP2; runReduce is written path-agnostic so a future parallel wire-form can
 // reuse it unchanged.) Returns the node's outcome. Two forms:
 //
-//   - quorum: count branches whose `over` field is true; ok iff ≥ k, committing
-//     a synthetic {passed,votes,agree} typed output. A miss is retryable_failure
-//     (mirrors min_success, engine/map.go) — NOT a new outcome class.
+//   - quorum: count branches whose `over` field is true; the reduce ALWAYS
+//     commits and returns ok — a synthetic {<field>,votes,agree,votes_detail}
+//     typed output, <field> being the boolean verdict (true iff agree ≥ k). A
+//     miss commits <field>:false rather than failing mechanically: a vote tally
+//     is a quality/business outcome, not a transient fault, so treating a miss
+//     as retryable_failure would conflate retry with repair.
 //   - run: stage every branch's named artifact + a canonical-JSON manifest into
 //     the reducer's REQUIRED container (the SP1 CopyTo path), run the command,
 //     commit its output_schema/output_files at nodePath.
@@ -170,15 +173,21 @@ func runReduce(
 	}
 }
 
-// runQuorumReduce computes the quorum verdict purely in-engine and commits a
-// synthetic {passed,votes,agree} typed output at nodePath. A not-met quorum is
-// retryable_failure with no commit (mirrors min_success, engine/map.go).
+// runQuorumReduce computes the quorum verdict purely in-engine and ALWAYS
+// commits a synthetic {<field>,votes,agree,votes_detail} typed output at
+// nodePath, returning ok whether or not the quorum was met (A1: a vote tally is
+// a quality/business outcome, never a mechanical failure — mirrors a gate's
+// `until`, not min_success). The verdict is named after `field:` so an enclosing
+// gate's `until: evaluate.<field>` (or any downstream `step.<id>.<field>` ref)
+// reads it unchanged, regardless of the quorum outcome. votes_detail carries
+// each branch's index + full typed output, so repair feedback can see every
+// juror's individual verdict, not just the tally.
 //
 // The threshold k is measured against the NON-PRUNED fan-out COHORT, not the
 // survivor count: a branch that failed mechanically is absent from branches and
 // therefore correctly counts as a NON-agreeing vote. This is what makes
 // "unanimous is quorum(N)" honest — a unanimous quorum over a cohort with one
-// crashed branch FAILS (need=N over the cohort, agree<N), rather than passing on
+// crashed branch misses (need=N over the cohort, agree<N), rather than passing on
 // the survivors. (Counting agree over survivors but k over the cohort is the only
 // combination that preserves the author's demand under crashes.) A deliberately-
 // PRUNED item is NOT in the cohort the caller passes (engine/map.go subtracts the
@@ -187,18 +196,29 @@ func runReduce(
 // against one denominator.
 func runQuorumReduce(r *ir.Reduce, nodePath string, branches []reduceBranch, cohort int, log state.Log, blobs state.Blobs, rs *RunState) (Outcome, error) {
 	agree := 0
+	votesDetail := make([]map[string]any, 0, len(branches))
 	for _, b := range branches {
 		if v, ok := b.Outputs[r.Field].(bool); ok && v {
 			agree++
 		}
+		// Ballot: index + the branch's full typed output NESTED under "output" (not
+		// flattened) — a branch output field literally named "index" must not clobber
+		// the ballot index. b.Outputs is a fresh per-branch map from the caller and is
+		// never mutated after this point, so referencing it here (not copying) is safe.
+		votesDetail = append(votesDetail, map[string]any{"index": b.N, "output": b.Outputs})
 	}
 	need := quorumThreshold(r.Quorum, cohort)
 	passed := int64(agree) >= need
-	out := map[string]any{"passed": passed, "votes": cohort, "agree": agree}
-	if !passed {
-		// Mirror min_success: a not-met quorum is retryable_failure, no commit.
-		return OutcomeRetryableFailure, fmt.Errorf("engine.runReduce: quorum %q: %d/%d branches agree, need %d",
-			nodePath, agree, cohort, need)
+	// A1: always commit, always ok. The verdict is named after field: so an
+	// enclosing gate's `until: evaluate.<field>` reads it unchanged; a miss
+	// commits <field>:false and drives repair rather than mechanically failing.
+	// field: is validator-guarded (ir.QuorumVerdictFields, AWF1068) against naming
+	// one of the reserved keys below, so this map literal can't collide.
+	out := map[string]any{
+		r.Field:        passed,
+		"votes":        cohort,
+		"agree":        agree,
+		"votes_detail": votesDetail,
 	}
 	nr, err := Commit(log, blobs, nodePath, DispatchResult{Outcome: OutcomeOK, Outputs: out}, false)
 	if err != nil {

@@ -1,0 +1,38 @@
+workflow: jury-panel
+version: 1
+containers:
+  c:
+    image: oci://example.com/panel@sha256:1111111111111111111111111111111111111111111111111111111111111111
+graph:
+  - gate:
+      generate:
+        - id: gen
+          container: c
+          run: ./propose.sh
+      evaluate:
+        - map:
+            as: __juror
+            container: c
+            over:
+              - model: gpt-5
+              - model: o3
+              - model: sonnet-5
+            body:
+              - id: judge
+                container: c
+                uses: openai/codex
+                with:
+                  prompt: review
+                  model: "{{ __juror.model }}"
+                output_schema:
+                  type: object
+                  properties:
+                    accept:
+                      type: boolean
+                    critique:
+                      type: string
+            reduce:
+              quorum: 2
+              field: accept
+      until: "{{ evaluate.accept }}"
+      max_attempts: 3

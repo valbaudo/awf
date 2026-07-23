@@ -87,36 +87,42 @@ func TestReducedMapNonDeclaredRunReducerFieldErrors(t *testing.T) {
 }
 
 // TestReducedMapQuorumReducerFieldsAccepted: a ref to a quorum reducer's fixed
-// {passed, votes, agree} output fields VALIDATES (no AWF5004, no AWF3001).
+// {votes, agree, votes_detail} keys, or to the reduce's own field: name, VALIDATES
+// (no AWF5004, no AWF3001).
 func TestReducedMapQuorumReducerFieldsAccepted(t *testing.T) {
 	body := func() NodeList {
 		return NodeList{
 			&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 				With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: &JSONSchema{
 					"type": "object", "additionalProperties": false,
-					"required":   []any{"agree"},
-					"properties": map[string]any{"agree": map[string]any{"type": "boolean"}}}},
+					"required":   []any{"concur"},
+					"properties": map[string]any{"concur": map[string]any{"type": "boolean"}}}},
 		}
 	}
-	for _, field := range []string{"passed", "votes", "agree"} {
+	// "concur" is the reduce's own field: name (not a reserved key — field: "agree"
+	// would be rejected by AWF1068); "votes"/"agree"/"votes_detail" are accepted
+	// purely via the fixed QuorumVerdictFields set.
+	for _, field := range []string{"concur", "votes", "agree", "votes_detail"} {
 		ld := makeLD(&Workflow{ID: "agg", Version: 1,
 			Containers: aggContainer(),
 			Graph: NodeList{
 				aggFindURLs(),
 				&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 					Body:   body(),
-					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
+					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "concur"},
 				},
 				&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.scan." + field + " }}"},
 			}})
 		diags := Validate(ld)
 		assertNoCode(t, diags, "AWF5004")
 		assertNoErrorCode(t, diags, "AWF3001")
+		assertNoErrorCode(t, diags, "AWF1068")
 	}
 }
 
-// TestReducedMapQuorumNonDeclaredFieldErrors: a ref to a field NOT in the quorum
-// reducer's fixed {passed, votes, agree} shape still errors (AWF3001), not AWF5004.
+// TestReducedMapQuorumNonDeclaredFieldErrors: a ref to a field that is NEITHER
+// the reduce's own field: NOR in the quorum reducer's fixed {votes, agree,
+// votes_detail} shape still errors (AWF3001), not AWF5004.
 func TestReducedMapQuorumNonDeclaredFieldErrors(t *testing.T) {
 	ld := makeLD(&Workflow{ID: "agg", Version: 1,
 		Containers: aggContainer(),
@@ -127,12 +133,13 @@ func TestReducedMapQuorumNonDeclaredFieldErrors(t *testing.T) {
 					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 						With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: &JSONSchema{
 							"type": "object", "additionalProperties": false,
-							"required":   []any{"agree"},
-							"properties": map[string]any{"agree": map[string]any{"type": "boolean"}}}},
+							"required":   []any{"concur"},
+							"properties": map[string]any{"concur": map[string]any{"type": "boolean"}}}},
 				},
-				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
+				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "concur"},
 			},
-			// `summary` is not in the quorum verdict's fixed shape → AWF3001.
+			// `summary` is neither field: concur nor in the quorum verdict's fixed
+			// shape → AWF3001.
 			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.scan.summary }}"},
 		}})
 	diags := Validate(ld)

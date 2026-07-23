@@ -373,9 +373,9 @@ func TestValidateCallInputFilesRejectsQuorumReducerArtifact(t *testing.T) {
 		&Map{Over: Expr("{{ input.xs }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 			Body: NodeList{&CodeStep{ID: "scan", Container: "c", Run: "true",
 				OutputSchema: &JSONSchema{"type": "object", "additionalProperties": false,
-					"required": []any{"agree"}, "properties": map[string]any{"agree": map[string]any{"type": "boolean"}}},
+					"required": []any{"concur"}, "properties": map[string]any{"concur": map[string]any{"type": "boolean"}}},
 				OutputFiles: OutputFiles{{Name: "leaf", Path: "/out/leaf.txt"}}}},
-			Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"}},
+			Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "concur"}},
 		&CallStep{ID: "send", Call: "scan", InputFiles: map[string]string{"report": "step.scan.files.leaf"}},
 	}
 	child := childWorkflowWithTypedOutput("child", "finding")

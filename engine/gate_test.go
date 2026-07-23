@@ -43,6 +43,109 @@ func schemaForVerdict() *ir.JSONSchema {
 	}
 }
 
+// TestLastEvaluatorPathMapTerminal: a gate whose evaluate: ends in a *ir.Map
+// with a typed reduce (jury-panel Task 2, AWF1014 relaxed) resolves to the
+// map's OWN path — bare map[i], no id segment, per ir.PathFor's map addressing
+// (mirrors ir/validate_structural.go's nodeHasOutputSchema *Map arm; the two
+// predicates must agree on exactly which maps are valid evaluate terminals).
+func TestLastEvaluatorPathMapTerminal(t *testing.T) {
+	q := ir.Ratio("2")
+	g := &ir.Gate{Evaluate: ir.NodeList{
+		&ir.CodeStep{ID: "pre", Run: "x", Container: "c"},
+		&ir.Map{ID: "jury", Reduce: &ir.Reduce{Quorum: &q, Field: "accept"}},
+	}}
+	got, err := lastEvaluatorPath(g, "gate[0].evaluate")
+	if err != nil {
+		t.Fatalf("lastEvaluatorPath: %v", err)
+	}
+	want := ir.PathFor("gate[0].evaluate", "map", "", 1)
+	if got != want {
+		t.Errorf("lastEvaluatorPath = %q, want %q", got, want)
+	}
+}
+
+// TestLastEvaluatorPathMapTerminalRunReducer: the OTHER half of the *ir.Map
+// arm — a run: reducer with output_schema (not just quorum) also resolves to
+// the map's own path. Mirrors TestLastEvaluatorPathMapTerminal.
+func TestLastEvaluatorPathMapTerminalRunReducer(t *testing.T) {
+	g := &ir.Gate{Evaluate: ir.NodeList{
+		&ir.CodeStep{ID: "pre", Run: "x", Container: "c"},
+		&ir.Map{ID: "jury", Reduce: &ir.Reduce{Run: "./vote.sh", Container: "c", OutputSchema: schemaForVerdict()}},
+	}}
+	got, err := lastEvaluatorPath(g, "gate[0].evaluate")
+	if err != nil {
+		t.Fatalf("lastEvaluatorPath: %v", err)
+	}
+	want := ir.PathFor("gate[0].evaluate", "map", "", 1)
+	if got != want {
+		t.Errorf("lastEvaluatorPath = %q, want %q", got, want)
+	}
+}
+
+// TestRunGateEvaluateMapResolvesOwnAsBinding is a jury-panel Task 5 regression
+// test. Every jury: workflow desugars its varied with:/run: keys to
+// {{ <as>.<key> }} (loader/jury.go's juryToMap) — before the
+// runtimeMapPathToStatic fix (engine/scope.go), a map nested inside
+// gate.evaluate could never resolve its OWN <as> binding: the runtime ctxPath
+// under an evaluate: map carries a gate[0].attempt-N segment the static
+// mapPathIndex key never has, so `resolveAsBinding` reported AWF4002 "unknown
+// ref root" for EVERY juror invocation. Because a quorum reduce always
+// commits regardless of how many branches actually ran (jury-panel Task 1),
+// the resulting agree:0 verdict looked like a legitimate unanimous
+// rejection, not a broken ref — this test pins agree:3 (every juror actually
+// voted) as the load-bearing assertion, not just the gate's outcome.
+func TestRunGateEvaluateMapResolvesOwnAsBinding(t *testing.T) {
+	q := ir.Ratio("2")
+	voteSchema := &ir.JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []any{"accept"},
+		"properties":           map[string]any{"accept": map[string]any{"type": "boolean"}},
+	}
+	g := &ir.Gate{
+		Generate: ir.NodeList{
+			&ir.CodeStep{ID: "gen", Run: "echo gen", Container: testMapContainer, Retry: &ir.RetryPolicy{Attempts: 1}},
+		},
+		Evaluate: ir.NodeList{
+			&ir.Map{
+				As:        "__juror",
+				Container: testMapContainer,
+				OverItems: []any{
+					map[string]any{"model": "a"},
+					map[string]any{"model": "b"},
+					map[string]any{"model": "c"},
+				},
+				Body: ir.NodeList{
+					&ir.CodeStep{ID: "vote", Run: "echo {{ __juror.model }}", Container: testMapContainer,
+						Retry: &ir.RetryPolicy{Attempts: 1}, OutputSchema: voteSchema},
+				},
+				Reduce: &ir.Reduce{Quorum: &q, Field: "accept"},
+			},
+		},
+		Until:       ir.Expr("{{ evaluate.accept }}"),
+		MaxAttempts: 1,
+	}
+	rig := newMapRig(t,
+		execProgram{cmd: "echo gen", res: container.ExecResult{ExitCode: 0}},
+		execProgram{cmd: "echo a", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"accept":true}`)}},
+		execProgram{cmd: "echo b", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"accept":true}`)}},
+		execProgram{cmd: "echo c", res: container.ExecResult{ExitCode: 0, AWFOutput: []byte(`{"accept":true}`)}},
+	)
+	wf := &ir.Workflow{ID: "x", Version: 1, Graph: ir.NodeList{g}}
+	rs := NewRunState(testRunID, testDigest, nil)
+	oc, err := runGate(context.Background(), g, "gate[0]", wf, rs, rig.ld, rig.lg, rig.blobs, rig.clk, nil, nil)
+	if oc != OutcomeOK || err != nil {
+		t.Fatalf("runGate: got (%q, %v), want (ok, nil) — a map nested in gate.evaluate must resolve its own <as> binding", oc, err)
+	}
+	nr, ok := rs.LookupCompleted("gate[0].attempt-1.evaluate.map[0]")
+	if !ok {
+		t.Fatalf("no node.completed at the jury map path")
+	}
+	if nr.Outputs["accept"] != true || nr.Outputs["agree"] != 3 {
+		t.Errorf("verdict = %+v, want accept:true agree:3 (all 3 jurors resolved {{ __juror.model }} and voted, not silently failed)", nr.Outputs)
+	}
+}
+
 func TestRunGateSingleAttemptPasses(t *testing.T) {
 	until := ir.Expr("{{ evaluate.verified }}")
 	g := &ir.Gate{

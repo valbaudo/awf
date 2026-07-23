@@ -246,6 +246,21 @@
         "stop_when": { "type": "string" }
       }
     },
+    "jury": {
+      "$comment": "jury: — loader sugar on an agent step (AgentStep.Jury), desugared to a map+quorum BEFORE digest/validate (loader/jury.go). over: is the per-juror with:-patch list; quorum/field mirror reduce.quorum/reduce.field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["over", "quorum"],
+      "properties": {
+        "over": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "object" }
+        },
+        "quorum": { "$ref": "#/$defs/ratio" },
+        "field": { "type": "string" }
+      }
+    },
 
     "codeStep": {
       "$comment": "run: — a shell/code step (CodeStep). Discriminated by the `run` key.",
@@ -282,7 +297,8 @@
         "input_files": { "$ref": "#/$defs/inputFilesMap" },
         "timeout": { "$ref": "#/$defs/timeout" },
         "idempotency_key": { "$ref": "#/$defs/template" },
-        "retry": { "$ref": "#/$defs/retry" }
+        "retry": { "$ref": "#/$defs/retry" },
+        "jury": { "$ref": "#/$defs/jury" }
       }
     },
     "signalStep": {

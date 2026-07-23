@@ -230,6 +230,11 @@ var catalog = map[string]string{
 	"AWF1065": "a container-less `run:` step requires native execution; it is incompatible with `--backend docker` — declare a `container:` or run native",
 	"AWF1066": "wire key renamed; see the diagnostic message for the old and new spelling",
 	"AWF1067": "role config may reference {{ input.* }} only in model, system_prompt, and top-level string with: values; templates in nested positions or map keys are never substituted",
+	"AWF1068": "quorum field: may not be a reserved verdict key (votes, agree, votes_detail) — the reduced output already carries those keys; rename the counted field",
+	"AWF1069": "jury: requires output_schema on the step",
+	"AWF1070": "jury: over items must declare the same set of keys (each juror overrides the same with: fields)",
+	"AWF1071": "jury: field: is required — output_schema has no single boolean field to default to",
+	"AWF1072": "jury: must be the last node of a gate's evaluate: (the panel verdict is the gate verdict)",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
 	"AWF_IMPORT_DECODE":         "workflow failed to decode",
