@@ -1374,6 +1374,12 @@ reimplemented. `field:` defaults to the sole boolean property in the step's
 `output_schema`; declare it explicitly when the schema has none or more than
 one boolean property.
 
+Each `over:` value is substituted into `with:` as a rendered scalar, so vary
+**string-valued** `with:` fields (`model`, `system_prompt`): a numeric juror
+value such as `temperature: 0.7` reaches the adapter as the string `"0.7"`,
+which a type-strict adapter may reject. This is the ordinary behaviour of `with:`
+templating (identical for a hand-written `map`), not specific to `jury:`.
+
 The desugared map is **anonymous** — unlike a hand-written `map` it carries no
 `id`. A jury verdict is addressed positionally, exactly like any other gate
 verdict: `{{ evaluate.<field> }}`, never `step.<id>`. This is what makes the
