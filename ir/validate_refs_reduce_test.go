@@ -95,27 +95,28 @@ func TestReducedMapQuorumReducerFieldsAccepted(t *testing.T) {
 			&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 				With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: &JSONSchema{
 					"type": "object", "additionalProperties": false,
-					"required":   []any{"agree"},
-					"properties": map[string]any{"agree": map[string]any{"type": "boolean"}}}},
+					"required":   []any{"concur"},
+					"properties": map[string]any{"concur": map[string]any{"type": "boolean"}}}},
 		}
 	}
-	// "agree" is both the reduce's own field: name AND a fixed QuorumVerdictFields
-	// key — either way it's accepted; "votes"/"votes_detail" are accepted purely
-	// via the fixed set.
-	for _, field := range []string{"agree", "votes", "votes_detail"} {
+	// "concur" is the reduce's own field: name (not a reserved key — field: "agree"
+	// would be rejected by AWF1068); "votes"/"agree"/"votes_detail" are accepted
+	// purely via the fixed QuorumVerdictFields set.
+	for _, field := range []string{"concur", "votes", "agree", "votes_detail"} {
 		ld := makeLD(&Workflow{ID: "agg", Version: 1,
 			Containers: aggContainer(),
 			Graph: NodeList{
 				aggFindURLs(),
 				&Map{Over: Expr("{{ step.find_urls.urls }}"), As: "u", Container: "c", Concurrency: intPtr(1),
 					Body:   body(),
-					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
+					Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "concur"},
 				},
 				&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.scan." + field + " }}"},
 			}})
 		diags := Validate(ld)
 		assertNoCode(t, diags, "AWF5004")
 		assertNoErrorCode(t, diags, "AWF3001")
+		assertNoErrorCode(t, diags, "AWF1068")
 	}
 }
 
@@ -132,12 +133,12 @@ func TestReducedMapQuorumNonDeclaredFieldErrors(t *testing.T) {
 					&AgentStep{ID: "scan", Container: "c", Uses: "anthropic/claude-code",
 						With: RawConfig{"prompt": "Scan {{ u }}"}, OutputSchema: &JSONSchema{
 							"type": "object", "additionalProperties": false,
-							"required":   []any{"agree"},
-							"properties": map[string]any{"agree": map[string]any{"type": "boolean"}}}},
+							"required":   []any{"concur"},
+							"properties": map[string]any{"concur": map[string]any{"type": "boolean"}}}},
 				},
-				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "agree"},
+				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "concur"},
 			},
-			// `summary` is neither field: agree nor in the quorum verdict's fixed
+			// `summary` is neither field: concur nor in the quorum verdict's fixed
 			// shape → AWF3001.
 			&CodeStep{ID: "after", Container: "c", Run: "echo {{ step.scan.summary }}"},
 		}})

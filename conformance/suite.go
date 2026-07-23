@@ -118,10 +118,12 @@
 //     — covered by ir/validate_tools_test.go's TestValidateReactRejectsDeclaredRole.
 //   - Reduce (SP2 C2a): a map's reduce: fan-in collapses N branches into ONE
 //     output committed at the map path. quorum_pass — quorum: 2 met over 3 items
-//     commits {passed:true,votes:3,agree:2} and a downstream step.<bodyId>.passed
-//     lifts the REDUCED output (not the per-item array). quorum_fail — quorum: 2
-//     with 1 vote returns retryable_failure, never commits at the map path, halts
-//     the run (mirrors min_success). run_reduce — an author ./merge.sh reducer in
+//     commits {vulnerable:true,votes:3,agree:2,votes_detail:[...]} and a downstream
+//     step.<bodyId>.vulnerable lifts the REDUCED output (not the per-item array).
+//     quorum_fail — quorum: 2 with 1 vote still COMMITS {vulnerable:false,...} and
+//     returns ok (jury-panel Task 1: a vote tally is never a mechanical failure);
+//     the downstream step runs and sees the reduced verdict. run_reduce — an
+//     author ./merge.sh reducer in
 //     its required container `agg` stages every branch's named artifact + a
 //     canonical-JSON manifest (SP1 CopyTo), commits its typed output + artifact at
 //     the map path; a downstream step.<bodyId>.files.<name> resolves the reducer's

@@ -83,11 +83,39 @@ func TestValidateReduceQuorumAndMinSuccess(t *testing.T) {
 }
 
 func TestValidateReduceValidQuorum(t *testing.T) {
-	// Valid quorum over a declared body field → no error.
-	r := &Reduce{Quorum: reduceRatio("2"), Field: "votes"}
-	diags := Validate(mapWithReduce(r, nil))
+	// Valid quorum over a declared, non-reserved body field → no error. Field:
+	// "concur" (not mapWithReduce's shared "votes" body field, which collides
+	// with the reserved quorum verdict key — see TestValidateReduceQuorumRejectsReservedField)
+	// so this test constructs its own body inline.
+	ld := makeLD(&Workflow{
+		ID: "reduce-wf-valid", Version: 1,
+		Containers: map[string]Container{"lab": {Image: "oci://x@sha256:abc"}},
+		Graph: NodeList{
+			&Map{
+				Over: Expr("{{ input.items }}"), As: "item", Container: "lab", Concurrency: intPtr(1),
+				Reduce: &Reduce{Quorum: reduceRatio("2"), Field: "concur"},
+				Body: NodeList{
+					&CodeStep{ID: "vote", Container: "lab", Run: "true", OutputSchema: boolSchema("concur")},
+				},
+			},
+		},
+	})
+	diags := Validate(ld)
 	assertNoErrorCode(t, diags, "AWF1035")
 	assertNoErrorCode(t, diags, "AWF5006")
+	assertNoErrorCode(t, diags, "AWF1068")
+}
+
+// TestValidateReduceQuorumRejectsReservedField: a quorum field: that names one
+// of the reserved verdict keys (votes, agree, votes_detail) — the reduced output
+// already carries those keys alongside the field-named verdict, so a collision
+// would silently clobber one or the other (engine/reduce.go runQuorumReduce's
+// output map) — is rejected with AWF1068, for every reserved name.
+func TestValidateReduceQuorumRejectsReservedField(t *testing.T) {
+	for _, reserved := range []string{"votes", "agree", "votes_detail"} {
+		r := &Reduce{Quorum: reduceRatio("2"), Field: reserved}
+		assertErrorAt(t, Validate(mapWithReduce(r, nil)), "AWF1068", "map[0].reduce")
+	}
 }
 
 func TestValidateReduceValidRun(t *testing.T) {

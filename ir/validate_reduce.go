@@ -80,6 +80,15 @@ func validateMapReduce(m *Map, nodePath string, wf *Workflow, scoped map[string]
 		if m.MinSuccess != nil {
 			c.errf(rp, "AWF5006", "reduce:{quorum} and min_success are mutually exclusive (quorum generalizes min_success)")
 		}
+		// The verdict commits under field:'s own name alongside the fixed
+		// {votes, agree, votes_detail} keys in the SAME output map (engine/reduce.go
+		// runQuorumReduce) — field: == one of those would collide (map-literal
+		// last-write-wins), silently discarding the verdict or the tally. Reject it
+		// loudly instead, applying to every quorum reduce (raw map+quorum and any
+		// future sugar built on it).
+		if QuorumVerdictFields[r.Field] {
+			c.errf(rp, "AWF1068", "quorum field: "+r.Field+" is a reserved verdict key (votes, agree, votes_detail); rename the counted field")
+		}
 		if !bodyDeclaresField(m.Body, r.Field) {
 			c.errf(rp, "AWF5006", "reduce: quorum field: "+r.Field+" is not declared in any body step's output_schema")
 		}

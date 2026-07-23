@@ -201,29 +201,19 @@ func runQuorumReduce(r *ir.Reduce, nodePath string, branches []reduceBranch, coh
 		if v, ok := b.Outputs[r.Field].(bool); ok && v {
 			agree++
 		}
-		// Ballot: index + the branch's full typed output, so repair feedback
-		// carries each juror's critique. Array-valued → an agent generator gets
-		// it via the untemplated auto-feed; a code generator cannot {{ }} it
-		// (pre-existing AWF4004, like every other array field).
-		detail := map[string]any{"index": b.N}
-		for k, v := range b.Outputs {
-			detail[k] = v
-		}
-		votesDetail = append(votesDetail, detail)
+		// Ballot: index + the branch's full typed output NESTED under "output" (not
+		// flattened) — a branch output field literally named "index" must not clobber
+		// the ballot index. b.Outputs is a fresh per-branch map from the caller and is
+		// never mutated after this point, so referencing it here (not copying) is safe.
+		votesDetail = append(votesDetail, map[string]any{"index": b.N, "output": b.Outputs})
 	}
 	need := quorumThreshold(r.Quorum, cohort)
 	passed := int64(agree) >= need
 	// A1: always commit, always ok. The verdict is named after field: so an
 	// enclosing gate's `until: evaluate.<field>` reads it unchanged; a miss
 	// commits <field>:false and drives repair rather than mechanically failing.
-	//
-	// KNOWN GAP (flagged, not fixed by jury-panel Task 1): if an author's
-	// field: literally names one of the reserved keys below (e.g. field: agree),
-	// this map literal's LAST write to that key wins (Go map-literal semantics),
-	// silently discarding whichever of {verdict, reserved metadata} lost — there
-	// is no validator guard against this collision yet. Task 1 sidesteps it only
-	// in its own fixtures (by choosing non-colliding field names); it is not
-	// resolved for authors in general.
+	// field: is validator-guarded (ir.QuorumVerdictFields, AWF1068) against naming
+	// one of the reserved keys below, so this map literal can't collide.
 	out := map[string]any{
 		r.Field:        passed,
 		"votes":        cohort,

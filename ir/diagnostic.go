@@ -230,6 +230,7 @@ var catalog = map[string]string{
 	"AWF1065": "a container-less `run:` step requires native execution; it is incompatible with `--backend docker` — declare a `container:` or run native",
 	"AWF1066": "wire key renamed; see the diagnostic message for the old and new spelling",
 	"AWF1067": "role config may reference {{ input.* }} only in model, system_prompt, and top-level string with: values; templates in nested positions or map keys are never substituted",
+	"AWF1068": "quorum field: may not be a reserved verdict key (votes, agree, votes_detail) — the reduced output already carries those keys; rename the counted field",
 	// Loader-stage import diagnostics can be projected through ir.Diagnostic by the CLI.
 	"AWF_IMPORT_CYCLE":          "workflow import graph contains a cycle",
 	"AWF_IMPORT_DECODE":         "workflow failed to decode",
