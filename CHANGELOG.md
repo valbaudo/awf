@@ -13,6 +13,46 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-23
+
+A passed gate is transparent to its `generate:` subtree. The accepted attempt's
+typed outputs now leave the gate, so a generate → evaluate → repair loop can bind
+its result straight to workflow `outputs:` — closing the gap that forced gated
+extraction to round-trip through `output_artifact` or be rebuilt outside AWF.
+
+### Added
+
+- **Gate typed-output forwarding.** `{{ step.<id>.<field> }}` for a producer in a
+  gate's `generate:` block now resolves to the gate's **accepted attempt** from
+  anywhere a normal step reference works: workflow `outputs:`, a downstream
+  step's `run:` / `input:` / `with:`, an `if:` condition, and the
+  `map → gate → reduce` typed fan-in (a gate-nested body producer contributes its
+  accepted attempt's typed outputs to `aggregate.json`, alongside its files). This
+  generalizes the prior files-only forwarding to typed outputs. The evaluator's
+  verdict stays gate-internal — read it with `{{ evaluate.<field> }}` from inside
+  the gate only. `examples/awf-llm-gate-extract/workflow-typed.yaml` demonstrates
+  a gated extraction bound directly to workflow `outputs:`.
+
+### Changed
+
+- **`AWF5003` restated.** It now covers the two cases that remain rejected: a gate
+  **evaluator** step referenced from outside the gate, and a gate nested inside a
+  `map` body referenced directly from outside the map (its accepted attempts fan
+  in through `reduce:`). A gate-nested-in-map producer referenced from outside the
+  map now reports `AWF5003` rather than `AWF5002`. No previously valid workflow
+  changes behavior — this is a pure widening: workflows that were rejected for
+  referencing a passed gate's `generate:` output now validate.
+
+### Fixed
+
+- **Gate integrity is enforced at every layer.** The generate-only rule (only
+  `generate:` producers forward; the evaluator's verdict stays internal) holds
+  identically in validation (`ir.blockingScope`), scalar resolution
+  (`stepRuntimePath`), and artifact resolution (`passedGateArtifactRuntimePath`),
+  so the scalar and file reference rules cannot drift apart. No IR field, event,
+  or fold arm was added: the definition digest is unchanged for every existing
+  workflow, and resume is unaffected.
+
 ## [0.6.0] - 2026-07-21
 
 Ownership of the host↔container boundary. Artifacts a step produces can now be
