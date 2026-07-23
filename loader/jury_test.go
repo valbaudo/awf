@@ -1,6 +1,8 @@
 package loader
 
 import (
+	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/valbaudo/awf/ir"
@@ -89,6 +91,35 @@ func TestDesugarJuryDefaultsOmittedField(t *testing.T) {
 	}
 	if m.Reduce == nil || m.Reduce.Field != "accept" {
 		t.Fatalf("reduce.field = %+v, want defaulted to the sole boolean property %q", m.Reduce, "accept")
+	}
+}
+
+// TestLoadJuryValidationIsDeterministicAcrossModules proves the fix for the
+// nondeterministic-module-selection bug: modules is a map, so a naive `for
+// range modules { if errs := ...; return juryLoadError(errs) }` would surface
+// WHICHEVER module's malformed jury: happened to be visited first in Go's
+// randomized map iteration order. Both the root workflow and its import here
+// carry a malformed jury: (missing output_schema, AWF1069); Load must collect
+// diagnostics from every module before choosing (sorted by path, then code —
+// see juryLoadError), so the same one — the alphabetically-first path,
+// "aaa_child_judge" in the imported module — surfaces on every call.
+func TestLoadJuryValidationIsDeterministicAcrossModules(t *testing.T) {
+	dir := t.TempDir()
+	childBody := "workflow: child\nversion: 1\ncontainers:\n  c:\n    image: oci://example.com/x@sha256:2222222222222222222222222222222222222222222222222222222222222222\ngraph:\n  - gate:\n      generate:\n        - id: gen\n          container: c\n          run: ./propose.sh\n      evaluate:\n        - id: aaa_child_judge\n          container: c\n          uses: openai/codex\n          with:\n            model: base\n          jury:\n            over:\n              - model: a\n              - model: b\n            quorum: 2\n      until: \"{{ evaluate.accept }}\"\n      max_attempts: 3\n"
+	writeFile(t, filepath.Join(dir, "child.awf.yaml"), childBody)
+	rootBody := "workflow: root\nversion: 1\nimports:\n  child: child.awf.yaml\ncontainers:\n  c:\n    image: oci://example.com/x@sha256:1111111111111111111111111111111111111111111111111111111111111111\ngraph:\n  - gate:\n      generate:\n        - id: gen\n          container: c\n          run: ./propose.sh\n      evaluate:\n        - id: zzz_root_judge\n          container: c\n          uses: openai/codex\n          with:\n            model: base\n          jury:\n            over:\n              - model: a\n              - model: b\n            quorum: 2\n      until: \"{{ evaluate.accept }}\"\n      max_attempts: 3\n"
+	rootPath := writeWorkflow(t, dir, rootBody)
+
+	const wantPath = "gate[0].evaluate.aaa_child_judge"
+	for i := 0; i < 10; i++ {
+		_, err := Load(rootPath)
+		var le *LoadError
+		if !errors.As(err, &le) {
+			t.Fatalf("iteration %d: err = %T %v, want *LoadError", i, err, err)
+		}
+		if le.Code != "AWF1069" || le.Path != wantPath {
+			t.Fatalf("iteration %d: LoadError = %+v, want code AWF1069 at %s (root AND child both violate; selection must not depend on map iteration order)", i, le, wantPath)
+		}
 	}
 }
 

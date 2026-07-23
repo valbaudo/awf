@@ -56,10 +56,19 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 	// silently desugaring a malformed block into a misleading downstream error
 	// (e.g. an unresolved field: would otherwise surface as AWF1035 on the
 	// emitted map, not AWF1071 on the jury: block that caused it).
+	//
+	// modules is a map, so `for range modules` iterates in Go's randomized
+	// order; collecting every module's diagnostics into ONE slice before
+	// picking "the first" (juryLoadError sorts by path, then code) keeps the
+	// choice deterministic regardless of module count or iteration order —
+	// and, as a side benefit, a violation in an imported module is never
+	// masked by the root module validating clean first.
+	var juryErrs []ir.Diagnostic
 	for _, m := range modules {
-		if errs := ir.ValidateJury(m.Workflow); len(errs) > 0 {
-			return nil, juryLoadError(errs)
-		}
+		juryErrs = append(juryErrs, ir.ValidateJury(m.Workflow)...)
+	}
+	if len(juryErrs) > 0 {
+		return nil, juryLoadError(juryErrs)
 	}
 
 	// F45: default an OMITTED `concurrency:` to 1 (serial) BEFORE any digest or validation

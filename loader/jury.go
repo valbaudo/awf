@@ -18,6 +18,9 @@ const juryBinding = "__juror"
 // an arbitrary slice order that could vary the reported code/path across identical
 // invocations.
 func juryLoadError(errs []ir.Diagnostic) *LoadError {
+	if len(errs) == 0 {
+		return nil
+	}
 	sort.Slice(errs, func(i, j int) bool {
 		if errs[i].Path != errs[j].Path {
 			return errs[i].Path < errs[j].Path
