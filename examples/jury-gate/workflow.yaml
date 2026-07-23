@@ -1,0 +1,57 @@
+workflow: product-copy-jury-gate
+version: 1
+
+containers:
+  checker:
+    image: oci://example.com/style-checker@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+graph:
+  - gate:
+      max_attempts: 3
+      generate:
+        - id: draft
+          uses: awf/llm
+          with:
+            provider: anthropic
+            model: claude-sonnet-4-6
+            prompt: |
+              Write a two-sentence product description for a ceramic travel mug.
+              Follow the brand style guide: plain language, no exclamation points,
+              no superlatives ("best", "amazing", "revolutionary").
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [description]
+            properties:
+              description: { type: string }
+
+      evaluate:
+        - id: judge
+          container: checker
+          uses: example/style-checker
+          with:
+            model: reviewer-a
+            input: "{{ step.draft.description }}"
+          output_schema:
+            type: object
+            additionalProperties: false
+            required: [meets_style, notes]
+            properties:
+              meets_style: { type: boolean }
+              notes: { type: string }
+          jury:
+            over:
+              - model: reviewer-a
+              - model: reviewer-b
+              - model: reviewer-c
+            quorum: 2
+
+      until: "{{ evaluate.meets_style }}"
+
+output_schema:
+  type: object
+  required: [description]
+  properties:
+    description: { type: string }
+outputs:
+  description: "{{ step.draft.description }}"

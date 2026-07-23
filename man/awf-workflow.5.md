@@ -1321,6 +1321,76 @@ outputs:
 `{{ step.extract.iban }}` resolves to whichever attempt the gate accepted. The
 judge's `ok` verdict is not readable here — it is gate-internal by design.
 
+### jury:
+
+A voting panel of N judges standing in for one evaluator. Instead of a single
+judge's verdict, `quorum` of `N` independently-run judges must agree, added to
+an ordinary `evaluate:` judge step with **one block and no other edits**:
+
+    evaluate:
+      - id: judge
+        uses: <adapter>
+        container: <name>
+        with: { <shared with: fields>, <field varied per juror>: <default> }
+        output_schema: <json-schema>  # needs exactly one boolean field, or set field: below
+        jury:
+          over: [ {<field>: <value>}, ... ] # one with:-patch per juror; literal, never {{ }}-templated
+          quorum: <n|ratio>                  # reuses the Ratio type (see map/min_success)
+          field: <field>                     # optional; defaults to the sole boolean output_schema property
+
+The diff from a single-judge gate is the `jury:` block alone — `uses:`,
+`container:`, `output_schema:`, and the gate's `until:` are untouched, the
+hot-swap:
+
+```yaml
+evaluate:
+  - id: judge
+    uses: openai/codex
+    container: judge
+    with: { prompt: "Review the diff. Does it hold?", model: gpt-5 }
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [accept, critique]
+      properties:
+        accept: { type: boolean }
+        critique: { type: string }
+    jury:
+      over:
+        - { model: gpt-5 }
+        - { model: o3 }
+        - { model: claude-sonnet-5 }
+      quorum: 2
+until: "{{ evaluate.accept }}"     # unchanged
+```
+
+`jury:` is loader sugar: before digest/validate, the step lowers to a `map`
+over `jury.over` (each item merged into the body step's own `with:`) with a
+`reduce: {quorum, field}` fan-in — the same `map`/`quorum` machinery described
+under **map**, not a new execution path. Jurors vary by `with:` only (same
+`uses:`, same `container:`); per-juror container isolation and independent
+agent context come from `map`'s existing per-item semantics, not
+reimplemented. `field:` defaults to the sole boolean property in the step's
+`output_schema`; declare it explicitly when the schema has none or more than
+one boolean property.
+
+The desugared map is **anonymous** — unlike a hand-written `map` it carries no
+`id`. A jury verdict is addressed positionally, exactly like any other gate
+verdict: `{{ evaluate.<field> }}`, never `step.<id>`. This is what makes the
+hot-swap total — a gate's `until: "{{ evaluate.<field> }}"` reads unchanged
+whether `evaluate:` ends in a plain judge or a jury.
+
+Constraints: `jury:` is valid **only on an agent step** — a code judge run N
+times identically has nothing to vary, and `jury:` on a code step is simply an
+unknown key (**AWF1062**). The step must declare `output_schema`
+(**AWF1069**). Every `over:` item must declare the **same set of keys**
+(**AWF1070**) — each juror overrides the same `with:` fields, so the
+per-juror substitution always resolves. `field:` is required when
+`output_schema` has zero or more than one boolean property (**AWF1071**). A
+`jury:` step must be the **last node of its enclosing gate's `evaluate:`**
+(**AWF1072**) — the panel verdict IS the gate verdict, so a jury anywhere else
+would be an unreferenceable dead computation.
+
 ## skip
 
     - skip: <reason>          # optional reason, recorded in the trace
@@ -1443,17 +1513,34 @@ reducer can read what the map body produced. Declare **exactly one** of `quorum:
 or `run:` (**AWF1035**). `reduce:` is supported on `map` only (parallel does not
 accept it — see *parallel*).
 
-`quorum: k` (the debate / cohort case) succeeds iff at least `k` branches produced
-a true `field:` value; the reduced output is `{passed, votes, agree}`. `quorum`
-generalizes `min_success`: `min_success` is quorum over the mechanical success
-predicate. There are no named-threshold keywords; a quorum is always the numeric
-`k` (an int count or a fraction). Conceptually, "any" is quorum(1), a "majority"
-is quorum(⌈N/2⌉), and "unanimous" is quorum(N) — but each is written as that
-numeric `k`, never as the word. A `quorum` ratio reuses the `min_success` int-or-
-fraction form. Declaring both `min_success` and `reduce: {quorum}` on one node is
-rejected (**AWF5006**), as is a `quorum` whose `field:` names a field no body step
-declares in its `output_schema` (**AWF5006**). A `quorum` reduce that is not met
-ends the node as `retryable_failure`, exactly like an unmet `min_success`.
+`quorum: k` (the debate / cohort case) tallies how many branches produced a true
+`field:` value. The reduce **always commits and returns `ok`**, whether or not
+`k` was reached: a vote tally is a quality/business outcome, never a mechanical
+fault, so a miss cannot be `retryable_failure` — that would conflate retry with
+repair (a missed quorum inside a `gate` is meant to drive *repair*, not
+propagate as a crash). The committed output is named after `field:`:
+
+    { <field>: <bool>, votes: <cohort>, agree: <count>, votes_detail: [ {index, output}, ... ] }
+
+`<field>` is `true` iff `agree >= k`. `votes` is the cohort — the non-pruned
+fan-out count, not the survivor count, so a branch that failed mechanically
+still counts against the tally instead of silently shrinking the denominator.
+`agree` is the count of true votes. `votes_detail` carries every branch's full
+typed output alongside its index — the ballots — so a gate's repair feedback
+carries each juror's critique, not just the tally. Authors who want a missed
+quorum to abort the run instead use `min_success:`, or test `<field>`
+downstream with an `if`.
+
+`quorum` generalizes `min_success`: `min_success` is quorum over the mechanical
+success predicate. There are no named-threshold keywords; a quorum is always the
+numeric `k` (an int count or a fraction). Conceptually, "any" is quorum(1), a
+"majority" is quorum(⌈N/2⌉), and "unanimous" is quorum(N) — but each is written
+as that numeric `k`, never as the word. A `quorum` ratio reuses the `min_success`
+int-or-fraction form. Declaring both `min_success` and `reduce: {quorum}` on one
+node is rejected (**AWF5006**), as is a `quorum` whose `field:` names a field no
+body step declares in its `output_schema` (**AWF5006**). `field:` may not name
+one of the reduce's own reserved verdict keys — `votes`, `agree`, or
+`votes_detail` — since the committed output already carries those (**AWF1068**).
 
 An author `run:` reducer (the merge / dedupe case) is a code step, so it runs in
 its **required `container:`** — a `run:` reducer with no `container:` is rejected
