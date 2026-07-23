@@ -60,6 +60,38 @@ func TestDesugarJuryProducesMapQuorum(t *testing.T) {
 	}
 }
 
+// TestDesugarJuryDefaultsOmittedField proves Task 4's binding item: an omitted
+// field: (the Jury struct's documented default) resolves to the sole boolean
+// output_schema property via ir.JuryField, instead of desugaring to
+// Reduce{Field:""} (which would surface a misleading AWF1035 on the emitted
+// map rather than reflecting the jury: block's own default).
+func TestDesugarJuryDefaultsOmittedField(t *testing.T) {
+	q := ir.Ratio("2")
+	step := &ir.AgentStep{
+		ID: "judge", Uses: "openai/codex", Container: "judge",
+		With: ir.RawConfig{"model": "base"},
+		OutputSchema: &ir.JSONSchema{"type": "object",
+			"properties": map[string]any{
+				"accept":   map[string]any{"type": "boolean"},
+				"critique": map[string]any{"type": "string"},
+			}},
+		Jury: &ir.Jury{
+			Over:   []map[string]any{{"model": "gpt-5"}, {"model": "o3"}},
+			Quorum: &q, // Field omitted
+		},
+	}
+	wf := &ir.Workflow{Graph: ir.NodeList{step}}
+	desugarJury(wf)
+
+	m, ok := wf.Graph[0].(*ir.Map)
+	if !ok {
+		t.Fatalf("Graph[0] = %T, want *ir.Map", wf.Graph[0])
+	}
+	if m.Reduce == nil || m.Reduce.Field != "accept" {
+		t.Fatalf("reduce.field = %+v, want defaulted to the sole boolean property %q", m.Reduce, "accept")
+	}
+}
+
 // TestJurySugarDesugaredByteIdentical proves the E1 promise: a jury: block and
 // its hand-written map+quorum equivalent normalize to the same digest once
 // loaded. testdata/valid/jury-sugar.yaml and jury-desugared.yaml differ ONLY in

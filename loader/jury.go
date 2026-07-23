@@ -1,6 +1,8 @@
 package loader
 
 import (
+	"sort"
+
 	"github.com/valbaudo/awf/ir"
 )
 
@@ -8,6 +10,23 @@ import (
 // with:-patch under. Chosen to be unlikely to collide with an author's own
 // binding.
 const juryBinding = "__juror"
+
+// juryLoadError converts ir.ValidateJury's diagnostics into the loader's *LoadError
+// error surface (Load returns (*ir.LoadedDefinition, error), not a diagnostic slice).
+// ValidateJury collects every violation in one pass, but LoadError carries only one
+// finding, so pick the first deterministically — sorted by (Path, Code) — rather than
+// an arbitrary slice order that could vary the reported code/path across identical
+// invocations.
+func juryLoadError(errs []ir.Diagnostic) *LoadError {
+	sort.Slice(errs, func(i, j int) bool {
+		if errs[i].Path != errs[j].Path {
+			return errs[i].Path < errs[j].Path
+		}
+		return errs[i].Code < errs[j].Code
+	})
+	first := errs[0]
+	return &LoadError{Code: first.Code, Path: first.Path, Message: first.Message}
+}
 
 // desugarJury lowers every AgentStep carrying a jury: block into a map+quorum,
 // in place, over wf.Graph and every nested NodeList. Runs in loader.Load BEFORE
@@ -101,6 +120,16 @@ func juryToMap(step *ir.AgentStep) *ir.Map {
 		overItems = append(overItems, item)
 	}
 
+	// field resolves an omitted j.Field to the sole boolean output_schema property
+	// (ir.ValidateJury's AWF1071 guarantees this resolves before Load ever reaches
+	// desugaring — see ir.JuryField). An explicit j.Field passes through unchanged.
+	field := j.Field
+	if field == "" {
+		if resolved, ok := ir.JuryField(j, step.OutputSchema); ok {
+			field = resolved
+		}
+	}
+
 	return &ir.Map{
 		// NO ID — see the doc comment above. body.ID (== the original step id) is
 		// retained on the inner step; the map aggregate is anonymous.
@@ -108,6 +137,6 @@ func juryToMap(step *ir.AgentStep) *ir.Map {
 		Container: step.Container,
 		OverItems: overItems,
 		Body:      ir.NodeList{&body},
-		Reduce:    &ir.Reduce{Quorum: j.Quorum, Field: j.Field},
+		Reduce:    &ir.Reduce{Quorum: j.Quorum, Field: field},
 	}
 }

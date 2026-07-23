@@ -47,6 +47,21 @@ func Load(workflowPath string) (*ir.LoadedDefinition, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ir.ValidateJury runs BEFORE desugarJury: it inspects the pre-desugar jury:
+	// blocks (output_schema present, uniform over: keys, a resolvable field:
+	// default, and gate.evaluate-terminal placement). ir.Validate can never see
+	// these checks — it runs after Load has already desugared jury: away — so
+	// this loader-side pass is the only place they can live. Reject on the
+	// first violation (deterministic: lowest path, then code) rather than
+	// silently desugaring a malformed block into a misleading downstream error
+	// (e.g. an unresolved field: would otherwise surface as AWF1035 on the
+	// emitted map, not AWF1071 on the jury: block that caused it).
+	for _, m := range modules {
+		if errs := ir.ValidateJury(m.Workflow); len(errs) > 0 {
+			return nil, juryLoadError(errs)
+		}
+	}
+
 	// F45: default an OMITTED `concurrency:` to 1 (serial) BEFORE any digest or validation
 	// pass ever sees the IR, so an omitted concurrency: and an explicit `concurrency: 1`
 	// normalize to byte-identical IR (same digest). Runs over every module — root AND every
