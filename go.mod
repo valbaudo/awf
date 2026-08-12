@@ -18,7 +18,7 @@ require (
 	github.com/landlock-lsm/go-landlock v0.9.0
 	github.com/openai/openai-go/v3 v3.41.0
 	github.com/opencontainers/go-digest v1.0.0
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/pflag v1.0.10
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
