@@ -50,3 +50,4 @@ _bmad/
 
 # Local agent-tooling state (gstack browse audit log, capability probe cache).
 .gstack/
+.worktrees/

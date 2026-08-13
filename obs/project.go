@@ -275,7 +275,7 @@ func ensureSpan(byPath map[string]*Span, path string) *Span {
 // kindFromCompleted infers a leaf step kind for a legacy log (no node.started).
 // ExitCode present ⇒ code step; otherwise agent/signal (indistinguishable from
 // the completed payload alone — "agent" is the safe label since signal steps
-// carry no metrics and render identically).
+// carry zero usage and render identically).
 func kindFromCompleted(d engine.NodeCompletedData) string {
 	if d.ExitCode != nil {
 		return "code"

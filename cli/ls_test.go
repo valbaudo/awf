@@ -96,7 +96,7 @@ func TestLSReportsCostAndTokens(t *testing.T) {
 		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "metered", WorkflowID: "wf"})},
 		state.Event{Type: engine.EventNodeCompleted, Path: "s1", Data: mustData(engine.NodeCompletedData{
 			Outcome: "ok",
-			Metrics: &agent.MetricSet{
+			Usage: &agent.MetricSet{
 				Cost:   agent.MetricCost{Total: 0.0123, Source: agent.CostSourceReported},
 				Tokens: agent.MetricTokens{Input: 1000, Output: 200},
 			},
@@ -104,7 +104,7 @@ func TestLSReportsCostAndTokens(t *testing.T) {
 		// a second agent step, to prove per-run aggregation sums them
 		state.Event{Type: engine.EventNodeCompleted, Path: "s2", Data: mustData(engine.NodeCompletedData{
 			Outcome: "ok",
-			Metrics: &agent.MetricSet{
+			Usage: &agent.MetricSet{
 				Cost:   agent.MetricCost{Total: 0.0077, Source: agent.CostSourceReported},
 				Tokens: agent.MetricTokens{Input: 200, Output: 140},
 			},
@@ -144,7 +144,7 @@ func TestLSOmitsCostWhenUnreportedButKeepsTokens(t *testing.T) {
 		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "unpriced"})},
 		state.Event{Type: engine.EventNodeCompleted, Path: "s1", Data: mustData(engine.NodeCompletedData{
 			Outcome: "ok",
-			Metrics: &agent.MetricSet{Tokens: agent.MetricTokens{Input: 500, Output: 90}},
+			Usage:   &agent.MetricSet{Tokens: agent.MetricTokens{Input: 500, Output: 90}},
 		})},
 		state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})},
 	)
@@ -189,7 +189,7 @@ func TestLSUnpricedMarker(t *testing.T) {
 		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "mixed", WorkflowID: "wf"})},
 		state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: mustData(engine.NodeCompletedData{
 			Outcome: "ok",
-			Metrics: &agent.MetricSet{
+			Usage: &agent.MetricSet{
 				Cost:   agent.MetricCost{Total: 0.5, Source: agent.CostSourceReported},
 				Tokens: agent.MetricTokens{Input: 10, Output: 10},
 			},
@@ -197,7 +197,7 @@ func TestLSUnpricedMarker(t *testing.T) {
 		// unpriced: no Cost.Source at all (e.g. droid pre-pricing).
 		state.Event{Type: engine.EventNodeCompleted, Path: "u1", Data: mustData(engine.NodeCompletedData{
 			Outcome: "ok",
-			Metrics: &agent.MetricSet{Tokens: agent.MetricTokens{Input: 5, Output: 5}},
+			Usage:   &agent.MetricSet{Tokens: agent.MetricTokens{Input: 5, Output: 5}},
 		})},
 		state.Event{Type: engine.EventRunFinished, Data: mustData(engine.RunFinishedData{Outcome: "ok"})},
 	)
@@ -237,7 +237,7 @@ func TestLSFullyPricedNoUnpricedMarker(t *testing.T) {
 		state.Event{Type: engine.EventRunStarted, Data: mustData(engine.RunStartedData{RunID: "priced", WorkflowID: "wf"})},
 		state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: mustData(engine.NodeCompletedData{
 			Outcome: "ok",
-			Metrics: &agent.MetricSet{
+			Usage: &agent.MetricSet{
 				Cost:   agent.MetricCost{Total: 0.5, Source: agent.CostSourceReported},
 				Tokens: agent.MetricTokens{Input: 10, Output: 10},
 			},

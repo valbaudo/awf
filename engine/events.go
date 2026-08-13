@@ -412,11 +412,12 @@ type NodeCompletedData struct {
 	OutputsRef string            `json:"outputs_ref,omitempty"`
 	StdoutRef  string            `json:"stdout_ref,omitempty"` // CAS pointer; empty if step produced no stdout (or has none — agent/signal)
 	Files      map[string]string `json:"files,omitempty"`      // declared path → CAS ref
-	// Slice 6.1 — the adapter's per-step metrics, persisted VERBATIM (zero engine
-	// interpretation). nil/omitted for code & signal steps. omitempty keeps
-	// legacy logs decoding to nil (additive, like Backend slice 4.5 / Runtimes
-	// slice 5.1). obs projects this into awf.cost.* / gen_ai.usage.*.
-	Metrics *agent.MetricSet `json:"metrics,omitempty"`
+	// usage is REQUIRED on every node.completed (cost-first-class spec
+	// 2026-08-13): agent steps carry the adapter's MetricSet verbatim (zero
+	// engine interpretation); code, signal and other non-agent steps carry an
+	// explicit zero value — absence is a producer bug, and the console rejects
+	// usage-less completions. obs projects this into awf.cost.* / gen_ai.usage.*.
+	Usage *agent.MetricSet `json:"usage"`
 	// Slice 7.1 — recorded ONLY when snapshot:workspace captured a CoW diff
 	// (the dispatcher Put it to Blobs pre-commit; Commit records the ref, never
 	// re-Puts). omitempty keeps pre-Phase-7 logs and non-snapshot steps byte-

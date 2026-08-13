@@ -234,7 +234,7 @@ func statePersistenceErrorPath(stateRoot string, err error) (string, bool) {
 // dollar split; InUSD/OutUSD accumulate that split across all derived steps.
 // ReportedUSD accumulates reported-source step costs and is shown in the
 // parenthetical split only when HasSplit is also true.
-// UnpricedSteps (F35) counts agent steps whose Metrics.Cost.Source is empty —
+// UnpricedSteps (F35) counts agent steps whose Usage.Cost.Source is empty —
 // the same absent-source signal HasCost is derived from, but per-step instead
 // of run-wide. A run can have HasCost==true (SOME step priced) while
 // UnpricedSteps > 0 (other steps weren't): TotalUSD then silently undercounts,
@@ -264,27 +264,34 @@ func foldRunMetrics(events []state.Event) runMetrics {
 			continue
 		}
 		var d engine.NodeCompletedData
-		if err := json.Unmarshal(e.Data, &d); err != nil || d.Metrics == nil {
+		if err := json.Unmarshal(e.Data, &d); err != nil || d.Usage == nil {
+			continue
+		}
+		u := d.Usage
+		// Non-agent steps carry an explicit zero MetricSet (cost-first-class:
+		// usage is required on every node.completed) — skip them exactly like
+		// the old nil-metrics code/signal steps so code-only runs print nothing.
+		if *u == (agent.MetricSet{}) {
 			continue
 		}
 		m.AgentSteps++
-		m.TotalUSD += d.Metrics.Cost.Total
-		if d.Metrics.Cost.Source != "" {
+		m.TotalUSD += u.Cost.Total
+		if u.Cost.Source != "" {
 			m.HasCost = true
 		} else {
 			m.UnpricedSteps++
 		}
-		switch d.Metrics.Cost.Source {
+		switch u.Cost.Source {
 		case agent.CostSourceDerived:
-			m.InUSD += d.Metrics.Cost.Input
-			m.OutUSD += d.Metrics.Cost.Output
+			m.InUSD += u.Cost.Input
+			m.OutUSD += u.Cost.Output
 			m.HasSplit = true
 		case agent.CostSourceReported:
-			m.ReportedUSD += d.Metrics.Cost.Total
+			m.ReportedUSD += u.Cost.Total
 		}
-		m.InTok += d.Metrics.Tokens.Input
-		m.OutTok += d.Metrics.Tokens.Output
-		m.Turns += d.Metrics.Turns
+		m.InTok += u.Tokens.Input
+		m.OutTok += u.Tokens.Output
+		m.Turns += u.Turns
 	}
 	return m
 }

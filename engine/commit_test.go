@@ -206,7 +206,7 @@ func collectRefs(d engine.NodeCompletedData) []string {
 	return refs
 }
 
-func TestCommitPersistsMetrics(t *testing.T) {
+func TestCommitPersistsUsage(t *testing.T) {
 	log := state.NewInMemoryLog(clock.System{})
 	blobs := state.NewInMemoryBlobs()
 
@@ -224,12 +224,16 @@ func TestCommitPersistsMetrics(t *testing.T) {
 	if err := json.Unmarshal(last.Data, &d); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if d.Metrics == nil || d.Metrics.Cost.Total != 0.5 {
-		t.Fatalf("node.completed.Metrics = %+v, want cost 0.5", d.Metrics)
+	if d.Usage == nil || d.Usage.Cost.Total != 0.5 {
+		t.Fatalf("node.completed.Usage = %+v, want cost 0.5", d.Usage)
 	}
 }
 
-func TestCommitCodeStepOmitsMetrics(t *testing.T) {
+func TestCommit_CodeStepWritesZeroUsage(t *testing.T) {
+	// A code step's DispatchResult has nil Metrics; the committed
+	// node.completed must still carry a zero usage block (cost-first-class:
+	// usage is REQUIRED on every node.completed — the console rejects
+	// usage-less completions outright).
 	log := state.NewInMemoryLog(clock.System{})
 	blobs := state.NewInMemoryBlobs()
 
@@ -240,10 +244,24 @@ func TestCommitCodeStepOmitsMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fold: %v", err)
 	}
-	last := events[len(events)-1]
-	// Metrics omitted from JSON (omitempty) when nil.
-	if bytes.Contains(last.Data, []byte("\"metrics\"")) {
-		t.Errorf("code-step node.completed must omit metrics; got %s", last.Data)
+	ev := events[len(events)-1]
+	if ev.Type != engine.EventNodeCompleted {
+		t.Fatalf("last event = %q, want %q", ev.Type, engine.EventNodeCompleted)
+	}
+	var data struct {
+		Usage *agent.MetricSet `json:"usage"`
+	}
+	if err := json.Unmarshal(ev.Data, &data); err != nil {
+		t.Fatalf("decode node.completed: %v", err)
+	}
+	if data.Usage == nil {
+		t.Fatal("node.completed carries no usage block")
+	}
+	if data.Usage.Tokens.Input != 0 || data.Usage.Tokens.Output != 0 {
+		t.Fatalf("code step usage must be explicit zeros, got %+v", data.Usage.Tokens)
+	}
+	if data.Usage.Turns != 0 || data.Usage.Cost.Source != "" || data.Usage.Cost.Total != 0 || data.Usage.Model != "" {
+		t.Fatalf("code step usage must be an explicit zero MetricSet, got %+v", data.Usage)
 	}
 }
 

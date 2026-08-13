@@ -4,11 +4,19 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
 )
 
 func appendNodeCompleted(log state.Log, path string, data NodeCompletedData) error {
+	if data.Usage == nil {
+		// Every node.completed MUST carry usage (cost-first-class spec
+		// 2026-08-13): Commit backfills the zero MetricSet for code steps;
+		// this guard covers the direct appenders (signal steps, call export
+		// products) — absence is a producer bug, the console rejects it.
+		data.Usage = &agent.MetricSet{}
+	}
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("marshal node.completed for %q: %w", path, err)
@@ -150,7 +158,7 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		OutputsRef: nr.OutputsRef,
 		StdoutRef:  nr.StdoutRef,
 		Files:      nr.Files,
-		Metrics:    dr.Metrics,
+		Usage:      dr.Metrics,
 		// Slice 7.1 — the snapshot blob was already Put to Blobs by the
 		// dispatcher (Backend.Snapshot); Commit records the ref ONLY. No re-Put.
 		SnapshotRef:       dr.SnapshotRef,
@@ -159,6 +167,11 @@ func Commit(log state.Log, blobs state.Blobs, path string, dr DispatchResult, pa
 		NodeKey:           nodeKey,
 		NodeSubtreeDigest: nodeSubtreeDigest, // reuses the same subtree value as NodeKey's input; no drift
 		SessionRef:        sessionRef,
+	}
+	if data.Usage == nil {
+		// Non-agent step (code/signal): explicit zeros — usage is required on
+		// every node.completed (cost-first-class spec 2026-08-13).
+		data.Usage = &agent.MetricSet{}
 	}
 	if err := appendNodeCompleted(log, path, data); err != nil {
 		return NodeResult{}, fmt.Errorf("engine.Commit: %w", err)

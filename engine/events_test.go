@@ -210,13 +210,15 @@ func TestNodeCompletedDataStdoutRefOmitEmpty(t *testing.T) {
 func TestNodeCompletedDataOmitEmpty(t *testing.T) {
 	// A node with no output_files / no output_schema produces a NodeCompletedData with
 	// no OutputsRef and no Files. Marshal must omit them so the JSON is minimal.
-	in := NodeCompletedData{Outcome: "ok"}
+	// usage is NEVER omitted (cost-first-class: required on every node.completed;
+	// Commit writes an explicit zero MetricSet for non-agent steps).
+	in := NodeCompletedData{Outcome: "ok", Usage: &agent.MetricSet{}}
 	b, err := json.Marshal(in)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	got := string(b)
-	want := `{"outcome":"ok"}`
+	want := `{"outcome":"ok","usage":{"cost":{},"tokens":{"input":0,"output":0},"turns":0}}`
 	if got != want {
 		t.Errorf("marshal omit-empty = %q, want %q", got, want)
 	}

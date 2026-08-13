@@ -30,7 +30,7 @@ func TestPrintRunCostSummary(t *testing.T) {
 	// one agent step with metrics + one code step without.
 	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a1", Data: d(engine.NodeCompletedData{
 		Outcome: "ok",
-		Metrics: &agent.MetricSet{Cost: agent.MetricCost{Total: 0.04, Source: "reported"}, Tokens: agent.MetricTokens{Input: 100, Output: 50}, Turns: 2},
+		Usage:   &agent.MetricSet{Cost: agent.MetricCost{Total: 0.04, Source: "reported"}, Tokens: agent.MetricTokens{Input: 100, Output: 50}, Turns: 2},
 	})})
 	exit0 := 0
 	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "c1", Data: d(engine.NodeCompletedData{Outcome: "ok", ExitCode: &exit0})})
@@ -56,7 +56,7 @@ func TestPrintRunCostSummaryDerived(t *testing.T) {
 
 	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a1", Data: d(engine.NodeCompletedData{
 		Outcome: "ok",
-		Metrics: &agent.MetricSet{
+		Usage: &agent.MetricSet{
 			Cost:   agent.MetricCost{Source: agent.CostSourceDerived, Total: 1.2, Input: 0.3, Output: 0.9},
 			Tokens: agent.MetricTokens{Input: 200, Output: 100},
 			Turns:  3,
@@ -91,7 +91,7 @@ func TestPrintRunCostSummaryReportedNoSplit(t *testing.T) {
 
 	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a1", Data: d(engine.NodeCompletedData{
 		Outcome: "ok",
-		Metrics: &agent.MetricSet{
+		Usage: &agent.MetricSet{
 			Cost:   agent.MetricCost{Source: agent.CostSourceReported, Total: 1.2},
 			Tokens: agent.MetricTokens{Input: 200, Output: 100},
 			Turns:  3,
@@ -140,14 +140,14 @@ func TestPrintRunCostSummaryMixedReportedAndDerived(t *testing.T) {
 	// Derived step: Total == Input + Output.
 	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a1", Data: d(engine.NodeCompletedData{
 		Outcome: "ok",
-		Metrics: &agent.MetricSet{
+		Usage: &agent.MetricSet{
 			Cost: agent.MetricCost{Source: agent.CostSourceDerived, Total: 1.2, Input: 0.3, Output: 0.9},
 		},
 	})})
 	// Reported step: Total only (Claude), Input/Output zero.
 	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "a2", Data: d(engine.NodeCompletedData{
 		Outcome: "ok",
-		Metrics: &agent.MetricSet{
+		Usage: &agent.MetricSet{
 			Cost: agent.MetricCost{Source: agent.CostSourceReported, Total: 0.5},
 		},
 	})})
@@ -181,11 +181,11 @@ func TestPrintRunCostSummaryUnpricedMarker(t *testing.T) {
 	priced := agent.MetricSet{Cost: agent.MetricCost{Source: agent.CostSourceReported, Total: 0.5}, Tokens: agent.MetricTokens{Input: 10, Output: 10}, Turns: 1}
 	unpriced := agent.MetricSet{Tokens: agent.MetricTokens{Input: 10, Output: 10}, Turns: 1} // no Cost.Source at all
 
-	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
-	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p2", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
-	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p3", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
-	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "u1", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &unpriced})})
-	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "u2", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &unpriced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: d(engine.NodeCompletedData{Outcome: "ok", Usage: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p2", Data: d(engine.NodeCompletedData{Outcome: "ok", Usage: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p3", Data: d(engine.NodeCompletedData{Outcome: "ok", Usage: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "u1", Data: d(engine.NodeCompletedData{Outcome: "ok", Usage: &unpriced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "u2", Data: d(engine.NodeCompletedData{Outcome: "ok", Usage: &unpriced})})
 
 	var out bytes.Buffer
 	printRunCostSummary(&out, lg)
@@ -211,8 +211,8 @@ func TestPrintRunCostSummaryFullyPricedNoMarker(t *testing.T) {
 	d := func(v any) []byte { b, _ := json.Marshal(v); return b }
 
 	priced := agent.MetricSet{Cost: agent.MetricCost{Source: agent.CostSourceReported, Total: 0.5}, Tokens: agent.MetricTokens{Input: 10, Output: 10}, Turns: 1}
-	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
-	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p2", Data: d(engine.NodeCompletedData{Outcome: "ok", Metrics: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p1", Data: d(engine.NodeCompletedData{Outcome: "ok", Usage: &priced})})
+	_ = lg.Append(state.Event{Type: engine.EventNodeCompleted, Path: "p2", Data: d(engine.NodeCompletedData{Outcome: "ok", Usage: &priced})})
 
 	var out bytes.Buffer
 	printRunCostSummary(&out, lg)
