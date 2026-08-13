@@ -13,6 +13,20 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-13
+
+`node.completed` events now carry a REQUIRED `usage` block — the adapter's
+`MetricSet` (cost/tokens/turns/model) verbatim for agent steps, an explicit
+zero value for code/signal/other non-agent steps. Absence is a producer bug;
+consumers may reject usage-less completions outright.
+
+### Changed
+
+- **BREAKING (event wire shape):** the `metrics` key on `node.completed` is
+  renamed to `usage` and is no longer omitted: every completion carries it.
+  Code/signal steps report `{"cost":{},"tokens":{"input":0,"output":0},"turns":0}`.
+  Readers (obs projections, the cli cost rollup) are updated in lockstep.
+
 ## [0.7.0] - 2026-07-23
 
 A passed gate is transparent to its `generate:` subtree. The accepted attempt's
