@@ -955,7 +955,7 @@ func TestRunReactModelLeafCarriesMetrics(t *testing.T) {
 	if err != nil || oc != OutcomeOK {
 		t.Fatalf("run: oc=%q err=%v", oc, err)
 	}
-	// The .model leaf's node.completed event must carry the Metrics verbatim.
+	// The .model leaf's node.completed event must carry the usage verbatim.
 	events, err := h.lg.Fold()
 	if err != nil {
 		t.Fatalf("Fold: %v", err)
@@ -969,13 +969,13 @@ func TestRunReactModelLeafCarriesMetrics(t *testing.T) {
 		if err := json.Unmarshal(e.Data, &d); err != nil {
 			t.Fatalf("unmarshal node.completed: %v", err)
 		}
-		got = d.Metrics
+		got = d.Usage
 	}
 	if got == nil {
-		t.Fatal("the .model leaf's node.completed carries no Metrics (react cost is invisible to obs)")
+		t.Fatal("the .model leaf's node.completed carries no usage (react cost is invisible to obs)")
 	}
 	if got.Cost.Total != 0.42 || got.Tokens.Input != 100 || got.Tokens.Output != 50 {
-		t.Fatalf("model-leaf Metrics = %+v, want cost 0.42 tokens 100/50", got)
+		t.Fatalf("model-leaf usage = %+v, want cost 0.42 tokens 100/50", got)
 	}
 }
 

@@ -89,7 +89,7 @@ const (
 )
 
 // stepAttributes builds the attribute map for a leaf step span from its
-// node.completed payload. Cost/token attrs are emitted ONLY when metrics are
+// node.completed payload. Cost/token attrs are emitted ONLY when usage is
 // present (decision 4: absent cost is omitted, never a misleading 0). Values
 // are restricted to string / int64 / float64 / bool (Export maps each).
 func stepAttributes(path, kind string, nc engine.NodeCompletedData) map[string]any {
@@ -101,11 +101,12 @@ func stepAttributes(path, kind string, nc engine.NodeCompletedData) map[string]a
 	if nc.ExitCode != nil {
 		attrs[AttrExitCode] = int64(*nc.ExitCode)
 	}
-	// gen_ai.* + cost attrs only for agent steps (m4): MetricSet is produced
-	// solely by agent adapters today, but gating on kind keeps gen_ai.* off
-	// non-LLM spans regardless of any future metrics source.
-	if kind == "agent" && nc.Metrics != nil {
-		m := nc.Metrics
+	// gen_ai.* + cost attrs only for agent steps (m4): real usage is produced
+	// solely by agent adapters (non-agent steps carry explicit zeros under the
+	// cost-first-class contract), but gating on kind keeps gen_ai.* off
+	// non-LLM spans regardless.
+	if kind == "agent" && nc.Usage != nil {
+		m := nc.Usage
 		if m.Cost.Source != "" {
 			attrs[AttrCostUSD] = m.Cost.Total
 			attrs[AttrCostSource] = m.Cost.Source

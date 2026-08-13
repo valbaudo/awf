@@ -30,7 +30,7 @@ func TestProjectIsDeterministic(t *testing.T) {
 		}),
 		ev(t, engine.EventNodeStarted, "gate[0].attempt-1.generate.g", t0.Add(1*time.Second), engine.NodeStartedData{Kind: "agent"}),
 		ev(t, engine.EventNodeCompleted, "gate[0].attempt-1.generate.g", t0.Add(2*time.Second),
-			engine.NodeCompletedData{Outcome: "ok", Metrics: &agent.MetricSet{Cost: agent.MetricCost{Total: 0.03, Source: "reported"}}}),
+			engine.NodeCompletedData{Outcome: "ok", Usage: &agent.MetricSet{Cost: agent.MetricCost{Total: 0.03, Source: "reported"}}}),
 		ev(t, engine.EventGateAttempt, "gate[0]", t0.Add(3*time.Second), engine.GateAttemptData{N: 1, AttemptOutcome: engine.AttemptPassed}),
 		ev(t, engine.EventRunFinished, "", t0.Add(4*time.Second), engine.RunFinishedData{Outcome: "ok"}),
 	}

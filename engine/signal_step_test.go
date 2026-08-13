@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/valbaudo/awf/agent"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/ir"
 	"github.com/valbaudo/awf/state"
@@ -73,6 +74,7 @@ func TestRunSignalStep_DeliversAndCommits(t *testing.T) {
 	// the same CAS blob (the canonicalized payload).
 	events, _ := log.Fold()
 	var sigPayloadRef, completedOutputsRef string
+	var completedUsage *agent.MetricSet
 	for _, e := range events {
 		if e.Type == EventSignalReceived {
 			var d SignalReceivedData
@@ -83,7 +85,15 @@ func TestRunSignalStep_DeliversAndCommits(t *testing.T) {
 			var d NodeCompletedData
 			_ = json.Unmarshal(e.Data, &d)
 			completedOutputsRef = d.OutputsRef
+			completedUsage = d.Usage
 		}
+	}
+	// cost-first-class: the signal step's node.completed (appended directly,
+	// bypassing Commit) must still carry an explicit zero usage block.
+	if completedUsage == nil {
+		t.Error("signal-step node.completed carries no usage block")
+	} else if *completedUsage != (agent.MetricSet{}) {
+		t.Errorf("signal-step usage = %+v, want explicit zeros", completedUsage)
 	}
 	if sigPayloadRef == "" {
 		t.Errorf("no signal.received event with PayloadRef")

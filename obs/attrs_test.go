@@ -12,7 +12,7 @@ func TestStepAttributesAgentWithMetrics(t *testing.T) {
 	nc := engine.NodeCompletedData{
 		Outcome:  "ok",
 		ExitCode: &exit,
-		Metrics: &agent.MetricSet{
+		Usage: &agent.MetricSet{
 			Cost:   agent.MetricCost{Total: 0.04, Source: agent.CostSourceReported},
 			Tokens: agent.MetricTokens{Input: 100, Output: 50, CacheReadInput: 10},
 			Turns:  3,
