@@ -46,3 +46,4 @@ ui/node_modules/
 
 _bmad-output/
 _bmad/
+.worktrees/
