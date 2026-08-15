@@ -63,19 +63,23 @@ func TestValidate_SandboxEnum(t *testing.T) {
 	}
 }
 
-func TestValidate_EffortEnum(t *testing.T) {
+func TestValidate_EffortBareWord(t *testing.T) {
 	a := codexAdapter(t)
-	// All SIX values codex v0.131.0 accepts (verified against the binary's own
-	// config validation: "expected one of none, minimal, low, medium, high, xhigh").
-	for _, ok := range []string{"none", "minimal", "low", "medium", "high", "xhigh"} {
+	// Any bare word passes: codex owns the tier vocabulary. The enum this
+	// replaced (frozen at v0.131.0's six values) rejected VALID tiers codex
+	// added later (max/ultra in v0.146.0) — 2026-08-15.
+	for _, ok := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "somefuturetier"} {
 		if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": ok}); err != nil {
 			t.Errorf("effort=%q should pass: %v", ok, err)
 		}
 	}
-	// A non-enum value (TOML-unsafe even after shell-quoting) must be rejected at
-	// validate time, never reaching the `-c model_reasoning_effort=` flag.
-	if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": `high"; x`}); err == nil {
-		t.Error("effort with a non-enum value should fail")
+	// A non-bare-word value (TOML/shell-unsafe even after shell-quoting) must
+	// be rejected at validate time, never reaching the
+	// `-c model_reasoning_effort=` flag.
+	for _, bad := range []string{`high"; x`, "High", "high effort", ""} {
+		if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": bad}); err == nil {
+			t.Errorf("effort=%q should fail (not a bare word)", bad)
+		}
 	}
 }
 

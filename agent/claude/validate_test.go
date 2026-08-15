@@ -44,15 +44,22 @@ func TestClaude_ToolsElementNonStringRejected(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_EffortEnum(t *testing.T) {
+func TestValidateConfig_EffortBareWord(t *testing.T) {
 	a, _ := New(WithEnv(map[string]string{"ANTHROPIC_API_KEY": "sk-test"}))
-	for _, ok := range []string{"low", "medium", "high", "xhigh", "max"} {
+	// transport-safety only: any bare word passes (claude owns its tier
+	// vocabulary; a frozen enum rejected codex's post-v0.131.0 max/ultra —
+	// enum removed 2026-08-15)
+	for _, ok := range []string{"low", "medium", "high", "xhigh", "max", "ultra", "somefuturetier"} {
 		if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": ok}); err != nil {
 			t.Errorf("effort=%q should pass: %v", ok, err)
 		}
 	}
-	if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": "ultra"}); err == nil {
-		t.Error("effort=ultra should fail (not in enum)")
+	// anything but a bare word is rejected before it reaches the shell-quoted
+	// command line
+	for _, bad := range []string{`high"; rm -rf /`, "High", "high effort", ""} {
+		if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": bad}); err == nil {
+			t.Errorf("effort=%q should fail (not a bare word)", bad)
+		}
 	}
 	if err := a.ValidateConfig(ir.RawConfig{"prompt": "x", "effort": 1}); err == nil {
 		t.Error("effort non-string should fail")

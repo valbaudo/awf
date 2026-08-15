@@ -732,22 +732,24 @@ func TestCodexlive_CwdMissingWithNoWorkflowDirIsError(t *testing.T) {
 // model_reasoning_effort enum — this validation did not exist before (a bad
 // value used to reach the app-server and fail mid-run rather than at
 // validate time).
-func TestCodexlive_EffortEnumValidated(t *testing.T) {
+func TestCodexlive_EffortBareWordValidated(t *testing.T) {
 	a := newVersionTestAdapter(t, &fakeClient{info: ProviderInfo{Version: "codex-cli/0.137.0", Binary: "/bin/codex"}})
 	base := ir.RawConfig{"prompt": "build", "cwd": t.TempDir(), "session": "effort-check"}
 
+	// any bare word passes — codex owns the tier vocabulary (enum removed
+	// 2026-08-15 after it rejected codex v0.146.0's max/ultra)
 	with := cloneRawConfig(base)
-	with["effort"] = "high"
+	with["effort"] = "max"
 	if err := a.ValidateConfig(with); err != nil {
-		t.Errorf("effort=high should pass: %v", err)
+		t.Errorf("effort=max should pass: %v", err)
 	}
 
 	with = cloneRawConfig(base)
-	with["effort"] = "bogus"
+	with["effort"] = `high"; x`
 	err := a.ValidateConfig(with)
 	var bad *agent.ErrInvalidConfig
 	if !errors.As(err, &bad) || bad.Key != "effort" {
-		t.Fatalf("effort=bogus: err = %v, want *agent.ErrInvalidConfig{Key:effort}", err)
+		t.Fatalf("effort with shell metacharacters: err = %v, want *agent.ErrInvalidConfig{Key:effort}", err)
 	}
 }
 

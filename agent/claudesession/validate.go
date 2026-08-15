@@ -23,4 +23,5 @@ var allowedKeys = map[string]struct{}{
 	keyAllowedTools: {}, keyBare: {}, keyMaxBudgetUSD: {},
 }
 
-var effortValues = []string{"low", "medium", "high", "xhigh", "max"}
+// (effort enum removed 2026-08-15 — transport-checked via agent.IsBareWord at
+// the check site in adapter.go, same as the base claude adapter)

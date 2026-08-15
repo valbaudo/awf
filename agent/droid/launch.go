@@ -253,7 +253,7 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 		parts = append(parts, "--model", shellQuote(ref))
 	}
 	if re, ok := inv.With[keyEffort].(string); ok && re != "" {
-		parts = append(parts, "--reasoning-effort", re) // value validated against a fixed enum
+		parts = append(parts, "--reasoning-effort", re) // bare-word-validated (agent.IsBareWord) — [a-z]+ is safe unquoted
 	}
 	autonomy := "skip" // default: --skip-permissions-unsafe (isolated container)
 	if v, ok := inv.With[keyAutonomy].(string); ok && v != "" {

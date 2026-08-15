@@ -58,7 +58,14 @@ func TestValidateConfig_SessionKeysRejected(t *testing.T) {
 }
 
 func TestValidateConfig_BadEffort(t *testing.T) {
+	// transport-safety only (enum removed 2026-08-15): a bare word droid
+	// doesn't know passes here and fails at exec (per-model subset); shell
+	// metacharacters are rejected at validate time
 	err := newWithKey(t).ValidateConfig(ir.RawConfig{"prompt": "x", "effort": "ludicrous"})
+	if err != nil {
+		t.Fatalf("effort=ludicrous (bare word) should pass validation, got %v", err)
+	}
+	err = newWithKey(t).ValidateConfig(ir.RawConfig{"prompt": "x", "effort": `high"; x`})
 	var bad *agent.ErrInvalidConfig
 	if !errors.As(err, &bad) || bad.Key != "effort" {
 		t.Fatalf("err = %v, want *agent.ErrInvalidConfig{Key:effort}", err)

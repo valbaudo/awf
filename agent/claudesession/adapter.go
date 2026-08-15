@@ -162,8 +162,8 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		if !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyEffort)
 		}
-		if !slices.Contains(effortValues, s) {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", effortValues, s), keyEffort)
+		if !agent.IsBareWord(s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be a bare word (lowercase letters only; it is shell-quoted onto the command line), got %q", s), keyEffort)
 		}
 	}
 	if v, ok := with[keyMaxTurns]; ok {

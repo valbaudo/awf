@@ -40,17 +40,13 @@ var sessionKeysList = []string{"resume", "fork", "last", "session_id", "continue
 // sandboxValues — codex exec --sandbox accepted modes.
 var sandboxValues = []string{"read-only", "workspace-write", "danger-full-access"}
 
-// EffortValues — codex's accepted model_reasoning_effort tiers, VERIFIED
-// against the v0.131.0 binary's own config validation: a bad value yields
-// "unknown variant ..., expected one of none, minimal, low, medium, high, xhigh"
-// at config-load, before any API call. Enum-validated here so a bad value fails at
-// awf-validate time, and only a bare-word, TOML-safe value reaches the
-// -c model_reasoning_effort= flag. (codex also rejects a bad value loudly at
-// config-load — this is fail-fast on top of that.)
-//
-// Exported so agent/codexlive can single-source the same enum: codexlive wraps
-// the same codex CLI, so a value valid on one is valid on the other.
-var EffortValues = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
+// Effort validation (below, in ValidateConfig) checks TRANSPORT safety only
+// (agent.IsBareWord): the value reaches codex as a bare TOML value in
+// -c model_reasoning_effort=<value> on a shell-quoted command line. codex
+// owns the tier vocabulary — v0.131.0 topped out at xhigh, v0.146.0 added
+// max/ultra, and the enum this replaced (verified-then-frozen against
+// v0.131.0) rejected those VALID tiers at validate time (2026-08-15).
+// A bogus tier fails loudly at the CLI/API at run time instead.
 
 // ValidateConfig enforces codex's with-schema (session-reject → unknown-key →
 // required-prompt → per-key types+enums). Deterministic (sorted keys); runs twice
@@ -104,8 +100,8 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		if !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyEffort)
 		}
-		if !slices.Contains(EffortValues, s) {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", EffortValues, s), keyEffort)
+		if !agent.IsBareWord(s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be a bare word (lowercase letters only; it is interpolated as a bare TOML value), got %q", s), keyEffort)
 		}
 	}
 	return nil

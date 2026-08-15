@@ -62,10 +62,12 @@ var renamedKeys = map[string]string{
 // has no fork flag); do not "align" this list to claude's.
 var sessionKeysList = []string{"session_id", "resume", "fork", "continue"}
 
-// reasoningEffortValues is droid's accepted --reasoning-effort superset. droid
-// enforces a per-model subset at exec; a model-invalid value passes here but is
-// caught as a permanent config error from stderr at Launch (see launch.go).
-var reasoningEffortValues = []string{"off", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+// reasoning-effort is transport-checked only (agent.IsBareWord at the check
+// site): droid owns the tier vocabulary and enforces its per-model subset at
+// exec — a model-invalid value passes here but is caught as a permanent
+// config error from stderr at Launch (see launch.go). (Enum removed
+// 2026-08-15 — a frozen enum rejects tiers the CLI adds later, as codex's
+// v0.146.0 max/ultra proved.)
 
 // wrapInvalidConfig builds the engine-classified *agent.ErrInvalidConfig.
 func wrapInvalidConfig(reason string, key string) error {
@@ -126,8 +128,8 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		if !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyEffort)
 		}
-		if !slices.Contains(reasoningEffortValues, s) {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", reasoningEffortValues, s), keyEffort)
+		if !agent.IsBareWord(s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be a bare word (lowercase letters only), got %q", s), keyEffort)
 		}
 	}
 	if v, ok := with[keyAutonomy]; ok {

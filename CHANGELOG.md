@@ -13,6 +13,22 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-15
+
+### Fixed
+
+- **Agent adapters no longer mirror effort-tier enums.** `openai/codex`,
+  `openai/codex-live`, `anthropic/claude-code`, `anthropic/claude-code-session`,
+  and `droid` validated `with.effort` against a frozen value list (codex's was
+  verified against v0.131.0's six tiers) — so a valid tier added by a later CLI
+  release (codex v0.146.0's `max`/`ultra`) was rejected at validate time. The
+  enums are replaced by a shared transport-safety predicate
+  (`agent.IsBareWord`: non-empty lowercase ASCII letters, ≤32 chars): the value
+  is shell-quoted onto a command line and interpolated as a bare TOML value
+  (`-c model_reasoning_effort=<value>`), and the adapters now guarantee only
+  THAT. An unknown tier fails loudly at the CLI/API at run time instead of a
+  stale enum failing a valid one at validate time.
+
 ## [0.8.0] - 2026-08-13
 
 `node.completed` events now carry a REQUIRED `usage` block — the adapter's

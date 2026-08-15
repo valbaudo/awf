@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/valbaudo/awf/agent"
-	"github.com/valbaudo/awf/agent/codex"
 	"github.com/valbaudo/awf/agent/live"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -248,13 +247,12 @@ func parseConfig(with ir.RawConfig) (config, error) {
 		if !ok {
 			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "effort", Reason: fmt.Sprintf("must be string, got %T", v)}
 		}
-		// codexlive wraps the same codex CLI, so it shares codex's six-value
-		// model_reasoning_effort enum (single-sourced as codex.EffortValues) —
-		// unlike the with-key-only checks above, this one was previously
-		// missing entirely (F12), letting a bad value reach the app-server and
-		// fail mid-run instead of at validate time.
-		if !slices.Contains(codex.EffortValues, s) {
-			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "effort", Reason: fmt.Sprintf("must be one of %v, got %q", codex.EffortValues, s)}
+		// codexlive wraps the same codex CLI, so it shares codex's effort rule
+		// (single-sourced as agent.IsBareWord): transport safety only, codex
+		// owns the tier vocabulary (enum removed 2026-08-15 — it rejected
+		// tiers codex added after the enum was frozen).
+		if !agent.IsBareWord(s) {
+			return config{}, &agent.ErrInvalidConfig{Ref: AdapterRef, Key: "effort", Reason: fmt.Sprintf("must be a bare word (lowercase letters only), got %q", s)}
 		}
 		cfg.reasoningEffort = s
 	}

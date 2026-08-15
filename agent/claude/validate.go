@@ -34,7 +34,7 @@ var allowedKeys = map[string]struct{}{
 	keyAllowedTools: {}, keyBare: {}, keyMaxBudgetUSD: {},
 }
 
-var effortValues = []string{"low", "medium", "high", "xhigh", "max"}
+// (effort enum removed 2026-08-15 — see the IsBareWord note at the check site)
 
 // sessionKeysList is the literal list of with-keys whose presence would
 // re-use a claude session (Phase 5 design decision 7). Used only for the
@@ -98,8 +98,12 @@ func (a *Adapter) ValidateConfig(with ir.RawConfig) error {
 		if !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyEffort)
 		}
-		if !slices.Contains(effortValues, s) {
-			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", effortValues, s), keyEffort)
+		// effort values are transport-checked only (agent.IsBareWord): the value is
+		// shell-quoted onto the claude command line; claude owns the tier vocabulary
+		// (enum removed 2026-08-15 — a frozen enum rejects tiers the CLI adds later,
+		// as codex's v0.146.0 max/ultra proved).
+		if !agent.IsBareWord(s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be a bare word (lowercase letters only; it is shell-quoted onto the command line), got %q", s), keyEffort)
 		}
 	}
 	if v, ok := with[keyMaxTurns]; ok {
