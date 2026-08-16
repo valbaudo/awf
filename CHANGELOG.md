@@ -13,6 +13,17 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-08-16
+
+### Fixed
+
+- **native backend pre-creates writable credential dirs before sandboxing.**
+  The landlock/bwrap grant for a dir that does not exist yet is silently
+  skipped (IgnoreIfMissing — right for optional host dirs, wrong for dirs we
+  intend to create), so on a fresh runner the codex login prelude's mkdir ran
+  inside the sandbox and died EACCES (prestige run 9486dda3). Exec now
+  mkdir -p's the read-write grant dirs before launching the sandboxed step.
+
 ## [0.8.3] - 2026-08-16
 
 ### Fixed

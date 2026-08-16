@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -81,6 +82,9 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 			// tmpfs'd HOME instead of exiting 126) and writable credential dirs
 			// (so a token refresh persists). A code step gets neither.
 			rwDirs, roDirs := sandboxDirsFor(cmd, runHome)
+			if err := ensureWritableDirs(rwDirs); err != nil {
+				return nil, nil, err
+			}
 			argv = perRunLauncher.prepend(r.workdir, rwDirs, roDirs)
 		} else {
 			// Non-factory launcher (e.g. noOpLauncher) returns nil from prepend.
@@ -175,6 +179,21 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 	}()
 
 	return chunks, result, nil
+}
+
+// ensureWritableDirs pre-creates the sandbox's read-write grant dirs. The
+// landlock launcher binds grants with IgnoreIfMissing — correct for optional
+// host dirs, but a credential dir that does not exist YET (fresh runner, no
+// ~/.codex) gets its grant silently skipped, and the agent CLI's own mkdir
+// then runs INSIDE the sandbox and dies EACCES (run 9486dda3, 2026-08-16).
+// Create before launch so the grant has something to bind to.
+func ensureWritableDirs(dirs []string) error {
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return fmt.Errorf("container/native: create writable dir %q: %w", d, err)
+		}
+	}
+	return nil
 }
 
 // resolvedSandbox returns the configured sandboxLauncher or nil.

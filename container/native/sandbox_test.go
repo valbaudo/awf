@@ -8,6 +8,7 @@ package native
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -377,5 +378,34 @@ func TestSandboxDirsFor_ScopedToAgentRuntime(t *testing.T) {
 	}
 	if hasDir(agentRW, home+"/.config") {
 		t.Errorf("agent exec must not get the bare ~/.config catch-all writable; rwDirs=%v", agentRW)
+	}
+}
+
+// Run 9486dda3 (2026-08-16): on a fresh runner, /root/.codex does not exist,
+// and the landlock RW grant for it is silently skipped (IgnoreIfMissing —
+// correct for optional host dirs like /lib64, wrong for dirs we INTEND to
+// create). The codex login prelude's mkdir -p then ran INSIDE the sandbox and
+// died EACCES. The sandbox must pre-create the dirs it means to grant.
+func TestEnsureWritableDirs(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, ".codex")
+	if err := ensureWritableDirs([]string{nested}); err != nil {
+		t.Fatalf("ensureWritableDirs: %v", err)
+	}
+	info, err := os.Stat(nested)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("dir not created: %v", err)
+	}
+	// idempotent on an existing dir
+	if err := ensureWritableDirs([]string{nested}); err != nil {
+		t.Fatalf("ensureWritableDirs (existing): %v", err)
+	}
+	// a FILE in the way is an error, never a silent skip
+	filePath := filepath.Join(root, "blocked")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureWritableDirs([]string{filePath}); err == nil {
+		t.Fatal("a file at the target must be an error")
 	}
 }
