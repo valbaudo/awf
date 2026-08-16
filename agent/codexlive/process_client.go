@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,50 @@ type processClient struct {
 
 func newProcessClient(env agent.SecretEnv) *processClient {
 	return &processClient{env: env}
+}
+
+// loginRunner is the `codex login --with-api-key` invocation — a package var so
+// tests substitute a recorder (same seam pattern as the backoff vars).
+var loginRunner = func(ctx context.Context, codexPath, apiKey string, env []string) error {
+	cmd := exec.CommandContext(ctx, codexPath, "login", "--with-api-key")
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(apiKey) // key via stdin, never argv
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("agent/codexlive: codex login --with-api-key: %w: %s", err, firstNonEmptyLine(out))
+	}
+	return nil
+}
+
+// authJSONPath locates codex's auth record: $CODEX_HOME/auth.json, defaulting
+// to ~/.codex/auth.json (mirrors the sandbox's credDirs resolution).
+func authJSONPath() string {
+	home := os.Getenv("CODEX_HOME")
+	if home == "" {
+		home = filepath.Join(os.Getenv("HOME"), ".codex")
+	}
+	return filepath.Join(home, "auth.json")
+}
+
+// ensureAPIKeyAuth materializes auth.json from OPENAI_API_KEY when the env
+// carries a key and no auth.json exists — codex (verified 0.146.0, 2026-08-16)
+// does not honor the bare env var for app-server/exec auth (401 "Missing
+// bearer"); it needs the login record. Idempotent; an existing auth.json
+// (ChatGPT OAuth) always wins. Same contract as agent/codex's shell prelude,
+// but process-spawned: codexlive drives the CLI without a shell.
+func (c *processClient) ensureAPIKeyAuth(ctx context.Context, codexPath string) error {
+	key := c.env["OPENAI_API_KEY"]
+	if key == "" {
+		return nil
+	}
+	if _, err := os.Stat(authJSONPath()); err == nil {
+		return nil
+	}
+	// codex refuses to create CODEX_HOME itself (0.146.0) — mkdir first
+	if err := os.MkdirAll(filepath.Dir(authJSONPath()), 0o700); err != nil {
+		return fmt.Errorf("agent/codexlive: create codex home: %w", err)
+	}
+	return loginRunner(ctx, codexPath, key, c.commandEnv())
 }
 
 func (c *processClient) ProviderInfo(ctx context.Context) (ProviderInfo, error) {
@@ -215,6 +260,9 @@ func (c *processClient) ensureStarted(ctx context.Context) error {
 	path, err := exec.LookPath(codexBinary)
 	if err != nil {
 		return fmt.Errorf("agent/codexlive: find codex binary: %w", err)
+	}
+	if err := c.ensureAPIKeyAuth(ctx, path); err != nil {
+		return err
 	}
 	cmd := exec.Command(path, "app-server", "--stdio")
 	cmd.Env = c.commandEnv()

@@ -13,6 +13,29 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-08-16
+
+### Fixed
+
+- **`openai/codex` login prelude creates CODEX_HOME first.** codex refuses to
+  create CODEX_HOME itself ("points to … but that path does not exist",
+  0.146.0), so on a fresh runner (no ~/.codex) the v0.8.2 prelude's login
+  failed and the 401 persisted. The prelude now mkdir -p's the home first.
+- **`openai/codex-live` materializes API-key auth too.** Same contract as the
+  codex adapter's shell prelude, process-spawned (the live adapter drives
+  `codex app-server` without a shell): when the env carries OPENAI_API_KEY and
+  no auth.json exists, `codex login --with-api-key` runs BEFORE the app-server
+  spawns; an existing auth.json (ChatGPT OAuth) always wins.
+
+### Added
+
+- **`agent/codex` live contract probe** (`probe_live_test.go`, runs under
+  `make integ-live`): machine-checks the adapter's load-bearing CLI
+  assumptions against the real codex binary — version handshake, CODEX_HOME
+  existence rule, env-only-auth failure mode, and login materialization with a
+  deliberately invalid key (two 401s, no spend). The assumptions this probes
+  rotted twice in two days when they were hand-verified once per adoption.
+
 ## [0.8.2] - 2026-08-16
 
 ### Fixed

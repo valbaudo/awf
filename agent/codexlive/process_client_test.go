@@ -1,8 +1,13 @@
 package codexlive
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/valbaudo/awf/agent"
 )
 
 func TestThreadStartResponseDecodesResolvedModel(t *testing.T) {
@@ -170,5 +175,78 @@ func TestProviderEventFromCommandExecutionItem(t *testing.T) {
 	reasoningParams := []byte(`{"threadId":"t1","turnId":"turn-1","item":{"type":"reasoning","text":"hmm"}}`)
 	if _, _, _, rok := providerEventFromNotification(EventItemCompleted, reasoningParams); rok {
 		t.Fatal("reasoning item/completed should be dropped (ok=false)")
+	}
+}
+
+// codex (verified 0.146.0, 2026-08-16) does not honor a bare OPENAI_API_KEY env
+// var — the app-server needs auth.json. When the env carries a key and no
+// auth.json exists, the client must run `codex login --with-api-key` BEFORE
+// spawning the app-server. Existing auth.json (ChatGPT OAuth) always wins.
+func TestEnsureAPIKeyAuth(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	var logins []string
+	orig := loginRunner
+	t.Cleanup(func() { loginRunner = orig })
+	loginRunner = func(_ context.Context, _ string, key string, _ []string) error {
+		logins = append(logins, key)
+		return nil
+	}
+
+	// key present, no auth.json → login with the key, once
+	c := newProcessClient(agent.SecretEnv{"OPENAI_API_KEY": "sk-test"})
+	if err := c.ensureAPIKeyAuth(context.Background(), "/bin/codex"); err != nil {
+		t.Fatalf("ensureAPIKeyAuth: %v", err)
+	}
+	if len(logins) != 1 || logins[0] != "sk-test" {
+		t.Fatalf("logins = %v, want one call with sk-test", logins)
+	}
+
+	// auth.json exists → login skipped (OAuth session wins)
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ensureAPIKeyAuth(context.Background(), "/bin/codex"); err != nil {
+		t.Fatalf("ensureAPIKeyAuth: %v", err)
+	}
+	if len(logins) != 1 {
+		t.Fatalf("existing auth.json must skip login, logins = %v", logins)
+	}
+
+	// no key → no login
+	c2 := newProcessClient(agent.SecretEnv{})
+	if err := c2.ensureAPIKeyAuth(context.Background(), "/bin/codex"); err != nil {
+		t.Fatalf("ensureAPIKeyAuth: %v", err)
+	}
+	if len(logins) != 1 {
+		t.Fatalf("no key must skip login, logins = %v", logins)
+	}
+}
+
+// CODEX_HOME overrides the default ~/.codex when locating auth.json.
+func TestEnsureAPIKeyAuthCodexHomeOverride(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ch := t.TempDir()
+	t.Setenv("CODEX_HOME", ch)
+	if err := os.WriteFile(filepath.Join(ch, "auth.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var logins int
+	orig := loginRunner
+	t.Cleanup(func() { loginRunner = orig })
+	loginRunner = func(context.Context, string, string, []string) error { logins++; return nil }
+
+	c := newProcessClient(agent.SecretEnv{"OPENAI_API_KEY": "sk-test"})
+	if err := c.ensureAPIKeyAuth(context.Background(), "/bin/codex"); err != nil {
+		t.Fatalf("ensureAPIKeyAuth: %v", err)
+	}
+	if logins != 0 {
+		t.Fatalf("auth.json under CODEX_HOME must skip login, got %d calls", logins)
 	}
 }

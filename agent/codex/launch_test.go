@@ -427,7 +427,7 @@ func TestAssembleCommand_APIKeyLoginPrelude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assembleCommand: %v", err)
 	}
-	want := `[ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || printenv OPENAI_API_KEY | codex login --with-api-key >&2; `
+	want := `[ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || { mkdir -p "${CODEX_HOME:-$HOME/.codex}" && printenv OPENAI_API_KEY | codex login --with-api-key >&2; }; `
 	if !strings.HasPrefix(withKey, want) {
 		t.Errorf("command must start with the login prelude:\n%s", withKey)
 	}

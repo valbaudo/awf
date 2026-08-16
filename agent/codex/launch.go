@@ -263,7 +263,11 @@ func assembleCommand(inv agent.AgentInvocation, apiKeyAuth bool) (string, error)
 
 	var prelude string
 	if apiKeyAuth {
-		prelude = `[ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || printenv OPENAI_API_KEY | codex login --with-api-key >&2; `
+		// mkdir -p first: codex refuses to create CODEX_HOME itself ("points to
+		// … but that path does not exist", 0.146.0). Under the native sandbox
+		// ~/.codex is a writable credential dir for agent runtimes, so both the
+		// mkdir and the login write land.
+		prelude = `[ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || { mkdir -p "${CODEX_HOME:-$HOME/.codex}" && printenv OPENAI_API_KEY | codex login --with-api-key >&2; }; `
 	}
 	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral"}
 
