@@ -13,6 +13,20 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-08-16
+
+### Fixed
+
+- **native backend: DNS works inside the sandbox on systemd-resolved hosts.**
+  /etc/resolv.conf is a symlink into /run/systemd/resolve/ — outside every
+  granted dir — so the landlock/bwrap sandbox made resolver config unreadable
+  and every DNS lookup died ("could not resolve host"; codex's reqwest
+  reported it as the opaque "error sending request for url …", prestige run
+  fabac8fa). Both Linux launchers now resolve the symlink and grant the target
+  — as a FILE grant for landlock (directory rights on a regular file are
+  rejected by landlock_add_rule), a --ro-bind-try for bwrap. Verified
+  end-to-end on an EC2 host: codex turn completes under the trampoline.
+
 ## [0.8.4] - 2026-08-16
 
 ### Fixed

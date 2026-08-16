@@ -58,7 +58,7 @@ func MaybeRunSandboxTrampoline() {
 		os.Exit(2)
 	}
 	// Apply Landlock FS restrictions. Fail closed — no BestEffort fallback.
-	if err := ApplyLandlock(policy.RODirs, policy.RWDirs); err != nil {
+	if err := ApplyLandlock(policy.RODirs, policy.RWDirs, policy.ROFiles); err != nil {
 		fmt.Fprintf(os.Stderr, "__sandbox: landlock apply: %v\n", err)
 		os.Exit(2)
 	}

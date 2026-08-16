@@ -138,6 +138,11 @@ func (l bwrapLauncher) prepend(scratchDir string, rwDirs, roDirs []string) []str
 	// /lib64 may not exist on all distros — use try variant.
 	argv = append(argv, "--ro-bind-try", "/lib64", "/lib64")
 	argv = append(argv, "--ro-bind", "/etc", "/etc")
+	// systemd-resolved hosts symlink /etc/resolv.conf into /run/... (outside the
+	// mount namespace) — bind the resolved target file or DNS dies inside
+	for _, f := range resolverExtraROFiles("/etc/resolv.conf", "/etc") {
+		argv = append(argv, "--ro-bind-try", f, f)
+	}
 	// /opt is where node/npm global prefixes commonly live, and an agent CLI
 	// shim in /usr/local/bin routinely resolves into it (verified: codex ->
 	// /opt/node-*/lib/node_modules/@openai/codex, interpreter /opt/node-*/bin/node).
@@ -188,6 +193,11 @@ type trampolineLauncher struct {
 type SandboxPolicy struct {
 	RODirs []string `json:"ro_dirs"`
 	RWDirs []string `json:"rw_dirs"`
+	// ROFiles grants individual FILES read-only (landlock rejects directory
+	// access rights on regular files) — today: the resolved target of an
+	// /etc/resolv.conf symlink escaping /etc (systemd-resolved hosts), else
+	// DNS dies inside the sandbox (run fabac8fa, 2026-08-16).
+	ROFiles []string `json:"ro_files,omitempty"`
 	Run    string   `json:"run"`
 }
 
@@ -235,7 +245,11 @@ func (l trampolineLauncher) prepend(scratchDir string, rwDirs, roDirs []string) 
 	p := SandboxPolicy{
 		RODirs: allRO,
 		RWDirs: allRW,
-		Run:    l.run,
+		// systemd-resolved hosts: /etc/resolv.conf symlinks into /run/... —
+		// grant the resolved target as a FILE (dir rights on a file are
+		// rejected by landlock_add_rule)
+		ROFiles: resolverExtraROFiles("/etc/resolv.conf", "/etc"),
+		Run:     l.run,
 	}
 	pJSON, err := json.Marshal(p)
 	if err != nil {

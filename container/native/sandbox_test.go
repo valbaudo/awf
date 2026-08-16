@@ -409,3 +409,59 @@ func TestEnsureWritableDirs(t *testing.T) {
 		t.Fatal("a file at the target must be an error")
 	}
 }
+
+// Run fabac8fa (2026-08-16): codex under the landlock trampoline died with an
+// opaque "error sending request" — the actual failure was DNS: on
+// systemd-resolved hosts /etc/resolv.conf is a symlink into
+// /run/systemd/resolve/, OUTSIDE every granted dir, and landlock follows the
+// symlink → resolver config unreadable → no nameservers. The RO grant set must
+// include the symlink's resolved target (as a FILE grant — landlock rejects
+// directory access rights on regular files).
+func TestResolverExtraROFiles(t *testing.T) {
+	root := t.TempDir()
+	etc := filepath.Join(root, "etc")
+	run := filepath.Join(root, "run", "systemd", "resolve")
+	if err := os.MkdirAll(filepath.Join(etc, "conf.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(run, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(run, "stub-resolv.conf")
+	if err := os.WriteFile(target, []byte("nameserver 127.0.0.53\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// symlink escaping the granted tree → the resolved target is granted
+	link := filepath.Join(etc, "resolv.conf")
+	if err := os.Symlink(filepath.Join("..", "run", "systemd", "resolve", "stub-resolv.conf"), link); err != nil {
+		t.Fatal(err)
+	}
+	got := resolverExtraROFiles(link, etc)
+	wantTarget, _ := filepath.EvalSymlinks(target) // macOS: /var → /private/var
+	if len(got) != 1 || got[0] != wantTarget {
+		t.Fatalf("escaping symlink: got %v, want [%s]", got, wantTarget)
+	}
+
+	// plain file (non-systemd host) → nothing extra
+	plain := filepath.Join(etc, "resolv-conf-plain")
+	if err := os.WriteFile(plain, []byte("nameserver 1.1.1.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolverExtraROFiles(plain, etc); got != nil {
+		t.Fatalf("plain file: got %v, want nil", got)
+	}
+
+	// symlink staying INSIDE the granted tree → already covered, nothing extra
+	if err := os.Symlink("inner.conf", filepath.Join(etc, "resolv-inner")); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolverExtraROFiles(filepath.Join(etc, "resolv-inner"), etc); got != nil {
+		t.Fatalf("internal symlink: got %v, want nil", got)
+	}
+
+	// missing file → nothing (IgnoreIfMissing-style tolerance)
+	if got := resolverExtraROFiles(filepath.Join(root, "nope"), etc); got != nil {
+		t.Fatalf("missing: got %v, want nil", got)
+	}
+}

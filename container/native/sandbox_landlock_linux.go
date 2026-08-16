@@ -33,7 +33,7 @@ import (
 //
 // Note: RestrictPaths also sets the "no new privileges" flag in the calling process,
 // which is appropriate for untrusted step execution.
-func ApplyLandlock(roDirs, rwDirs []string) error {
+func ApplyLandlock(roDirs, rwDirs, roFiles []string) error {
 	v, err := llsyscall.LandlockGetABIVersion()
 	if err != nil {
 		return fmt.Errorf("landlock ABI probe failed: %w", err)
@@ -44,5 +44,6 @@ func ApplyLandlock(roDirs, rwDirs []string) error {
 	return landlock.V9.BestEffort().RestrictPaths(
 		landlock.RODirs(roDirs...).IgnoreIfMissing(),
 		landlock.RWDirs(rwDirs...).IgnoreIfMissing(),
+		landlock.ROFiles(roFiles...).IgnoreIfMissing(),
 	)
 }

@@ -83,6 +83,34 @@ type noOpLauncher struct{}
 
 func (noOpLauncher) prepend(_ string, _, _ []string) []string { return nil }
 
+// resolverExtraROFiles returns extra read-only grants needed for DNS inside a
+// write-confined sandbox: on systemd-resolved hosts /etc/resolv.conf is a
+// SYMLINK into /run/systemd/resolve/ — outside every granted dir — and a
+// path-confined process follows the symlink and cannot read the resolver
+// config, so DNS dies ("could not resolve host"; codex's reqwest reports it
+// as "error sending request"). Run fabac8fa, 2026-08-16. Returns the resolved
+// target when resolvConfPath escapes grantedRoot; nil when the file is plain,
+// missing, or resolves inside the granted tree. The target is granted as a
+// FILE (landlock rejects directory access rights on regular files; bwrap
+// binds it directly).
+func resolverExtraROFiles(resolvConfPath, grantedRoot string) []string {
+	target, err := filepath.EvalSymlinks(resolvConfPath)
+	if err != nil {
+		return nil
+	}
+	// canonicalize BOTH sides: EvalSymlinks resolves platform symlinks
+	// (macOS /var → /private/var), so an unresolved root would make a plain
+	// in-tree file look like an escapee
+	root := grantedRoot
+	if r, err := filepath.EvalSymlinks(grantedRoot); err == nil {
+		root = r
+	}
+	if isAncestorOrSelf(root, target) {
+		return nil
+	}
+	return []string{target}
+}
+
 // credDirs returns the deduplicated list of agent credential / config
 // directories that OS-specific launchers should mount read-only (or add to
 // their allow-list). The per-run HOME is passed in as runHome; the function
