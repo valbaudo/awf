@@ -29,3 +29,20 @@ func TestErrSessionReuseAttempted_Message(t *testing.T) {
 		t.Errorf("Error() = %q", e.Error())
 	}
 }
+
+// The preview must show the TAIL of codex's output: fatal errors come last —
+// codex prints benign startup warnings first ("could not create PATH aliases",
+// "stale arg0 temp dirs"), and a head-first preview let the warning consume the
+// whole budget, hiding the real 401 (prestige run 91db8db6, 2026-08-16).
+func TestErrUnexpectedExit_PreviewShowsTail(t *testing.T) {
+	head := strings.Repeat("W", 300) // a wall of warning noise
+	fatal := "turn.failed: 401 Unauthorized"
+	e := &codex.ErrUnexpectedExit{ExitCode: 1, Output: head + fatal}
+	msg := e.Error()
+	if !strings.Contains(msg, fatal) {
+		t.Errorf("preview must contain the fatal tail, got: %q", msg)
+	}
+	if strings.Contains(msg, strings.Repeat("W", 300)) {
+		t.Errorf("preview must not be head-capped at the warning wall, got: %q", msg)
+	}
+}

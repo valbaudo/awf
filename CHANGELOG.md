@@ -13,6 +13,24 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-16
+
+### Fixed
+
+- **`openai/codex`: materialize API-key auth before exec.** Current codex CLI
+  (verified on 0.146.0) does not honor a bare `OPENAI_API_KEY` env var for
+  `codex exec` auth — it needs `auth.json`, so env-only runs died with 401
+  "Missing bearer". When the adapter's env carries `OPENAI_API_KEY`, the
+  assembled command now starts with an idempotent prelude:
+  `[ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || printenv OPENAI_API_KEY | codex login --with-api-key >&2;`
+  (key never enters argv; login chatter stays off the `--json` stdout; under
+  the native sandbox `~/.codex` is a writable credential dir for agent
+  runtimes, so the write lands).
+- **`openai/codex`: error preview shows the output TAIL, not the head.** A
+  benign codex startup warning ("could not create PATH aliases" / "stale arg0
+  temp dirs") consumed the 300-char head-first budget and hid the actual fatal
+  error (a 401) in every event and failure report.
+
 ## [0.8.1] - 2026-08-15
 
 ### Fixed

@@ -60,7 +60,10 @@ func (e *ErrUnexpectedExit) Error() string {
 	const maxOut = 300
 	preview := e.Output
 	if len(preview) > maxOut {
-		preview = preview[:maxOut]
+		// the TAIL: fatal errors come last — codex prints benign startup
+		// warnings first, and a head-first preview let one consume the whole
+		// budget, hiding the real 401 (prestige run 91db8db6, 2026-08-16)
+		preview = "…" + preview[len(preview)-maxOut:]
 	}
 	return fmt.Sprintf("agent/codex: codex exited with code %d and no usable result: %s", e.ExitCode, preview)
 }

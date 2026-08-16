@@ -306,7 +306,7 @@ func TestAssembleCommand_EscapesAdversarialInput(t *testing.T) {
 		With:         ir.RawConfig{"prompt": prompt},
 		OutputSchema: schema,
 	}
-	cmd, err := codex.AssembleCommandForTest(inv)
+	cmd, err := codex.AssembleCommandForTest(inv, false)
 	if err != nil {
 		t.Fatalf("assembleCommand: %v", err)
 	}
@@ -408,5 +408,38 @@ func TestLaunch_TurnFailedNoMessage_UnexpectedExit(t *testing.T) {
 	var unexp *codex.ErrUnexpectedExit
 	if !errors.As(outcome.Err, &unexp) {
 		t.Fatalf("turn.failed(empty, no error event) = %v, want *codex.ErrUnexpectedExit", outcome.Err)
+	}
+}
+
+// codex 0.146.0 does not honor a bare OPENAI_API_KEY env var for exec auth
+// (401 "Missing bearer", proven against the binary on 2026-08-16): the key must
+// be materialized into auth.json via `codex login --with-api-key` first. The
+// prelude runs ONLY when the adapter's env carries the key, is idempotent
+// (skips when auth.json exists), and keeps stdout clean (login chatter →
+// stderr; codex --json owns stdout).
+func TestAssembleCommand_APIKeyLoginPrelude(t *testing.T) {
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: codex.AdapterRef,
+		With: ir.RawConfig{"prompt": "hi"},
+	}
+
+	withKey, err := codex.AssembleCommandForTest(inv, true)
+	if err != nil {
+		t.Fatalf("assembleCommand: %v", err)
+	}
+	want := `[ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || printenv OPENAI_API_KEY | codex login --with-api-key >&2; `
+	if !strings.HasPrefix(withKey, want) {
+		t.Errorf("command must start with the login prelude:\n%s", withKey)
+	}
+	if !strings.Contains(withKey, "codex exec --json") {
+		t.Errorf("exec command missing after prelude:\n%s", withKey)
+	}
+
+	withoutKey, err := codex.AssembleCommandForTest(inv, false)
+	if err != nil {
+		t.Fatalf("assembleCommand: %v", err)
+	}
+	if strings.Contains(withoutKey, "codex login") {
+		t.Errorf("no API key in env → no login prelude:\n%s", withoutKey)
 	}
 }

@@ -41,7 +41,7 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 	if a.backend == nil {
 		return nil, nil, &agent.ErrAgentLaunch{Cause: errors.New("agent/codex: Launch: no Backend wired (use WithBackend in New)")}
 	}
-	cmdString, err := assembleCommand(inv)
+	cmdString, err := assembleCommand(inv, a.env["OPENAI_API_KEY"] != "")
 	if err != nil {
 		return nil, nil, &agent.ErrAgentLaunch{Cause: err}
 	}
@@ -243,7 +243,15 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 // POSIX-single-quoted via shellQuote. The prompt+feedback ride as one sh -c argv
 // element (128 KiB MAX_ARG_STRLEN ceiling, inherited from the sibling adapters);
 // the schema-to-file write keeps the --output-schema value tiny (a path).
-func assembleCommand(inv agent.AgentInvocation) (string, error) {
+//
+// apiKeyAuth (adapter env carries OPENAI_API_KEY): prepend an idempotent login
+// prelude. codex ≥ some 0.14x does NOT honor a bare OPENAI_API_KEY env var for
+// exec auth — it needs auth.json materialized (`codex login --with-api-key`
+// reading stdin; proven against 0.146.0 on 2026-08-16: env-only → 401 "Missing
+// bearer", login first → green). printenv keeps the key out of argv; login
+// chatter goes to stderr so stdout stays clean --json; under the native sandbox
+// ~/.codex is a writable credential dir for agent runtimes, so the write lands.
+func assembleCommand(inv agent.AgentInvocation, apiKeyAuth bool) (string, error) {
 	prompt, ok := inv.With[keyPrompt].(string)
 	if !ok {
 		return "", fmt.Errorf("agent/codex: assembleCommand: with.prompt missing or non-string")
@@ -254,6 +262,9 @@ func assembleCommand(inv agent.AgentInvocation) (string, error) {
 	}
 
 	var prelude string
+	if apiKeyAuth {
+		prelude = `[ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || printenv OPENAI_API_KEY | codex login --with-api-key >&2; `
+	}
 	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral"}
 
 	if inv.OutputSchema != nil {
