@@ -13,6 +13,22 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-08-16
+
+### Changed
+
+- **The native sandbox is write-only by default (threat-model alignment).**
+  SECURITY.md has always documented write-confinement; the Linux launchers
+  shipped deny-by-default READS instead (undocumented drift), which broke
+  ambient infrastructure reads (a /etc/resolv.conf symlink escaping /etc killed
+  DNS; credential dirs that don't exist yet were ungrantable). Reads now
+  default to OPEN on both Linux launchers (landlock grants `/` read; bwrap
+  binds `/` read-only without the HOME tmpfs) — matching macOS, where
+  sandbox-exec was always write-only. Writes stay confined to the scratch dir,
+  /tmp, /dev, and agent credential dirs. `AWF_SANDBOX_READS=confined` restores
+  deny-by-default reads for hosts that hold secrets worth denying reads to.
+  Verified end-to-end on EC2: a codex turn completes under the trampoline.
+
 ## [0.8.5] - 2026-08-16
 
 ### Fixed

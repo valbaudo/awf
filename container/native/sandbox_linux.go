@@ -37,7 +37,7 @@ func detectLinuxSandbox(
 	if bwrapPath, err := lookPath("bwrap"); err == nil && bwrapPath != "" {
 		if err := probeBwrap(bwrapPath); err == nil {
 			home, _ := os.UserHomeDir()
-			return &bwrapLauncherFactory{bwrapPath: bwrapPath, home: home}, "bwrap"
+			return &bwrapLauncherFactory{bwrapPath: bwrapPath, home: home, readsOpen: !readsConfinedEnv(os.Getenv)}, "bwrap"
 		}
 	}
 
@@ -46,7 +46,7 @@ func detectLinuxSandbox(
 	// create a ruleset or restrict the process. We require ABI ≥ 1 (Linux 5.13).
 	if ver, err := landlockABIVersion(); err == nil && ver >= 1 {
 		self, _ := os.Executable()
-		return &trampolineLauncherFactory{self: self}, "landlock-trampoline"
+		return &trampolineLauncherFactory{self: self, readsOpen: !readsConfinedEnv(os.Getenv)}, "landlock-trampoline"
 	}
 
 	// ── 3. no platform sandbox ────────────────────────────────────────────────
@@ -73,13 +73,14 @@ func probeBwrapSandbox(bwrapPath string) error {
 type bwrapLauncherFactory struct {
 	bwrapPath string
 	home      string
+	readsOpen bool
 }
 
 // prepend is a sentinel no-op. exec.go always calls buildForRun first.
 func (f *bwrapLauncherFactory) prepend(_ string, _, _ []string) []string { return nil }
 
 func (f *bwrapLauncherFactory) buildForRun(run string) sandboxLauncher {
-	return bwrapLauncher{bwrapPath: f.bwrapPath, home: f.home, run: run}
+	return bwrapLauncher{bwrapPath: f.bwrapPath, home: f.home, run: run, readsOpen: f.readsOpen}
 }
 
 // bwrapLauncher builds the bubblewrap argv for one dispatch.
@@ -88,6 +89,7 @@ type bwrapLauncher struct {
 	bwrapPath string
 	home      string
 	run       string
+	readsOpen bool
 }
 
 // prepend returns the complete bwrap argv including the terminal "-- sh -c <run>".
@@ -109,15 +111,23 @@ type bwrapLauncher struct {
 func (l bwrapLauncher) prepend(scratchDir string, rwDirs, roDirs []string) []string {
 	argv := []string{l.bwrapPath}
 
-	// Isolate HOME: overlay with tmpfs so the step cannot read real credentials.
-	if l.home != "" {
-		argv = append(argv, "--tmpfs", l.home)
-	}
+	if l.readsOpen {
+		// WRITE-confinement only (the documented threat model, SECURITY.md):
+		// the whole OS is readable; writes stay confined to the rw set below.
+		argv = append(argv, "--ro-bind", "/", "/")
+	} else {
+		// Confined reads (opt-in, AWF_SANDBOX_READS=confined): isolate HOME and
+		// re-bind only the enumerated cred/system dirs.
+		// Isolate HOME: overlay with tmpfs so the step cannot read real credentials.
+		if l.home != "" {
+			argv = append(argv, "--tmpfs", l.home)
+		}
 
-	// Re-bind each credential directory read-only inside the new mount namespace.
-	// --ro-bind-try silently skips dirs that don't exist (new hosts, optional tools).
-	for _, d := range roDirs {
-		argv = append(argv, "--ro-bind-try", d, d)
+		// Re-bind each credential directory read-only inside the new mount namespace.
+		// --ro-bind-try silently skips dirs that don't exist (new hosts, optional tools).
+		for _, d := range roDirs {
+			argv = append(argv, "--ro-bind-try", d, d)
+		}
 	}
 
 	// Re-bind the agent config dirs that must persist a token refresh READ-WRITE,
@@ -131,13 +141,15 @@ func (l bwrapLauncher) prepend(scratchDir string, rwDirs, roDirs []string) []str
 	// Bind the per-run scratch dir read-write so the step can write output files.
 	argv = append(argv, "--bind", scratchDir, scratchDir)
 
-	// Essential system dirs (read-only).
-	for _, d := range []string{"/usr", "/bin", "/lib"} {
-		argv = append(argv, "--ro-bind", d, d)
+	if !l.readsOpen {
+		// Essential system dirs (read-only). (Open-reads mode bound / already.)
+		for _, d := range []string{"/usr", "/bin", "/lib"} {
+			argv = append(argv, "--ro-bind", d, d)
+		}
+		// /lib64 may not exist on all distros — use try variant.
+		argv = append(argv, "--ro-bind-try", "/lib64", "/lib64")
+		argv = append(argv, "--ro-bind", "/etc", "/etc")
 	}
-	// /lib64 may not exist on all distros — use try variant.
-	argv = append(argv, "--ro-bind-try", "/lib64", "/lib64")
-	argv = append(argv, "--ro-bind", "/etc", "/etc")
 	// systemd-resolved hosts symlink /etc/resolv.conf into /run/... (outside the
 	// mount namespace) — bind the resolved target file or DNS dies inside
 	for _, f := range resolverExtraROFiles("/etc/resolv.conf", "/etc") {
@@ -172,19 +184,21 @@ func (l bwrapLauncher) prepend(scratchDir string, rwDirs, roDirs []string) []str
 // trampolineLauncherFactory is stored in Backend.sandbox when go-landlock is
 // available (and bwrap is not). exec.go calls buildForRun(cmd.Run) per dispatch.
 type trampolineLauncherFactory struct {
-	self string // path to the awf binary (os.Executable())
+	self      string // path to the awf binary (os.Executable())
+	readsOpen bool
 }
 
 func (f *trampolineLauncherFactory) prepend(_ string, _, _ []string) []string { return nil }
 
 func (f *trampolineLauncherFactory) buildForRun(run string) sandboxLauncher {
-	return trampolineLauncher{self: f.self, run: run}
+	return trampolineLauncher{self: f.self, run: run, readsOpen: f.readsOpen}
 }
 
 // trampolineLauncher builds the re-exec argv for one dispatch.
 type trampolineLauncher struct {
-	self string // path to the awf binary
-	run  string // the shell command to exec inside the sandbox
+	self      string // path to the awf binary
+	run       string // the shell command to exec inside the sandbox
+	readsOpen bool
 }
 
 // SandboxPolicy is the JSON payload the __sandbox trampoline subcommand decodes.
@@ -199,6 +213,15 @@ type SandboxPolicy struct {
 	// DNS dies inside the sandbox (run fabac8fa, 2026-08-16).
 	ROFiles []string `json:"ro_files,omitempty"`
 	Run    string   `json:"run"`
+}
+
+// resolverROFilesIfConfined resolves the /etc/resolv.conf symlink grant only
+// when reads are confined (open mode grants all of / and needs nothing).
+func resolverROFilesIfConfined(readsOpen bool) []string {
+	if readsOpen {
+		return nil
+	}
+	return resolverExtraROFiles("/etc/resolv.conf", "/etc")
 }
 
 // systemRODirs are the fixed OS directories the trampoline always grants
@@ -225,10 +248,16 @@ var systemRODirs = []string{"/usr", "/bin", "/lib", "/lib64", "/etc", "/proc", "
 // maybeSandboxTrampoline() and applies the Landlock policy before
 // syscall.Exec("/bin/sh",...).
 func (l trampolineLauncher) prepend(scratchDir string, rwDirs, roDirs []string) []string {
-	// RODirs = caller-supplied cred dirs + fixed system dirs.
-	allRO := make([]string, 0, len(roDirs)+len(systemRODirs))
-	allRO = append(allRO, roDirs...)
-	allRO = append(allRO, systemRODirs...)
+	// RODirs: open mode (default — the documented write-confinement model)
+	// reads everything; confined mode = caller cred dirs + fixed system dirs.
+	var allRO []string
+	if l.readsOpen {
+		allRO = []string{"/"}
+	} else {
+		allRO = make([]string, 0, len(roDirs)+len(systemRODirs))
+		allRO = append(allRO, roDirs...)
+		allRO = append(allRO, systemRODirs...)
+	}
 
 	// RWDirs = the fixed writable set + the agent config dirs that must persist a
 	// token refresh (credDirsWritable). RestrictPaths uses IgnoreIfMissing()
@@ -248,7 +277,8 @@ func (l trampolineLauncher) prepend(scratchDir string, rwDirs, roDirs []string) 
 		// systemd-resolved hosts: /etc/resolv.conf symlinks into /run/... —
 		// grant the resolved target as a FILE (dir rights on a file are
 		// rejected by landlock_add_rule)
-		ROFiles: resolverExtraROFiles("/etc/resolv.conf", "/etc"),
+		// (confined mode only — open mode grants all of / read anyway)
+		ROFiles: resolverROFilesIfConfined(l.readsOpen),
 		Run:     l.run,
 	}
 	pJSON, err := json.Marshal(p)

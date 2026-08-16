@@ -83,6 +83,15 @@ type noOpLauncher struct{}
 
 func (noOpLauncher) prepend(_ string, _, _ []string) []string { return nil }
 
+// readsConfinedEnv parses AWF_SANDBOX_READS. Default OPEN (2026-08-16): the
+// documented threat model (SECURITY.md) is WRITE-confinement — reads are
+// ambient infrastructure (resolv.conf, CA certs, locale) and enumerating them
+// is unbounded whack-a-mole. "confined" opts into deny-by-default reads for
+// hosts that hold secrets worth protecting from agent steps.
+func readsConfinedEnv(getenv func(string) string) bool {
+	return strings.EqualFold(strings.TrimSpace(getenv("AWF_SANDBOX_READS")), "confined")
+}
+
 // resolverExtraROFiles returns extra read-only grants needed for DNS inside a
 // write-confined sandbox: on systemd-resolved hosts /etc/resolv.conf is a
 // SYMLINK into /run/systemd/resolve/ — outside every granted dir — and a

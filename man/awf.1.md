@@ -597,6 +597,16 @@ part of the contract. The `awf trace --output json` span projection is
     supplies the default. Honored by every subcommand that takes **--state-dir**
     (run, resume, signal, pause, cancel, ls, inspect, trace, outputs, graph, ui).
 
+**AWF_SANDBOX_READS**
+:   Native-backend sandbox read policy: `open` (default) or `confined`. The
+    documented threat model (see SECURITY.md) is *write*-confinement — open
+    keeps every host read working (ambient infrastructure like the resolver
+    config can never break) and confines writes to the scratch dir, TMPDIR, and
+    agent credential dirs. `confined` opts into deny-by-default reads (only
+    enumerated system + agent-config dirs are readable) for hosts that hold
+    secrets worth denying reads to. macOS is always write-only; this knob
+    selects between the two Linux launchers' read policies.
+
 **AWF_STAGING_ROOT**
 :   Set by the engine (not by the operator) inside a `reduce:` step's container so
     a `run:` reducer can locate the staged per-item manifests and branch

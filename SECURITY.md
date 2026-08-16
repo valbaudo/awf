@@ -32,7 +32,10 @@ intentional and worth understanding before reporting:
 
 - Docker steps run in digest-pinned containers. The `native` backend attempts
   to write-confine host processes with bubblewrap or Landlock on Linux and
-  `sandbox-exec` on macOS. It selects the first functionally usable launcher:
+  `sandbox-exec` on macOS. With `AWF_SANDBOX_READS=open` (the default) reads are unrestricted and writes
+  are confined; `confined` opts into deny-by-default reads (only enumerated
+  system + agent-config dirs) for hosts that hold secrets worth denying reads
+  to. It selects the first functionally usable launcher:
   on Linux, bubblewrap
   must successfully probe its namespace and mount policy before selection;
   otherwise AWF tries Landlock. If no launcher is usable, native retains a

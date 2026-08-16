@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -466,4 +467,71 @@ func TestBwrapLauncher_OptBound(t *testing.T) {
 		}
 	}
 	t.Errorf("bwrap argv missing --ro-bind-try /opt /opt; argv=%v", argv)
+}
+
+// Threat-model alignment (2026-08-16): open reads by default (write-only
+// confinement, SECURITY.md); AWF_SANDBOX_READS=confined restores the
+// deny-by-default read policy.
+func TestTrampolineLauncher_OpenReadsPolicy(t *testing.T) {
+	l := trampolineLauncher{self: "/bin/awf", run: "echo hi", readsOpen: true}
+	argv := l.prepend("/scratch", []string{"/home/u/.codex"}, []string{"/home/u/.claude"})
+	var p SandboxPolicy
+	if err := json.Unmarshal([]byte(argv[2]), &p); err != nil {
+		t.Fatalf("policy JSON: %v", err)
+	}
+	if len(p.RODirs) != 1 || p.RODirs[0] != "/" {
+		t.Fatalf("open reads: RODirs = %v, want [/]", p.RODirs)
+	}
+	if p.ROFiles != nil {
+		t.Fatalf("open reads need no file grants (resolv.conf is under /), got %v", p.ROFiles)
+	}
+	// writes stay confined: scratch + /tmp + /dev + writable cred dirs
+	for _, want := range []string{"/scratch", "/tmp", "/dev", "/home/u/.codex"} {
+		if !slices.Contains(p.RWDirs, want) {
+			t.Errorf("RWDirs missing %q: %v", want, p.RWDirs)
+		}
+	}
+}
+
+func TestTrampolineLauncher_ConfinedReadsPolicyUnchanged(t *testing.T) {
+	l := trampolineLauncher{self: "/bin/awf", run: "echo hi", readsOpen: false}
+	argv := l.prepend("/scratch", []string{"/home/u/.codex"}, []string{"/home/u/.claude"})
+	var p SandboxPolicy
+	if err := json.Unmarshal([]byte(argv[2]), &p); err != nil {
+		t.Fatalf("policy JSON: %v", err)
+	}
+	if slices.Contains(p.RODirs, "/") {
+		t.Fatalf("confined reads must NOT grant /, got %v", p.RODirs)
+	}
+	if !slices.Contains(p.RODirs, "/etc") || !slices.Contains(p.RODirs, "/home/u/.claude") {
+		t.Fatalf("confined reads lost the system/cred grants: %v", p.RODirs)
+	}
+}
+
+func TestBwrapLauncher_OpenReadsArgv(t *testing.T) {
+	l := bwrapLauncher{bwrapPath: "/usr/bin/bwrap", home: "/home/u", run: "echo hi", readsOpen: true}
+	argv := l.prepend("/scratch", []string{"/home/u/.codex"}, []string{"/home/u/.claude"})
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--ro-bind / /") {
+		t.Errorf("open reads must bind the whole OS read-only:\n%s", joined)
+	}
+	if strings.Contains(joined, "--tmpfs /home/u") {
+		t.Errorf("open reads must NOT shadow HOME:\n%s", joined)
+	}
+	// writes still confined: scratch is rw, /tmp is a fresh tmpfs
+	if !strings.Contains(joined, "--bind /scratch /scratch") || !strings.Contains(joined, "--tmpfs /tmp") {
+		t.Errorf("write confinement lost:\n%s", joined)
+	}
+}
+
+func TestBwrapLauncher_ConfinedReadsArgvUnchanged(t *testing.T) {
+	l := bwrapLauncher{bwrapPath: "/usr/bin/bwrap", home: "/home/u", run: "echo hi", readsOpen: false}
+	argv := l.prepend("/scratch", []string{"/home/u/.codex"}, []string{"/home/u/.claude"})
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--tmpfs /home/u") {
+		t.Errorf("confined reads keep the HOME tmpfs:\n%s", joined)
+	}
+	if strings.Contains(joined, "--ro-bind / /") {
+		t.Errorf("confined reads must NOT bind / read-only:\n%s", joined)
+	}
 }

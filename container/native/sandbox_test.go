@@ -465,3 +465,27 @@ func TestResolverExtraROFiles(t *testing.T) {
 		t.Fatalf("missing: got %v, want nil", got)
 	}
 }
+
+// Threat-model alignment (2026-08-16): SECURITY.md documents the native
+// sandbox as WRITE-confinement; the Linux launchers shipped deny-by-default
+// READS instead (undocumented drift), which broke ambient infrastructure reads
+// (resolv.conf symlink → DNS dead, run fabac8fa). Reads default to OPEN;
+// AWF_SANDBOX_READS=confined opts back into the deny-by-default read policy
+// for hosts that actually hold secrets worth denying reads to.
+func TestReadsConfinedEnv(t *testing.T) {
+	cases := []struct {
+		val  string
+		want bool
+	}{
+		{"", false},        // unset: open (the documented write-confinement model)
+		{"open", false},    // explicit
+		{"confined", true}, // opt-in read confinement
+		{"CONFINED", true}, // case-insensitive
+		{"garbage", false}, // unknown values fail OPEN (write-confinement is the contract)
+	}
+	for _, c := range cases {
+		if got := readsConfinedEnv(func(string) string { return c.val }); got != c.want {
+			t.Errorf("readsConfinedEnv(%q) = %v, want %v", c.val, got, c.want)
+		}
+	}
+}
