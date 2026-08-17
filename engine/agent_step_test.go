@@ -2677,3 +2677,85 @@ graph:
 		}
 	})
 }
+
+// 2026-08-16: STRICT (non-live) agent events must ALSO carry the normalized
+// display_* fields in the WAL — the console's run transcript renders those,
+// and gating them on Live left strict adapters (codex exec) with no
+// agent-agnostic text, forcing consumers to parse CLI dialects. The Live flag
+// now gates ONLY payload redaction, not display metadata.
+func TestRunAgentStep_StrictAgentEventCarriesDisplayMetadata(t *testing.T) {
+	const yaml = `workflow: strict-agent-events
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: strict
+    container: lab
+    uses: openai/codex-strict
+    with:
+      prompt: "p"
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	var reg agent.Registry
+	fk := fake.New("openai/codex-strict").WithCaps(agent.Caps{NativeSchema: true}).Script(0, fake.Result{
+		Output: map[string]any{"ok": true},
+		Events: []agent.AgentEvent{{
+			Kind:    "agent_message",
+			Stream:  "stdout",
+			Payload: []byte(`{"type":"item.completed"}`),
+			Display: agent.EventDisplay{Class: agent.DisplayAssistant, Text: "hello from strict"},
+		}},
+	})
+	if err := reg.Register(fk); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  &autoTreeFake{Fake: container.NewFake()},
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+	rs := engine.NewRunState("r1", "d", nil)
+
+	oc, err := engine.Run(context.Background(), ld, rs, dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if oc != engine.OutcomeOK {
+		t.Fatalf("Outcome = %q", oc)
+	}
+
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Type != engine.EventAgentEvent || ev.Path != "strict" {
+			continue
+		}
+		var data engine.AgentEventData
+		if err := json.Unmarshal(ev.Data, &data); err != nil {
+			t.Fatalf("unmarshal AgentEventData: %v", err)
+		}
+		if data.Live {
+			t.Fatal("strict event must keep Live=false")
+		}
+		if data.DisplayClass != "assistant" || data.DisplaySummary != "hello from strict" {
+			t.Fatalf("strict event display metadata = class %q summary %q, want assistant/hello from strict", data.DisplayClass, data.DisplaySummary)
+		}
+		return
+	}
+	t.Fatal("missing strict agent.event")
+}

@@ -513,13 +513,19 @@ func appendAgentEvents(log state.Log, blobs state.Blobs, path string, events []a
 		if ev.Live {
 			eventPayload = []byte(agent.RedactDisplayText(agent.SanitizeDisplayBytes(eventPayload)))
 			data.Live = true
-			data.DisplayClass = ev.Display.Class.String()
-			data.DisplayTool = liveDisplayField(ev.Display.Tool)
-			data.DisplaySummary = liveDisplayField(ev.Display.Text)
-			data.DisplayLines = ev.Display.Lines
-			data.DisplayBytes = ev.Display.Bytes
-			data.DisplayIsError = ev.Display.IsError
 		}
+		// Display metadata is for EVERY adapter (2026-08-16): strict adapters
+		// (codex exec) also compute EventDisplay, and the WAL is the console's
+		// transcript source — gating display_* on Live left strict events with
+		// no agent-agnostic text and forced consumers into CLI-dialect parsing.
+		// Live now gates ONLY payload redaction. Display text is always
+		// sanitized/redacted/bounded (it derives from raw harness bytes).
+		data.DisplayClass = ev.Display.Class.String()
+		data.DisplayTool = liveDisplayField(ev.Display.Tool)
+		data.DisplaySummary = liveDisplayField(ev.Display.Text)
+		data.DisplayLines = ev.Display.Lines
+		data.DisplayBytes = ev.Display.Bytes
+		data.DisplayIsError = ev.Display.IsError
 		data.Size = len(eventPayload)
 		if len(eventPayload) >= AgentEventInlineThreshold {
 			ref, err := blobs.Put(eventPayload)

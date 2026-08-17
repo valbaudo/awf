@@ -13,6 +13,18 @@ of the `awf` tool version.
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-08-16
+
+### Fixed
+
+- **agent.event log entries carry the normalized display fields for EVERY
+  adapter.** They were gated on Live, so strict adapters (codex exec) computed
+  EventDisplay and the WAL dropped it — leaving consumers (the prestige
+  console's run transcript) no agent-agnostic text and forcing CLI-dialect
+  parsing. Live now gates only payload redaction; display_* (class, tool,
+  summary, lines, bytes, is_error) is written unconditionally, always
+  sanitized/redacted/bounded.
+
 ## [0.8.6] - 2026-08-16
 
 ### Changed
