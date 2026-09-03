@@ -24,8 +24,10 @@ import (
 )
 
 // Adapter is the agent.Adapter implementation for OpenAI codex. One Adapter per
-// CLI invocation; multiple Launch calls per Adapter; all state read-only after
-// construction (no session state crosses Launch boundaries).
+// CLI invocation; multiple Launch calls per Adapter; all in-memory state is
+// read-only after construction. Each logical invocation gets an opaque isolated
+// CODEX_HOME; only deterministic retries of that same run/node/key reuse it.
+// Provider sessions never cross Launch boundaries (`codex exec --ephemeral`).
 type Adapter struct {
 	env     agent.SecretEnv   // env-var allowlist (NAME → VALUE) forwarded into each `codex exec`
 	backend container.Backend // for Version + Launch; nil → those methods error

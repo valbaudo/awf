@@ -17,6 +17,11 @@ import (
 	"github.com/valbaudo/awf/ir"
 )
 
+// errAgentWallTimeout marks cancellation caused by the engine-owned agent step
+// wall timer. The private cause distinguishes it from a parent/user deadline and
+// from transport errors that happen to wrap context.DeadlineExceeded.
+var errAgentWallTimeout = errors.New("engine: agent wall timeout")
+
 // runAgent is the agent-step counterpart to runCode. Symmetric in shape;
 // returns DispatchResult with one of the outcomes listed above.
 //
@@ -27,6 +32,7 @@ import (
 //     ("", err) — NO node.failed event; preserves fold integrity)
 //   - *agent.ErrInvalidConfig         → permanent_failure (workflow bug)
 //   - *agent.ErrUnparseableOutput     → retryable_failure (parse miss)
+//   - agent wall deadline             → permanent_failure (retry cannot extend it)
 //   - *agent.ErrAgentLaunch / other  → retryable_failure (transport class)
 //   - adapter.Refused (slice 5.3+)   → permanent_failure (policy block)
 func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *ir.AgentStep) (DispatchResult, <-chan container.IOChunk, error) {
@@ -167,10 +173,13 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}, closedChunks(), nil
 	}
 
-	// Apply step timeout to ctx (mirrors runCode).
+	// Apply the agent wall timeout with a private cause. ctx.Err() remains
+	// context.DeadlineExceeded for callers, while context.Cause lets failure
+	// classification distinguish this engine-owned budget from a parent/user
+	// deadline or a transient transport timeout.
 	var cancel context.CancelFunc
 	if intent.ResolvedInputs.Timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, intent.ResolvedInputs.Timeout)
+		ctx, cancel = context.WithTimeoutCause(ctx, intent.ResolvedInputs.Timeout, errAgentWallTimeout)
 	} else {
 		ctx, cancel = context.WithCancel(ctx)
 	}
@@ -179,9 +188,9 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// Idle timeout: arm a timer that cancels ctx if no AgentEvent is drained for
 	// IdleTimeout. Armed here (the pre-first-output window counts, so a step that
 	// emits nothing still fires), reset on each event in the drain loop below, and
-	// stopped on normal completion. An idle fire cancels ctx exactly like a wall
-	// expiry; the dispatcher maps ctx.Err() to retryable_failure even if a broken
-	// adapter ignores cancellation and never completes its channels.
+	// stopped on normal completion. Idle cancellation remains retryable; only the
+	// separately marked wall deadline is permanent. Both remain authoritative if
+	// a broken adapter ignores cancellation and never completes its channels.
 	var idleTimer *time.Timer
 	if intent.ResolvedInputs.IdleTimeout > 0 {
 		idleTimer = time.AfterFunc(intent.ResolvedInputs.IdleTimeout, cancel)
@@ -279,7 +288,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		if errors.Is(launchErr, agent.ErrLiveReplayRequired) {
 			return DispatchResult{}, nil, launchErr
 		}
-		dispatchOutcome := classifyAgentLaunchErr(launchErr)
+		dispatchOutcome := classifyAgentLaunchErr(ctx, launchErr)
 		return DispatchResult{Outcome: dispatchOutcome, Err: launchErr}, nil, nil
 	}
 
@@ -354,7 +363,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 		}
 		launchErr := &agent.ErrAgentLaunch{Cause: ctx.Err()}
 		return DispatchResult{
-			Outcome:     OutcomeRetryableFailure,
+			Outcome:     classifyAgentLaunchErr(ctx, launchErr),
 			Err:         launchErr,
 			AgentEvents: drained.events,
 		}, closedChunks(), nil
@@ -392,7 +401,7 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 				AgentEvents: bufferedEvents,
 			}, nil, launchOutcome.Err
 		}
-		dispatchOutcome := classifyAgentLaunchErr(launchOutcome.Err)
+		dispatchOutcome := classifyAgentLaunchErr(ctx, launchOutcome.Err)
 		return DispatchResult{
 			Outcome:     dispatchOutcome,
 			Err:         launchOutcome.Err,
@@ -538,13 +547,17 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 }
 
 // classifyAgentLaunchErr maps an Adapter.Launch error to an Outcome per the
-// Adapter contract (agent/adapter.go doc on Launch). Defaults to
-// retryable_failure for transport-class faults.
-func classifyAgentLaunchErr(err error) Outcome {
+// Adapter contract (agent/adapter.go doc on Launch). An engine-owned agent wall
+// deadline is permanent because retrying the same bounded step cannot extend its
+// budget. Parent/user cancellation and adapter-internal deadline errors do not
+// carry errAgentWallTimeout and retain transport/cancellation semantics.
+func classifyAgentLaunchErr(ctx context.Context, err error) Outcome {
 	var notFound *agent.ErrAdapterNotFound
 	var badConfig *agent.ErrInvalidConfig
 	var unparseable *agent.ErrUnparseableOutput
 	switch {
+	case errors.Is(context.Cause(ctx), errAgentWallTimeout) && errors.Is(err, context.DeadlineExceeded):
+		return OutcomePermanentFailure
 	// Defense-in-depth: *ErrAdapterNotFound is normally caught before Launch by
 	// the Resolver.Lookup miss path in runAgent. This branch handles the unlikely
 	// case of an adapter whose Launch surfaces a wrapped *ErrAdapterNotFound,

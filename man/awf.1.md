@@ -690,12 +690,21 @@ part of the contract. The `awf trace --output json` span projection is
     config inside the image.
 
 **OPENAI_API_KEY**, **CODEX_HOME**
-:   Authentication for the `openai/codex` agent runtime. **awf** does not read
-    these itself; it forwards those named in **--agent-env** (both included in the
-    default allowlist) into each `codex exec` invocation. Codex supports two auth
-    modes: an `OPENAI_API_KEY` env var, or ChatGPT-OAuth via an `auth.json`
-    provisioned into the runner image under `CODEX_HOME` (default `~/.codex`). The
-    adapter cannot validate auth statically — a missing or invalid credential
+:   Authentication for the `openai/codex` agent runtime. Both names are included
+    in the default **--agent-env** allowlist. A configured `CODEX_HOME` is the
+    *base seed* configuration location (default `~/.codex`), not the mutable
+    home used directly by `codex exec`: before every launch, **awf** selects an
+    absolute, opaque per-invocation home below the container workdir's writable
+    `.awf` area, copies missing `auth.json` and `config.toml` from the base without
+    placing their contents in the command line, and sets `CODEX_HOME` to the
+    isolated path before login or exec. Different runs, node paths, or idempotency
+    identities never share mutable Codex state; a retry of the same logical
+    invocation deterministically reuses its home.
+
+    Codex supports ChatGPT OAuth from the copied `auth.json`. When
+    `OPENAI_API_KEY` is present and the isolated home still has no `auth.json`, the
+    adapter runs `codex login --with-api-key` with the key on stdin before exec.
+    The adapter cannot validate auth statically — a missing or invalid credential
     surfaces as a failed run (a `turn.failed` event with the API error message).
 
     The adapter always passes **--ephemeral** (no session persistence, preserving

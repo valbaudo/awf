@@ -7,9 +7,12 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
 	"github.com/valbaudo/awf/engine"
 	"github.com/valbaudo/awf/ir"
+	"github.com/valbaudo/awf/retry"
+	"github.com/valbaudo/awf/state"
 )
 
 // idleTestAdapter is a minimal containerless agent adapter whose Launch behavior
@@ -40,7 +43,9 @@ func (a *idleTestAdapter) Launch(ctx context.Context, _ container.Handle, _ agen
 // contextIgnoringAdapter violates the adapter lifecycle contract by ignoring
 // cancellation and leaving both channels open forever. The dispatcher still
 // must honor its own timeout instead of trusting adapter cleanup.
-type contextIgnoringAdapter struct{}
+type contextIgnoringAdapter struct {
+	calls int
+}
 
 func (*contextIgnoringAdapter) Ref() string              { return "test/context-ignoring" }
 func (*contextIgnoringAdapter) Capabilities() agent.Caps { return agent.Caps{Containerless: true} }
@@ -48,7 +53,8 @@ func (*contextIgnoringAdapter) Version(context.Context, container.Handle) (strin
 	return "1", nil
 }
 func (*contextIgnoringAdapter) ValidateConfig(ir.RawConfig) error { return nil }
-func (*contextIgnoringAdapter) Launch(context.Context, container.Handle, agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+func (a *contextIgnoringAdapter) Launch(context.Context, container.Handle, agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+	a.calls++
 	return make(chan agent.AgentEvent), make(chan agent.AgentOutcome), nil
 }
 
@@ -74,10 +80,10 @@ func runIdleAgent(t *testing.T, ri engine.ResolvedInputs, adapter *idleTestAdapt
 	return dr
 }
 
-// TestRunAgent_TimeoutDoesNotWaitForContextIgnoringAdapter verifies that the
-// dispatcher's wall timeout remains authoritative even if a broken adapter
-// ignores ctx and never closes or sends on either channel.
-func TestRunAgent_TimeoutDoesNotWaitForContextIgnoringAdapter(t *testing.T) {
+// TestRunAgent_WallTimeoutIsPermanentAndNotRetried verifies both that the
+// dispatcher's wall timeout remains authoritative when a broken adapter ignores
+// ctx and that a retry policy with attempts=3 still dispatches only once.
+func TestRunAgent_WallTimeoutIsPermanentAndNotRetried(t *testing.T) {
 	adapter := &contextIgnoringAdapter{}
 	reg := &agent.Registry{}
 	if err := reg.Register(adapter); err != nil {
@@ -92,6 +98,7 @@ func TestRunAgent_TimeoutDoesNotWaitForContextIgnoringAdapter(t *testing.T) {
 			Timeout: 25 * time.Millisecond,
 		},
 	}
+	policy := retry.Policy{Attempts: 3, Backoff: retry.BackoffNone}
 
 	type runResult struct {
 		dr     engine.DispatchResult
@@ -100,20 +107,25 @@ func TestRunAgent_TimeoutDoesNotWaitForContextIgnoringAdapter(t *testing.T) {
 	}
 	done := make(chan runResult, 1)
 	go func() {
-		dr, chunks, err := d.Run(context.Background(), intent)
+		dr, chunks, err := engine.RunWithRetry(
+			context.Background(), d, intent, policy, &clock.Fake{}, state.NewInMemoryLog(clock.System{}),
+		)
 		done <- runResult{dr: dr, chunks: chunks, err: err}
 	}()
 
 	select {
 	case got := <-done:
-		if got.err != nil {
-			t.Fatalf("Run engine-level error: %v", got.err)
+		if !errors.Is(got.err, context.DeadlineExceeded) {
+			t.Fatalf("RunWithRetry err = %v, want context deadline exceeded", got.err)
 		}
-		if got.dr.Outcome != engine.OutcomeRetryableFailure {
-			t.Fatalf("Outcome = %v, want retryable_failure (wall timeout)", got.dr.Outcome)
+		if got.dr.Outcome != engine.OutcomePermanentFailure {
+			t.Fatalf("Outcome = %v, want permanent_failure (wall timeout)", got.dr.Outcome)
 		}
 		if !errors.Is(got.dr.Err, context.DeadlineExceeded) {
 			t.Fatalf("dr.Err = %v, want context deadline exceeded", got.dr.Err)
+		}
+		if adapter.calls != 1 {
+			t.Fatalf("Launch calls = %d, want 1 with retry attempts=3", adapter.calls)
 		}
 		if got.chunks == nil {
 			t.Fatal("chunks = nil, want closed channel")
@@ -122,7 +134,7 @@ func TestRunAgent_TimeoutDoesNotWaitForContextIgnoringAdapter(t *testing.T) {
 			t.Fatal("chunks channel is open, want closed channel")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Run remained blocked on adapter channels after its timeout")
+		t.Fatal("RunWithRetry remained blocked on adapter channels after its timeout")
 	}
 }
 
