@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -36,6 +37,21 @@ func (a *idleTestAdapter) Launch(ctx context.Context, _ container.Handle, _ agen
 	return events, outcome, nil
 }
 
+// contextIgnoringAdapter violates the adapter lifecycle contract by ignoring
+// cancellation and leaving both channels open forever. The dispatcher still
+// must honor its own timeout instead of trusting adapter cleanup.
+type contextIgnoringAdapter struct{}
+
+func (*contextIgnoringAdapter) Ref() string              { return "test/context-ignoring" }
+func (*contextIgnoringAdapter) Capabilities() agent.Caps { return agent.Caps{Containerless: true} }
+func (*contextIgnoringAdapter) Version(context.Context, container.Handle) (string, error) {
+	return "1", nil
+}
+func (*contextIgnoringAdapter) ValidateConfig(ir.RawConfig) error { return nil }
+func (*contextIgnoringAdapter) Launch(context.Context, container.Handle, agent.AgentInvocation) (<-chan agent.AgentEvent, <-chan agent.AgentOutcome, error) {
+	return make(chan agent.AgentEvent), make(chan agent.AgentOutcome), nil
+}
+
 func runIdleAgent(t *testing.T, ri engine.ResolvedInputs, adapter *idleTestAdapter) engine.DispatchResult {
 	t.Helper()
 	reg := &agent.Registry{}
@@ -56,6 +72,58 @@ func runIdleAgent(t *testing.T, ri engine.ResolvedInputs, adapter *idleTestAdapt
 		t.Fatalf("Run engine-level error: %v", err)
 	}
 	return dr
+}
+
+// TestRunAgent_TimeoutDoesNotWaitForContextIgnoringAdapter verifies that the
+// dispatcher's wall timeout remains authoritative even if a broken adapter
+// ignores ctx and never closes or sends on either channel.
+func TestRunAgent_TimeoutDoesNotWaitForContextIgnoringAdapter(t *testing.T) {
+	adapter := &contextIgnoringAdapter{}
+	reg := &agent.Registry{}
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	d := &engine.LocalDispatcher{Resolver: reg}
+	intent := engine.NodeIntent{
+		Path: "gen",
+		Node: &ir.AgentStep{ID: "gen", Uses: adapter.Ref()},
+		ResolvedInputs: engine.ResolvedInputs{
+			Uses:    adapter.Ref(),
+			Timeout: 25 * time.Millisecond,
+		},
+	}
+
+	type runResult struct {
+		dr     engine.DispatchResult
+		chunks <-chan container.IOChunk
+		err    error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		dr, chunks, err := d.Run(context.Background(), intent)
+		done <- runResult{dr: dr, chunks: chunks, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("Run engine-level error: %v", got.err)
+		}
+		if got.dr.Outcome != engine.OutcomeRetryableFailure {
+			t.Fatalf("Outcome = %v, want retryable_failure (wall timeout)", got.dr.Outcome)
+		}
+		if !errors.Is(got.dr.Err, context.DeadlineExceeded) {
+			t.Fatalf("dr.Err = %v, want context deadline exceeded", got.dr.Err)
+		}
+		if got.chunks == nil {
+			t.Fatal("chunks = nil, want closed channel")
+		}
+		if _, ok := <-got.chunks; ok {
+			t.Fatal("chunks channel is open, want closed channel")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run remained blocked on adapter channels after its timeout")
+	}
 }
 
 // TestRunAgent_IdleTimeoutFires: an agent that produces no output blocks until

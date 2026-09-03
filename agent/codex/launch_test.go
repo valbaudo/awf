@@ -3,6 +3,7 @@ package codex_test
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -23,6 +24,20 @@ func codexLaunchAdapter(t *testing.T, f *container.Fake) *codex.Adapter {
 
 func chunk(b []byte) container.IOChunk { return container.IOChunk{Stream: "stdout", Data: b} }
 func nl(b []byte) []byte               { return append(append([]byte(nil), b...), '\n') }
+
+var codexSchemaPathRE = regexp.MustCompile(`/tmp/awf-codex-schema-[0-9a-f]{64}\.json`)
+
+func schemaPathFromCommand(t *testing.T, cmd string) string {
+	t.Helper()
+	paths := codexSchemaPathRE.FindAllString(cmd, -1)
+	if len(paths) != 2 {
+		t.Fatalf("command has %d schema-path occurrences, want write + flag:\n%s", len(paths), cmd)
+	}
+	if paths[0] != paths[1] {
+		t.Fatalf("schema write path %q != --output-schema path %q:\n%s", paths[0], paths[1], cmd)
+	}
+	return paths[0]
+}
 
 func drainLaunch(t *testing.T, a *codex.Adapter, h container.Handle, inv agent.AgentInvocation) ([]agent.AgentEvent, agent.AgentOutcome) {
 	t.Helper()
@@ -105,15 +120,18 @@ func TestLaunch_CommandLine_SchemaPrelude_Flags_Env(t *testing.T) {
 	}
 	cmd := f.Calls[0].Run
 	for _, want := range []string{
-		"printf '%s' '", "> /tmp/awf-codex-schema.json && ",
+		"codex login --with-api-key", "printf '%s' '",
 		"codex exec --json --skip-git-repo-check --ephemeral",
-		"--output-schema /tmp/awf-codex-schema.json",
 		"--sandbox 'workspace-write'", "-m 'gpt-5-codex'", "-c 'model_reasoning_effort=high'",
 		"-- 'do it'", "</dev/null",
 	} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("command missing %q\nfull: %s", want, cmd)
 		}
+	}
+	schemaPath := schemaPathFromCommand(t, cmd)
+	if !strings.Contains(cmd, "> "+schemaPath+" &&") || !strings.Contains(cmd, "--output-schema "+schemaPath) {
+		t.Errorf("schema path not wired to both write and flag:\n%s", cmd)
 	}
 	// sandbox set → bypass flag MUST be absent.
 	if strings.Contains(cmd, "--dangerously-bypass-approvals-and-sandbox") {
@@ -441,5 +459,67 @@ func TestAssembleCommand_APIKeyLoginPrelude(t *testing.T) {
 	}
 	if strings.Contains(withoutKey, "codex login") {
 		t.Errorf("no API key in env → no login prelude:\n%s", withoutKey)
+	}
+}
+
+func TestAssembleCommand_APIKeyAndOutputSchemaCombinePreludes(t *testing.T) {
+	inv := agent.AgentInvocation{
+		NodePath:       "graph[0]",
+		Uses:           codex.AdapterRef,
+		With:           ir.RawConfig{"prompt": "hi"},
+		OutputSchema:   &ir.JSONSchema{"type": "object"},
+		IdempotencyKey: "typed-step",
+	}
+
+	cmd, err := codex.AssembleCommandForTest(inv, true)
+	if err != nil {
+		t.Fatalf("assembleCommand: %v", err)
+	}
+	loginPrelude := `[ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || { mkdir -p "${CODEX_HOME:-$HOME/.codex}" && printenv OPENAI_API_KEY | codex login --with-api-key >&2; }; `
+	if !strings.HasPrefix(cmd, loginPrelude+"printf '%s' ") {
+		t.Fatalf("login and schema preludes must both precede codex exec:\n%s", cmd)
+	}
+	schemaPath := schemaPathFromCommand(t, cmd)
+	if !strings.Contains(cmd, "> "+schemaPath+" && codex exec --json") {
+		t.Errorf("schema prelude must feed the following codex exec:\n%s", cmd)
+	}
+}
+
+func TestAssembleCommand_ParallelInvocationsUseDistinctSchemaPaths(t *testing.T) {
+	schema := &ir.JSONSchema{"type": "object"}
+	invA := agent.AgentInvocation{
+		NodePath:       "map[0].item-0.graph[0]",
+		Uses:           codex.AdapterRef,
+		With:           ir.RawConfig{"prompt": "x"},
+		OutputSchema:   schema,
+		IdempotencyKey: "parallel/a with spaces",
+	}
+	invB := invA
+	invB.NodePath = "map[0].item-1.graph[0]"
+	invB.IdempotencyKey = "parallel/b;$(unsafe)"
+
+	cmdA, err := codex.AssembleCommandForTest(invA, false)
+	if err != nil {
+		t.Fatalf("assembleCommand(invA): %v", err)
+	}
+	cmdB, err := codex.AssembleCommandForTest(invB, false)
+	if err != nil {
+		t.Fatalf("assembleCommand(invB): %v", err)
+	}
+	pathA := schemaPathFromCommand(t, cmdA)
+	pathB := schemaPathFromCommand(t, cmdB)
+	if pathA == pathB {
+		t.Fatalf("parallel invocations share schema path %q", pathA)
+	}
+	if strings.Contains(cmdA, invA.IdempotencyKey) || strings.Contains(cmdB, invB.IdempotencyKey) {
+		t.Fatalf("raw invocation identity leaked into a schema path:\nA: %s\nB: %s", cmdA, cmdB)
+	}
+
+	cmdARepeat, err := codex.AssembleCommandForTest(invA, false)
+	if err != nil {
+		t.Fatalf("assembleCommand(invA repeat): %v", err)
+	}
+	if repeatPath := schemaPathFromCommand(t, cmdARepeat); repeatPath != pathA {
+		t.Errorf("same invocation schema path changed: first %q, repeat %q", pathA, repeatPath)
 	}
 }

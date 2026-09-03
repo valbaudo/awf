@@ -180,7 +180,8 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	// IdleTimeout. Armed here (the pre-first-output window counts, so a step that
 	// emits nothing still fires), reset on each event in the drain loop below, and
 	// stopped on normal completion. An idle fire cancels ctx exactly like a wall
-	// expiry → the adapter surfaces ctx.Err() → retryable_failure → existing retry.
+	// expiry; the dispatcher maps ctx.Err() to retryable_failure even if a broken
+	// adapter ignores cancellation and never completes its channels.
 	var idleTimer *time.Timer
 	if intent.ResolvedInputs.IdleTimeout > 0 {
 		idleTimer = time.AfterFunc(intent.ResolvedInputs.IdleTimeout, cancel)
@@ -289,39 +290,89 @@ func (d *LocalDispatcher) runAgent(ctx context.Context, intent NodeIntent, as *i
 	drainDone := make(chan drainedAgentEvents, 1)
 	go func() {
 		var buf []agent.AgentEvent
-		var sinkErr error
 		render := d.eventRenderer()
-		for ev := range events {
-			// Any drained event is progress — reset the idle deadline.
+		finish := func(err error) {
+			// Disarm so a post-completion idle fire cannot cancel a step that has
+			// already finished draining. The buffered send lets runAgent return on
+			// cancellation without waiting for this cleanup rendezvous.
 			if idleTimer != nil {
-				idleTimer.Reset(intent.ResolvedInputs.IdleTimeout)
+				idleTimer.Stop()
 			}
-			if d.AgentEventTap != nil {
-				render(d.AgentEventTap, ev)
+			drainDone <- drainedAgentEvents{events: buf, err: err}
+		}
+		for {
+			// Prefer an already-observed cancellation over another buffered event;
+			// a contract-violating adapter may keep events permanently readable.
+			if ctx.Err() != nil {
+				finish(nil)
+				return
 			}
-			if ev.Live && intent.agentEventSink != nil {
-				if err := intent.agentEventSink.send(ev); err != nil {
-					if sinkErr == nil {
-						sinkErr = err
-						cancel()
-					}
+			select {
+			case <-ctx.Done():
+				finish(nil)
+				return
+			case ev, ok := <-events:
+				if !ok {
+					finish(nil)
+					return
 				}
-				continue
+				// Any drained event is progress — reset the idle deadline.
+				if idleTimer != nil {
+					idleTimer.Reset(intent.ResolvedInputs.IdleTimeout)
+				}
+				if d.AgentEventTap != nil {
+					render(d.AgentEventTap, ev)
+				}
+				if ev.Live && intent.agentEventSink != nil {
+					if err := intent.agentEventSink.send(ev); err != nil {
+						// Publish the sink error before cancellation wakes the main path,
+						// then stop draining rather than trusting adapter cleanup.
+						finish(err)
+						cancel()
+						return
+					}
+					continue
+				}
+				// Display is json:"-" and never serialized directly. Keep it in memory
+				// so the interpreter can copy sanitized scalar summaries for live events.
+				buf = append(buf, ev)
 			}
-			// Display is json:"-" and never serialized directly. Keep it in memory
-			// so the interpreter can copy sanitized scalar summaries for live events.
-			buf = append(buf, ev)
 		}
-		// Events channel closed = agent finished; disarm so a post-completion idle
-		// fire can't cancel a step that already produced its outcome.
-		if idleTimer != nil {
-			idleTimer.Stop()
-		}
-		drainDone <- drainedAgentEvents{events: buf, err: sinkErr}
 	}()
 
-	launchOutcome := <-outcomeCh
-	drained := <-drainDone
+	// On cancellation, collect event-drain cleanup only if it is already ready.
+	// A broken adapter may leave both channels open forever, so neither channel is
+	// allowed to delay the timeout result.
+	cancelledResult := func() (DispatchResult, <-chan container.IOChunk, error) {
+		var drained drainedAgentEvents
+		select {
+		case drained = <-drainDone:
+		default:
+		}
+		if drained.err != nil {
+			return DispatchResult{AgentEvents: drained.events}, nil, drained.err
+		}
+		launchErr := &agent.ErrAgentLaunch{Cause: ctx.Err()}
+		return DispatchResult{
+			Outcome:     OutcomeRetryableFailure,
+			Err:         launchErr,
+			AgentEvents: drained.events,
+		}, closedChunks(), nil
+	}
+
+	var launchOutcome agent.AgentOutcome
+	select {
+	case launchOutcome = <-outcomeCh:
+	case <-ctx.Done():
+		return cancelledResult()
+	}
+
+	var drained drainedAgentEvents
+	select {
+	case drained = <-drainDone:
+	case <-ctx.Done():
+		return cancelledResult()
+	}
 	bufferedEvents := drained.events
 	if drained.err != nil {
 		return DispatchResult{

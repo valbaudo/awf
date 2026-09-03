@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,14 +15,15 @@ import (
 	"github.com/valbaudo/awf/container"
 )
 
-// codexSchemaPath is the in-container path the step's output_schema is written to
-// (via printf in the same sh -c command) for --output-schema. Fixed path keeps
-// Launch deterministic (no rand — CLAUDE.md); single-exec-per-container is
-// guaranteed by the format (sequential gate/loop/retry; per-element map
-// container). `>` truncates the file in the same command immediately before codex
-// reads it, so any restored/leftover file (incl. under snapshot: workspace) is
-// overwritten before use.
-const codexSchemaPath = "/tmp/awf-codex-schema.json"
+// codexSchemaPath returns the in-container path the invocation's output_schema is
+// written to (via printf in the same sh -c command) for --output-schema. The hex
+// digest is deterministic and shell-safe, uses only stable non-secret invocation
+// identity, and isolates concurrent native invocations that share the host /tmp.
+// Retries of the same node intentionally reuse (and truncate) the same path.
+func codexSchemaPath(inv agent.AgentInvocation) string {
+	sum := sha256.Sum256([]byte(inv.NodePath + "\x00" + inv.IdempotencyKey))
+	return fmt.Sprintf("/tmp/awf-codex-schema-%x.json", sum)
+}
 
 // Launch runs `codex exec --json ...` inside handle via the streaming Backend.Exec.
 // codex's --json emits JSONL flushed live; Launch scans it and emits ONE AgentEvent
@@ -276,8 +278,9 @@ func assembleCommand(inv agent.AgentInvocation, apiKeyAuth bool) (string, error)
 		if serr != nil {
 			return "", fmt.Errorf("agent/codex: marshal OutputSchema: %w", serr)
 		}
-		prelude = "printf '%s' " + shellQuote(string(schemaBytes)) + " > " + codexSchemaPath + " && "
-		parts = append(parts, "--output-schema", codexSchemaPath)
+		schemaPath := codexSchemaPath(inv)
+		prelude += "printf '%s' " + shellQuote(string(schemaBytes)) + " > " + schemaPath + " && "
+		parts = append(parts, "--output-schema", schemaPath)
 	}
 
 	// Sandbox: an explicit non-empty key uses codex's internal sandbox; otherwise the
