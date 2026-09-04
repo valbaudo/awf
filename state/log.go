@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/valbaudo/awf/clock"
 )
@@ -38,9 +39,10 @@ type Log interface {
 	Close() error
 }
 
-// FileLog is the production impl — one append-only file per run. Single-writer per
-// instance; the interpreter is single-threaded for commits (runtime-design §5).
+// FileLog is the production impl — one append-only file per run. Live agent
+// event sinks may append concurrently with interpreter commits.
 type FileLog struct {
+	mu    sync.Mutex
 	path  string
 	file  *os.File
 	clk   clock.Clock
@@ -137,6 +139,8 @@ func OpenLogExclusive(path string, clk clock.Clock) (*FileLog, error) {
 // Append assigns Seq/Epoch/TS and writes the framed JSON record. Does NOT fsync — caller
 // invokes Sync at durability-critical events.
 func (lg *FileLog) Append(e Event) error {
+	lg.mu.Lock()
+	defer lg.mu.Unlock()
 	lg.seq++
 	e.Seq = lg.seq
 	e.Epoch = lg.epoch
@@ -157,6 +161,8 @@ func (lg *FileLog) Append(e Event) error {
 
 // Sync fsyncs the underlying file.
 func (lg *FileLog) Sync() error {
+	lg.mu.Lock()
+	defer lg.mu.Unlock()
 	if err := lg.file.Sync(); err != nil {
 		return fmt.Errorf("state: sync log %q: %w", lg.path, err)
 	}
@@ -167,6 +173,8 @@ func (lg *FileLog) Sync() error {
 // Torn-tail records are silently skipped (Open already truncated them; this is the
 // post-truncation read).
 func (lg *FileLog) Fold() ([]Event, error) {
+	lg.mu.Lock()
+	defer lg.mu.Unlock()
 	// Re-open a read handle so the seek/read interaction with the O_APPEND write handle
 	// doesn't race for the file offset. Phase 1 is single-writer; the read handle is
 	// short-lived (within this Fold call).
@@ -201,6 +209,8 @@ func FoldFile(path string) ([]Event, error) {
 // Close fsyncs and closes. If Sync fails we still attempt Close (releasing the FD is more
 // important than the trailing close-error), but the Sync error is what we return.
 func (lg *FileLog) Close() error {
+	lg.mu.Lock()
+	defer lg.mu.Unlock()
 	if err := lg.file.Sync(); err != nil {
 		_ = lg.file.Close()
 		return fmt.Errorf("state: close log %q (sync): %w", lg.path, err)

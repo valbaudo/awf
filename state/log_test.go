@@ -3,9 +3,11 @@ package state
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,56 @@ import (
 func fixedClock(t *testing.T) clock.Clock {
 	t.Helper()
 	return &clock.Fake{T: time.Date(2026, 5, 24, 0, 0, 0, 0, time.UTC)}
+}
+
+func TestLogConcurrentAppendsKeepFramesAndSequenceIntact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.log")
+	lg, err := OpenLog(path, clock.System{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lg.Close() }()
+
+	const writers = 16
+	const eventsPerWriter = 100
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for writer := 0; writer < writers; writer++ {
+		wg.Add(1)
+		go func(writer int) {
+			defer wg.Done()
+			for event := 0; event < eventsPerWriter; event++ {
+				if err := lg.Append(Event{Type: "agent.event", Path: fmt.Sprintf("writer-%d", writer)}); err != nil {
+					errs <- err
+					return
+				}
+				if event%25 == 0 {
+					if err := lg.Sync(); err != nil {
+						errs <- err
+						return
+					}
+				}
+			}
+		}(writer)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	events, err := lg.Fold()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != writers*eventsPerWriter {
+		t.Fatalf("events = %d, want %d", len(events), writers*eventsPerWriter)
+	}
+	for index, event := range events {
+		if event.Seq != uint64(index+1) {
+			t.Fatalf("event %d seq = %d, want %d", index, event.Seq, index+1)
+		}
+	}
 }
 
 func TestLogAppendFoldRoundTrip(t *testing.T) {

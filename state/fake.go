@@ -9,9 +9,9 @@ import (
 )
 
 // InMemoryLog is the Log fake: events live in a slice, Sync/Close are no-ops. Used by
-// Phase 2's engine tests (the fake backend's conformance suite). Single-writer; not
-// safe for concurrent Append from multiple goroutines (matches FileLog's contract).
+// Phase 2's engine tests (the fake backend's conformance suite).
 type InMemoryLog struct {
+	mu     sync.Mutex
 	clk    clock.Clock
 	events []Event
 	seq    uint64
@@ -31,6 +31,8 @@ func NewInMemoryLog(clk clock.Clock) *InMemoryLog {
 }
 
 func (l *InMemoryLog) Append(e Event) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.failAppendAt != nil && l.appendCalls == *l.failAppendAt {
 		n := l.appendCalls
 		l.appendCalls++
@@ -51,7 +53,11 @@ func (l *InMemoryLog) Append(e Event) error {
 //
 // Mirrors container.Fake.FailExecAfterN's semantics; lets slice 2.4's commit
 // test crash *between* Blobs.Put and Log.Append for a chosen attempt.
-func (l *InMemoryLog) FailAppendAfterN(n int) { l.failAppendAt = &n }
+func (l *InMemoryLog) FailAppendAfterN(n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.failAppendAt = &n
+}
 
 // Reopen simulates a FileLog.OpenLog of an existing file: bumps the internal
 // epoch counter to (last-event.Epoch + 1) so subsequent Appends carry the new
@@ -69,6 +75,8 @@ func (l *InMemoryLog) FailAppendAfterN(n int) { l.failAppendAt = &n }
 // that — Phase 4 Docker conformance may swap in a file-backed log where the
 // signature matters.
 func (l *InMemoryLog) Reopen() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if len(l.events) == 0 {
 		return nil
 	}
@@ -81,12 +89,16 @@ func (l *InMemoryLog) Reopen() error {
 // on already-cleared. Conformance harness calls this before the resume so a
 // programmed crash doesn't replay on the resume's own Appends.
 func (l *InMemoryLog) ClearFault() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.failAppendAt = nil
 }
 
 func (*InMemoryLog) Sync() error { return nil }
 
 func (l *InMemoryLog) Fold() ([]Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	// Return a copy so callers can't mutate our backing array.
 	out := make([]Event, len(l.events))
 	copy(out, l.events)
