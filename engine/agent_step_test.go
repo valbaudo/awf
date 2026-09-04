@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/valbaudo/awf/agent"
+	"github.com/valbaudo/awf/agent/codex"
 	"github.com/valbaudo/awf/agent/fake"
 	"github.com/valbaudo/awf/clock"
 	"github.com/valbaudo/awf/container"
@@ -651,6 +652,283 @@ graph:
 
 	if err := <-done; err != nil {
 		t.Fatalf("engine.Run: %v", err)
+	}
+}
+
+type controlledCodexBackend struct {
+	*container.Fake
+	chunks          []container.IOChunk
+	interChunkDelay time.Duration
+	releaseResult   <-chan struct{}
+	releaseStall    <-chan struct{}
+	allChunksSent   chan struct{}
+}
+
+func (b *controlledCodexBackend) Exec(_ context.Context, _ container.Handle, _ container.Cmd) (<-chan container.IOChunk, <-chan container.ExecResult, error) {
+	chunks := make(chan container.IOChunk)
+	result := make(chan container.ExecResult, 1)
+	go func() {
+		for i, c := range b.chunks {
+			chunks <- c
+			if b.interChunkDelay > 0 && i+1 < len(b.chunks) {
+				time.Sleep(b.interChunkDelay)
+			}
+		}
+		if b.allChunksSent != nil {
+			close(b.allChunksSent)
+		}
+		if b.releaseStall != nil {
+			// Intentionally ignore the Exec context and leave both channels open
+			// until the test releases us. This models a stuck backend/adapter path.
+			<-b.releaseStall
+			close(chunks)
+			result <- container.ExecResult{Err: context.Canceled}
+			close(result)
+			return
+		}
+		close(chunks)
+		if b.releaseResult != nil {
+			<-b.releaseResult
+		}
+		result <- container.ExecResult{ExitCode: 0}
+		close(result)
+	}()
+	return chunks, result, nil
+}
+
+func codexJSONLChunk(line string) container.IOChunk {
+	return container.IOChunk{Stream: "stdout", Data: []byte(line + "\n")}
+}
+
+func codexAgentEventData(t *testing.T, log state.Log, path string) ([]engine.AgentEventData, bool) {
+	t.Helper()
+	events, err := log.Fold()
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	var data []engine.AgentEventData
+	var terminal bool
+	for _, ev := range events {
+		if ev.Path != path {
+			continue
+		}
+		switch ev.Type {
+		case engine.EventAgentEvent:
+			var d engine.AgentEventData
+			if err := json.Unmarshal(ev.Data, &d); err != nil {
+				t.Fatalf("unmarshal AgentEventData: %v", err)
+			}
+			data = append(data, d)
+		case engine.EventNodeCompleted, engine.EventNodeFailed:
+			terminal = true
+		}
+	}
+	return data, terminal
+}
+
+func TestRunAgentStep_CodexJSONLEventsDurableBeforeOutcomeAndNotDuplicated(t *testing.T) {
+	const yaml = `workflow: codex-jsonl-durable
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: codex
+    container: lab
+    uses: openai/codex
+    with: { prompt: inspect }
+    output_schema:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	releaseResult := make(chan struct{})
+	resultReleased := false
+	defer func() {
+		if !resultReleased {
+			close(releaseResult)
+		}
+	}()
+	backend := &controlledCodexBackend{
+		Fake:          container.NewFake(),
+		releaseResult: releaseResult,
+		chunks: []container.IOChunk{
+			codexJSONLChunk(`{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"pwd","status":"in_progress"}}`),
+			codexJSONLChunk(`{"type":"item.completed","item":{"id":"reason-1","type":"reasoning","text":"inspect files"}}`),
+			codexJSONLChunk(`{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"{\"ok\":true}"}}`),
+			codexJSONLChunk(`{"type":"turn.completed","usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}`),
+		},
+	}
+	adapter, err := codex.New(codex.WithBackend(backend))
+	if err != nil {
+		t.Fatalf("codex.New: %v", err)
+	}
+	var reg agent.Registry
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  backend,
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	runDir := t.TempDir()
+	log, err := state.OpenLogExclusive(filepath.Join(runDir, "log"), clk)
+	if err != nil {
+		t.Fatalf("OpenLogExclusive: %v", err)
+	}
+	defer func() { _ = log.Close() }()
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		oc, runErr := engine.Run(context.Background(), ld, engine.NewRunState("r1", "d", nil), dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+		if runErr == nil && oc != engine.OutcomeOK {
+			runErr = fmt.Errorf("Outcome = %q, want %q", oc, engine.OutcomeOK)
+		}
+		done <- runErr
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		data, terminal := codexAgentEventData(t, log, "codex")
+		if len(data) >= 2 {
+			if terminal {
+				t.Fatal("node terminal event appeared while codex outcome was still blocked")
+			}
+			if data[0].Kind != "command_execution" || data[1].Kind != "reasoning" {
+				t.Fatalf("in-flight agent.event kinds = %q, %q, want command_execution, reasoning", data[0].Kind, data[1].Kind)
+			}
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("engine.Run returned while outcome was blocked: %v", err)
+		case <-deadline:
+			t.Fatal("timed out waiting for codex JSONL events to reach the log before outcome")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	close(releaseResult)
+	resultReleased = true
+	if err := <-done; err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	data, terminal := codexAgentEventData(t, log, "codex")
+	if !terminal {
+		t.Fatal("missing node.completed after releasing codex outcome")
+	}
+	wantKinds := []string{"command_execution", "reasoning", "agent_message", "turn.completed"}
+	if len(data) != len(wantKinds) {
+		t.Fatalf("durable transcript-source agent.event count = %d, want %d (events must not be appended again at completion)", len(data), len(wantKinds))
+	}
+	for i, want := range wantKinds {
+		if data[i].Kind != want || !data[i].Live {
+			t.Errorf("agent.event[%d] = {Kind:%q Live:%v}, want {Kind:%q Live:true}", i, data[i].Kind, data[i].Live, want)
+		}
+		if !json.Valid(data[i].PayloadInline) {
+			t.Errorf("agent.event[%d] (%s) lost its JSONL transcript source payload: %q", i, data[i].Kind, data[i].PayloadInline)
+		}
+	}
+}
+
+func TestRunAgentStep_CodexJSONLEventsSurviveNoncooperativeTimeout(t *testing.T) {
+	const yaml = `workflow: codex-jsonl-timeout
+version: 1
+containers:
+  lab:
+    image: oci://example.com/runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+graph:
+  - id: codex
+    container: lab
+    uses: openai/codex
+    with: { prompt: inspect }
+    timeout: { wall: "250ms" }
+`
+	ld := loadAgentSimpleDef(t, yaml)
+	releaseStall := make(chan struct{})
+	allChunksSent := make(chan struct{})
+	defer close(releaseStall)
+	backend := &controlledCodexBackend{
+		Fake:            container.NewFake(),
+		releaseStall:    releaseStall,
+		allChunksSent:   allChunksSent,
+		interChunkDelay: 20 * time.Millisecond,
+		chunks: []container.IOChunk{
+			codexJSONLChunk(`{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"slow-command","status":"in_progress"}}`),
+			codexJSONLChunk(`{"type":"item.completed","item":{"id":"reason-1","type":"reasoning","text":"still working"}}`),
+		},
+	}
+	adapter, err := codex.New(codex.WithBackend(backend))
+	if err != nil {
+		t.Fatalf("codex.New: %v", err)
+	}
+	var reg agent.Registry
+	if err := reg.Register(adapter); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dispatcher := &engine.LocalDispatcher{
+		Backend:  backend,
+		Handles:  map[string]container.Handle{"lab": {Name: "lab", ID: "fake-1"}},
+		Resolver: &reg,
+	}
+	clk := &clock.Fake{T: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	log := state.NewInMemoryLog(clk)
+	if err := log.Append(state.Event{Type: engine.EventRunStarted, Data: mustJSON(engine.RunStartedData{RunID: "r1", WorkflowDigest: "d"})}); err != nil {
+		t.Fatalf("append run.started: %v", err)
+	}
+
+	done := make(chan struct {
+		oc  engine.Outcome
+		err error
+	}, 1)
+	go func() {
+		oc, runErr := engine.Run(context.Background(), ld, engine.NewRunState("r1", "d", nil), dispatcher, log, state.NewInMemoryBlobs(), clk, engine.RunOptions{Tap: io.Discard})
+		done <- struct {
+			oc  engine.Outcome
+			err error
+		}{oc: oc, err: runErr}
+	}()
+	select {
+	case <-allChunksSent:
+	case <-time.After(time.Second):
+		t.Fatal("slow backend did not emit its JSONL events")
+	}
+
+	select {
+	case got := <-done:
+		if got.oc != engine.OutcomePermanentFailure {
+			t.Fatalf("Outcome = %q, want %q", got.oc, engine.OutcomePermanentFailure)
+		}
+		if !errors.Is(got.err, context.DeadlineExceeded) {
+			t.Fatalf("engine.Run err = %v, want context deadline exceeded", got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("engine.Run remained blocked after timeout on noncooperative codex backend")
+	}
+
+	data, terminal := codexAgentEventData(t, log, "codex")
+	if !terminal {
+		t.Fatal("missing node.failed after wall timeout")
+	}
+	wantKinds := []string{"command_execution", "reasoning"}
+	if len(data) != len(wantKinds) {
+		t.Fatalf("agent.event count after timeout = %d, want %d", len(data), len(wantKinds))
+	}
+	for i, want := range wantKinds {
+		if data[i].Kind != want || !data[i].Live {
+			t.Errorf("agent.event[%d] after timeout = {Kind:%q Live:%v}, want {Kind:%q Live:true}", i, data[i].Kind, data[i].Live, want)
+		}
+		if !json.Valid(data[i].PayloadInline) {
+			t.Errorf("agent.event[%d] (%s) lost its JSONL payload after timeout: %q", i, data[i].Kind, data[i].PayloadInline)
+		}
 	}
 }
 
@@ -2678,13 +2956,11 @@ graph:
 	})
 }
 
-// 2026-08-16: STRICT (non-live) agent events must ALSO carry the normalized
-// display_* fields in the WAL — the console's run transcript renders those,
-// and gating them on Live left strict adapters (codex exec) with no
-// agent-agnostic text, forcing consumers to parse CLI dialects. The Live flag
-// now gates ONLY payload redaction, not display metadata.
-func TestRunAgentStep_StrictAgentEventCarriesDisplayMetadata(t *testing.T) {
-	const yaml = `workflow: strict-agent-events
+// Buffered (non-Live) agent events must ALSO carry normalized display_* fields
+// in the WAL — the console's run transcript renders those. The Live flag gates
+// immediate durability and payload redaction, not display metadata.
+func TestRunAgentStep_BufferedAgentEventCarriesDisplayMetadata(t *testing.T) {
+	const yaml = `workflow: buffered-agent-events
 version: 1
 containers:
   lab:
@@ -2692,7 +2968,7 @@ containers:
 graph:
   - id: strict
     container: lab
-    uses: openai/codex-strict
+    uses: test/buffered-agent
     with:
       prompt: "p"
     output_schema:
@@ -2704,7 +2980,7 @@ graph:
 `
 	ld := loadAgentSimpleDef(t, yaml)
 	var reg agent.Registry
-	fk := fake.New("openai/codex-strict").WithCaps(agent.Caps{NativeSchema: true}).Script(0, fake.Result{
+	fk := fake.New("test/buffered-agent").WithCaps(agent.Caps{NativeSchema: true}).Script(0, fake.Result{
 		Output: map[string]any{"ok": true},
 		Events: []agent.AgentEvent{{
 			Kind:    "agent_message",
@@ -2750,12 +3026,12 @@ graph:
 			t.Fatalf("unmarshal AgentEventData: %v", err)
 		}
 		if data.Live {
-			t.Fatal("strict event must keep Live=false")
+			t.Fatal("buffered event must keep Live=false")
 		}
 		if data.DisplayClass != "assistant" || data.DisplaySummary != "hello from strict" {
-			t.Fatalf("strict event display metadata = class %q summary %q, want assistant/hello from strict", data.DisplayClass, data.DisplaySummary)
+			t.Fatalf("buffered event display metadata = class %q summary %q, want assistant/hello from strict", data.DisplayClass, data.DisplaySummary)
 		}
 		return
 	}
-	t.Fatal("missing strict agent.event")
+	t.Fatal("missing buffered agent.event")
 }

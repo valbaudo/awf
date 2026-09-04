@@ -2,6 +2,7 @@ package codex_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -102,6 +103,49 @@ func TestLaunch_HappyPath_TypedOutput(t *testing.T) {
 	}
 	if outcome.Result.Metrics.Tokens.Input != 20 || outcome.Result.Metrics.Tokens.Output != 5 || outcome.Result.Metrics.Tokens.CacheReadInput != 2 {
 		t.Errorf("tokens = %+v", outcome.Result.Metrics.Tokens)
+	}
+}
+
+func TestLaunch_JSONLEventsRequestImmediateDurability(t *testing.T) {
+	f := container.NewFake()
+	h, _ := f.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	reasoning := []byte(`{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"inspect the workspace"}}`)
+	lines := [][]byte{
+		cmdStarted("ls"),
+		reasoning,
+		itemMsg(`{"answer":4}`),
+		turnCompleted(20, 2, 5),
+	}
+	chunks := make([]container.IOChunk, 0, len(lines))
+	for _, line := range lines {
+		chunks = append(chunks, chunk(nl(line)))
+	}
+	f.ProgramExecAny(container.ExecResult{ExitCode: 0}, chunks)
+	a := codexLaunchAdapter(t, f)
+	inv := agent.AgentInvocation{
+		NodePath: "graph[0]", Uses: codex.AdapterRef,
+		With:         ir.RawConfig{"prompt": "inspect then answer"},
+		OutputSchema: &ir.JSONSchema{"type": "object"},
+	}
+
+	events, outcome := drainLaunch(t, a, h, inv)
+	if outcome.Err != nil {
+		t.Fatalf("outcome.Err = %v", outcome.Err)
+	}
+	wantKinds := []string{"command_execution", "reasoning", "agent_message", "turn.completed"}
+	if len(events) != len(wantKinds) {
+		t.Fatalf("events len = %d, want %d", len(events), len(wantKinds))
+	}
+	for i, ev := range events {
+		if ev.Kind != wantKinds[i] {
+			t.Errorf("events[%d].Kind = %q, want %q", i, ev.Kind, wantKinds[i])
+		}
+		if !ev.Live {
+			t.Errorf("events[%d] (%s).Live = false, want true so the engine appends each JSONL event as it arrives", i, ev.Kind)
+		}
+		if !json.Valid(ev.Payload) {
+			t.Errorf("events[%d] (%s).Payload is not retained JSON: %q", i, ev.Kind, ev.Payload)
+		}
 	}
 }
 

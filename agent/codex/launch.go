@@ -64,9 +64,10 @@ func codexSchemaPath(inv agent.AgentInvocation) string {
 }
 
 // Launch runs `codex exec --json ...` inside handle via the streaming Backend.Exec.
-// codex's --json emits JSONL flushed live; Launch scans it and emits ONE AgentEvent
-// per line, records the LAST agent_message text (last-wins), captures the terminal
-// usage + any error/turn.failed message, then sends exactly one AgentOutcome.
+// codex's --json emits JSONL flushed live; Launch scans it and emits ONE Live
+// AgentEvent per line so the engine's agentEventSink journals it immediately,
+// records the LAST agent_message text (last-wins), captures the terminal usage +
+// any error/turn.failed message, then sends exactly one AgentOutcome.
 //
 // STREAMING GRANULARITY (accepted limitation): codex exec --json is EVENT-granular,
 // not token-granular — each agent_message arrives as ONE complete item.completed
@@ -139,10 +140,11 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 		}
 	}()
 
-	// Goroutine B: scan stdout lines, emit one AgentEvent per line PROGRESSIVELY
-	// (event-granular live progress; the answer TEXT is one atomic agent_message line),
-	// record last-wins agent_message + terminal usage + turn-failure/error messages
-	// + diag, then send exactly one AgentOutcome. defer LIFO: outcomeCh closes LAST.
+	// Goroutine B: scan stdout lines, emit one Live AgentEvent per line
+	// PROGRESSIVELY (event-granular live progress + immediate engine durability;
+	// the answer TEXT is one atomic agent_message line), record last-wins
+	// agent_message + terminal usage + turn-failure/error messages + diag, then
+	// send exactly one AgentOutcome. defer LIFO: outcomeCh closes LAST.
 	go func() {
 		defer close(outcomeCh)
 		defer close(events)
@@ -171,8 +173,12 @@ func (a *Adapter) Launch(ctx context.Context, handle container.Handle, inv agent
 				diag.WriteByte('\n')
 				continue
 			}
+			// Live routes the event through the engine's immediate durability sink;
+			// satisfy its payload contract before publishing while retaining the
+			// parsed raw line above for outcome construction.
+			durablePayload := []byte(agent.RedactDisplayText(agent.SanitizeDisplayBytes(raw)))
 			select {
-			case events <- agent.AgentEvent{Kind: eventKind(ev), Payload: raw, Stream: "stdout", Display: displayForCodex(ev)}:
+			case events <- agent.AgentEvent{Kind: eventKind(ev), Payload: durablePayload, Stream: "stdout", Live: true, Display: displayForCodex(ev)}:
 			case <-ctx.Done():
 				outcomeCh <- agent.AgentOutcome{Err: &agent.ErrAgentLaunch{Cause: ctx.Err()}}
 				return

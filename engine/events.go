@@ -517,8 +517,9 @@ type ReactRoundData struct {
 
 const (
 	// Phase 5 slice 5.2. agent.event: the interpreter writes one entry per
-	// agent.AgentEvent buffered in DispatchResult.AgentEvents, BEFORE the
-	// node.completed commit. OBSERVATIONAL — Fold ignores it (default arm).
+	// agent.AgentEvent. Live events are appended as they arrive; non-Live events
+	// are buffered in DispatchResult.AgentEvents and written before node.completed.
+	// OBSERVATIONAL — Fold ignores it (default arm).
 	// Phase 6 obs will project these as OTel span events. Mirrors how
 	// retry.attempt is treated: appended for trace/obs, invisible to resume.
 	EventAgentEvent = "agent.event"
@@ -526,10 +527,11 @@ const (
 
 // AgentEventData is the payload of an agent.event log entry. The dispatcher
 // (engine/local_dispatcher.go runAgent) drains <-chan agent.AgentEvent from
-// adapter.Launch and buffers them into DispatchResult.AgentEvents; the
-// interpreter-level engine/agent_step.go writes one AgentEventData per
-// buffered event via Log.Append BEFORE Commit (so the journal records the
-// stream alongside the node it belongs to).
+// adapter.Launch. Events marked Live go through agentEventSink and are appended
+// immediately; remaining events are buffered in DispatchResult.AgentEvents and
+// written by engine/agent_step.go before Commit. Thus the journal records the
+// stream alongside the node it belongs to without re-appending Live events at
+// successful completion.
 //
 // Payload offload policy: PayloadInline carries the event bytes when
 // `Size < AgentEventInlineThreshold` (4096 bytes, mirroring io.chunk per

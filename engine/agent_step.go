@@ -70,8 +70,9 @@ func effectiveRecovery(authored string, persistentSession bool) string {
 //  2. Substitutes string-leaf values in AgentStep.With via template.Substitute.
 //  3. Substitutes AgentStep.IdempotencyKey (if any).
 //  4. Builds NodeIntent and calls engine.RunWithRetry.
-//  5. Writes one agent.event log entry per buffered AgentEvent (Blobs offload
-//     for payloads ≥ AgentEventInlineThreshold).
+//  5. Live AgentEvents are journaled by agentEventSink as they arrive; writes one
+//     agent.event per remaining buffered event (Blobs offload for payloads ≥
+//     AgentEventInlineThreshold).
 //  6. Calls the canonical engine.Commit (engine/commit.go) and records the
 //     resulting NodeResult in runstate.
 //
@@ -408,11 +409,13 @@ func runAgentStepWithContext(ctx context.Context, as *ir.AgentStep, path string,
 	// tap-write-failure suppression.
 	drainTap(chunks, as.ID, tap)
 
-	// 4. Write agent.event log entries from the buffered events. Done BEFORE
-	// the commit so the journal records them adjacent to the node.completed
-	// (happy path) or node.failed (failure path). On failure, runErr is
-	// authoritative — appendErr is reported only when runErr is nil so we
-	// never silently mask a step failure with an internal append error.
+	// 4. Finish the live-event sink, then write agent.event entries for only the
+	// non-Live events the dispatcher buffered. Live events were deliberately not
+	// copied into dr.AgentEvents, so successful completion cannot append them a
+	// second time. Everything precedes node.completed (happy path) or node.failed
+	// (failure path). On failure, runErr is authoritative — appendErr is reported
+	// only when runErr is nil so we never silently mask a step failure with an
+	// internal append error.
 	sinkErr := sink.closeWait()
 	appendErr := appendAgentEvents(log, blobs, path, dr.AgentEvents)
 

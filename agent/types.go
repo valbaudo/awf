@@ -279,8 +279,10 @@ type LiveDispatch struct {
 // "tool_use", "tool_result", "thinking", "result", "rate_limit"). Payload
 // is the raw bytes a strict adapter's harness emitted for the event
 // (CAS-offloaded by the dispatcher in slice 5.2 if larger than 4 KiB).
-// Live adapters set Live and must put only normalized/redacted durable payload
-// bytes here — never raw provider transcripts. Stream is "stdout" or "stderr"
+// Events that must be appended durably as they arrive set Live and must put only
+// normalized/redacted durable payload bytes here — never raw provider transcripts.
+// This includes stateless streaming adapters such as openai/codex as well as
+// persistent live adapters. Stream is "stdout" or "stderr"
 // — typed loosely to match container/Backend's IOChunk.
 type AgentEvent struct {
 	Kind    string `json:"kind"`
