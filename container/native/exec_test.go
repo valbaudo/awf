@@ -56,3 +56,30 @@ func TestNative_Exec_ChunksArriveDuringExec(t *testing.T) {
 		t.Errorf("ExitCode = %d; want 0", r.ExitCode)
 	}
 }
+
+func TestNative_Exec_ClosesPipeInheritedByExitedProcessDescendant(t *testing.T) {
+	b, err := native.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h, err := b.Create(context.Background(), container.ContainerSpec{Name: "lab"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Destroy(context.Background(), h) })
+
+	start := time.Now()
+	chunks, result, err := b.Exec(context.Background(), h, container.Cmd{Run: "sleep 30 & printf parent-exited"})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	for range chunks {
+	}
+	res := <-result
+	if elapsed := time.Since(start); elapsed >= 15*time.Second {
+		t.Fatalf("Exec waited %v for a descendant-held pipe; WaitDelay never activated", elapsed)
+	}
+	if res.ExitCode != 0 || string(res.Stdout) != "parent-exited" {
+		t.Fatalf("result = exit %d stdout %q", res.ExitCode, res.Stdout)
+	}
+}

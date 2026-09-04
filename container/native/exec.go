@@ -32,10 +32,10 @@ const execWaitDelay = 10 * time.Second
 //
 // Streaming contract (slice 5.3): returns (chunks, result, error).
 // Per-pipe reader goroutines emit IOChunks live as bytes arrive; a
-// waiter goroutine wg.Waits both readers, then c.Wait()s the process,
-// closes chunks, computes the ExitCode and emits ONE ExecResult on the
-// 1-buffered result channel. chunks closes BEFORE result emits — every
-// chunk is materialized before the result is observable.
+// waiter goroutine c.Waits while both readers drain, then waits for the
+// readers, closes chunks, computes the ExitCode and emits ONE ExecResult on
+// the 1-buffered result channel. Calling Wait first is required for WaitDelay
+// to close pipe descriptors inherited by descendants after the child exits.
 //
 // ctx-cancel: the default exec.CommandContext cancel SIGKILLs only the
 // DIRECT child, but the workload runs as a GRANDCHILD (under `sh -c`, and a
@@ -157,8 +157,8 @@ func (b *Backend) Exec(ctx context.Context, h container.Handle, cmd container.Cm
 	go emit("stderr", stderrPipe, nil)
 
 	go func() {
-		wg.Wait()
 		_ = c.Wait()
+		wg.Wait()
 		close(chunks)
 		exitCode := c.ProcessState.ExitCode()
 		stdoutMu.Lock()
