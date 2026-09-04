@@ -64,21 +64,21 @@
   },
   "deepseek-chat": {
     "currency": "USD",
-    "input_per_m": 0.14,
-    "output_per_m": 0.28,
-    "cache_read_per_m": 0.0028,
+    "input_per_m": 0.28,
+    "output_per_m": 0.42,
+    "cache_read_per_m": 0.028,
     "cache_write_per_m": 0,
-    "updated_on": "2026-02-28",
-    "source": "https://models.dev"
+    "updated_on": "2026-08-31",
+    "source": "https://github.com/BerriAI/litellm"
   },
   "deepseek-reasoner": {
     "currency": "USD",
-    "input_per_m": 0.14,
-    "output_per_m": 0.28,
-    "cache_read_per_m": 0.0028,
+    "input_per_m": 0.28,
+    "output_per_m": 0.42,
+    "cache_read_per_m": 0.028,
     "cache_write_per_m": 0,
-    "updated_on": "2026-02-28",
-    "source": "https://models.dev"
+    "updated_on": "2026-08-31",
+    "source": "https://github.com/BerriAI/litellm"
   },
   "deepseek-v4-flash": {
     "currency": "USD",
@@ -86,7 +86,7 @@
     "output_per_m": 0.28,
     "cache_read_per_m": 0.0028,
     "cache_write_per_m": 0,
-    "updated_on": "2026-04-24",
+    "updated_on": "2026-07-31",
     "source": "https://models.dev"
   },
   "deepseek-v4-pro": {
@@ -95,17 +95,17 @@
     "output_per_m": 0.87,
     "cache_read_per_m": 0.003625,
     "cache_write_per_m": 0,
-    "updated_on": "2026-04-24",
+    "updated_on": "2026-08-22",
     "source": "https://models.dev"
   },
   "gemini-2.0-flash": {
     "currency": "USD",
-    "input_per_m": 0.1,
-    "output_per_m": 0.4,
-    "cache_read_per_m": 0.025,
+    "input_per_m": 0.09999999999999999,
+    "output_per_m": 0.39999999999999997,
+    "cache_read_per_m": 0.024999999999999998,
     "cache_write_per_m": 0,
-    "updated_on": "2024-12-11",
-    "source": "https://models.dev"
+    "updated_on": "2026-08-31",
+    "source": "https://github.com/BerriAI/litellm"
   },
   "gemini-2.5-flash": {
     "currency": "USD",
@@ -147,10 +147,10 @@
     "currency": "USD",
     "input_per_m": 2,
     "output_per_m": 12,
-    "cache_read_per_m": 0.2,
+    "cache_read_per_m": 0.19999999999999998,
     "cache_write_per_m": 0,
-    "updated_on": "2025-11-18",
-    "source": "https://models.dev"
+    "updated_on": "2026-08-31",
+    "source": "https://github.com/BerriAI/litellm"
   },
   "gemini-3.1-pro-preview": {
     "currency": "USD",
@@ -185,8 +185,8 @@
     "output_per_m": 10,
     "cache_read_per_m": 0.125,
     "cache_write_per_m": 0,
-    "updated_on": "2025-09-15",
-    "source": "https://models.dev"
+    "updated_on": "2026-08-31",
+    "source": "https://github.com/BerriAI/litellm"
   },
   "gpt-5-mini": {
     "currency": "USD",
@@ -230,8 +230,8 @@
     "output_per_m": 10,
     "cache_read_per_m": 0.125,
     "cache_write_per_m": 0,
-    "updated_on": "2025-11-13",
-    "source": "https://models.dev"
+    "updated_on": "2026-08-31",
+    "source": "https://github.com/BerriAI/litellm"
   },
   "gpt-5.2": {
     "currency": "USD",
@@ -248,8 +248,8 @@
     "output_per_m": 14,
     "cache_read_per_m": 0.175,
     "cache_write_per_m": 0,
-    "updated_on": "2025-12-11",
-    "source": "https://models.dev"
+    "updated_on": "2026-08-31",
+    "source": "https://github.com/BerriAI/litellm"
   },
   "gpt-5.2-pro": {
     "currency": "USD",
