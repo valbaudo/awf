@@ -27,6 +27,8 @@ const (
 	keyCacheDocuments   = "cache_documents"
 	keyCacheContext     = "cache_context"
 	keyGeminiCache      = "gemini_cache"
+	keyMediaResolution  = "media_resolution"
+	keyThinking         = "thinking"
 )
 
 // cacheBoolKeys — the provider-scoped boolean cache-hint with-keys, each
@@ -44,7 +46,7 @@ var cacheBoolKeys = []struct {
 var allowedKeys = map[string]struct{}{
 	keyModel: {}, keyPrompt: {}, keyBaseURL: {}, keyAPIKeyEnv: {},
 	keySystemPrompt: {}, keyTemperature: {}, keyMaxTokens: {}, keyStructuredOutput: {},
-	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {}, keyCacheSystem: {}, keyCacheDocuments: {}, keyCacheContext: {}, keyGeminiCache: {},
+	keyTLSInsecure: {}, keyProvider: {}, keyMaxInlineBytes: {}, keyCacheSystem: {}, keyCacheDocuments: {}, keyCacheContext: {}, keyGeminiCache: {}, keyMediaResolution: {}, keyThinking: {},
 }
 
 // rejectedKeys never belong in `with:` — `api_key` would inline a secret into
@@ -62,6 +64,9 @@ var structuredOutputValues = []string{soResponseFormat, soOllamaFormat, soOff}
 // ollama → native /api/chat. structured_output: ollama_format remains a back-compat
 // alias that selects the ollama transport when no provider is set (effectiveProvider).
 var providerValues = []string{providerOpenAI, providerGemini, providerOllama, providerAnthropic}
+
+var geminiMediaResolutionValues = []string{"low", "medium", "high"}
+var geminiThinkingValues = []string{"low", "medium", "high"}
 
 // defaultAPIKeyEnv is the canonical default API-key env-var name for this adapter.
 // DefaultEnvAllowlist (errors.go) is built from this constant so the two values
@@ -148,6 +153,30 @@ func (a *Adapter) validateConfigCommon(with ir.RawConfig) error {
 	if v, ok := with[keyTLSInsecure]; ok {
 		if _, ok := v.(bool); !ok {
 			return wrapInvalidConfig(fmt.Sprintf("must be a bool, got %T", v), keyTLSInsecure)
+		}
+	}
+	if v, ok := with[keyMediaResolution]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyMediaResolution)
+		}
+		if !slices.Contains(geminiMediaResolutionValues, s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", geminiMediaResolutionValues, s), keyMediaResolution)
+		}
+		if effectiveProvider(with) != providerGemini {
+			return wrapInvalidConfig("media_resolution is only valid with provider: gemini", keyMediaResolution)
+		}
+	}
+	if v, ok := with[keyThinking]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return wrapInvalidConfig(fmt.Sprintf("must be string, got %T", v), keyThinking)
+		}
+		if !slices.Contains(geminiThinkingValues, s) {
+			return wrapInvalidConfig(fmt.Sprintf("must be one of %v, got %q", geminiThinkingValues, s), keyThinking)
+		}
+		if effectiveProvider(with) != providerGemini {
+			return wrapInvalidConfig("thinking is only valid with provider: gemini", keyThinking)
 		}
 	}
 	// Provider-scoped boolean cache-hint keys — uniform policy (F13): all three

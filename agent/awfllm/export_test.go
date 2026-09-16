@@ -101,8 +101,12 @@ func BuildAnthropicBodyForTest(cfg ReqConfigForTest, prompt string, thread []age
 }
 
 // GeminiCacheKeyForTest exposes the content-address key function.
-func GeminiCacheKeyForTest(model, systemPrompt string, files []agent.InputFile) string {
-	return geminiCacheKey(model, systemPrompt, files)
+func GeminiCacheKeyForTest(model, systemPrompt string, files []agent.InputFile, mediaResolution ...string) string {
+	resolution := ""
+	if len(mediaResolution) > 0 {
+		resolution = mediaResolution[0]
+	}
+	return geminiCacheKey(model, systemPrompt, files, resolution)
 }
 
 // EnsureGeminiCacheForTest exposes the cache-lifecycle helper.

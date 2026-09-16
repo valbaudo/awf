@@ -21,7 +21,7 @@ import (
 // names live ONLY in this in-process map: never journaled, committed, or resumed (resume
 // re-sends the document and re-caches).
 func (a *Adapter) ensureGeminiCache(ctx context.Context, cfg reqConfig, files []agent.InputFile) (string, error) {
-	key := geminiCacheKey(cfg.Model, cfg.SystemPrompt, files)
+	key := geminiCacheKey(cfg.Model, cfg.SystemPrompt, files, cfg.MediaResolution)
 
 	a.geminiCacheMu.RLock()
 	name, cached := a.geminiCacheMap[key]
@@ -93,10 +93,7 @@ func (a *Adapter) geminiCacheCreate(ctx context.Context, cfg reqConfig, files []
 		if _, ok := forwardable(providerGemini, f.MIME); !ok {
 			return "", unsupportedMIMEErr(f.MIME, "")
 		}
-		parts = append(parts, map[string]any{"inlineData": map[string]any{
-			"mimeType": f.MIME,
-			"data":     base64.StdEncoding.EncodeToString(f.Content),
-		}})
+		parts = append(parts, geminiInlinePart(f, cfg.MediaResolution))
 	}
 	ttl := defaultGeminiCacheTTL
 	if cfg.GeminiCache != nil && cfg.GeminiCache.TTL != "" {
@@ -144,16 +141,34 @@ func (a *Adapter) geminiCacheCreate(ctx context.Context, cfg reqConfig, files []
 	return cc.Name, nil
 }
 
+// geminiInlinePart is shared by CachedContent creation and uncached generation so
+// the image detail setting cannot diverge between the two media paths.
+func geminiInlinePart(f agent.InputFile, mediaResolution string) map[string]any {
+	part := map[string]any{"inlineData": map[string]any{
+		"mimeType": f.MIME,
+		"data":     base64.StdEncoding.EncodeToString(f.Content),
+	}}
+	if mediaResolution != "" {
+		part["media_resolution"] = map[string]any{
+			"level": "MEDIA_RESOLUTION_" + strings.ToUpper(mediaResolution),
+		}
+	}
+	return part
+}
+
 // geminiCacheKey is the content address for a CachedContent object: a hash of the
-// model, the systemInstruction (it is cached, so it must distinguish caches), and
-// each file's MIME and bytes, in order. Two callGemini calls with the same model +
-// system prompt + document(s) collide deterministically and reuse one server-side
-// cache. The filename is excluded (it does not affect cached tokens).
-func geminiCacheKey(model, systemPrompt string, files []agent.InputFile) string {
+// model, the systemInstruction (it is cached, so it must distinguish caches), the
+// media resolution (it changes the cached media representation), and each file's
+// MIME and bytes, in order. Two callGemini calls with the same settings and
+// document(s) collide deterministically and reuse one server-side cache. The
+// filename is excluded (it does not affect cached tokens).
+func geminiCacheKey(model, systemPrompt string, files []agent.InputFile, mediaResolution string) string {
 	h := sha256.New()
 	h.Write([]byte(model))
 	h.Write([]byte{0})
 	h.Write([]byte(systemPrompt))
+	h.Write([]byte{0})
+	h.Write([]byte(mediaResolution))
 	h.Write([]byte{0})
 	for _, f := range files {
 		h.Write([]byte(f.MIME))

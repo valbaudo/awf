@@ -130,6 +130,9 @@ func TestGeminiCacheKey_ContentAddressed(t *testing.T) {
 	if k == awfllm.GeminiCacheKeyForTest("gemini-2.5-pro", "OTHER-sys", f1) {
 		t.Error("different systemInstruction must produce a different key (it is baked into the cache)")
 	}
+	if k == awfllm.GeminiCacheKeyForTest("gemini-2.5-pro", "sys", f1, "high") {
+		t.Error("different media resolution must produce a different key (it changes cached media)")
+	}
 	if k == "" {
 		t.Error("key must be non-empty")
 	}

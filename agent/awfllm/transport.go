@@ -538,10 +538,7 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 			if _, ok := forwardable(providerGemini, f.MIME); !ok {
 				return "", usageRec{}, "", "", unsupportedMIMEErr(f.MIME, "")
 			}
-			parts = append(parts, map[string]any{"inlineData": map[string]any{
-				"mimeType": f.MIME,
-				"data":     base64.StdEncoding.EncodeToString(f.Content), // bare base64, no data: prefix
-			}})
+			parts = append(parts, geminiInlinePart(f, cfg.MediaResolution))
 		}
 	}
 	parts = append(parts, map[string]any{"text": wirePrompt})
@@ -565,6 +562,9 @@ func (a *Adapter) callGemini(ctx context.Context, cfg reqConfig, prompt string, 
 	}
 	if cfg.HasMaxTokens {
 		gc["maxOutputTokens"] = cfg.MaxTokens
+	}
+	if cfg.ThinkingLevel != "" {
+		gc["thinkingConfig"] = map[string]any{"thinkingLevel": cfg.ThinkingLevel}
 	}
 	// Native structured output is kept even with a cache (verified to coexist).
 	if schema != nil && cfg.StructuredOutput != soOff {

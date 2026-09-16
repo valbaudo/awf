@@ -123,6 +123,8 @@ type reqConfig struct {
 	CacheDocuments   bool               // anthropic: mark the LAST input-file block cacheable (the static/varying boundary)
 	CacheContext     bool               // anthropic: mark the evaluator context-evidence block cacheable
 	GeminiCache      *geminiCacheConfig // explicit Gemini CachedContent (nil = off)
+	MediaResolution  string             // gemini: low|medium|high image detail for input media
+	ThinkingLevel    string             // gemini: low|medium|high thinking level; empty uses model default
 }
 
 // buildReqConfig translates validated `with:` + the resolved env into a reqConfig.
@@ -173,6 +175,12 @@ func (a *Adapter) buildReqConfig(inv agent.AgentInvocation) (reqConfig, error) {
 		if n, okN := toInt(v); okN {
 			cfg.MaxTokens, cfg.HasMaxTokens = n, true
 		}
+	}
+	if v, ok := with[keyMediaResolution].(string); ok {
+		cfg.MediaResolution = v
+	}
+	if v, ok := with[keyThinking].(string); ok {
+		cfg.ThinkingLevel = v
 	}
 	cfg.GeminiCache = parseGeminiCache(with)
 	return cfg, nil

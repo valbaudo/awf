@@ -205,6 +205,72 @@ func TestBuildReqConfig_GeminiCacheParsed(t *testing.T) {
 	}
 }
 
+func TestBuildReqConfig_GeminiDocumentSettings(t *testing.T) {
+	a := llmAdapter(t, map[string]string{"GEMINI_API_KEY": "k"})
+	with := ir.RawConfig{
+		"provider":         "gemini",
+		"model":            "gemini-3.8-flash",
+		"prompt":           "read",
+		"media_resolution": "high",
+		"thinking":         "low",
+	}
+	if err := a.ValidateConfig(with); err != nil {
+		t.Fatalf("ValidateConfig: %v", err)
+	}
+	cfg, err := a.BuildReqConfigForTest(agent.AgentInvocation{With: with})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MediaResolution != "high" {
+		t.Errorf("MediaResolution = %q, want high", cfg.MediaResolution)
+	}
+	if cfg.ThinkingLevel != "low" {
+		t.Errorf("ThinkingLevel = %q, want low", cfg.ThinkingLevel)
+	}
+}
+
+func TestValidateConfig_GeminiDocumentSettingsValues(t *testing.T) {
+	a := llmAdapter(t, map[string]string{"GEMINI_API_KEY": "k"})
+	cases := []struct {
+		name  string
+		key   string
+		value any
+	}{
+		{name: "media resolution", key: "media_resolution", value: "ultra"},
+		{name: "thinking", key: "thinking", value: "maximum"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := a.ValidateConfig(ir.RawConfig{
+				"provider": "gemini",
+				"model":    "gemini-3.8-flash",
+				"prompt":   "read",
+				tc.key:     tc.value,
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("err = %v, want %s value rejection", err, tc.key)
+			}
+		})
+	}
+}
+
+func TestValidateConfig_GeminiDocumentSettingsProviderGuard(t *testing.T) {
+	a := llmAdapter(t, okEnv())
+	for _, key := range []string{"media_resolution", "thinking"} {
+		t.Run(key, func(t *testing.T) {
+			err := a.ValidateConfig(ir.RawConfig{
+				"provider": "openai",
+				"model":    "gpt-5",
+				"prompt":   "read",
+				key:        "high",
+			})
+			if err == nil || !strings.Contains(err.Error(), "only valid with provider: gemini") {
+				t.Fatalf("err = %v, want Gemini-only rejection", err)
+			}
+		})
+	}
+}
+
 // TestBuildReqConfig_MaxInlineBytesOverride: max_inline_bytes with-key overrides
 // the default.
 func TestBuildReqConfig_MaxInlineBytesOverride(t *testing.T) {

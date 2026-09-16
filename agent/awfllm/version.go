@@ -15,7 +15,7 @@ import (
 // not a definition-digest pin. Do not assume model is definition-fixed. Bump
 // adapterVersion ONLY on an intentional adapter-contract revision (resume
 // hard-errors on drift).
-const adapterVersion = "awf-llm/1"
+const adapterVersion = "awf-llm/2"
 
 // Version returns the static adapter version. Ignores ctx and handle.
 func (*Adapter) Version(_ context.Context, _ container.Handle) (string, error) {

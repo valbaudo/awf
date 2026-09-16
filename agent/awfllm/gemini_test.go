@@ -110,6 +110,58 @@ func TestCallGemini_PDFRequestAndUsage(t *testing.T) {
 	}
 }
 
+func TestCallGemini_DocumentSettingsWire(t *testing.T) {
+	const resp = `{"candidates":[{"content":{"parts":[{"text":"{\"ok\":true}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`
+	var gotBody string
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		return jsonResponse(resp), nil
+	})
+	a, _ := awfllm.New(awfllm.WithHTTPClient(&http.Client{Transport: rt}))
+	cfg := awfllm.ReqConfigForTest{
+		Provider:        "gemini",
+		BaseURL:         "https://generativelanguage.googleapis.com",
+		Model:           "gemini-3.8-flash",
+		APIKey:          "k",
+		MediaResolution: "high",
+		ThinkingLevel:   "low",
+	}
+	files := []agent.InputFile{{Name: "doc", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
+	_, _, _, _, err := a.StreamWithFilesForTest(
+		context.Background(), cfg, "read", nil, nil, files, func(string, []byte) {},
+	)
+	if err != nil {
+		t.Fatalf("callGemini: %v", err)
+	}
+	var req struct {
+		Contents []struct {
+			Parts []struct {
+				MediaResolution *struct {
+					Level string `json:"level"`
+				} `json:"media_resolution"`
+			} `json:"parts"`
+		} `json:"contents"`
+		GenerationConfig struct {
+			ThinkingConfig *struct {
+				ThinkingLevel string `json:"thinkingLevel"`
+			} `json:"thinkingConfig"`
+		} `json:"generationConfig"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &req); err != nil {
+		t.Fatalf("request body: %v\n%s", err, gotBody)
+	}
+	if len(req.Contents) != 1 || len(req.Contents[0].Parts) != 2 {
+		t.Fatalf("contents = %+v, want one media part and one prompt part", req.Contents)
+	}
+	if req.Contents[0].Parts[0].MediaResolution == nil || req.Contents[0].Parts[0].MediaResolution.Level != "MEDIA_RESOLUTION_HIGH" {
+		t.Fatalf("media resolution = %+v, want MEDIA_RESOLUTION_HIGH\n%s", req.Contents[0].Parts[0].MediaResolution, gotBody)
+	}
+	if req.GenerationConfig.ThinkingConfig == nil || req.GenerationConfig.ThinkingConfig.ThinkingLevel != "low" {
+		t.Fatalf("thinking config = %+v, want low\n%s", req.GenerationConfig.ThinkingConfig, gotBody)
+	}
+}
+
 // TestCallGemini_StructuredOutputOff — Fix C: structured_output:off must mean
 // "no native structured output" for the Gemini transport too. With off, even when
 // an output_schema is present, the request body must OMIT responseMimeType and
@@ -216,11 +268,13 @@ func TestCallGemini_ThreadRendered(t *testing.T) {
 }
 
 func TestCallGemini_ExplicitCacheWire(t *testing.T) {
-	var genBody string
+	var genBody, cacheBody string
 	var posts int
 	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch {
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/cachedContents"):
+			body, _ := io.ReadAll(r.Body)
+			cacheBody = string(body)
 			posts++
 			return jsonResponse(`{"name":"cachedContents/abc"}`), nil
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/cachedContents/"):
@@ -235,7 +289,8 @@ func TestCallGemini_ExplicitCacheWire(t *testing.T) {
 	cfg := awfllm.ReqConfigForTest{
 		Provider: "gemini", BaseURL: "https://generativelanguage.googleapis.com",
 		Model: "gemini-2.5-pro", APIKey: "k", SystemPrompt: "sys",
-		GeminiCache: awfllm.GeminiCacheConfigForTest("explicit", "600s"),
+		MediaResolution: "high",
+		GeminiCache:     awfllm.GeminiCacheConfigForTest("explicit", "600s"),
 	}
 	files := []agent.InputFile{{Name: "d", MIME: "application/pdf", Content: []byte("%PDF-1.7")}}
 	_, usage, _, _, err := a.StreamWithFilesForTest(context.Background(), cfg, "extract", &ir.JSONSchema{"type": "object"}, nil, files, func(string, []byte) {})
@@ -244,6 +299,9 @@ func TestCallGemini_ExplicitCacheWire(t *testing.T) {
 	}
 	if posts != 1 {
 		t.Errorf("expected one cachedContents create, got %d", posts)
+	}
+	if !strings.Contains(cacheBody, `"media_resolution":{"level":"MEDIA_RESOLUTION_HIGH"}`) {
+		t.Errorf("cached document must carry media resolution: %s", cacheBody)
 	}
 	// Decode the generateContent body to assert the wire precisely.
 	var req map[string]any

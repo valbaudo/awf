@@ -16,7 +16,7 @@ func TestVersion_StaticConstant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Version: %v", err)
 	}
-	if v != "awf-llm/1" {
-		t.Errorf("Version = %q, want %q", v, "awf-llm/1")
+	if v != "awf-llm/2" {
+		t.Errorf("Version = %q, want %q", v, "awf-llm/2")
 	}
 }
